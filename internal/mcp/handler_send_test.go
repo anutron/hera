@@ -86,7 +86,7 @@ func TestSend_Worker_DefaultRoutes_ToCoordinator(t *testing.T) {
 	}
 }
 
-func TestSend_Coordinator_DefaultRoutes_ToUser(t *testing.T) {
+func TestSend_CoordinatorWithoutTo_Rejected(t *testing.T) {
 	ctx := context.Background()
 	e := setupHandlers(t)
 	orch, _ := e.db.Orchestrators.Create(ctx, "foo")
@@ -101,29 +101,16 @@ func TestSend_Coordinator_DefaultRoutes_ToUser(t *testing.T) {
 	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
 	h := NewSendHandler(e.resolver, e.db, inj)
 	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/coord", Body: "FYI"}))
-	out := decodeSendOutput(t, resp)
-	if out.RecipientRole != "user" {
-		t.Fatalf("recipient = %q", out.RecipientRole)
+	if !resp.IsError {
+		t.Fatalf("expected error for coordinator-without-to, got success: %+v", resp)
 	}
-	if out.DeliveryMode != string(db.DeliveryUserInbox) {
-		t.Fatalf("delivery = %q", out.DeliveryMode)
+	if !strings.Contains(resp.Content[0].Text, "explicit") {
+		t.Fatalf("error wording should explain the explicit-`to` requirement: %q", resp.Content[0].Text)
 	}
 	inj.mu.Lock()
+	defer inj.mu.Unlock()
 	if len(inj.calls) != 0 {
-		t.Fatalf("user-routed message should NOT inject, got %d calls", len(inj.calls))
-	}
-	inj.mu.Unlock()
-
-	// Confirm the row is in the messages table with to_kind=user, to_role_id=nil.
-	msg, err := e.db.Messages.GetByID(ctx, out.MessageID)
-	if err != nil {
-		t.Fatalf("GetByID: %v", err)
-	}
-	if msg.ToKind != db.ToKindUser {
-		t.Fatalf("to_kind = %q", msg.ToKind)
-	}
-	if msg.ToRoleID != nil {
-		t.Fatalf("to_role_id should be nil for user kind")
+		t.Fatalf("rejected send should not inject, got %d calls", len(inj.calls))
 	}
 }
 

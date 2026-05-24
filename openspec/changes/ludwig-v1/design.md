@@ -24,9 +24,10 @@ Ludwig formalizes the role layer as a first-class entity model and exposes it th
 
 **Non-Goals:**
 
-- **No plugin view in this change.** Substrate (drn/argus PR 9) is shipped, but the view's TUI library, rail rendering details, and per-pane focus behavior require their own design pass. Tracked as a follow-up change.
-- **No settings section UI in this change.** The substrate supports `form` sections; the actual fields (cadence interval, view prefs, etc.) need their own design pass.
-- **No `ludwig install` (launchd auto-start) in this change.** Depends on the view + settings being settled.
+- **No plugin view in this change.** Substrate (drn/argus PR 9) is shipped, but the view's TUI library, rail rendering details, and per-pane focus behavior require their own design pass. Tracked as a follow-up change. Build order for the follow-ups (per Aaron's morning review): settings → view → install.
+- **No settings section UI in this change.** The settings section will ship in the next change with exactly two fields: idle debounce (int seconds) and auto-inject enabled (bool). No active-orchestrator list there – that belongs in the view. No default-orchestrator field – orchestrator names are always project-name-driven and explicit.
+- **No `ludwig install` (launchd auto-start) in this change.** Lands after the view + settings.
+- **No coordinator → user message channel.** Coordinator agents talk to the human in their own Claude pane (which is exactly what the plugin view's left panel renders). `ludwig_send` from a coordinator REQUIRES an explicit `to`; the user-pseudo-recipient that earlier drafts of this design proposed is removed.
 - **No multi-host operation.** One ludwig daemon per user account, talking to one argus daemon on `127.0.0.1`. Tailscale-routed multi-host is out of scope.
 - **No external network egress.** Ludwig only talks to `127.0.0.1:7743`. No telemetry, no remote logging.
 - **No conversational "talk to ludwig" surface.** The user talks to coordinator agents; coordinators talk to ludwig via MCP tools. Ludwig itself does not host a chat surface for the user.
@@ -134,9 +135,11 @@ event_cursor  (id=1 singleton, last_seen_event_id)
 config        (key PK, value)
 ```
 
-WAL mode for concurrent reader access. Schema migrations in code, versioned by an `application_id` PRAGMA so we can detect mismatches.
+`messages.to_role_id` is NOT NULL – every message must address a real role. Earlier drafts of this design included a `to_kind` column with a `user` pseudo-recipient; that was removed during the morning review.
 
-`delivery_mode` on `messages` records how this message was delivered (`idle_submit` / `busy_buffer` / `pending`) so the operational log can answer "did this message auto-submit?" without re-deriving. `delivered_at` is when the inject POST returned.
+WAL mode for concurrent reader access. Schema migrations in code, versioned by the `user_version` PRAGMA so we can detect mismatches.
+
+`delivery_mode` on `messages` records how this message was delivered (`idle_submit` / `busy_buffer` / `queued_no_binding` / `pending`) so the operational log can answer "did this message auto-submit?" without re-deriving. `delivered_at` is when the inject POST returned.
 
 ### D9. MCP tool registration + callback HTTP listener
 
@@ -176,10 +179,15 @@ Rollback: revoke the scope token via `argus token revoke`. Argus cascades the re
 
 ## Open Questions
 
-- **`session.idle` semantics.** Pending coordinator reply to substrate question (sent message `1779615721295314000`). Resolves the right value for the idle-debounce constant in `internal/idle/`.
+- **`session.idle` semantics.** Pending coordinator reply to substrate question (sent message `1779615721295314000`). Resolves the right value for the idle-debounce constant in `internal/idle/`. The 2-second conservative gate is correct in either case; the answer only determines whether we can drop it.
 - **`ludwig_inbox` default behavior.** Returns unread by default; should it also accept a `since` cursor for "last 24h" type queries? V1: unread-only; add cursor support if usage warrants.
-- **`ludwig_send` to=`user`.** Coordinator → user routing: for v1, "user" is a pseudo-recipient – the message lands in the DB but isn't injected anywhere (no human PTY to inject into). When the view ships, "user" messages render in the coordinator pane. Confirm the v1 stub behavior is acceptable.
 - **Status enum.** v1 uses `idle` / `working` / `blocked` / `done`. Expand?
+
+### Resolved during morning review (2026-05-24)
+
+- **Coordinator → user routing dropped entirely.** Coordinators talk to the human via their own Claude pane (the plugin view's left panel). `ludwig_send` from a coordinator with no `to` is now a hard error.
+- **Per-message `urgent=true` flag postponed.** Will revisit only if we hit a case where the conservative idle gate is too restrictive.
+- **`ludwig_new_orchestrator` split (deferred to next change).** The orchestrator-bootstrap path currently folded into `ludwig_join(kind=coordinator)` becomes its own MCP tool when the next tool-surface change lands. v1 keeps it on `ludwig_join` so the headless surface is shippable; the split is a non-breaking addition.
 
 ## Discovery findings
 

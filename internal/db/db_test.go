@@ -272,11 +272,9 @@ func TestMessages_CreateInboxMarkRead(t *testing.T) {
 		ArgusProject: "argus",
 	})
 
-	to := worker.ID
 	msg, err := d.Messages.Create(ctx, CreateMessageInput{
 		FromRoleID: coord.ID,
-		ToRoleID:   &to,
-		ToKind:     ToKindRole,
+		ToRoleID:   worker.ID,
 		Body:       "please review",
 	})
 	if err != nil {
@@ -326,9 +324,8 @@ func TestMessages_MarkReadDoesNotTouchOtherRolesMessages(t *testing.T) {
 		OrchestratorID: orch.ID, Name: "w2", Kind: KindWorker, ArgusProject: "argus",
 	})
 
-	to1 := w1.ID
 	msg, _ := d.Messages.Create(ctx, CreateMessageInput{
-		FromRoleID: coord.ID, ToRoleID: &to1, ToKind: ToKindRole, Body: "for w1",
+		FromRoleID: coord.ID, ToRoleID: w1.ID, Body: "for w1",
 	})
 
 	// w2 tries to mark w1's message read.
@@ -347,42 +344,19 @@ func TestMessages_MarkReadDoesNotTouchOtherRolesMessages(t *testing.T) {
 	}
 }
 
-func TestMessages_UserKindHasNullToRoleID(t *testing.T) {
-	ctx := context.Background()
-	d := openTestDB(t)
-	orch, _ := d.Orchestrators.Create(ctx, "foo")
-	coord, _ := d.Roles.Create(ctx, CreateRoleInput{
-		OrchestratorID: orch.ID, Name: "coordinator", Kind: KindCoordinator,
-		ArgusProject: "argus",
-	})
-
-	msg, err := d.Messages.Create(ctx, CreateMessageInput{
-		FromRoleID: coord.ID, ToKind: ToKindUser, Body: "FYI",
-	})
-	if err != nil {
-		t.Fatalf("Create with ToKindUser: %v", err)
-	}
-	if msg.ToRoleID != nil {
-		t.Fatalf("user-addressed message should have nil ToRoleID, got %+v", msg.ToRoleID)
-	}
-}
-
-func TestMessages_UserKindWithRoleIDIsRejected(t *testing.T) {
+func TestMessages_CreateRequiresToRoleID(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 	orch, _ := d.Orchestrators.Create(ctx, "foo")
 	coord, _ := d.Roles.Create(ctx, CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "c", Kind: KindCoordinator, ArgusProject: "p",
 	})
-	w, _ := d.Roles.Create(ctx, CreateRoleInput{
-		OrchestratorID: orch.ID, Name: "w", Kind: KindWorker, ArgusProject: "p",
-	})
-	to := w.ID
 	_, err := d.Messages.Create(ctx, CreateMessageInput{
-		FromRoleID: coord.ID, ToRoleID: &to, ToKind: ToKindUser, Body: "...",
+		FromRoleID: coord.ID,
+		Body:       "no recipient",
 	})
 	if err == nil {
-		t.Fatalf("expected rejection for user-kind with to_role_id")
+		t.Fatalf("expected error when ToRoleID is zero")
 	}
 }
 
@@ -396,9 +370,8 @@ func TestMessages_SetDelivered(t *testing.T) {
 	w, _ := d.Roles.Create(ctx, CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "w", Kind: KindWorker, ArgusProject: "p",
 	})
-	to := w.ID
 	msg, _ := d.Messages.Create(ctx, CreateMessageInput{
-		FromRoleID: coord.ID, ToRoleID: &to, ToKind: ToKindRole, Body: "x",
+		FromRoleID: coord.ID, ToRoleID: w.ID, Body: "x",
 	})
 
 	if err := d.Messages.SetDelivered(ctx, msg.ID, DeliveryIdleSubmit); err != nil {

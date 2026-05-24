@@ -321,10 +321,9 @@ func TestInbox_EmptyAndPopulated(t *testing.T) {
 	}
 
 	// Send a couple of messages to the worker.
-	to := worker.ID
 	for _, body := range []string{"first", "second"} {
 		_, _ = e.db.Messages.Create(ctx, db.CreateMessageInput{
-			FromRoleID: coord.ID, ToRoleID: &to, ToKind: db.ToKindRole, Body: body,
+			FromRoleID: coord.ID, ToRoleID: worker.ID, Body: body,
 		})
 	}
 
@@ -361,9 +360,8 @@ func TestMarkRead_OnlyOwnMessagesAffected(t *testing.T) {
 	e.fake.addTask(argus.Task{ID: "t-w1", Name: "w1", Project: "p", WorktreePath: "/tmp/w1"})
 	e.fake.addTask(argus.Task{ID: "t-w2", Name: "w2", Project: "p", WorktreePath: "/tmp/w2"})
 
-	to1 := w1.ID
 	msg, _ := e.db.Messages.Create(ctx, db.CreateMessageInput{
-		FromRoleID: coord.ID, ToRoleID: &to1, ToKind: db.ToKindRole, Body: "for w1",
+		FromRoleID: coord.ID, ToRoleID: w1.ID, Body: "for w1",
 	})
 
 	// w2 tries to mark w1's message as read.

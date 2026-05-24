@@ -196,19 +196,23 @@ The system SHALL treat a bound argus task as eligible for auto-submit only when 
 - **WHEN** `session.idle` for `T1` fired at time X, then `session.started` for `T1` fired at time X+1
 - **THEN** `T1` MUST NOT be treated as idle until a new `session.idle` event fires AND ≥2 seconds elapse without intervening session events
 
-### Requirement: Default message routing follows role kind
+### Requirement: Default message routing for worker and freelance senders
 
-The system SHALL route `ludwig_send` calls that omit the `to` parameter as follows: a message from a worker or freelance role defaults to the coordinator role of the same orchestrator; a message from a coordinator role defaults to the pseudo-recipient `user`. Messages addressed to `user` MUST be persisted to the messages table but MUST NOT trigger PTY injection.
+The system SHALL route `ludwig_send` calls from a worker or freelance role that omit the `to` parameter to the coordinator role of the same orchestrator. The coordinator role MUST exist for the send to succeed.
 
 #### Scenario: Worker without `to` routes to coordinator
 
 - **WHEN** a worker role under orchestrator `foo` calls `ludwig_send(cwd=$PWD, body="...")` with no `to`
 - **THEN** the message row's `to_role_id` MUST be the coordinator role's id under orchestrator `foo`, AND the injection path MUST be triggered
 
-#### Scenario: Coordinator without `to` routes to user pseudo-recipient
+### Requirement: Coordinator senders must supply an explicit recipient
+
+The system SHALL reject `ludwig_send` calls from a coordinator role that omit the `to` parameter. The coordinator's normal channel to the human is the coordinator's own Claude pane; messages emitted via `ludwig_send` MUST target a specific worker or freelance role by name.
+
+#### Scenario: Coordinator without `to` is rejected
 
 - **WHEN** the coordinator role under orchestrator `foo` calls `ludwig_send(cwd=$PWD, body="...")` with no `to`
-- **THEN** the message row's `to_role_id` MUST encode the `user` pseudo-recipient AND no PTY injection MUST be performed
+- **THEN** the call MUST return `isError: true` with content explaining that coordinator messages require an explicit recipient, AND no message row MUST be persisted
 
 ### Requirement: Tool inputs and outputs documented
 

@@ -14,31 +14,26 @@ type MessagesDAO struct{ db *sql.DB }
 // CreateMessageInput captures the fields needed to insert a new message.
 type CreateMessageInput struct {
 	FromRoleID int64
-	ToRoleID   *int64 // nil when ToKind=user
-	ToKind     ToKind
+	ToRoleID   int64
 	Body       string
 	InReplyTo  *int64
 }
 
 // Create inserts a new message row with delivery_mode=pending.
 func (m *MessagesDAO) Create(ctx context.Context, in CreateMessageInput) (*Message, error) {
-	if in.ToKind == ToKindRole && in.ToRoleID == nil {
-		return nil, fmt.Errorf("messages.Create: to_kind=role requires to_role_id")
+	if in.ToRoleID == 0 {
+		return nil, fmt.Errorf("messages.Create: to_role_id is required")
 	}
-	if in.ToKind == ToKindUser && in.ToRoleID != nil {
-		return nil, fmt.Errorf("messages.Create: to_kind=user requires nil to_role_id")
-	}
-	if in.ToKind == "" {
-		in.ToKind = ToKindRole
+	if in.FromRoleID == 0 {
+		return nil, fmt.Errorf("messages.Create: from_role_id is required")
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := m.db.ExecContext(ctx,
 		`INSERT INTO messages
-		 (from_role_id, to_role_id, to_kind, body, in_reply_to, sent_at, delivery_mode)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		in.FromRoleID, nullable(in.ToRoleID), string(in.ToKind),
-		in.Body, nullable(in.InReplyTo), now, string(DeliveryPending),
+		 (from_role_id, to_role_id, body, in_reply_to, sent_at, delivery_mode)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		in.FromRoleID, in.ToRoleID, in.Body, nullable(in.InReplyTo), now, string(DeliveryPending),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("messages.Create: %w", err)
@@ -52,7 +47,6 @@ func (m *MessagesDAO) Create(ctx context.Context, in CreateMessageInput) (*Messa
 		ID:           id,
 		FromRoleID:   in.FromRoleID,
 		ToRoleID:     in.ToRoleID,
-		ToKind:       in.ToKind,
 		Body:         in.Body,
 		InReplyTo:    in.InReplyTo,
 		SentAt:       t,
@@ -78,10 +72,10 @@ func (m *MessagesDAO) SetDelivered(ctx context.Context, messageID int64, mode De
 // sent_at ascending (oldest first, matching inbox semantics).
 func (m *MessagesDAO) UnreadForRole(ctx context.Context, roleID int64) ([]*Message, error) {
 	rows, err := m.db.QueryContext(ctx,
-		`SELECT id, from_role_id, to_role_id, to_kind, body, in_reply_to,
+		`SELECT id, from_role_id, to_role_id, body, in_reply_to,
 		        sent_at, read_at, delivery_mode, delivered_at
 		 FROM messages
-		 WHERE to_role_id = ? AND to_kind = 'role' AND read_at IS NULL
+		 WHERE to_role_id = ? AND read_at IS NULL
 		 ORDER BY sent_at ASC`, roleID)
 	if err != nil {
 		return nil, fmt.Errorf("messages.UnreadForRole: %w", err)
@@ -99,13 +93,12 @@ func (m *MessagesDAO) UnreadForRole(ctx context.Context, roleID int64) ([]*Messa
 	return out, rows.Err()
 }
 
-// CountUnreadForRole returns the count of unread role-addressed messages
-// for a given role.
+// CountUnreadForRole returns the count of unread messages for a given role.
 func (m *MessagesDAO) CountUnreadForRole(ctx context.Context, roleID int64) (int, error) {
 	var n int
 	err := m.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM messages
-		 WHERE to_role_id = ? AND to_kind = 'role' AND read_at IS NULL`,
+		 WHERE to_role_id = ? AND read_at IS NULL`,
 		roleID,
 	).Scan(&n)
 	if err != nil {
@@ -122,7 +115,6 @@ func (m *MessagesDAO) MarkRead(ctx context.Context, roleID int64, messageIDs []i
 		return 0, nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// Build "?,?,?,..." placeholders. messageIDs is internal.
 	query := `UPDATE messages SET read_at = ?
 	          WHERE read_at IS NULL AND to_role_id = ? AND id IN (`
 	args := []any{now, roleID}
@@ -146,7 +138,7 @@ func (m *MessagesDAO) MarkRead(ctx context.Context, roleID int64, messageIDs []i
 // GetByID loads a single message by id.
 func (m *MessagesDAO) GetByID(ctx context.Context, id int64) (*Message, error) {
 	row := m.db.QueryRowContext(ctx,
-		`SELECT id, from_role_id, to_role_id, to_kind, body, in_reply_to,
+		`SELECT id, from_role_id, to_role_id, body, in_reply_to,
 		        sent_at, read_at, delivery_mode, delivered_at
 		 FROM messages WHERE id = ?`, id)
 	msg, err := scanMessageRow(row)
@@ -159,30 +151,24 @@ func (m *MessagesDAO) GetByID(ctx context.Context, id int64) (*Message, error) {
 	return msg, nil
 }
 
-// rowScanner is satisfied by both *sql.Row and *sql.Rows. Used so scanMessageRow
-// can share between single-row and multi-row callers.
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
 func scanMessageRow(rs rowScanner) (*Message, error) {
 	var msg Message
-	var toRoleID, inReplyTo sql.NullInt64
+	var inReplyTo sql.NullInt64
 	var readAt, deliveredAt sql.NullString
-	var sentAt, toKind, deliveryMode string
+	var sentAt, deliveryMode string
 	if err := rs.Scan(
-		&msg.ID, &msg.FromRoleID, &toRoleID, &toKind, &msg.Body, &inReplyTo,
+		&msg.ID, &msg.FromRoleID, &msg.ToRoleID, &msg.Body, &inReplyTo,
 		&sentAt, &readAt, &deliveryMode, &deliveredAt,
 	); err != nil {
 		return nil, err
 	}
-	msg.ToKind = ToKind(toKind)
 	msg.DeliveryMode = DeliveryMode(deliveryMode)
 	msg.SentAt, _ = time.Parse(time.RFC3339Nano, sentAt)
-	if toRoleID.Valid {
-		v := toRoleID.Int64
-		msg.ToRoleID = &v
-	}
 	if inReplyTo.Valid {
 		v := inReplyTo.Int64
 		msg.InReplyTo = &v

@@ -29,17 +29,7 @@ const (
 	DeliveryPending         DeliveryMode = "pending"
 	DeliveryIdleSubmit      DeliveryMode = "idle_submit"
 	DeliveryBusyBuffer      DeliveryMode = "busy_buffer"
-	DeliveryUserInbox       DeliveryMode = "user_inbox"
 	DeliveryQueuedNoBinding DeliveryMode = "queued_no_binding"
-)
-
-// ToKind distinguishes role-addressed messages from user-pseudo-recipient
-// messages.
-type ToKind string
-
-const (
-	ToKindRole ToKind = "role"
-	ToKindUser ToKind = "user"
 )
 
 // Orchestrator is one coordination group.
@@ -73,12 +63,11 @@ type Binding struct {
 	EndReason    string
 }
 
-// Message is one ludwig-bus message. ToRoleID is nil when ToKind=user.
+// Message is one ludwig-bus message.
 type Message struct {
 	ID           int64
 	FromRoleID   int64
-	ToRoleID     *int64
-	ToKind       ToKind
+	ToRoleID     int64
 	Body         string
 	InReplyTo    *int64
 	SentAt       time.Time

@@ -53,8 +53,7 @@ CREATE INDEX bindings_by_worktree ON bindings(worktree_path) WHERE ended_at IS N
 CREATE TABLE messages (
     id            INTEGER PRIMARY KEY,
     from_role_id  INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-    to_role_id    INTEGER REFERENCES roles(id) ON DELETE CASCADE,
-    to_kind       TEXT NOT NULL DEFAULT 'role' CHECK (to_kind IN ('role','user')),
+    to_role_id    INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
     body          TEXT NOT NULL,
     in_reply_to   INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     sent_at       TEXT NOT NULL,

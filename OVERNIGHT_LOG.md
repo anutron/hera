@@ -1,9 +1,21 @@
 # Overnight log – ludwig v1 headless shipping pass
 
-**Date:** 2026-05-24 (overnight)
+**Date:** 2026-05-24 (overnight; morning-review applied)
 **Branch:** `argus/ludwig-argus-coordinator`
 **Worktree:** `/Users/aaron/.argus/worktrees/Ludwig/ludwig-argus-coordinator`
-**Repo:** `anutron/ludwig` (already provisioned; nine commits on this branch tonight)
+**Repo:** `anutron/ludwig`
+
+## Morning review applied
+
+Aaron's Plannotator pass on 2026-05-24 settled the open questions below. Changes folded into v1:
+
+- **Coordinator → user routing removed entirely.** Coordinators talk to the human in their own Claude pane (the plugin view's left panel). `ludwig_send` from a coordinator with no `to` now returns an error. The `to_kind` column on messages, the `DeliveryUserInbox` mode, and the `user` pseudo-recipient are gone from schema, types, handler, and spec.
+- **Next change's settings shape locked.** Two fields: idle debounce (int seconds) and auto-inject enabled (bool). No active-orchestrators list (lives in the view), no default-orchestrator field (always a project name), no user-message-surface field (no user-bound messages exist).
+- **Build order for follow-ups locked:** settings → view → install.
+- **`ludwig_new_orchestrator` confirmed as a separate tool** (will split out of `ludwig_join`'s freelance path) in the next tool-surface change. v1 keeps it on `ludwig_join` so the headless surface ships; the split is a non-breaking addition.
+- **Per-message `urgent=true` postponed** – revisit only if needed once Aaron is using ludwig.
+
+The substrate question on `session.idle` semantics is still in flight – the 2-second conservative gate stays until the coordinator answers; the answer only determines if it can drop.
 
 ## TL;DR
 
@@ -40,42 +52,38 @@ The OpenSpec change folder is fully written, validated (`openspec validate ludwi
 
 ## Design decisions made tonight without you
 
-These are decisions I made autonomously while building. None of them break what we discussed in the brainstorm, but they're worth your sanity-check.
+These are decisions I made autonomously while building. None break what we discussed in the brainstorm. The morning review section above supersedes any that conflict.
 
-- **Coordinator bootstrap path through `ludwig_join`.** `ludwig_join` with `kind=coordinator` will now idempotently create the orchestrator if it doesn't exist. `kind=worker` and `kind=freelance` still require an existing orchestrator. Reason: the brainstorm said "the user types `ludwig spawn`", but I deferred `ludwig spawn` to a follow-up change, so the first agent of a new project needs a way to bootstrap its own orchestrator. This is the cleanest hole I could fill.
-- **Coordinator → user routing is silent.** When a coordinator sends a message with no explicit `to`, ludwig persists it with `to_kind=user` and `to_role_id=NULL`. No PTY injection happens (there's no human PTY to inject into). The message lives in the DB and will surface in the plugin view once that ships. For now, `ludwig list` doesn't expose user-bound messages – they're effectively a deferred drain queue.
+- **Coordinator bootstrap path through `ludwig_join`.** `ludwig_join` with `kind=coordinator` idempotently creates the orchestrator if it doesn't exist. `kind=worker` and `kind=freelance` still require an existing orchestrator. Stays as v1 behavior; will move into `ludwig_new_orchestrator` in the next tool-surface change.
 - **Queued-no-binding mode.** When a message's recipient role exists but has no live argus task, the message is persisted with `delivery_mode=queued_no_binding`. There is no drain worker yet (the role's next incarnation won't catch up automatically). Flagged in `tasks.md` 11.5 as a v1.1 follow-up.
-- **5-minute MCP heartbeat.** Argus's idle sweep defaults to 10 minutes; ludwig re-POSTs each tool registration every 5 minutes. Half-window margin per the substrate doc's recommendation.
-- **`ludwig start` without `--foreground` is unimplemented.** Background daemonization (double-fork or launchd) would be 50-100 lines of fiddly OS-specific code that we'll get for free once `ludwig install` ships. For now, the verb returns an explanatory error pointing at `nohup` and launchd. Per Aaron's habits, this is fine for the dev cycle.
-- **Idle debounce is hardcoded at 2 seconds.** Configurable via `config.Config.IdleDebounce` but no CLI flag exposes it. We tune it once the coordinator answers the still-pending session.idle semantics question.
+- **5-minute MCP heartbeat.** Ludwig re-POSTs each of its tool registrations to argus every 5 minutes so argus's MCP idle sweep (10-minute default) doesn't garbage-collect them. Not related to worker idle detection; that's the `session.idle` event subscription, a different mechanism.
+- **`ludwig start` without `--foreground` is unimplemented.** Background daemonization (double-fork or launchd) would be 50-100 lines of fiddly OS-specific code that we'll get for free once `ludwig install` ships. For now, the verb returns an explanatory error pointing at `nohup` and launchd.
+- **Idle debounce is hardcoded at 2 seconds.** Configurable via `config.Config.IdleDebounce` but no CLI flag exposes it (the planned settings panel will). Tune once the coordinator answers the still-pending session.idle semantics question.
 
 ## What's still open
 
-- **Substrate question still in flight.** I asked the coordinator agent for `session.idle` semantics (does the event fire on drainable-input vs after a debounce post-generation). No reply yet. Until that lands, the 2-second debounce in `internal/idle/tracker.go` line 9-12 holds; tune to match argus's actual signal once we know.
-- **Plugin view.** Substrate landed (PR 9 on the argus side – `POST /api/plugins/views`, `GET /api/tasks/{id}/stream` SSE, `POST /api/tasks/{id}/input`). Ludwig has the pieces it needs (argus.Client.StreamEvents shape can be lifted into a PTY-stream helper); the open design questions are the TUI library choice and the rail rendering details we deferred from the brainstorm.
-- **Settings section.** Form-only, single section, probably one field for cadence (which we no longer need since auto-injection replaced the scheduler), and maybe a read-only summary of orchestrators. Worth deferring or revisiting.
-- **`ludwig install` (launchd plist).** Deferred per the brainstorm carve-out.
-- **`ludwig resume`.** Stubbed in `cmd/ludwig/resume.go`. Needs the actual argus task_create wiring for fresh incarnations. Touches the spawn flow we deferred from v1.
+- **Substrate question still in flight.** I asked the coordinator agent for `session.idle` semantics (does the event fire on drainable-input vs after a debounce post-generation). No reply yet. Until that lands, the 2-second debounce in `internal/idle/tracker.go` holds.
+- **Plugin view (ships next-next).** Substrate is ready. Open design choices: TUI library, rail rendering details. Per build order: ships after settings.
+- **Settings section (ships next).** Two fields locked: idle debounce + auto-inject toggle. No active-orchestrators list, no default-orchestrator field, no user-message-surface field.
+- **`ludwig install` (launchd plist).** Ships last.
+- **`ludwig resume`.** Stubbed in `cmd/ludwig/resume.go`. Needs argus task_create wiring for fresh incarnations; touches the spawn flow we deferred from v1.
 
-## Suggested morning actions
+## Suggested next actions
 
-1. **Read the change folder.** Either via `openspec show ludwig-v1` or by opening the four files: `proposal.md`, `design.md`, `specs/ludwig-coordination/spec.md`, `tasks.md`. If anything in there is wrong, push back; I'd rather rewrite than build on a wrong spec.
-2. **Sanity-check the design decisions in the section above.** Especially the coordinator-bootstrap-through-ludwig_join change – that was my call.
-3. **Check the substrate question reply.** When the coordinator replies on session.idle semantics, the only code change is the debounce constant. I'll update it as a follow-up commit if you forward me the answer.
-4. **Try a smoke run.** Once you re-mint your argus binary with PR 9 merged:
+1. **Annotate the change folder as a group.** All four artifacts in one Plannotator session:
+   ```
+   plannotator annotate /Users/aaron/.argus/worktrees/Ludwig/ludwig-argus-coordinator/openspec/changes/ludwig-v1/
+   ```
+   (Run from outside the argus task sandbox – either your shell or via `!` in this session.)
+2. **Smoke-run ludwig.** Once your argus binary has the PR 9 substrate plus the gap-1 fix:
    ```bash
    argus token mint --scope ludwig > ~/.ludwig/api-token
    chmod 600 ~/.ludwig/api-token
    ./bin/ludwig start --foreground
    ```
-   In another argus task, call `ludwig_join` with `kind=coordinator` to bootstrap. Then spawn a worker via argus's `task_create` with the right meta and watch ludwig adopt it.
-5. **Decide the next change folder.** Three obvious candidates: plugin view, settings section, `ludwig install`. The view is the most user-visible. The view + settings can land together if you want, or the view can land first and settings can stay deferred.
-
-## Open questions for you
-
-- **Should the orchestrator-bootstrap path stay in `ludwig_join`, or move to its own `ludwig_new_orchestrator` tool?** Current design folds it into `ludwig_join(kind=coordinator)` for tool-surface minimalism. The downside is the path is slightly hidden – you might not think to bootstrap an orchestrator from the join verb.
-- **Should `ludwig_send` to=`user` be persisted differently?** Right now it lands in the messages table with `to_kind=user`, `to_role_id=NULL`. When the view ships, those messages need a UI surface. Worth deciding now if user-bound messages should also have something like a per-orchestrator sequence so the view can group them.
-- **Per-message `urgent=true` flag?** If we want the option to inject + auto-submit even when the recipient is busy, we add a boolean to `ludwig_send`. Not implemented in v1; flag a preference.
+   In another argus task, call `ludwig_join` with `kind=coordinator` to bootstrap. Then spawn a worker via argus's `task_create` with `meta:ludwig.role=worker` and watch ludwig adopt it. `ludwig list` will show the orchestrator tree.
+3. **Forward the coordinator's `session.idle` reply when it arrives.** I'll tune the debounce.
+4. **Start the settings change folder.** Two fields locked; quick `openspec new change ludwig-settings` and we can run it under the same brainstorm + execute pipeline.
 
 ## Commits this session
 
