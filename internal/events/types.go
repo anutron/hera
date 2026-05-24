@@ -1,0 +1,40 @@
+package events
+
+// Canonical argus event type strings. Kept as constants so the rest of
+// ludwig refers to them symbolically (renames in argus become compile
+// errors here, not runtime mismatches).
+//
+// Source of truth: argus/internal/model/event.go and the table in
+// argus/docs/plugins.md.
+const (
+	TypeTaskCreated       = "task.created"
+	TypeTaskStatusChanged = "task.status_changed"
+	TypeTaskCompleted     = "task.completed"
+	TypeTaskArchived      = "task.archived"
+	TypeTaskRenamed       = "task.renamed"
+	TypeTaskForked        = "task.forked"
+
+	TypeMessageSent  = "message.sent"
+	TypeMessageAcked = "message.acked"
+
+	TypeLinkCreated = "link.created"
+	TypeLinkRemoved = "link.removed"
+
+	TypeSessionStarted = "session.started"
+	TypeSessionExited  = "session.exited"
+	TypeSessionIdle    = "session.idle"
+
+	TypeResync = "resync"
+)
+
+// Meta keys ludwig reads from argus task metadata.
+const (
+	MetaKeyRole         = "role"
+	MetaKeyMission      = "mission"
+	MetaKeyConstraints  = "constraints"
+	MetaKeyThreadStatus = "thread_status"
+
+	// Namespace used when fetching task meta. Ludwig's writes are
+	// auto-namespaced server-side per substrate gap-1 fix.
+	MetaNamespace = "ludwig"
+)
