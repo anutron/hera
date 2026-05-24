@@ -129,12 +129,24 @@ func (h *JoinHandler) freelance(ctx context.Context, argusTaskID, project, workt
 		return ErrorResponse(fmt.Sprintf("ludwig_join: invalid kind %q (must be worker, freelance, or coordinator)", in.Kind))
 	}
 
-	orch, err := h.db.Orchestrators.GetByName(ctx, in.Orchestrator)
-	if errors.Is(err, db.ErrNotFound) {
-		return ErrorResponse(fmt.Sprintf("ludwig_join: orchestrator %q does not exist", in.Orchestrator))
-	}
-	if err != nil {
-		return ErrorResponse("ludwig_join: " + err.Error())
+	// Coordinator kinds may bootstrap a brand-new orchestrator; other
+	// kinds (worker, freelance) must attach to an existing one.
+	var orch *db.Orchestrator
+	if kind == db.KindCoordinator {
+		var err error
+		orch, err = h.db.Orchestrators.Create(ctx, in.Orchestrator) // idempotent
+		if err != nil {
+			return ErrorResponse("ludwig_join: " + err.Error())
+		}
+	} else {
+		var err error
+		orch, err = h.db.Orchestrators.GetByName(ctx, in.Orchestrator)
+		if errors.Is(err, db.ErrNotFound) {
+			return ErrorResponse(fmt.Sprintf("ludwig_join: orchestrator %q does not exist", in.Orchestrator))
+		}
+		if err != nil {
+			return ErrorResponse("ludwig_join: " + err.Error())
+		}
 	}
 
 	if existing, err := h.db.Roles.GetByOrchestratorAndName(ctx, orch.ID, in.RoleName); err == nil && existing.Kind != kind {
