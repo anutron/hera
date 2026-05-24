@@ -5,11 +5,11 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/db"
 )
 
-// ResyncHandler reconciles ludwig's bindings against argus's current task
+// ResyncHandler reconciles hera's bindings against argus's current task
 // list when a resync event arrives (cursor older than argus's retained
 // event ring).
 type ResyncHandler struct {
@@ -37,7 +37,7 @@ func (r *ResyncHandler) HandleEvent(ctx context.Context, ev argus.Event) {
 	}
 }
 
-// reconcile fetches the current argus task list and ends any ludwig
+// reconcile fetches the current argus task list and ends any hera
 // binding whose argus task is no longer present.
 func (r *ResyncHandler) reconcile(ctx context.Context) error {
 	tasks, err := r.client.ListTasks(ctx)

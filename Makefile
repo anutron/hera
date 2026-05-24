@@ -2,11 +2,11 @@
 
 GO ?= go
 BIN_DIR := bin
-BIN := $(BIN_DIR)/ludwig
+BIN := $(BIN_DIR)/hera
 
 build:
 	@mkdir -p $(BIN_DIR)
-	$(GO) build -o $(BIN) ./cmd/ludwig
+	$(GO) build -o $(BIN) ./cmd/hera
 
 test:
 	$(GO) test ./... -race -count=1
@@ -21,4 +21,4 @@ clean:
 	rm -rf $(BIN_DIR)
 
 install-dev: build
-	cp $(BIN) $$HOME/bin/ludwig
+	cp $(BIN) $$HOME/bin/hera

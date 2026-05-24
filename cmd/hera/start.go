@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/anutron/ludwig/internal/config"
-	"github.com/anutron/ludwig/internal/daemon"
+	"github.com/anutron/hera/internal/config"
+	"github.com/anutron/hera/internal/daemon"
 )
 
 func newStartCmd() *cobra.Command {
@@ -19,8 +19,8 @@ func newStartCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the ludwig daemon",
-		Long:  "Start the ludwig daemon. --foreground keeps it in the current shell (useful for dev). Without it, ludwig exits after writing its PID to ~/.ludwig/ludwig.pid (true daemonization with double-fork is deferred to a follow-up; until then, run via launchd or `nohup ludwig start --foreground &`).",
+		Short: "Start the hera daemon",
+		Long:  "Start the hera daemon. --foreground keeps it in the current shell (useful for dev). Without it, hera exits after writing its PID to ~/.hera/hera.pid (true daemonization with double-fork is deferred to a follow-up; until then, run via launchd or `nohup hera start --foreground &`).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Default()
 
@@ -28,7 +28,7 @@ func newStartCmd() *cobra.Command {
 			// daemonization (double-fork or launchd plist) is intentionally
 			// deferred; the user can wrap with `nohup` or a launchd job.
 			if !foreground {
-				return fmt.Errorf("ludwig start without --foreground is not yet implemented; pass --foreground (you can wrap the call in nohup or launchd if you need it backgrounded)")
+				return fmt.Errorf("hera start without --foreground is not yet implemented; pass --foreground (you can wrap the call in nohup or launchd if you need it backgrounded)")
 			}
 
 			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// PluginVersion is the contract version ludwig sends with every request via
+// PluginVersion is the contract version hera sends with every request via
 // the X-Argus-Plugin-Version header.
 const PluginVersion = "1"
 
@@ -27,7 +27,7 @@ type Client struct {
 }
 
 // New constructs a Client. baseURL is the daemon's HTTP root (no trailing
-// slash). token is the scope token loaded from ~/.ludwig/api-token.
+// slash). token is the scope token loaded from ~/.hera/api-token.
 func New(baseURL, token string) *Client {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL

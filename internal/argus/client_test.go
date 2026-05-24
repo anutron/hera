@@ -109,15 +109,15 @@ func TestClient_GetTaskMeta_WithNamespace(t *testing.T) {
 	var gotQuery string
 	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"entries":[{"namespace":"ludwig","key":"role","value":"worker","updated_at":"2026-05-24T00:00:00Z"}]}`)
+		_, _ = io.WriteString(w, `{"entries":[{"namespace":"hera","key":"role","value":"worker","updated_at":"2026-05-24T00:00:00Z"}]}`)
 	})
 	defer srv.Close()
 
-	entries, err := c.GetTaskMeta(context.Background(), "t1", "ludwig")
+	entries, err := c.GetTaskMeta(context.Background(), "t1", "hera")
 	if err != nil {
 		t.Fatalf("GetTaskMeta: %v", err)
 	}
-	if gotQuery != "namespace=ludwig" {
+	if gotQuery != "namespace=hera" {
 		t.Fatalf("query = %q", gotQuery)
 	}
 	if len(entries) != 1 || entries[0].Key != "role" {
@@ -155,12 +155,12 @@ func TestClient_RegisterTool(t *testing.T) {
 	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"name":"ludwig_send","scope":"ludwig"}`)
+		_, _ = io.WriteString(w, `{"name":"hera_send","scope":"hera"}`)
 	})
 	defer srv.Close()
 
 	tool := MCPTool{
-		Name:        "ludwig_send",
+		Name:        "hera_send",
 		Description: "Send a message",
 		InputSchema: map[string]any{
 			"type": "object",
@@ -169,14 +169,14 @@ func TestClient_RegisterTool(t *testing.T) {
 				"body": map[string]any{"type": "string"},
 			},
 		},
-		CallbackURL: "http://127.0.0.1:7744/mcp/ludwig_send",
+		CallbackURL: "http://127.0.0.1:7744/mcp/hera_send",
 		AuthHeader:  "Bearer secret",
 	}
 	resp, err := c.RegisterTool(context.Background(), tool)
 	if err != nil {
 		t.Fatalf("RegisterTool: %v", err)
 	}
-	if resp.Name != "ludwig_send" {
+	if resp.Name != "hera_send" {
 		t.Fatalf("resp.Name = %s", resp.Name)
 	}
 	if gotBody.AuthHeader != "Bearer secret" {
@@ -193,13 +193,13 @@ func TestClient_UnregisterTool(t *testing.T) {
 	})
 	defer srv.Close()
 
-	if err := c.UnregisterTool(context.Background(), "ludwig_send"); err != nil {
+	if err := c.UnregisterTool(context.Background(), "hera_send"); err != nil {
 		t.Fatalf("UnregisterTool: %v", err)
 	}
 	if gotMethod != "DELETE" {
 		t.Fatalf("method = %s", gotMethod)
 	}
-	if gotPath != "/api/mcp/tools/ludwig_send" {
+	if gotPath != "/api/mcp/tools/hera_send" {
 		t.Fatalf("path = %s", gotPath)
 	}
 }

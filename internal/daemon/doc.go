@@ -1,5 +1,5 @@
 // Package daemon wires together every other internal package into a
-// runnable ludwig process.
+// runnable hera process.
 //
 // Run(ctx, cfg) opens the DB, loads the scope token, builds the argus
 // client, starts the event subscriber, starts the idle tracker, brings

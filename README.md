@@ -1,28 +1,28 @@
-# ludwig
+# hera
 
 Coordinator/overlay daemon for [argus](https://github.com/drn/argus). Provides role-as-identity coordination over argus's plugin substrate: roles persist across argus task lifetimes, messages flow between roles via an idle-gated injection bus, and worker tasks spawned by a coordinator are auto-adopted into the orchestrator graph.
 
-**Status:** v1 in development. The OpenSpec change folder at `openspec/changes/ludwig-v1/` is the source of truth for the current design and implementation plan.
+**Status:** v1 in development. The OpenSpec change folder at `openspec/changes/hera-v1/` is the source of truth for the current design and implementation plan.
 
-## What ludwig does
+## What hera does
 
-- **Roles outlive tasks.** Argus tasks come and go (worktrees get archived, branches merge); ludwig roles persist with their decisions, messages, and status intact.
-- **Message bus with auto-delivery.** `ludwig_send` injects messages directly into the recipient's PTY – with `\n` (auto-submit) when the recipient is idle, without `\n` (user submits) when the recipient is busy.
-- **Auto-adopted worker tasks.** Coordinators spawn workers via argus's existing `task_create`; ludwig watches the event stream and adopts new tasks into the orchestrator graph automatically.
+- **Roles outlive tasks.** Argus tasks come and go (worktrees get archived, branches merge); hera roles persist with their decisions, messages, and status intact.
+- **Message bus with auto-delivery.** `hera_send` injects messages directly into the recipient's PTY – with `\n` (auto-submit) when the recipient is idle, without `\n` (user submits) when the recipient is busy.
+- **Auto-adopted worker tasks.** Coordinators spawn workers via argus's existing `task_create`; hera watches the event stream and adopts new tasks into the orchestrator graph automatically.
 - **Cross-repo orchestration.** Roles can live in different argus projects; the orchestrator binds them logically without forcing co-location.
 
-## What ludwig is not (in v1)
+## What hera is not (in v1)
 
-- **Not a chat surface for the user.** Users talk to coordinator agents; coordinators talk to ludwig via MCP tools.
+- **Not a chat surface for the user.** Users talk to coordinator agents; coordinators talk to hera via MCP tools.
 - **Not a plugin view yet.** The embedded-terminal split view is deferred to a follow-up change.
-- **Not a daemon supervisor.** `ludwig install` (launchd auto-start) is deferred.
+- **Not a daemon supervisor.** `hera install` (launchd auto-start) is deferred.
 
 ## Building
 
 ```sh
-make build         # produces ./bin/ludwig
+make build         # produces ./bin/hera
 make test          # runs the full test suite
-make install-dev   # copies ./bin/ludwig to ~/bin/
+make install-dev   # copies ./bin/hera to ~/bin/
 ```
 
 ## Running
@@ -30,28 +30,28 @@ make install-dev   # copies ./bin/ludwig to ~/bin/
 1. Mint a scope token from argus (one time):
 
    ```sh
-   argus token mint --scope ludwig > ~/.ludwig/api-token
-   chmod 600 ~/.ludwig/api-token
+   argus token mint --scope hera > ~/.hera/api-token
+   chmod 600 ~/.hera/api-token
    ```
 
-2. Start ludwig in the foreground (for development):
+2. Start hera in the foreground (for development):
 
    ```sh
-   ludwig start --foreground
+   hera start --foreground
    ```
 
-   For background mode (no foreground flag), ludwig writes its PID to `~/.ludwig/ludwig.pid`.
+   For background mode (no foreground flag), hera writes its PID to `~/.hera/hera.pid`.
 
 3. Verify:
 
    ```sh
-   ludwig status
+   hera status
    ```
 
 ## Repository layout
 
 ```
-cmd/ludwig/         # Cobra CLI verbs (main + start + stop + status + list + resume)
+cmd/hera/         # Cobra CLI verbs (main + start + stop + status + list + resume)
 internal/
   config/           # config loading + token reading
   db/               # SQLite schema, migrations, DAOs

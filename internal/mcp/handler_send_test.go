@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/db"
 )
 
 // fakeInjector records every Inject call and returns a configurable mode.

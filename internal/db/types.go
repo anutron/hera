@@ -63,7 +63,7 @@ type Binding struct {
 	EndReason    string
 }
 
-// Message is one ludwig-bus message.
+// Message is one hera-bus message.
 type Message struct {
 	ID           int64
 	FromRoleID   int64

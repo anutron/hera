@@ -10,20 +10,20 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/anutron/ludwig/internal/config"
+	"github.com/anutron/hera/internal/config"
 )
 
 func newStopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
-		Short: "Stop the running ludwig daemon",
-		Long:  "Read the PID from ~/.ludwig/ludwig.pid, send SIGTERM, and wait up to 10 seconds for the daemon to exit cleanly.",
+		Short: "Stop the running hera daemon",
+		Long:  "Read the PID from ~/.hera/hera.pid, send SIGTERM, and wait up to 10 seconds for the daemon to exit cleanly.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Default()
 			data, err := os.ReadFile(cfg.PIDPath())
 			if err != nil {
 				if os.IsNotExist(err) {
-					return fmt.Errorf("no PID file at %s; is ludwig running?", cfg.PIDPath())
+					return fmt.Errorf("no PID file at %s; is hera running?", cfg.PIDPath())
 				}
 				return fmt.Errorf("read pidfile: %w", err)
 			}
@@ -43,12 +43,12 @@ func newStopCmd() *cobra.Command {
 			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
 				if _, err := os.Stat(cfg.PIDPath()); os.IsNotExist(err) {
-					fmt.Fprintf(cmd.OutOrStdout(), "ludwig (pid %d) stopped.\n", pid)
+					fmt.Fprintf(cmd.OutOrStdout(), "hera (pid %d) stopped.\n", pid)
 					return nil
 				}
 				time.Sleep(200 * time.Millisecond)
 			}
-			return fmt.Errorf("ludwig (pid %d) did not exit within 10s", pid)
+			return fmt.Errorf("hera (pid %d) did not exit within 10s", pid)
 		},
 	}
 }

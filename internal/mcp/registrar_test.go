@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anutron/ludwig/internal/argus"
+	"github.com/anutron/hera/internal/argus"
 )
 
 // stub argus that records POST /api/mcp/tools and DELETE /api/mcp/tools/x.
@@ -36,7 +36,7 @@ func (f *fakeRegistry) handler() http.Handler {
 		f.authHeaders = append(f.authHeaders, body.AuthHeader)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"name":"`+body.Name+`","scope":"ludwig"}`)
+		_, _ = io.WriteString(w, `{"name":"`+body.Name+`","scope":"hera"}`)
 	})
 	mux.HandleFunc("/api/mcp/tools/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "DELETE" {
@@ -60,12 +60,12 @@ func TestRegistrar_StartRegistersAllToolsAndHeartbeats(t *testing.T) {
 
 	r := NewRegistrar(client, "http://127.0.0.1:9000", "Bearer test-secret", nil)
 	r.Add(ToolDefinition{
-		Name:        "ludwig_send",
-		Description: "Send a ludwig message",
+		Name:        "hera_send",
+		Description: "Send a hera message",
 		InputSchema: map[string]any{"type": "object"},
 	})
 	r.Add(ToolDefinition{
-		Name:        "ludwig_inbox",
+		Name:        "hera_inbox",
 		Description: "Read inbox for the calling role",
 		InputSchema: map[string]any{"type": "object"},
 	})

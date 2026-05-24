@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/db"
 )
 
 // Resolver helps handlers translate a cwd input into the argus task that
-// owns that worktree and the ludwig role bound to it.
+// owns that worktree and the hera role bound to it.
 type Resolver struct {
 	client *argus.Client
 	db     *db.DB
@@ -40,7 +40,7 @@ func (r *Resolver) TaskForCwd(ctx context.Context, cwd string) (*argus.Task, err
 }
 
 // CallerRole resolves cwd → argus task → live binding → role. Returns
-// ErrNoBinding if the task is not bound to any ludwig role.
+// ErrNoBinding if the task is not bound to any hera role.
 func (r *Resolver) CallerRole(ctx context.Context, cwd string) (*argus.Task, *db.Role, *db.Binding, error) {
 	task, err := r.TaskForCwd(ctx, cwd)
 	if err != nil {
@@ -65,5 +65,5 @@ func (r *Resolver) CallerRole(ctx context.Context, cwd string) (*argus.Task, *db
 var (
 	ErrCwdMissing = errors.New("cwd input is required")
 	ErrCwdUnknown = errors.New("cwd does not map to any tracked argus task")
-	ErrNoBinding  = errors.New("argus task at cwd is not bound to any ludwig role")
+	ErrNoBinding  = errors.New("argus task at cwd is not bound to any hera role")
 )

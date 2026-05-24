@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/db"
 )
 
 // Handler reacts to argus events. Implementations should be cheap; the
@@ -24,7 +24,7 @@ type HandlerFunc func(ctx context.Context, ev argus.Event)
 // HandleEvent implements Handler.
 func (f HandlerFunc) HandleEvent(ctx context.Context, ev argus.Event) { f(ctx, ev) }
 
-// Subscriber connects ludwig to argus's SSE event stream, persists the
+// Subscriber connects hera to argus's SSE event stream, persists the
 // cursor across daemon restarts, and dispatches each event to every
 // registered handler.
 type Subscriber struct {

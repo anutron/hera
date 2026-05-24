@@ -2,7 +2,7 @@ package mcp
 
 import "encoding/json"
 
-// CallbackEnvelope is the JSON body argus POSTs into ludwig's MCP callback
+// CallbackEnvelope is the JSON body argus POSTs into hera's MCP callback
 // endpoint when a registered tool is invoked.
 type CallbackEnvelope struct {
 	Tool    string          `json:"tool"`

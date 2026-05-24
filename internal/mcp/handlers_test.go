@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/db"
 )
 
 // handlerFixture wires a fake argus + a real SQLite + a Resolver to drive
@@ -74,7 +74,7 @@ func setupHandlers(t *testing.T) *handlerFixture {
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 
-	dbPath := filepath.Join(t.TempDir(), "ludwig.sqlite")
+	dbPath := filepath.Join(t.TempDir(), "hera.sqlite")
 	database, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
@@ -116,7 +116,7 @@ func TestJoin_FreelanceAttach_HappyPath(t *testing.T) {
 	_, _ = e.db.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p",
 	})
-	e.fake.addTask(argus.Task{ID: "t-free", Name: "freelance", Project: "ludwig", WorktreePath: "/tmp/free"})
+	e.fake.addTask(argus.Task{ID: "t-free", Name: "freelance", Project: "hera", WorktreePath: "/tmp/free"})
 
 	h := NewJoinHandler(e.resolver, e.db)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{

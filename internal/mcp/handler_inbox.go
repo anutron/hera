@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/db"
 )
 
-// InboxHandler implements ludwig_inbox. Returns every unread message
+// InboxHandler implements hera_inbox. Returns every unread message
 // addressed to the caller's role, oldest-first.
 type InboxHandler struct {
 	resolver *Resolver
@@ -46,23 +46,23 @@ type InboxOutput struct {
 func (h *InboxHandler) Handle(ctx context.Context, raw json.RawMessage) Response {
 	var in InboxInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return ErrorResponse("ludwig_inbox: invalid input JSON: " + err.Error())
+		return ErrorResponse("hera_inbox: invalid input JSON: " + err.Error())
 	}
 	if in.Cwd == "" {
-		return ErrorResponse("ludwig_inbox: cwd is required")
+		return ErrorResponse("hera_inbox: cwd is required")
 	}
 
 	_, role, _, err := h.resolver.CallerRole(ctx, in.Cwd)
 	if err != nil {
 		if errors.Is(err, ErrNoBinding) {
-			return ErrorResponse("ludwig_inbox: " + err.Error())
+			return ErrorResponse("hera_inbox: " + err.Error())
 		}
-		return ErrorResponse("ludwig_inbox: " + err.Error())
+		return ErrorResponse("hera_inbox: " + err.Error())
 	}
 
 	msgs, err := h.db.Messages.UnreadForRole(ctx, role.ID)
 	if err != nil {
-		return ErrorResponse("ludwig_inbox: query: " + err.Error())
+		return ErrorResponse("hera_inbox: query: " + err.Error())
 	}
 
 	out := InboxOutput{RoleName: role.Name, Count: len(msgs)}

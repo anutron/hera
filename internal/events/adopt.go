@@ -5,13 +5,13 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/db"
 )
 
 // AdoptHandler implements the stricter auto-adopt rule from the spec:
 // when a link.created event names a child whose parent is bound to a
-// ludwig coordinator role AND the child has meta:ludwig.role=worker,
+// hera coordinator role AND the child has meta:hera.role=worker,
 // adopt the child as a worker role under the parent's orchestrator.
 //
 // Tasks meeting only one of those conditions are NOT adopted. Skipped
@@ -48,10 +48,10 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 		return
 	}
 
-	// (1) Is the parent bound to a ludwig coordinator role?
+	// (1) Is the parent bound to a hera coordinator role?
 	parentBinding, err := a.db.Bindings.GetLiveByTaskID(ctx, link.Parent)
 	if errors.Is(err, db.ErrNotFound) {
-		// Parent isn't bound to anything ludwig owns – not our task to adopt.
+		// Parent isn't bound to anything hera owns – not our task to adopt.
 		return
 	}
 	if err != nil {
@@ -69,7 +69,7 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 		return
 	}
 
-	// (2) Does the child task have meta:ludwig.role=worker?
+	// (2) Does the child task have meta:hera.role=worker?
 	meta, err := a.client.GetTaskMeta(ctx, link.Child, MetaNamespace)
 	if err != nil {
 		a.log.Warn("link.created: fetch child meta", "child", link.Child, "err", err)
@@ -78,12 +78,12 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 	roleVal, missionVal, constraintsVal := pickAdoptMeta(meta)
 
 	if roleVal == "" {
-		a.log.Info("link.created: skipped adoption (no meta:ludwig.role)",
+		a.log.Info("link.created: skipped adoption (no meta:hera.role)",
 			"child", link.Child, "parent", link.Parent)
 		return
 	}
 	if roleVal != string(db.KindWorker) {
-		a.log.Info("link.created: skipped adoption (meta:ludwig.role not 'worker')",
+		a.log.Info("link.created: skipped adoption (meta:hera.role not 'worker')",
 			"child", link.Child, "value", roleVal)
 		return
 	}

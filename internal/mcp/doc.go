@@ -1,7 +1,7 @@
-// Package mcp owns ludwig's MCP tool surface.
+// Package mcp owns hera's MCP tool surface.
 //
 // On daemon startup it registers five tools with argus
-// (ludwig_join, ludwig_send, ludwig_inbox, ludwig_mark_read, ludwig_status)
+// (hera_join, hera_send, hera_inbox, hera_mark_read, hera_status)
 // and hosts an HTTP listener on 127.0.0.1:7744 (default) for argus to POST
 // callbacks into. A randomly-generated shared secret is included in the
 // auth_header at registration time; the callback listener constant-time

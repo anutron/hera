@@ -5,8 +5,8 @@
 // argus's /api/tasks/{id}/input endpoint.
 //
 // The formatted body always carries the prefix
-// "[ludwig from <senderRoleName>] " so the recipient agent can identify
+// "[hera from <senderRoleName>] " so the recipient agent can identify
 // the source of the message.
 //
-// See openspec/changes/ludwig-v1/design.md decision D3.
+// See openspec/changes/hera-v1/design.md decision D3.
 package inject

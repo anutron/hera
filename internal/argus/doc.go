@@ -2,7 +2,7 @@
 //
 // Every request carries Authorization: Bearer <scope-token> and
 // X-Argus-Plugin-Version: 1. The client also implements the SSE event-stream
-// subscription and PTY-output stream that ludwig consumes.
+// subscription and PTY-output stream that hera consumes.
 //
 // Contract reference: ~/Development/Personal/argus/docs/plugins.md.
 package argus

@@ -34,12 +34,12 @@ func TestServer_HealthCheckRespondsOK(t *testing.T) {
 
 func TestServer_CallbackInvokesHandler(t *testing.T) {
 	s, base := startTestServer(t, "Bearer s3cret")
-	s.RegisterHandler("ludwig_echo", HandlerFunc(func(ctx context.Context, input json.RawMessage) Response {
+	s.RegisterHandler("hera_echo", HandlerFunc(func(ctx context.Context, input json.RawMessage) Response {
 		return TextResponse("echo: " + string(input))
 	}))
 
-	body := `{"tool":"ludwig_echo","input":{"hello":true},"context":{}}`
-	req, _ := http.NewRequest("POST", base+"/mcp/ludwig_echo", bytes.NewBufferString(body))
+	body := `{"tool":"hera_echo","input":{"hello":true},"context":{}}`
+	req, _ := http.NewRequest("POST", base+"/mcp/hera_echo", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer s3cret")
 	req.Header.Set("Content-Type", "application/json")
 
@@ -65,8 +65,8 @@ func TestServer_CallbackInvokesHandler(t *testing.T) {
 
 func TestServer_RejectsWrongAuth(t *testing.T) {
 	_, base := startTestServer(t, "Bearer s3cret")
-	body := `{"tool":"ludwig_x","input":{}}`
-	req, _ := http.NewRequest("POST", base+"/mcp/ludwig_x", bytes.NewBufferString(body))
+	body := `{"tool":"hera_x","input":{}}`
+	req, _ := http.NewRequest("POST", base+"/mcp/hera_x", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer wrong")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -81,8 +81,8 @@ func TestServer_RejectsWrongAuth(t *testing.T) {
 
 func TestServer_ReturnsNotFoundForUnknownTool(t *testing.T) {
 	_, base := startTestServer(t, "Bearer s3cret")
-	body := `{"tool":"ludwig_x","input":{}}`
-	req, _ := http.NewRequest("POST", base+"/mcp/ludwig_x", bytes.NewBufferString(body))
+	body := `{"tool":"hera_x","input":{}}`
+	req, _ := http.NewRequest("POST", base+"/mcp/hera_x", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer s3cret")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -101,11 +101,11 @@ func TestServer_ReturnsNotFoundForUnknownTool(t *testing.T) {
 
 func TestServer_RejectsEnvelopeMismatch(t *testing.T) {
 	s, base := startTestServer(t, "Bearer s3cret")
-	s.RegisterHandler("ludwig_a", HandlerFunc(func(ctx context.Context, input json.RawMessage) Response {
+	s.RegisterHandler("hera_a", HandlerFunc(func(ctx context.Context, input json.RawMessage) Response {
 		return TextResponse("ok")
 	}))
-	body := `{"tool":"ludwig_b","input":{}}` // path says A, envelope says B
-	req, _ := http.NewRequest("POST", base+"/mcp/ludwig_a", bytes.NewBufferString(body))
+	body := `{"tool":"hera_b","input":{}}` // path says A, envelope says B
+	req, _ := http.NewRequest("POST", base+"/mcp/hera_a", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer s3cret")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -119,7 +119,7 @@ func TestServer_RejectsEnvelopeMismatch(t *testing.T) {
 
 func TestServer_RejectsGET(t *testing.T) {
 	_, base := startTestServer(t, "Bearer s3cret")
-	resp, err := http.Get(base + "/mcp/ludwig_send")
+	resp, err := http.Get(base + "/mcp/hera_send")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}

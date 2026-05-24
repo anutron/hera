@@ -109,14 +109,14 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Auth: constant-time compare against the configured header.
 	if !s.authCheck(r) {
-		writeJSON(w, http.StatusUnauthorized, ErrorResponse("ludwig: invalid auth_header on MCP callback"))
+		writeJSON(w, http.StatusUnauthorized, ErrorResponse("hera: invalid auth_header on MCP callback"))
 		return
 	}
 
 	// Tool name comes from the URL path: /mcp/<name>
 	name := strings.TrimPrefix(r.URL.Path, "/mcp/")
 	if name == "" || strings.Contains(name, "/") {
-		writeJSON(w, http.StatusNotFound, ErrorResponse("ludwig: unknown tool"))
+		writeJSON(w, http.StatusNotFound, ErrorResponse("hera: unknown tool"))
 		return
 	}
 
@@ -124,17 +124,17 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	h, ok := s.handlers[name]
 	s.mu.RUnlock()
 	if !ok {
-		writeJSON(w, http.StatusNotFound, ErrorResponse("ludwig: unknown tool "+name))
+		writeJSON(w, http.StatusNotFound, ErrorResponse("hera: unknown tool "+name))
 		return
 	}
 
 	var env CallbackEnvelope
 	if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse("ludwig: invalid envelope: "+err.Error()))
+		writeJSON(w, http.StatusBadRequest, ErrorResponse("hera: invalid envelope: "+err.Error()))
 		return
 	}
 	if env.Tool != "" && env.Tool != name {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse("ludwig: envelope tool mismatch"))
+		writeJSON(w, http.StatusBadRequest, ErrorResponse("hera: envelope tool mismatch"))
 		return
 	}
 
@@ -154,7 +154,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // GenerateAuthHeader produces a random "Bearer <hex>" header value for
-// use as the shared secret between argus and ludwig.
+// use as the shared secret between argus and hera.
 func GenerateAuthHeader() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {

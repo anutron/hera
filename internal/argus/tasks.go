@@ -7,7 +7,7 @@ import (
 	"net/url"
 )
 
-// Task is the subset of argus's task representation that ludwig consumes.
+// Task is the subset of argus's task representation that hera consumes.
 // Argus may return additional fields; they are ignored.
 type Task struct {
 	ID           string `json:"id"`

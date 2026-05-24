@@ -9,7 +9,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps a *sql.DB and exposes the typed DAOs ludwig uses for its local
+// DB wraps a *sql.DB and exposes the typed DAOs hera uses for its local
 // state.
 //
 // Open creates the parent directory if missing, opens the SQLite file in

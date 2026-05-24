@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/db"
 )
 
 type fakePTY struct {
@@ -33,7 +33,7 @@ func (f fakeIdle) IsIdle(taskID string) bool { return f.idle }
 
 func TestFormatBody(t *testing.T) {
 	got := FormatBody("foo-coord", "please review")
-	want := "[ludwig from foo-coord] please review"
+	want := "[hera from foo-coord] please review"
 	if got != want {
 		t.Fatalf("FormatBody = %q, want %q", got, want)
 	}
@@ -55,7 +55,7 @@ func TestInject_IdleSubmits(t *testing.T) {
 		t.Fatalf("got %d writes, want 1", len(pty.writes))
 	}
 	got := string(pty.writes[0])
-	want := "[ludwig from foo-coord] ping\n"
+	want := "[hera from foo-coord] ping\n"
 	if got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
@@ -77,7 +77,7 @@ func TestInject_BusyBuffersWithoutNewline(t *testing.T) {
 		t.Fatalf("mode = %s, want %s", mode, db.DeliveryBusyBuffer)
 	}
 	got := string(pty.writes[0])
-	want := "[ludwig from foo-coord] ping"
+	want := "[hera from foo-coord] ping"
 	if got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}

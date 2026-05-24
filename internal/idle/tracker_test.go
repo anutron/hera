@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/events"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/events"
 )
 
 // fixedClock returns a clock that can be advanced explicitly.

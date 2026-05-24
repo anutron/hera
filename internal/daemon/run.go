@@ -6,13 +6,13 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/config"
-	"github.com/anutron/ludwig/internal/db"
-	"github.com/anutron/ludwig/internal/events"
-	"github.com/anutron/ludwig/internal/idle"
-	"github.com/anutron/ludwig/internal/inject"
-	"github.com/anutron/ludwig/internal/mcp"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/config"
+	"github.com/anutron/hera/internal/db"
+	"github.com/anutron/hera/internal/events"
+	"github.com/anutron/hera/internal/idle"
+	"github.com/anutron/hera/internal/inject"
+	"github.com/anutron/hera/internal/mcp"
 )
 
 // Daemon bundles every running component so the caller can introspect or
@@ -30,7 +30,7 @@ type Daemon struct {
 	Subscriber *events.Subscriber
 }
 
-// Start assembles ludwig and brings every subsystem up. Returns the live
+// Start assembles hera and brings every subsystem up. Returns the live
 // Daemon ready for Run to call. Use only when you want to inspect each
 // subsystem (tests, custom orchestration). For normal operation, call
 // Run(ctx, cfg, log).
@@ -43,7 +43,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 
 	if err := cfg.EnsureStateDir(); err != nil {
-		return nil, fmt.Errorf("ludwig: state dir: %w", err)
+		return nil, fmt.Errorf("hera: state dir: %w", err)
 	}
 	token, err := cfg.LoadToken()
 	if err != nil {
@@ -51,7 +51,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 	database, err := db.Open(cfg.StatePath())
 	if err != nil {
-		return nil, fmt.Errorf("ludwig: open db: %w", err)
+		return nil, fmt.Errorf("hera: open db: %w", err)
 	}
 
 	client := argus.New(cfg.ArgusBaseURL, token)
@@ -63,21 +63,21 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	auth, err := mcp.GenerateAuthHeader()
 	if err != nil {
 		database.Close()
-		return nil, fmt.Errorf("ludwig: generate mcp auth: %w", err)
+		return nil, fmt.Errorf("hera: generate mcp auth: %w", err)
 	}
 
 	mcpSrv := mcp.NewServer(cfg.ListenAddr, auth, log)
 	if err := mcpSrv.Start(ctx); err != nil {
 		database.Close()
-		return nil, fmt.Errorf("ludwig: start mcp server: %w", err)
+		return nil, fmt.Errorf("hera: start mcp server: %w", err)
 	}
 
 	// Wire handlers.
-	mcpSrv.RegisterHandler("ludwig_join", mcp.NewJoinHandler(resolver, database))
-	mcpSrv.RegisterHandler("ludwig_send", mcp.NewSendHandler(resolver, database, injector))
-	mcpSrv.RegisterHandler("ludwig_inbox", mcp.NewInboxHandler(resolver, database))
-	mcpSrv.RegisterHandler("ludwig_mark_read", mcp.NewMarkReadHandler(resolver, database))
-	mcpSrv.RegisterHandler("ludwig_status", mcp.NewStatusHandler(resolver, database, client))
+	mcpSrv.RegisterHandler("hera_join", mcp.NewJoinHandler(resolver, database))
+	mcpSrv.RegisterHandler("hera_send", mcp.NewSendHandler(resolver, database, injector))
+	mcpSrv.RegisterHandler("hera_inbox", mcp.NewInboxHandler(resolver, database))
+	mcpSrv.RegisterHandler("hera_mark_read", mcp.NewMarkReadHandler(resolver, database))
+	mcpSrv.RegisterHandler("hera_status", mcp.NewStatusHandler(resolver, database, client))
 
 	// CallbackBaseURL is the actual bound address (honors :0).
 	callback := "http://" + mcpSrv.Addr()
@@ -89,7 +89,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	if err := registrar.Start(ctx); err != nil {
 		_ = mcpSrv.Stop()
 		database.Close()
-		return nil, fmt.Errorf("ludwig: register tools: %w", err)
+		return nil, fmt.Errorf("hera: register tools: %w", err)
 	}
 
 	subscriber := events.NewSubscriber(client, database, log)
@@ -104,7 +104,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		}
 	}()
 
-	log.Info("ludwig ready",
+	log.Info("hera ready",
 		"argus_base_url", cfg.ArgusBaseURL,
 		"mcp_addr", mcpSrv.Addr(),
 		"state", cfg.StatePath(),
@@ -132,10 +132,10 @@ func (d *Daemon) Stop(ctx context.Context) {
 	if d.DB != nil {
 		_ = d.DB.Close()
 	}
-	d.Log.Info("ludwig stopped")
+	d.Log.Info("hera stopped")
 }
 
-// Run brings ludwig up, writes its PID file, blocks until ctx is canceled
+// Run brings hera up, writes its PID file, blocks until ctx is canceled
 // (typically by SIGINT/SIGTERM), then gracefully shuts down.
 func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	d, err := Start(ctx, cfg, log)
@@ -153,12 +153,12 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	return nil
 }
 
-// toolDefinitions returns the five ludwig_* tool registrations.
+// toolDefinitions returns the five hera_* tool registrations.
 func toolDefinitions() []mcp.ToolDefinition {
 	return []mcp.ToolDefinition{
 		{
-			Name:        "ludwig_join",
-			Description: "Claim or create a ludwig role for the calling argus task. Bare call (cwd only) claims an existing binding; extended call (orchestrator + role_name + kind + optional mission/constraints/status) attaches as a freelance or coordinator.",
+			Name:        "hera_join",
+			Description: "Claim or create a hera role for the calling argus task. Bare call (cwd only) claims an existing binding; extended call (orchestrator + role_name + kind + optional mission/constraints/status) attaches as a freelance or coordinator.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -174,8 +174,8 @@ func toolDefinitions() []mcp.ToolDefinition {
 			},
 		},
 		{
-			Name:        "ludwig_send",
-			Description: "Send a message to another ludwig role. Default routing: worker/freelance → coordinator of same orchestrator; coordinator → user pseudo-recipient.",
+			Name:        "hera_send",
+			Description: "Send a message to another hera role. Default routing: worker/freelance → coordinator of same orchestrator; coordinator → user pseudo-recipient.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -188,7 +188,7 @@ func toolDefinitions() []mcp.ToolDefinition {
 			},
 		},
 		{
-			Name:        "ludwig_inbox",
+			Name:        "hera_inbox",
 			Description: "List unread messages addressed to the caller's role, oldest first.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -199,20 +199,20 @@ func toolDefinitions() []mcp.ToolDefinition {
 			},
 		},
 		{
-			Name:        "ludwig_mark_read",
+			Name:        "hera_mark_read",
 			Description: "Mark one or more inbox messages as read for the caller's role.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"cwd":         map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
-					"message_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Inbox message ids returned by ludwig_inbox"},
+					"message_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Inbox message ids returned by hera_inbox"},
 				},
 				"required": []string{"cwd", "message_ids"},
 			},
 		},
 		{
-			Name:        "ludwig_status",
-			Description: "Set the caller role's status. Status is also mirrored to argus task_meta as meta:ludwig.thread_status.",
+			Name:        "hera_status",
+			Description: "Set the caller role's status. Status is also mirrored to argus task_meta as meta:hera.thread_status.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

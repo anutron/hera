@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/db"
 )
 
 func TestSubscriber_AdvancesCursor(t *testing.T) {

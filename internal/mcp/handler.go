@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 )
 
-// Handler implements a ludwig MCP tool's behavior. The runtime decodes the
+// Handler implements a hera MCP tool's behavior. The runtime decodes the
 // callback envelope, then calls Handle with the parsed input. Returning a
 // Response with IsError=true surfaces a tool error to the MCP client.
 type Handler interface {

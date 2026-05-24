@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/db"
 )
 
 // PTYWriter writes raw bytes to an argus task's PTY. *argus.Client
@@ -33,7 +33,7 @@ func New(pty PTYWriter, idle IdleChecker) *Injector {
 // FormatBody returns the on-PTY representation of a message body. Exposed
 // for tests so they can assert the exact byte sequence.
 func FormatBody(senderRoleName, body string) string {
-	return fmt.Sprintf("[ludwig from %s] %s", senderRoleName, body)
+	return fmt.Sprintf("[hera from %s] %s", senderRoleName, body)
 }
 
 // Inject delivers a message into the recipient task's PTY. Returns the

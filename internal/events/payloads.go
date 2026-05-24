@@ -3,7 +3,7 @@ package events
 import (
 	"encoding/json"
 
-	"github.com/anutron/ludwig/internal/argus"
+	"github.com/anutron/hera/internal/argus"
 )
 
 // LinkCreatedPayload is the parsed payload of a link.created event.

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/config"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/config"
 )
 
 // fakeArgusForDaemon stubs every endpoint daemon.Start hits during boot:
@@ -52,7 +52,7 @@ func (f *fakeArgusForDaemon) handler() http.Handler {
 		f.registered = append(f.registered, body.Name)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"name":"`+body.Name+`","scope":"ludwig"}`)
+		_, _ = io.WriteString(w, `{"name":"`+body.Name+`","scope":"hera"}`)
 	})
 	mux.HandleFunc("/api/mcp/tools/", func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, "/api/mcp/tools/")
@@ -97,7 +97,7 @@ func TestDaemonStart_RegistersAllFiveToolsAndCleansUp(t *testing.T) {
 	defer d.Stop(context.Background())
 
 	// Wait until all five tools have registered.
-	want := []string{"ludwig_join", "ludwig_send", "ludwig_inbox", "ludwig_mark_read", "ludwig_status"}
+	want := []string{"hera_join", "hera_send", "hera_inbox", "hera_mark_read", "hera_status"}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		fake.mu.Lock()

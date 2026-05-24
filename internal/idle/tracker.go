@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/events"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/events"
 )
 
 // DefaultDebounce is the conservative idle debounce window applied by the
@@ -15,7 +15,7 @@ import (
 // clarifies session.idle semantics (see design D10).
 const DefaultDebounce = 2 * time.Second
 
-// sessionEvent records the kind of the most recent session event ludwig
+// sessionEvent records the kind of the most recent session event hera
 // saw for a task, plus its timestamp.
 type sessionEvent struct {
 	kind string // events.TypeSessionIdle | events.TypeSessionStarted | events.TypeSessionExited
@@ -89,7 +89,7 @@ func (t *Tracker) IsIdle(taskID string) bool {
 }
 
 // Lookup returns the most recently seen session event for a task, mostly
-// for diagnostics / status output. ok=false if ludwig has never seen a
+// for diagnostics / status output. ok=false if hera has never seen a
 // session event for that task.
 func (t *Tracker) Lookup(taskID string) (eventType string, at time.Time, ok bool) {
 	t.mu.RLock()

@@ -6,16 +6,16 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/db"
 )
 
-// MessageInjector is the dependency ludwig_send uses to deliver bytes
+// MessageInjector is the dependency hera_send uses to deliver bytes
 // into the recipient's PTY. *inject.Injector implements this.
 type MessageInjector interface {
 	Inject(ctx context.Context, taskID, senderRoleName, body string) (db.DeliveryMode, error)
 }
 
-// SendHandler implements ludwig_send. It looks up the sender via cwd,
+// SendHandler implements hera_send. It looks up the sender via cwd,
 // resolves the recipient via explicit name or default routing (worker
 // or freelance senders default to the orchestrator's coordinator;
 // coordinator senders MUST supply an explicit `to`), persists the
@@ -51,23 +51,23 @@ type SendOutput struct {
 func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response {
 	var in SendInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return ErrorResponse("ludwig_send: invalid input JSON: " + err.Error())
+		return ErrorResponse("hera_send: invalid input JSON: " + err.Error())
 	}
 	if in.Cwd == "" {
-		return ErrorResponse("ludwig_send: cwd is required")
+		return ErrorResponse("hera_send: cwd is required")
 	}
 	if in.Body == "" {
-		return ErrorResponse("ludwig_send: body is required")
+		return ErrorResponse("hera_send: body is required")
 	}
 
 	_, senderRole, _, err := h.resolver.CallerRole(ctx, in.Cwd)
 	if err != nil {
-		return ErrorResponse("ludwig_send: " + err.Error())
+		return ErrorResponse("hera_send: " + err.Error())
 	}
 
 	recipient, err := h.resolveRecipient(ctx, senderRole, in.To)
 	if err != nil {
-		return ErrorResponse("ludwig_send: " + err.Error())
+		return ErrorResponse("hera_send: " + err.Error())
 	}
 
 	msg, err := h.db.Messages.Create(ctx, db.CreateMessageInput{
@@ -77,7 +77,7 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 		InReplyTo:  in.InReplyTo,
 	})
 	if err != nil {
-		return ErrorResponse("ludwig_send: persist message: " + err.Error())
+		return ErrorResponse("hera_send: persist message: " + err.Error())
 	}
 
 	// Deliver.
@@ -87,17 +87,17 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 	case errors.Is(lookupErr, db.ErrNotFound):
 		mode = db.DeliveryQueuedNoBinding
 	case lookupErr != nil:
-		return ErrorResponse("ludwig_send: lookup recipient binding: " + lookupErr.Error())
+		return ErrorResponse("hera_send: lookup recipient binding: " + lookupErr.Error())
 	default:
 		delivered, injectErr := h.injector.Inject(ctx, bnd.ArgusTaskID, senderRole.Name, in.Body)
 		if injectErr != nil {
-			return ErrorResponse("ludwig_send: inject: " + injectErr.Error())
+			return ErrorResponse("hera_send: inject: " + injectErr.Error())
 		}
 		mode = delivered
 	}
 
 	if err := h.db.Messages.SetDelivered(ctx, msg.ID, mode); err != nil {
-		return ErrorResponse("ludwig_send: persist delivery mode: " + err.Error())
+		return ErrorResponse("hera_send: persist delivery mode: " + err.Error())
 	}
 
 	return jsonText(SendOutput{

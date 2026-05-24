@@ -5,5 +5,5 @@
 // `debounce` ago. Default debounce is 2 seconds – tunable when argus
 // clarifies session.idle semantics.
 //
-// See openspec/changes/ludwig-v1/design.md decision D10.
+// See openspec/changes/hera-v1/design.md decision D10.
 package idle

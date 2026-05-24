@@ -3,8 +3,8 @@
 //
 // The auto-adopt handler enforces the stricter rule from the spec: a new
 // argus task is adopted as a worker only when (a) link.created names a
-// parent currently bound to a ludwig coordinator role AND (b) the new task
-// has meta:ludwig.role=worker.
+// parent currently bound to a hera coordinator role AND (b) the new task
+// has meta:hera.role=worker.
 //
-// See openspec/changes/ludwig-v1/design.md decision D4.
+// See openspec/changes/hera-v1/design.md decision D4.
 package events

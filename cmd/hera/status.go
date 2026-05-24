@@ -10,25 +10,25 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/anutron/ludwig/internal/config"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/config"
+	"github.com/anutron/hera/internal/db"
 )
 
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show the ludwig daemon status",
+		Short: "Show the hera daemon status",
 		Long:  "Print whether the daemon is running, the last-seen event id, and counts of orchestrators / roles / live bindings.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Default()
 
 			running, pid := pidIsAlive(cfg)
 			if running {
-				fmt.Fprintf(cmd.OutOrStdout(), "ludwig: running (pid %d)\n", pid)
+				fmt.Fprintf(cmd.OutOrStdout(), "hera: running (pid %d)\n", pid)
 			} else if pid != 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "ludwig: stale pidfile (pid %d not alive)\n", pid)
+				fmt.Fprintf(cmd.OutOrStdout(), "hera: stale pidfile (pid %d not alive)\n", pid)
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "ludwig: not running")
+				fmt.Fprintln(cmd.OutOrStdout(), "hera: not running")
 			}
 
 			// Open the DB read-only-ish (we run migrations but no real

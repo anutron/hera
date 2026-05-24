@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/db"
-	"github.com/anutron/ludwig/internal/events"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/db"
+	"github.com/anutron/hera/internal/events"
 )
 
-// StatusHandler implements ludwig_status. It updates the caller role's
+// StatusHandler implements hera_status. It updates the caller role's
 // status and mirrors the value to argus task_meta so other observers can
 // see it.
 type StatusHandler struct {
@@ -43,32 +43,32 @@ type StatusOutput struct {
 func (h *StatusHandler) Handle(ctx context.Context, raw json.RawMessage) Response {
 	var in StatusInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return ErrorResponse("ludwig_status: invalid input JSON: " + err.Error())
+		return ErrorResponse("hera_status: invalid input JSON: " + err.Error())
 	}
 	if in.Cwd == "" {
-		return ErrorResponse("ludwig_status: cwd is required")
+		return ErrorResponse("hera_status: cwd is required")
 	}
 	if in.Status == "" {
-		return ErrorResponse("ludwig_status: status is required")
+		return ErrorResponse("hera_status: status is required")
 	}
 	s := db.RoleStatusValue(in.Status)
 	switch s {
 	case db.StatusIdle, db.StatusWorking, db.StatusBlocked, db.StatusDone:
 		// ok
 	default:
-		return ErrorResponse(fmt.Sprintf("ludwig_status: invalid status %q (must be one of: idle, working, blocked, done)", in.Status))
+		return ErrorResponse(fmt.Sprintf("hera_status: invalid status %q (must be one of: idle, working, blocked, done)", in.Status))
 	}
 
 	_, role, bnd, err := h.resolver.CallerRole(ctx, in.Cwd)
 	if err != nil {
 		if errors.Is(err, ErrNoBinding) {
-			return ErrorResponse("ludwig_status: " + err.Error())
+			return ErrorResponse("hera_status: " + err.Error())
 		}
-		return ErrorResponse("ludwig_status: " + err.Error())
+		return ErrorResponse("hera_status: " + err.Error())
 	}
 
 	if err := h.db.RoleStatus.Upsert(ctx, role.ID, s); err != nil {
-		return ErrorResponse("ludwig_status: persist status: " + err.Error())
+		return ErrorResponse("hera_status: persist status: " + err.Error())
 	}
 
 	// Mirror to argus task_meta. Best-effort; report success on the

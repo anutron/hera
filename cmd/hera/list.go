@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/anutron/ludwig/internal/config"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/config"
+	"github.com/anutron/hera/internal/db"
 )
 
 func newListCmd() *cobra.Command {
@@ -20,7 +20,7 @@ func newListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Default()
 			if _, err := os.Stat(cfg.StatePath()); os.IsNotExist(err) {
-				fmt.Fprintln(cmd.OutOrStdout(), "(no orchestrators – ludwig has never started)")
+				fmt.Fprintln(cmd.OutOrStdout(), "(no orchestrators – hera has never started)")
 				return nil
 			}
 			database, err := db.Open(cfg.StatePath())

@@ -1,4 +1,4 @@
-// Package db owns ludwig's local SQLite state.
+// Package db owns hera's local SQLite state.
 //
 // Schema is defined in code with versioned migrations. Tables:
 //
@@ -10,6 +10,6 @@
 //   - event_cursor  (id=1 singleton, last_seen_event_id)
 //   - config        (key PK, value)
 //
-// WAL mode is enabled. See openspec/changes/ludwig-v1/design.md decision D8
+// WAL mode is enabled. See openspec/changes/hera-v1/design.md decision D8
 // for rationale.
 package db

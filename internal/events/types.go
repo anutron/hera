@@ -1,7 +1,7 @@
 package events
 
 // Canonical argus event type strings. Kept as constants so the rest of
-// ludwig refers to them symbolically (renames in argus become compile
+// hera refers to them symbolically (renames in argus become compile
 // errors here, not runtime mismatches).
 //
 // Source of truth: argus/internal/model/event.go and the table in
@@ -27,14 +27,14 @@ const (
 	TypeResync = "resync"
 )
 
-// Meta keys ludwig reads from argus task metadata.
+// Meta keys hera reads from argus task metadata.
 const (
 	MetaKeyRole         = "role"
 	MetaKeyMission      = "mission"
 	MetaKeyConstraints  = "constraints"
 	MetaKeyThreadStatus = "thread_status"
 
-	// Namespace used when fetching task meta. Ludwig's writes are
+	// Namespace used when fetching task meta. Hera's writes are
 	// auto-namespaced server-side per substrate gap-1 fix.
-	MetaNamespace = "ludwig"
+	MetaNamespace = "hera"
 )

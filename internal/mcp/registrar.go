@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anutron/ludwig/internal/argus"
+	"github.com/anutron/hera/internal/argus"
 )
 
 // DefaultHeartbeat is how often Registrar re-POSTs each tool registration.
@@ -15,14 +15,14 @@ import (
 // keeps a comfortable margin.
 const DefaultHeartbeat = 5 * time.Minute
 
-// ToolDefinition is one tool ludwig wants to register with argus.
+// ToolDefinition is one tool hera wants to register with argus.
 type ToolDefinition struct {
-	Name        string         // must be force-prefixed "ludwig_"
+	Name        string         // must be force-prefixed "hera_"
 	Description string         // ≥ 10 chars
 	InputSchema map[string]any // JSON Schema (object) describing inputs
 }
 
-// Registrar owns the lifecycle of ludwig's tool registrations with argus:
+// Registrar owns the lifecycle of hera's tool registrations with argus:
 // register on start, heartbeat on a ticker, unregister on stop.
 type Registrar struct {
 	client      *argus.Client
@@ -37,7 +37,7 @@ type Registrar struct {
 }
 
 // NewRegistrar constructs a Registrar. callbackBaseURL is the URL prefix
-// ludwig's MCP server hosts (e.g. "http://127.0.0.1:7744"); the per-tool
+// hera's MCP server hosts (e.g. "http://127.0.0.1:7744"); the per-tool
 // URL becomes "<callbackBaseURL>/mcp/<tool-name>".
 func NewRegistrar(client *argus.Client, callbackBaseURL, authHeader string, log *slog.Logger) *Registrar {
 	if log == nil {

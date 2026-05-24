@@ -11,19 +11,19 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anutron/ludwig/internal/argus"
-	"github.com/anutron/ludwig/internal/db"
+	"github.com/anutron/hera/internal/argus"
+	"github.com/anutron/hera/internal/db"
 )
 
 // fakeArgus is an httptest-backed argus stub for adopt tests. It serves:
-//   - GET /api/tasks/{id}/meta?namespace=ludwig
+//   - GET /api/tasks/{id}/meta?namespace=hera
 //   - GET /api/tasks/{id}
 //   - PUT /api/tasks/{id}/meta
 //   - GET /api/tasks
 type fakeArgus struct {
 	mu        sync.Mutex
 	tasks     map[string]argus.Task
-	taskMeta  map[string]map[string]string // task_id → key → value (ludwig ns)
+	taskMeta  map[string]map[string]string // task_id → key → value (hera ns)
 	putWrites []putRecord
 }
 
@@ -86,9 +86,9 @@ func (f *fakeArgus) handler() http.Handler {
 			ns := r.URL.Query().Get("namespace")
 			var entries []argus.MetaEntry
 			for k, v := range f.taskMeta[taskID] {
-				if ns == "" || ns == "ludwig" {
+				if ns == "" || ns == "hera" {
 					entries = append(entries, argus.MetaEntry{
-						Namespace: "ludwig", Key: k, Value: v,
+						Namespace: "hera", Key: k, Value: v,
 					})
 				}
 			}
@@ -118,7 +118,7 @@ func (f *fakeArgus) handler() http.Handler {
 	return mux
 }
 
-// adoptTestEnv wires fake argus + ludwig DB + adopt handler.
+// adoptTestEnv wires fake argus + hera DB + adopt handler.
 type adoptTestEnv struct {
 	fake    *fakeArgus
 	srv     *httptest.Server
@@ -133,7 +133,7 @@ func setupAdopt(t *testing.T) *adoptTestEnv {
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 
-	dbPath := filepath.Join(t.TempDir(), "ludwig.sqlite")
+	dbPath := filepath.Join(t.TempDir(), "hera.sqlite")
 	database, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
@@ -155,7 +155,7 @@ func fixtureCoordinator(t *testing.T, e *adoptTestEnv, taskID string) *db.Role {
 	}
 	role, err := e.db.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "coordinator", Kind: db.KindCoordinator,
-		ArgusProject: "ludwig",
+		ArgusProject: "hera",
 	})
 	if err != nil {
 		t.Fatalf("role.Create: %v", err)
@@ -165,7 +165,7 @@ func fixtureCoordinator(t *testing.T, e *adoptTestEnv, taskID string) *db.Role {
 	}); err != nil {
 		t.Fatalf("binding.Create: %v", err)
 	}
-	e.fake.addTask(argus.Task{ID: taskID, Name: "coordinator", Project: "ludwig", WorktreePath: "/tmp/coord"})
+	e.fake.addTask(argus.Task{ID: taskID, Name: "coordinator", Project: "hera", WorktreePath: "/tmp/coord"})
 	return role
 }
 
@@ -243,7 +243,7 @@ func TestAdopt_MissingMeta_NotAdopted(t *testing.T) {
 	orch, _ := e.db.Orchestrators.GetByName(ctx, "foo")
 	_, err := e.db.Roles.GetByOrchestratorAndName(ctx, orch.ID, "stray")
 	if err == nil {
-		t.Fatalf("expected role NOT to be created without ludwig.role meta")
+		t.Fatalf("expected role NOT to be created without hera.role meta")
 	}
 }
 
@@ -261,7 +261,7 @@ func TestAdopt_MetaSaysNotWorker_NotAdopted(t *testing.T) {
 	orch, _ := e.db.Orchestrators.GetByName(ctx, "foo")
 	_, err := e.db.Roles.GetByOrchestratorAndName(ctx, orch.ID, "other")
 	if err == nil {
-		t.Fatalf("expected role NOT to be created when meta:ludwig.role != 'worker'")
+		t.Fatalf("expected role NOT to be created when meta:hera.role != 'worker'")
 	}
 }
 

@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-// Config bundles ludwig's runtime configuration. All fields have working
+// Config bundles hera's runtime configuration. All fields have working
 // defaults; the daemon does not require a user-supplied config file in v1.
 type Config struct {
-	// StateDir is where ludwig keeps its SQLite, token file, log, and PID.
-	// Default: ~/.ludwig
+	// StateDir is where hera keeps its SQLite, token file, log, and PID.
+	// Default: ~/.hera
 	StateDir string
 
 	// ArgusBaseURL is the argus daemon's HTTP root.
@@ -23,7 +23,7 @@ type Config struct {
 	// Default: 127.0.0.1:7744
 	ListenAddr string
 
-	// CallbackBaseURL is what ludwig advertises to argus as its
+	// CallbackBaseURL is what hera advertises to argus as its
 	// callback_url prefix. Usually "http://" + the actual listen address.
 	// Default: derived from ListenAddr.
 	CallbackBaseURL string
@@ -33,7 +33,7 @@ type Config struct {
 	// Default: 2s.
 	IdleDebounce time.Duration
 
-	// MCPHeartbeat is how often ludwig re-POSTs its tool registrations
+	// MCPHeartbeat is how often hera re-POSTs its tool registrations
 	// to argus to stay within the substrate's idle sweep window.
 	// Default: 5m.
 	MCPHeartbeat time.Duration
@@ -42,7 +42,7 @@ type Config struct {
 // Default returns a Config populated with the v1 defaults.
 func Default() *Config {
 	home, _ := os.UserHomeDir()
-	stateDir := filepath.Join(home, ".ludwig")
+	stateDir := filepath.Join(home, ".hera")
 	listenAddr := "127.0.0.1:7744"
 	return &Config{
 		StateDir:        stateDir,
@@ -54,7 +54,7 @@ func Default() *Config {
 	}
 }
 
-// TokenPath returns the path to the scope-token file ludwig reads on
+// TokenPath returns the path to the scope-token file hera reads on
 // startup.
 func (c *Config) TokenPath() string {
 	return filepath.Join(c.StateDir, "api-token")
@@ -65,17 +65,17 @@ func (c *Config) StatePath() string {
 	return filepath.Join(c.StateDir, "state.sqlite")
 }
 
-// PIDPath returns the path to ludwig's PID file.
+// PIDPath returns the path to hera's PID file.
 func (c *Config) PIDPath() string {
-	return filepath.Join(c.StateDir, "ludwig.pid")
+	return filepath.Join(c.StateDir, "hera.pid")
 }
 
-// LogPath returns the path to ludwig's log file.
+// LogPath returns the path to hera's log file.
 func (c *Config) LogPath() string {
-	return filepath.Join(c.StateDir, "ludwig.log")
+	return filepath.Join(c.StateDir, "hera.log")
 }
 
-// LoadToken reads the scope token from ~/.ludwig/api-token (or whatever
+// LoadToken reads the scope token from ~/.hera/api-token (or whatever
 // the configured TokenPath resolves to). Missing or empty files produce
 // an actionable error message.
 func (c *Config) LoadToken() (string, error) {
@@ -84,19 +84,19 @@ func (c *Config) LoadToken() (string, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf(
-				"ludwig: scope token file %s not found\n\n"+
-					"Run: argus token mint --scope ludwig > %s\n"+
+				"hera: scope token file %s not found\n\n"+
+					"Run: argus token mint --scope hera > %s\n"+
 					"     chmod 600 %s\n",
 				path, path, path,
 			)
 		}
-		return "", fmt.Errorf("ludwig: read token file %s: %w", path, err)
+		return "", fmt.Errorf("hera: read token file %s: %w", path, err)
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
 		return "", fmt.Errorf(
-			"ludwig: scope token file %s is empty\n\n"+
-				"Run: argus token mint --scope ludwig > %s\n",
+			"hera: scope token file %s is empty\n\n"+
+				"Run: argus token mint --scope hera > %s\n",
 			path, path,
 		)
 	}
