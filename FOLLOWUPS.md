@@ -2,6 +2,28 @@
 
 Items the spec-audit and ralph-review passes surfaced and we consciously chose to defer (vs silently parked). Each entry includes the rationale for deferring and a one-line signal for when to escalate it back to active work.
 
+## Dogfood loop reliability (surfaced during hera-settings)
+
+### `argus.PostTaskInput` response decode error
+
+**Status:** Active bug. Bit w1, w3, and coord during the hera-settings dogfood loop.
+
+**What:** `hera_send` to a worker via the coordinator returns the error `decode: json: cannot unmarshal string into Go struct field postTaskInputResponse.bytes of type int`. The POST itself succeeds — the bytes reach the recipient's PTY — but the response unmarshal fails on a schema mismatch between hera's `postTaskInputResponse` struct (defines `bytes int`) and argus's actual response (returns a stringified int). The error propagates back to the tool caller as a hera_send failure, so callers think the send failed even though it landed.
+
+**Why escalate now:** Combined with the "auto-execute doesn't seem to be working" report from one of the workers, this points at a real dogfood-blocker — the auto-execute inject side of hera_send is exactly the path the decode error sits on. Fix in `internal/argus/input.go` (field type, likely `json.Number` or `string` with parse) plus a regression test.
+
+**Escalate when:** Already — slated as the next change after `hera-settings` archive.
+
+### Possible auto-execute regression / idle-gate misclassification
+
+**Status:** Reported but unconfirmed. Flagged by a worker during hera-settings.
+
+**What:** A worker reported "auto-execute doesn't seem to be working" — the trailing-`\n` submit on idle did not auto-submit their buffered hera_send message. Observed direction unclear; coordinator-side auto-execute was confirmed working (every worker→coord message arrived as a new turn). Two suspects: (1) the response-decode bug above masking a partial-fail in the inject path, (2) the idle gate misreading the worker session as still-busy when it had quieted. Needs reproduction.
+
+**Why deferred from hera-settings:** Out of scope; settings ships the *knob* for the debounce, not a behavior change.
+
+**Escalate when:** Same change as the decode-error fix — both live in the inject path.
+
 ## Architecture (deferred to v1.1+)
 
 ### Atomic role+binding insert across DAOs

@@ -14,21 +14,23 @@ import (
 	"github.com/anutron/hera/internal/idle"
 	"github.com/anutron/hera/internal/inject"
 	"github.com/anutron/hera/internal/mcp"
+	"github.com/anutron/hera/internal/settings"
 )
 
 // Daemon bundles every running component so the caller can introspect or
 // shut them down individually. The Run helper composes one and returns
 // it (mostly useful for tests; production callers use Run() and forget).
 type Daemon struct {
-	Cfg        *config.Config
-	Log        *slog.Logger
-	DB         *db.DB
-	Argus      *argus.Client
-	IdleTrack  *idle.Tracker
-	Injector   *inject.Injector
-	MCPServer  *mcp.Server
-	Registrar  *mcp.Registrar
-	Subscriber *events.Subscriber
+	Cfg               *config.Config
+	Log               *slog.Logger
+	DB                *db.DB
+	Argus             *argus.Client
+	IdleTrack         *idle.Tracker
+	Injector          *inject.Injector
+	MCPServer         *mcp.Server
+	Registrar         *mcp.Registrar
+	SettingsRegistrar *settings.Registrar
+	Subscriber        *events.Subscriber
 }
 
 // Start assembles hera and brings every subsystem up. Returns the live
@@ -55,10 +57,18 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		return nil, fmt.Errorf("hera: open db: %w", err)
 	}
 
+	// Override Config defaults with persisted settings (if any) before
+	// instantiating Tracker and Injector, so they see the saved values.
+	if err := LoadPersistedSettings(ctx, cfg, database.Config); err != nil {
+		database.Close()
+		return nil, fmt.Errorf("hera: load persisted settings: %w", err)
+	}
+
 	client := argus.New(cfg.ArgusBaseURL, token)
 
 	tracker := idle.NewWithDebounce(cfg.IdleDebounce)
 	injector := inject.New(client, tracker)
+	injector.SetAutoInjectEnabled(cfg.AutoInjectEnabled)
 	resolver := mcp.NewResolver(client, database)
 
 	auth, err := mcp.GenerateAuthHeader()
@@ -80,6 +90,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	mcpSrv.RegisterHandler("hera_inbox", mcp.NewInboxHandler(resolver, database))
 	mcpSrv.RegisterHandler("hera_mark_read", mcp.NewMarkReadHandler(resolver, database))
 	mcpSrv.RegisterHandler("hera_status", mcp.NewStatusHandler(resolver, database, client))
+	mcpSrv.RegisterHandler("settings_save", mcp.NewSettingsSaveHandler(database.Config, tracker, injector))
 
 	// CallbackBaseURL is the actual bound address (honors :0).
 	callback := "http://" + mcpSrv.Addr()
@@ -92,6 +103,21 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		_ = mcpSrv.Stop()
 		database.Close()
 		return nil, fmt.Errorf("hera: register tools: %w", err)
+	}
+
+	// Register hera's settings-section with argus on the same callback
+	// listener + shared secret as the MCP tools. The section definition
+	// (callback URL, fields, descriptions) lives in settings.HeraSection.
+	settingsReg := settings.NewRegistrar(client, log)
+	settingsReg.SetHeartbeat(cfg.MCPHeartbeat)
+	settingsReg.Add(settings.HeraSection(auth))
+	if err := settingsReg.Start(ctx); err != nil {
+		unregCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = registrar.Stop(unregCtx)
+		cancel()
+		_ = mcpSrv.Stop()
+		database.Close()
+		return nil, fmt.Errorf("hera: register settings section: %w", err)
 	}
 
 	subscriber := events.NewSubscriber(client, database, log)
@@ -115,7 +141,8 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	return &Daemon{
 		Cfg: cfg, Log: log, DB: database, Argus: client,
 		IdleTrack: tracker, Injector: injector,
-		MCPServer: mcpSrv, Registrar: registrar, Subscriber: subscriber,
+		MCPServer: mcpSrv, Registrar: registrar,
+		SettingsRegistrar: settingsReg, Subscriber: subscriber,
 	}, nil
 }
 
@@ -126,6 +153,11 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 func (d *Daemon) Stop(ctx context.Context) {
 	if d == nil {
 		return
+	}
+	if d.SettingsRegistrar != nil {
+		unregCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = d.SettingsRegistrar.Stop(unregCtx)
+		cancel()
 	}
 	if d.Registrar != nil {
 		unregCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

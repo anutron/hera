@@ -11,8 +11,8 @@
 - [x] 1.3 In `internal/mcp/handler_settings_save_test.go`, write failing tests for: valid save updates `config` table rows AND calls `Tracker.SetDebounce` AND calls `Injector.SetAutoInjectEnabled`; out-of-range int returns `isError: true`; non-bool returns `isError: true`; missing field uses last persisted value (partial save).
 - [x] 1.4 In `internal/idle/tracker_test.go`, add tests for `SetDebounce(d)` changing the in-effect threshold; concurrent SetDebounce + IsIdle (race detector).
 - [x] 1.5 In `internal/inject/inject_test.go`, add tests for `SetAutoInjectEnabled(false)` forcing busy_buffer mode even when the task is idle; SetAutoInjectEnabled(true) restoring idle_submit; default value is true.
-- [ ] 1.6 In `internal/daemon/run_test.go`, add a smoke test that: persists config rows via `ConfigDAO.Set` before Start; asserts Tracker.debounce and Injector.autoInjectEnabled reflect the persisted values; asserts SettingsRegistrar is started and stopped alongside the MCP Registrar.
-- [ ] 1.7 Validate the change: `openspec validate hera-settings --strict` MUST pass after spec text is committed (no implementation needed for this gate).
+- [x] 1.6 In `internal/daemon/run_test.go`, add a smoke test that: persists config rows via `ConfigDAO.Set` before Start; asserts Tracker.debounce and Injector.autoInjectEnabled reflect the persisted values; asserts SettingsRegistrar is started and stopped alongside the MCP Registrar.
+- [x] 1.7 Validate the change: `openspec validate hera-settings --strict` MUST pass after spec text is committed (no implementation needed for this gate).
 
 ## 2. Argus client extension
 
@@ -39,11 +39,11 @@
 
 **Depends on:** Stage 1.
 
-- [ ] 4.1 Add `AutoInjectEnabled bool` to `internal/config/config.Config`. `Default()` sets it to `true`.
-- [ ] 4.2 Add `internal/config/settings_keys.go` with the two key string constants (`KeyIdleDebounceSeconds = "idle_debounce_seconds"`, `KeyAutoInjectEnabled = "auto_inject_enabled"`).
-- [ ] 4.3 Add `internal/daemon/loadsettings.go` with `func LoadPersistedSettings(ctx, cfg *config.Config, dao *db.ConfigDAO) error` that reads both keys, parses the int (returning a clear error on parse failure), parses the bool, and overwrites the `Config` fields. Missing keys → no-op (defaults stand).
-- [ ] 4.4 Wire `LoadPersistedSettings` into `daemon.Start` BEFORE Tracker and Injector instantiation.
-- [ ] 4.5 Make the Stage 1.6 daemon smoke test green for "persisted values override defaults on Start."
+- [x] 4.1 Add `AutoInjectEnabled bool` to `internal/config/config.Config`. `Default()` sets it to `true`.
+- [x] 4.2 Add `internal/config/settings_keys.go` with the two key string constants (`KeyIdleDebounceSeconds = "idle_debounce_seconds"`, `KeyAutoInjectEnabled = "auto_inject_enabled"`).
+- [x] 4.3 Add `internal/daemon/loadsettings.go` with `func LoadPersistedSettings(ctx, cfg *config.Config, dao *db.ConfigDAO) error` that reads both keys, parses the int (returning a clear error on parse failure), parses the bool, and overwrites the `Config` fields. Missing keys → no-op (defaults stand).
+- [x] 4.4 Wire `LoadPersistedSettings` into `daemon.Start` BEFORE Tracker and Injector instantiation.
+- [x] 4.5 Make the Stage 1.6 daemon smoke test green for "persisted values override defaults on Start."
 
 ## 5. Tracker + Injector setters
 
@@ -70,15 +70,15 @@
 
 **Depends on:** Stages 3, 4, 6.
 
-- [ ] 7.1 In `internal/daemon/run.go`, add `SettingsRegistrar *settings.Registrar` field on `Daemon`.
-- [ ] 7.2 After `mcp.Registrar` is started (and after `LoadPersistedSettings` ran), instantiate `settings.NewRegistrar` with the existing argus client + callback base URL + same auth header that `mcp.Registrar` uses. Add the one section. Call `Start(ctx)`.
-- [ ] 7.3 Wire `mcp.Server.RegisterHandler("settings_save", ...)` immediately after the six tool handlers, passing the `ConfigDAO`, `Tracker`, `Injector` it needs.
-- [ ] 7.4 In `Stop`, call `SettingsRegistrar.Stop(ctx)` BEFORE `mcp.Server.Stop()` (graceful unregister before listener teardown), with the same 10-second timeout.
-- [ ] 7.5 Run `go test ./... -race -count=1`. All packages green.
+- [x] 7.1 In `internal/daemon/run.go`, add `SettingsRegistrar *settings.Registrar` field on `Daemon`.
+- [x] 7.2 After `mcp.Registrar` is started (and after `LoadPersistedSettings` ran), instantiate `settings.NewRegistrar` with the existing argus client + callback base URL + same auth header that `mcp.Registrar` uses. Add the one section. Call `Start(ctx)`.
+- [x] 7.3 Wire `mcp.Server.RegisterHandler("settings_save", ...)` immediately after the six tool handlers, passing the `ConfigDAO`, `Tracker`, `Injector` it needs.
+- [x] 7.4 In `Stop`, call `SettingsRegistrar.Stop(ctx)` BEFORE `mcp.Server.Stop()` (graceful unregister before listener teardown), with the same 10-second timeout.
+- [x] 7.5 Run `go test ./... -race -count=1`. All packages green.
 
 ## 8. Spec base update (handled by archive)
 
 **Depends on:** all above.
 
-- [ ] 8.1 `openspec validate hera-settings --strict` still passes after all task checkboxes flip.
+- [x] 8.1 `openspec validate hera-settings --strict` still passes after all task checkboxes flip.
 - [ ] 8.2 `openspec archive hera-settings` merges the delta into `openspec/specs/hera-coordination/spec.md`.

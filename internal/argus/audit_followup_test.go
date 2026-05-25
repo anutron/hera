@@ -60,10 +60,15 @@ func TestStreamEvents_SinceCarriesCursorValue(t *testing.T) {
 func TestStreamEvents_SinceZeroAlwaysEmitted(t *testing.T) {
 	// since=0 is the new behavior — always emit the param, including the
 	// zero cursor case, so request shape is uniform.
-	var sawSince bool
+	var (
+		mu       sync.Mutex
+		sawSince bool
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Has("since") {
+			mu.Lock()
 			sawSince = true
+			mu.Unlock()
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		// Close immediately so the test exits.
@@ -75,7 +80,10 @@ func TestStreamEvents_SinceZeroAlwaysEmitted(t *testing.T) {
 	defer cancel()
 	_ = c.StreamEvents(ctx, 0, func(ev Event) {})
 
-	if !sawSince {
+	mu.Lock()
+	got := sawSince
+	mu.Unlock()
+	if !got {
 		t.Fatalf("expected since= param to be present even when sinceID=0")
 	}
 }

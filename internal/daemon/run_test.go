@@ -15,6 +15,7 @@ import (
 
 	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/config"
+	"github.com/anutron/hera/internal/db"
 )
 
 // fakeArgusForDaemon stubs every endpoint daemon.Start hits during boot:
@@ -23,11 +24,13 @@ import (
 //   - DELETE /api/mcp/tools/{name}
 //   - GET /api/tasks (resolver fallback)
 type fakeArgusForDaemon struct {
-	mu          sync.Mutex
-	registered  []string
-	unregister  []string
-	streamReqs  int
-	streamClose chan struct{}
+	mu                  sync.Mutex
+	registered          []string
+	unregister          []string
+	settingsRegistered  []string
+	settingsUnregister  []string
+	streamReqs          int
+	streamClose         chan struct{}
 }
 
 func (f *fakeArgusForDaemon) handler() http.Handler {
@@ -58,6 +61,22 @@ func (f *fakeArgusForDaemon) handler() http.Handler {
 		name := strings.TrimPrefix(r.URL.Path, "/api/mcp/tools/")
 		f.mu.Lock()
 		f.unregister = append(f.unregister, name)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/api/plugins/settings/sections", func(w http.ResponseWriter, r *http.Request) {
+		var body argus.SettingsSectionDefinition
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.settingsRegistered = append(f.settingsRegistered, body.Name)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"name":"`+body.Name+`"}`)
+	})
+	mux.HandleFunc("/api/plugins/settings/sections/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/api/plugins/settings/sections/")
+		f.mu.Lock()
+		f.settingsUnregister = append(f.settingsUnregister, name)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})
@@ -131,6 +150,96 @@ func TestDaemonStart_RegistersAllFiveToolsAndCleansUp(t *testing.T) {
 	fake.mu.Unlock()
 	if len(gotUnreg) != len(want) {
 		t.Fatalf("unregistered %d tools, want %d", len(gotUnreg), len(want))
+	}
+}
+
+// TestDaemonStart_PersistedSettingsOverrideDefaults exercises the Stage 1.6
+// integration contract: rows in the config table override the Default() values
+// of IdleDebounce and AutoInjectEnabled before Tracker and Injector are
+// instantiated. It also asserts the SettingsRegistrar registered the section
+// on Start and unregistered it on Stop.
+func TestDaemonStart_PersistedSettingsOverrideDefaults(t *testing.T) {
+	fake := &fakeArgusForDaemon{streamClose: make(chan struct{})}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	defer close(fake.streamClose)
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	// Pre-populate the config table with persisted values that diverge
+	// from Default(): debounce 5s (vs default 2s), auto-inject off (vs
+	// default true).
+	cfg := &config.Config{
+		StateDir:     stateDir,
+		ArgusBaseURL: srv.URL,
+		ListenAddr:   "127.0.0.1:0",
+		IdleDebounce: 2 * time.Second,
+		MCPHeartbeat: 24 * time.Hour,
+		AutoInjectEnabled: true, // Default — LoadPersistedSettings should flip this to false.
+	}
+	database, err := db.Open(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("pre-seed db open: %v", err)
+	}
+	ctx0 := context.Background()
+	if err := database.Config.Set(ctx0, config.KeyIdleDebounceSeconds, "5"); err != nil {
+		t.Fatalf("pre-seed debounce: %v", err)
+	}
+	if err := database.Config.Set(ctx0, config.KeyAutoInjectEnabled, "false"); err != nil {
+		t.Fatalf("pre-seed auto-inject: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("pre-seed db close: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	d, err := Start(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer d.Stop(context.Background())
+
+	// Persisted debounce wins: cfg.IdleDebounce was overwritten.
+	if cfg.IdleDebounce != 5*time.Second {
+		t.Errorf("cfg.IdleDebounce = %v, want 5s", cfg.IdleDebounce)
+	}
+	if cfg.AutoInjectEnabled {
+		t.Errorf("cfg.AutoInjectEnabled = true, want false (persisted)")
+	}
+
+	// SettingsRegistrar instantiated and section registered.
+	if d.SettingsRegistrar == nil {
+		t.Fatal("d.SettingsRegistrar is nil")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fake.mu.Lock()
+		n := len(fake.settingsRegistered)
+		fake.mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fake.mu.Lock()
+	gotReg := append([]string(nil), fake.settingsRegistered...)
+	fake.mu.Unlock()
+	if len(gotReg) < 1 || gotReg[0] == "" {
+		t.Fatalf("settings-section not registered, got %+v", gotReg)
+	}
+
+	// Shut down and verify unregister.
+	d.Stop(context.Background())
+	fake.mu.Lock()
+	gotUnreg := append([]string(nil), fake.settingsUnregister...)
+	fake.mu.Unlock()
+	if len(gotUnreg) < 1 {
+		t.Fatalf("settings-section not unregistered, got %+v", gotUnreg)
 	}
 }
 
