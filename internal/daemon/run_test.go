@@ -96,8 +96,8 @@ func TestDaemonStart_RegistersAllFiveToolsAndCleansUp(t *testing.T) {
 	}
 	defer d.Stop(context.Background())
 
-	// Wait until all five tools have registered.
-	want := []string{"hera_join", "hera_send", "hera_inbox", "hera_mark_read", "hera_status"}
+	// Wait until all six tools have registered.
+	want := []string{"hera_new_orchestrator", "hera_join", "hera_send", "hera_inbox", "hera_mark_read", "hera_status"}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		fake.mu.Lock()

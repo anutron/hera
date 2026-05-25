@@ -1,0 +1,73 @@
+{
+  "branch_summary": {
+    "total": 77,
+    "covered": 73,
+    "uncovered_behavioral": 2,
+    "uncovered_implementation": 0,
+    "contradictions": 2,
+    "unimplemented_promises": 0
+  },
+  "findings": [
+    {
+      "id": "internal-argus-1",
+      "type": "contradiction",
+      "severity": "medium",
+      "code_location": "internal/argus/events.go:67-69",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:175-176",
+      "description": "Spec requires the SSE subscription URL to include `since=<id>` when reconnecting with a persisted cursor (e.g., `since=1234`). The code only appends `?since=` when sinceID > 0, so a legitimate cursor value of 0 from a fresh state is omitted, but more importantly, after each successful event in `streamOnce` the `advance` closure updates the outer `sinceID` (events.go:42) but `streamOnce` itself was already entered with the prior value as a `since` query string - it cannot re-emit the URL mid-stream, which is fine. However, the early-return `if sinceID > 0` (events.go:67) silently treats `sinceID == 0` as 'no cursor', which contradicts the spec scenario that requires `since=1234` to be present on reconnect for any persisted cursor. The cursor table in `event_cursor` is restored at startup (per spec line 171); if the table stores 0 due to a fresh write before any events arrive, the `since=` param is dropped on the reconnect. This may or may not be intentional - the spec does not say cursor 0 is a sentinel for 'no cursor'.",
+      "referenced_symbols": []
+    },
+    {
+      "id": "internal-argus-2",
+      "type": "uncovered-behavioral",
+      "severity": "medium",
+      "code_location": "internal/argus/client.go:97-106",
+      "spec_location": null,
+      "description": "Because `withTokenQuery` appends `?token=<token>` to the URL as an SSE workaround (clients that can't set headers), and this code is callable but not invoked by any caller in this module, it means hera may be exposing the scope token as a URL query parameter that ends up in argus access logs and any proxy logs. The spec mandates `Authorization: Bearer <scope-token>` (doc.go:4-5 paraphrases this) for every request. The spec does not mention or authorize an alternate token-in-URL pathway. Intent question: should hera ever send its scope token in a query string at all, given the substrate requires header-based auth? If not, this helper should be removed; if yes, the spec should document this exception and the operational risk.",
+      "referenced_symbols": []
+    },
+    {
+      "id": "internal-argus-3",
+      "type": "contradiction",
+      "severity": "low",
+      "code_location": "internal/argus/events.go:33-61",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:169-181",
+      "description": "Spec requires that on receipt of a `resync` event, hera MUST call `GET /api/tasks` and reconcile bindings before resuming live event processing. The argus client in this module exposes `StreamEvents` with a generic `EventHandler` callback and `ListTasks` separately, but there is no in-package mechanism that ties `resync` to a snapshot. The wiring lives outside this module (per symbols.json, `internal-events.NewResyncHandler` and `internal-events.ResyncHandler` exist). This is a delegation, not a contradiction - flagging only as a note. The `StreamEvents` contract here neither documents nor enforces the resync semantics, so a future caller could subscribe and ignore `resync` entirely with no signal from this client. Intent question: should `StreamEvents` document the resync requirement in its doc comment so consumers know they must handle it?",
+      "referenced_symbols": []
+    },
+    {
+      "id": "internal-argus-4",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "internal/argus/events.go:34-60",
+      "spec_location": null,
+      "description": "Because `StreamEvents` reconnects on transient errors with exponential backoff capped at 10 seconds, and the spec on heartbeats says hera must re-POST tool registrations on a 5-minute cadence (line 157), it means a long network outage will pile up event handler reconnect attempts at 10s intervals while heartbeats continue in another goroutine. The backoff/reconnect contract is not described in the hera-coordination spec at all. This is implementation detail for resilience, BUT the spec scenario 'Restart resumes from cursor' (line 173-176) implies a connect/reconnect lifecycle that is not specified. Intent question: should the spec describe the SSE reconnect/backoff behavior, or is this acceptable as silent implementation?",
+      "referenced_symbols": []
+    },
+    {
+      "id": "internal-argus-5",
+      "type": "test-doesnt-assert-spec",
+      "severity": "low",
+      "code_location": "internal/argus/client_test.go:222-284",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:173-176",
+      "description": "Spec scenario 'Restart resumes from cursor' asserts the SSE URL MUST include `since=1234` on reconnect when `last_seen_event_id = 1234`. The test `TestClient_StreamEvents` only checks `r.URL.Query().Get(\"since\") == \"\"` is non-empty - it does not assert the value equals the passed `sinceID` (1 in the test). A regression that hard-coded `since=0` would pass this test. The test should assert `r.URL.Query().Get(\"since\")` equals the literal `\"1\"` to match the spec wording.",
+      "referenced_symbols": []
+    },
+    {
+      "id": "internal-argus-6",
+      "type": "test-doesnt-assert-spec",
+      "severity": "low",
+      "code_location": "internal/argus/client_test.go:24-42",
+      "spec_location": "openspec/specs/hera-coordination/spec.md (doc.go:3-5 contract)",
+      "description": "Test `TestClient_SendsAuthAndVersion` verifies `Authorization: Bearer test-token` and `X-Argus-Plugin-Version: 1` are sent on `ListTasks`. Good coverage for that one endpoint, but the spec implies 'every request' carries these headers. There is no test that verifies the headers are present on `PutTaskMeta`, `PostTaskInput`, `RegisterTool`, `UnregisterTool`, `GetTask`, `GetTaskMeta`, or `StreamEvents`. A future refactor that conditionally omits `applyAuth` on one of those paths would not be caught. Recommendation: parameterize the header assertion across all endpoints, or add table-driven coverage."
+    },
+    {
+      "id": "internal-argus-7",
+      "type": "test-doesnt-assert-spec",
+      "severity": "low",
+      "code_location": "internal/argus/client_test.go:128-151",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:41-46",
+      "description": "Spec scenario 'Recipient idle, message auto-submits' requires `POST /api/tasks/{id}/input` with body terminated by `\\n`. `TestClient_PostTaskInput` sends `\"hello world\\n\"` and verifies the body round-trips, but does not assert the request method is POST or that the path is `/api/tasks/{id}/input`. A regression that hit `PUT /api/tasks/{id}/text` would still pass byte-equality. Recommendation: assert `r.Method == \"POST\"` and `r.URL.Path == \"/api/tasks/t1/input\"`."
+    }
+  ]
+}

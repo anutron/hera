@@ -79,12 +79,12 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 
 	if roleVal == "" {
 		a.log.Info("link.created: skipped adoption (no meta:hera.role)",
-			"child", link.Child, "parent", link.Parent)
+			"child", link.Child, "parent", link.Parent, "missing_key", MetaKeyRole)
 		return
 	}
 	if roleVal != string(db.KindWorker) {
 		a.log.Info("link.created: skipped adoption (meta:hera.role not 'worker')",
-			"child", link.Child, "value", roleVal)
+			"child", link.Child, "parent", link.Parent, "missing_key", MetaKeyRole, "value", roleVal)
 		return
 	}
 

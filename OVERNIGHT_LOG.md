@@ -1,9 +1,27 @@
 # Overnight log – hera v1 headless shipping pass
 
-**Date:** 2026-05-24 (overnight; morning-review applied; project renamed ludwig → hera 2026-05-24 afternoon)
+**Date:** 2026-05-24 (overnight; morning-review applied; project renamed ludwig → hera 2026-05-24 afternoon; spec-audit + fixes 2026-05-24 evening)
 **Branch:** `argus/ludwig-argus-coordinator` (argus-owned slug from when the task spawned; the project itself is now hera)
 **Worktree:** `/Users/aaron/.argus/worktrees/Ludwig/ludwig-argus-coordinator` (argus-managed; not renamed)
 **Repo:** `anutron/hera`
+
+## Spec-audit pass applied
+
+Aaron asked for `/spec-audit` after morning-review to check for TDD-order gaps. The audit ran 7 parallel module agents against the base spec and surfaced 21 behavioral gaps + 3 contradictions + 2 unimplemented promises + 30 test-alignment gaps. Audit artifacts at `.workflow/audits/2026-05-24/`. The fixes that landed:
+
+- **G1 (real bug):** `hera_join` now mirrors `meta:hera.role` on freelance/worker attach. `JoinHandler` gained an `*argus.Client` reference. Previously only auto-adopt did the mirror; freelance attach silently skipped it.
+- **G4 (real bug):** `adopt.go:86-88` skipped-adoption log (wrong-meta-value branch) now includes `parent=` and `missing_key=` to match the other branch. Symmetric with the no-role-meta branch.
+- **G9 (scope addition):** new MCP tool `hera_new_orchestrator(cwd, name, coordinator_role_name, mission?, constraints?)` as the canonical "be an orchestrator" entry point. `kind=coordinator` is no longer accepted by `hera_join` (returns error directing to `hera_new_orchestrator`). The earlier `hera_join(kind=coordinator)` overload was a stopgap; this is the cleaner shape Aaron asked for.
+- **G7 (spec amend):** `hera_status` meta-mirror is now explicitly best-effort in the spec. Operational reality: argus blips shouldn't break status calls.
+- **G8 (spec amend):** `queued_no_binding` delivery mode is now enumerated in the base spec. Different from the killed user-routing path — this is for messages addressed to real roles whose current binding has ended (drain worker for delivery on next-binding is a v1.1 follow-up).
+- **G3 (test gap):** new `internal/events/resync_test.go` covering ResyncHandler: ignores non-resync events, ends bindings for vanished tasks (`end_reason=resync_missing`), leaves live bindings alone.
+- **G5 (test gap):** new test asserts mission/constraints-absent → empty-string (not NULL) columns on auto-adopted roles.
+- **G6 (test gap):** new slog-capture tests assert the skipped-adoption INFO log carries `child`, `parent`, and `missing_key` in both branches (no-role-meta + wrong-role-value).
+- **G2 (test gap):** `TestSend_*` tests now fetch the message row via `Messages.GetByID` and assert the persisted `delivery_mode` matches the spec MUST.
+
+The audit's tool count went from "five MCP tools" to "six MCP tools" in the base spec to reflect the new `hera_new_orchestrator` tool.
+
+What stayed deferred (low priority): the remaining ~25 small "test exercises the path but doesn't quote spec wording" findings (G10-G17). Tackle when convenient; none change behavior.
 
 ## Morning review applied
 
@@ -12,7 +30,7 @@ Aaron's Plannotator pass on 2026-05-24 settled the open questions below. Changes
 - **Coordinator → user routing removed entirely.** Coordinators talk to the human in their own Claude pane (the plugin view's left panel). `hera_send` from a coordinator with no `to` now returns an error. The `to_kind` column on messages, the `DeliveryUserInbox` mode, and the `user` pseudo-recipient are gone from schema, types, handler, and spec.
 - **Next change's settings shape locked.** Two fields: idle debounce (int seconds) and auto-inject enabled (bool). No active-orchestrators list (lives in the view), no default-orchestrator field (always a project name), no user-message-surface field (no user-bound messages exist).
 - **Build order for follow-ups locked:** settings → view → install.
-- **`hera_new_orchestrator` confirmed as a separate tool** (will split out of `hera_join`'s freelance path) in the next tool-surface change. v1 keeps it on `hera_join` so the headless surface ships; the split is a non-breaking addition.
+- **`hera_new_orchestrator` confirmed as a separate tool.** Originally planned for the next change; the spec-audit pass realized it's the primary "be an orchestrator" entry point and pulled it forward into v1.
 - **Per-message `urgent=true` postponed** – revisit only if needed once Aaron is using hera.
 
 The substrate question on `session.idle` semantics is still in flight – the 2-second conservative gate stays until the coordinator answers; the answer only determines if it can drop.

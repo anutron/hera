@@ -1,0 +1,87 @@
+{
+  "module": "internal-events",
+  "date": "2026-05-24",
+  "branches": {
+    "total": 72,
+    "covered": 28,
+    "by_file": {
+      "doc.go": {"total": 0, "covered": 0},
+      "types.go": {"total": 0, "covered": 0},
+      "payloads.go": {"total": 4, "covered": 4},
+      "subscriber.go": {"total": 8, "covered": 6},
+      "adopt.go": {"total": 42, "covered": 18},
+      "resync.go": {"total": 18, "covered": 0}
+    }
+  },
+  "behavioral_gaps": [
+    {
+      "id": "events-bg-1",
+      "severity": "high",
+      "spec_requirement": "Event stream cursor persisted and replayed",
+      "spec_scenario": "Resync triggers task snapshot",
+      "location": "internal/events/resync.go (entire file)",
+      "summary": "ResyncHandler has no unit tests in internal/events/. The handler is wired in daemon/run.go but never exercised; its reconciliation walk (orchestrators -> roles -> end-vanished-bindings) is unverified at this layer.",
+      "fix": "Add TestResync_EndsVanishedBindings that seeds bindings for present + absent tasks against a fake argus serving GET /api/tasks, fires a resync event, and asserts the vanished binding ended with end_reason=resync_missing."
+    },
+    {
+      "id": "events-bg-2",
+      "severity": "medium",
+      "spec_requirement": "Auto-adopt copies mission and constraints from task meta",
+      "spec_scenario": "Mission and constraints meta absent",
+      "location": "internal/events/adopt.go:99-110",
+      "summary": "No test asserts that when meta:hera.role=worker is present but meta:hera.mission and meta:hera.constraints are absent, the created role's Mission and Constraints columns are empty strings (per spec: 'not NULL'). The happy path sets both; the missing-role test exits before Create.",
+      "fix": "Add TestAdopt_MissionConstraintsAbsent_EmptyStrings that sets only meta:hera.role=worker and asserts role.Mission == \"\" && role.Constraints == \"\" after adoption."
+    }
+  ],
+  "contradictions": [
+    {
+      "id": "events-c-1",
+      "severity": "low",
+      "spec_requirement": "Stricter rule on auto-adoption logged",
+      "spec_scenario": "Skipped adoption logged",
+      "location": "internal/events/adopt.go:86-88",
+      "summary": "Spec requires the skipped-adoption INFO log to include 'the new task's id, the parent task's id, and the missing meta key'. The meta-value-not-worker branch logs only `child` and `value` (no `parent`, no structured `missing_key`). The missing-role-meta branch (line 81-83) does include `parent`.",
+      "fix": "Either (a) update adopt.go:86-88 to add parent=link.Parent and missing_key=MetaKeyRole to the log attributes, or (b) interpret the spec as covering only the strictly-missing case and clarify the wording. Recommended: option (a) for symmetry."
+    }
+  ],
+  "unimplemented_promises": [],
+  "test_alignment_gaps": [
+    {
+      "id": "events-ta-1",
+      "severity": "high",
+      "spec_requirement": "Event stream cursor persisted and replayed",
+      "spec_scenario": "Resync triggers task snapshot",
+      "location": "internal/events/ (missing test file resync_test.go)",
+      "summary": "ResyncHandler is entirely untested in this module. Spec scenario maps to live code but no assertion exists.",
+      "fix": "Create resync_test.go covering: (1) ResyncHandler ignores non-resync events; (2) on resync, ListTasks is called; (3) bindings whose ArgusTaskID is absent from the live list are ended with end_reason=resync_missing; (4) bindings whose tasks are still present are left alone."
+    },
+    {
+      "id": "events-ta-2",
+      "severity": "medium",
+      "spec_requirement": "Stricter rule on auto-adoption logged",
+      "spec_scenario": "Skipped adoption logged",
+      "location": "internal/events/adopt_test.go:TestAdopt_MissingMeta_NotAdopted, TestAdopt_MetaSaysNotWorker_NotAdopted",
+      "summary": "Neither skipped-adoption test asserts that an INFO log was emitted, nor that the log carries the spec-mandated fields (child id, parent id, missing meta key). Spec wording on log content is unverified.",
+      "fix": "Use a slog.Handler wired to a capture buffer in setupAdopt, then assert the captured records contain Level=Info and the expected attrs after the skipped-adoption call."
+    },
+    {
+      "id": "events-ta-3",
+      "severity": "low",
+      "spec_requirement": "Auto-adopt coordinator-spawned worker tasks",
+      "spec_scenario": "Meta present, parent link absent - not adopted",
+      "location": "internal/events/adopt_test.go:TestAdopt_ParentNotBound_NotAdopted",
+      "summary": "The test fires a link.created event with an unbound parent, which exercises the parent-binding-not-found branch. Spec scenario describes task.created with hera.role=worker and NO link.created naming the task. The test verifies the same outcome (no adoption) but via a different code path. Coverage of the spec's exact preconditions is missing.",
+      "fix": "Either rename the test to reflect what it actually covers, or add a second test where only task.created fires (no link.created) and verify no adoption occurred. Note: the implementation listens for link.created exclusively; the absence of a link.created event is implicitly handled by never triggering the handler at all."
+    },
+    {
+      "id": "events-ta-4",
+      "severity": "low",
+      "spec_requirement": "Event stream cursor persisted and replayed",
+      "spec_scenario": "Restart resumes from cursor",
+      "location": "internal/events/subscriber.go:69-71, 79-82",
+      "summary": "EventCursor.Get failure (Run line 70) and EventCursor.Set failure (Run line 80) error paths are not tested.",
+      "fix": "Inject a DB stub that returns errors from EventCursor.Get and EventCursor.Set to verify the Get path returns an error and the Set path logs a warn but continues."
+    }
+  ],
+  "summary_line": "internal-events: 28/72 branches covered, 2 behavioral gaps, 1 contradiction, 0 unimplemented promises, 4 test-alignment gaps"
+}

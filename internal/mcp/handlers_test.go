@@ -118,7 +118,7 @@ func TestJoin_FreelanceAttach_HappyPath(t *testing.T) {
 	})
 	e.fake.addTask(argus.Task{ID: "t-free", Name: "freelance", Project: "hera", WorktreePath: "/tmp/free"})
 
-	h := NewJoinHandler(e.resolver, e.db)
+	h := NewJoinHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{
 		Cwd: "/tmp/free", Orchestrator: "foo", RoleName: "refactor-x",
 		Kind: "freelance", Mission: "extract X", Constraints: "do not change keybindings",
@@ -161,7 +161,7 @@ func TestJoin_FreelanceAttach_OrchestratorMissing(t *testing.T) {
 	e := setupHandlers(t)
 	e.fake.addTask(argus.Task{ID: "t-free", Name: "free", Project: "p", WorktreePath: "/tmp/free"})
 
-	h := NewJoinHandler(e.resolver, e.db)
+	h := NewJoinHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{
 		Cwd: "/tmp/free", Orchestrator: "ghost", RoleName: "x", Kind: "freelance",
 	}))
@@ -182,7 +182,7 @@ func TestJoin_FreelanceAttach_ConflictingKind(t *testing.T) {
 	})
 	e.fake.addTask(argus.Task{ID: "t-free", Name: "free", Project: "p", WorktreePath: "/tmp/free"})
 
-	h := NewJoinHandler(e.resolver, e.db)
+	h := NewJoinHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{
 		Cwd: "/tmp/free", Orchestrator: "foo", RoleName: "f2-impl", Kind: "freelance",
 	}))
@@ -207,7 +207,7 @@ func TestJoin_BareReincarnation_HappyPath(t *testing.T) {
 	})
 	e.fake.addTask(argus.Task{ID: "t-1", Name: "coord", Project: "p", WorktreePath: "/tmp/coord"})
 
-	h := NewJoinHandler(e.resolver, e.db)
+	h := NewJoinHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{Cwd: "/tmp/coord"}))
 	out := decodeJoinOutput(t, resp)
 	if out.RoleName != "coord" || out.Mission != "build it" {
@@ -220,7 +220,7 @@ func TestJoin_BareReincarnation_NoBinding(t *testing.T) {
 	e := setupHandlers(t)
 	e.fake.addTask(argus.Task{ID: "t-1", Name: "x", Project: "p", WorktreePath: "/tmp/x"})
 
-	h := NewJoinHandler(e.resolver, e.db)
+	h := NewJoinHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{Cwd: "/tmp/x"}))
 	if !resp.IsError {
 		t.Fatalf("expected error, got success")
@@ -233,7 +233,7 @@ func TestJoin_BareReincarnation_NoBinding(t *testing.T) {
 func TestJoin_UnknownCwd(t *testing.T) {
 	ctx := context.Background()
 	e := setupHandlers(t)
-	h := NewJoinHandler(e.resolver, e.db)
+	h := NewJoinHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{Cwd: "/nowhere"}))
 	if !resp.IsError {
 		t.Fatalf("expected error, got success")

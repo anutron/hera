@@ -1,0 +1,74 @@
+{
+  "branch_summary": {
+    "total": 64,
+    "covered": 1,
+    "uncovered_behavioral": 6,
+    "contradictions": 0,
+    "unimplemented_promises": 1
+  },
+  "findings": [
+    {
+      "id": "cmd-hera-1",
+      "type": "uncovered-behavioral",
+      "severity": "medium",
+      "code_location": "cmd/hera/start.go:30-32",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:5",
+      "description": "`hera start` without --foreground returns an error rather than starting the daemon. The spec describes a running daemon (e.g., § 'Five MCP tools exposed under the hera_ prefix', § 'MCP tool registrations heartbeated and unregistered on shutdown') but does not document that daemonization is deferred or that --foreground is required. Operator-observable limitation not mentioned in spec.",
+      "referenced_symbols": ["daemon.Run", "config.Default"]
+    },
+    {
+      "id": "cmd-hera-2",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "cmd/hera/stop.go:43-51",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:155-167",
+      "description": "`hera stop` waits up to 10s for the PID file to be removed before declaring failure. The spec § 'MCP tool registrations heartbeated and unregistered on shutdown' specifies SIGTERM-driven graceful shutdown but says nothing about a CLI wait window or that PID-file removal is the liveness signal. Operator-visible contract that may matter for scripts chaining stop->start.",
+      "referenced_symbols": []
+    },
+    {
+      "id": "cmd-hera-3",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "cmd/hera/status.go:51-65",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:5",
+      "description": "`hera status` prints argus_url, mcp_addr, state_path, last_event_id, orchestrator_cnt, plus per-orchestrator role and live-binding counts. The spec touches several of these data points (event cursor, orchestrators, roles, bindings) but never specifies a CLI inspection format. Inspection contract not specced.",
+      "referenced_symbols": ["database.Orchestrators.List", "database.Roles.ListByOrchestrator", "database.Bindings.GetLiveByRole", "database.EventCursor.Get"]
+    },
+    {
+      "id": "cmd-hera-4",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "cmd/hera/status.go:25-32",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:5",
+      "description": "`hera status` reports one of three states based on PID-file presence and signal(0) liveness: 'running', 'stale pidfile', 'not running'. The 'stale pidfile' state and its detection mechanism (signal(0)) are operator-visible behavior not described in the spec.",
+      "referenced_symbols": []
+    },
+    {
+      "id": "cmd-hera-5",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "cmd/hera/list.go:47-54",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:132-144",
+      "description": "`hera list` exposes role kind (worker/freelance/coordinator) and argus_project as operator-visible attributes. Consistent with § 'Roles live in argus projects; orchestrators do not', but the spec does not mandate a CLI surface for this inventory.",
+      "referenced_symbols": ["database.Bindings.GetLiveByRole", "db.ErrNotFound"]
+    },
+    {
+      "id": "cmd-hera-6",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "cmd/hera/status.go:60-63",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:5",
+      "description": "`hera status` silently swallows real DB errors from `GetLiveByRole` (only success is counted; both ErrNotFound and other errors get treated as 'no live binding'). The list command (list.go:51) handles this correctly by distinguishing ErrNotFound from other errors; status does not. Minor inconsistency in error handling between two CLI verbs that read the same data; not spec-described.",
+      "referenced_symbols": ["database.Bindings.GetLiveByRole"]
+    },
+    {
+      "id": "cmd-hera-7",
+      "type": "unimplemented-promise",
+      "severity": "medium",
+      "code_location": "cmd/hera/resume.go:13-16",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:141-144",
+      "description": "Scenario 'Role's argus_project preserved across incarnation' under § 'Roles live in argus projects; orchestrators do not' references `hera resume` creating a new binding. The `hera resume` verb is stubbed (returns errNotYetImplemented). The scenario's WHEN clause is therefore unreachable via the shipping CLI. The base spec does not mark resume as deferred — only the code comment and the (now-archived) hera-v1 design doc do. Either the spec should explicitly defer resume, or resume should be implemented to make the scenario reachable.",
+      "referenced_symbols": []
+    }
+  ]
+}

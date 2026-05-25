@@ -84,6 +84,17 @@ func TestSend_Worker_DefaultRoutes_ToCoordinator(t *testing.T) {
 	if inj.calls[0].SenderRole != "w" {
 		t.Fatalf("sender on inject = %q", inj.calls[0].SenderRole)
 	}
+	// Verify the message row was updated with the chosen delivery mode (spec MUSTs this).
+	row, err := e.db.Messages.GetByID(ctx, out.MessageID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if row.DeliveryMode != db.DeliveryIdleSubmit {
+		t.Fatalf("persisted delivery_mode = %q, want %q", row.DeliveryMode, db.DeliveryIdleSubmit)
+	}
+	if row.DeliveredAt == nil {
+		t.Fatalf("delivered_at not set on persisted row")
+	}
 }
 
 func TestSend_CoordinatorWithoutTo_Rejected(t *testing.T) {
@@ -151,9 +162,18 @@ func TestSend_ExplicitTo_LooksUpRoleByName(t *testing.T) {
 		t.Fatalf("delivery = %q", out.DeliveryMode)
 	}
 	inj.mu.Lock()
-	defer inj.mu.Unlock()
 	if len(inj.calls) != 1 || inj.calls[0].TaskID != "t-w2" {
+		inj.mu.Unlock()
 		t.Fatalf("inject call routed to wrong task: %+v", inj.calls)
+	}
+	inj.mu.Unlock()
+	// Verify the message row was updated with busy_buffer (spec MUSTs this).
+	row, err := e.db.Messages.GetByID(ctx, out.MessageID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if row.DeliveryMode != db.DeliveryBusyBuffer {
+		t.Fatalf("persisted delivery_mode = %q, want %q", row.DeliveryMode, db.DeliveryBusyBuffer)
 	}
 }
 
@@ -203,6 +223,14 @@ func TestSend_RecipientHasNoLiveBinding_QueuesPending(t *testing.T) {
 	out := decodeSendOutput(t, resp)
 	if out.DeliveryMode != string(db.DeliveryQueuedNoBinding) {
 		t.Fatalf("delivery = %q, want queued_no_binding", out.DeliveryMode)
+	}
+	// Verify the message row was persisted with the queued mode (spec MUSTs this).
+	row, err := e.db.Messages.GetByID(ctx, out.MessageID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if row.DeliveryMode != db.DeliveryQueuedNoBinding {
+		t.Fatalf("persisted delivery_mode = %q, want %q", row.DeliveryMode, db.DeliveryQueuedNoBinding)
 	}
 	inj.mu.Lock()
 	if len(inj.calls) != 0 {

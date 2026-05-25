@@ -1,0 +1,684 @@
+{
+  "code_files": [
+    {
+      "path": "cmd/hera/list.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/resume.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/start.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/stop.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/status.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/main.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/errors.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/idle/tracker.go",
+      "language": "go",
+      "exports": [
+        "HandleEvent",
+        "IsIdle",
+        "Lookup",
+        "New",
+        "NewWithDebounce",
+        "SetClock",
+        "Tracker"
+      ]
+    },
+    {
+      "path": "internal/idle/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/idle/tracker_test.go",
+      "language": "go",
+      "exports": [
+        "TestHandleEvent_IgnoresUnrelatedTypes",
+        "TestHandleEvent_PerTaskIsolation",
+        "TestIsIdle_AfterDebounce_True",
+        "TestIsIdle_FalseWhenUnknown",
+        "TestIsIdle_IdleAfterStarted_DebouncesAgain",
+        "TestIsIdle_SessionExitedAfterIdle_False",
+        "TestIsIdle_SessionStartedAfterIdle_False",
+        "TestIsIdle_WithinDebounce_False"
+      ]
+    },
+    {
+      "path": "internal/inject/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/inject/inject.go",
+      "language": "go",
+      "exports": [
+        "FormatBody",
+        "IdleChecker",
+        "Inject",
+        "Injector",
+        "New",
+        "PTYWriter"
+      ]
+    },
+    {
+      "path": "internal/inject/inject_test.go",
+      "language": "go",
+      "exports": [
+        "IsIdle",
+        "PostTaskInput",
+        "TestFormatBody",
+        "TestInject_BusyBuffersWithoutNewline",
+        "TestInject_IdleSubmits",
+        "TestInject_PropagatesPTYErrors"
+      ]
+    },
+    {
+      "path": "internal/config/config.go",
+      "language": "go",
+      "exports": [
+        "Config",
+        "Default",
+        "EnsureStateDir",
+        "LoadToken",
+        "LogPath",
+        "PIDPath",
+        "StatePath",
+        "TokenPath"
+      ]
+    },
+    {
+      "path": "internal/config/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/config/config_test.go",
+      "language": "go",
+      "exports": [
+        "TestDefault_ReasonableValues",
+        "TestEnsureStateDir",
+        "TestLoadToken_FileEmpty",
+        "TestLoadToken_FileMissing",
+        "TestLoadToken_FileValid"
+      ]
+    },
+    {
+      "path": "internal/argus/tasks.go",
+      "language": "go",
+      "exports": [
+        "GetTask",
+        "GetTaskMeta",
+        "GetTaskMetaResponse",
+        "ListTasks",
+        "ListTasksResponse",
+        "MetaEntry",
+        "PostTaskInput",
+        "PutTaskMeta",
+        "PutTaskMetaInput",
+        "Task"
+      ]
+    },
+    {
+      "path": "internal/argus/request.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/argus/client.go",
+      "language": "go",
+      "exports": [
+        "BaseURL",
+        "Client",
+        "New"
+      ]
+    },
+    {
+      "path": "internal/argus/events.go",
+      "language": "go",
+      "exports": [
+        "Event",
+        "EventHandler",
+        "StreamEvents"
+      ]
+    },
+    {
+      "path": "internal/argus/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/argus/mcp.go",
+      "language": "go",
+      "exports": [
+        "MCPTool",
+        "MCPToolResponse",
+        "RegisterTool",
+        "UnregisterTool"
+      ]
+    },
+    {
+      "path": "internal/argus/client_test.go",
+      "language": "go",
+      "exports": [
+        "TestClient_DoJSON_Errors",
+        "TestClient_GetTask",
+        "TestClient_GetTaskMeta_WithNamespace",
+        "TestClient_ListTasks",
+        "TestClient_PostTaskInput",
+        "TestClient_PutTaskMeta",
+        "TestClient_RegisterTool",
+        "TestClient_SendsAuthAndVersion",
+        "TestClient_StreamEvents",
+        "TestClient_UnregisterTool"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_status.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "NewStatusHandler",
+        "StatusHandler",
+        "StatusInput",
+        "StatusOutput"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "Handler",
+        "HandlerFunc"
+      ]
+    },
+    {
+      "path": "internal/mcp/resolve.go",
+      "language": "go",
+      "exports": [
+        "CallerRole",
+        "NewResolver",
+        "Resolver",
+        "TaskForCwd"
+      ]
+    },
+    {
+      "path": "internal/mcp/handlers_test.go",
+      "language": "go",
+      "exports": [
+        "TestInbox_EmptyAndPopulated",
+        "TestJoin_BareReincarnation_HappyPath",
+        "TestJoin_BareReincarnation_NoBinding",
+        "TestJoin_FreelanceAttach_ConflictingKind",
+        "TestJoin_FreelanceAttach_HappyPath",
+        "TestJoin_FreelanceAttach_OrchestratorMissing",
+        "TestJoin_UnknownCwd",
+        "TestMarkRead_OnlyOwnMessagesAffected",
+        "TestMarkRead_RequiresMessageIDs",
+        "TestStatus_HappyPath",
+        "TestStatus_InvalidStatus"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_inbox.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "InboxHandler",
+        "InboxInput",
+        "InboxMessage",
+        "InboxOutput",
+        "NewInboxHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/server.go",
+      "language": "go",
+      "exports": [
+        "Addr",
+        "CallbackBaseURL",
+        "GenerateAuthHeader",
+        "NewServer",
+        "RegisterHandler",
+        "Server",
+        "Start",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/mcp/registrar_test.go",
+      "language": "go",
+      "exports": [
+        "TestRegistrar_StartRegistersAllToolsAndHeartbeats"
+      ]
+    },
+    {
+      "path": "internal/mcp/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/mcp/handler_send_test.go",
+      "language": "go",
+      "exports": [
+        "Inject",
+        "TestSend_BodyRequired",
+        "TestSend_CoordinatorWithoutTo_Rejected",
+        "TestSend_ExplicitTo_LooksUpRoleByName",
+        "TestSend_ExplicitTo_UnknownRole",
+        "TestSend_InjectError_Surfaces",
+        "TestSend_RecipientHasNoLiveBinding_QueuesPending",
+        "TestSend_Worker_DefaultRoutes_ToCoordinator"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_mark_read.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "MarkReadHandler",
+        "MarkReadInput",
+        "MarkReadOutput",
+        "NewMarkReadHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_join.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "JoinHandler",
+        "JoinInput",
+        "JoinOutput",
+        "NewJoinHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/envelope.go",
+      "language": "go",
+      "exports": [
+        "CallbackEnvelope",
+        "ContentBlock",
+        "ErrorResponse",
+        "Response",
+        "TextResponse"
+      ]
+    },
+    {
+      "path": "internal/mcp/registrar.go",
+      "language": "go",
+      "exports": [
+        "Add",
+        "NewRegistrar",
+        "Registrar",
+        "SetHeartbeat",
+        "Start",
+        "Stop",
+        "ToolDefinition",
+        "Tools"
+      ]
+    },
+    {
+      "path": "internal/mcp/server_test.go",
+      "language": "go",
+      "exports": [
+        "TestGenerateAuthHeader",
+        "TestServer_CallbackInvokesHandler",
+        "TestServer_HealthCheckRespondsOK",
+        "TestServer_RejectsEnvelopeMismatch",
+        "TestServer_RejectsGET",
+        "TestServer_RejectsWrongAuth",
+        "TestServer_ReturnsNotFoundForUnknownTool"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_send.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "MessageInjector",
+        "NewSendHandler",
+        "SendHandler",
+        "SendInput",
+        "SendOutput"
+      ]
+    },
+    {
+      "path": "internal/daemon/run.go",
+      "language": "go",
+      "exports": [
+        "Daemon",
+        "Run",
+        "Start",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/daemon/run_test.go",
+      "language": "go",
+      "exports": [
+        "TestDaemonStart_RegistersAllFiveToolsAndCleansUp",
+        "TestDaemonStart_TokenMissing"
+      ]
+    },
+    {
+      "path": "internal/daemon/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/db/roles.go",
+      "language": "go",
+      "exports": [
+        "Create",
+        "CreateRoleInput",
+        "GetByID",
+        "GetByOrchestratorAndName",
+        "ListByOrchestrator",
+        "RolesDAO"
+      ]
+    },
+    {
+      "path": "internal/db/role_status.go",
+      "language": "go",
+      "exports": [
+        "Get",
+        "RoleStatusDAO",
+        "Upsert"
+      ]
+    },
+    {
+      "path": "internal/db/config.go",
+      "language": "go",
+      "exports": [
+        "ConfigDAO",
+        "Get",
+        "Set"
+      ]
+    },
+    {
+      "path": "internal/db/orchestrators.go",
+      "language": "go",
+      "exports": [
+        "Create",
+        "GetByID",
+        "GetByName",
+        "List",
+        "OrchestratorsDAO"
+      ]
+    },
+    {
+      "path": "internal/db/event_cursor.go",
+      "language": "go",
+      "exports": [
+        "EventCursorDAO",
+        "Get",
+        "Set"
+      ]
+    },
+    {
+      "path": "internal/db/db.go",
+      "language": "go",
+      "exports": [
+        "Close",
+        "DB",
+        "Open",
+        "Path",
+        "Raw"
+      ]
+    },
+    {
+      "path": "internal/db/db_test.go",
+      "language": "go",
+      "exports": [
+        "TestBindings_EndIsIdempotentlySafe",
+        "TestBindings_GetLiveByWorktree",
+        "TestBindings_LifecycleStartAndEnd",
+        "TestConfig_GetSet",
+        "TestEventCursor_GetSetMonotonic",
+        "TestMessages_CreateInboxMarkRead",
+        "TestMessages_CreateRequiresToRoleID",
+        "TestMessages_MarkReadDoesNotTouchOtherRolesMessages",
+        "TestMessages_SetDelivered",
+        "TestOpen_CreatesFileAndMigrates",
+        "TestOpen_IsIdempotent_ReopenWithExistingFile",
+        "TestOrchestrators_CreateAndGet",
+        "TestOrchestrators_CreateIsIdempotent",
+        "TestOrchestrators_GetByName_NotFound",
+        "TestRoles_CreateAndGet",
+        "TestRoles_CreateConflictingKindFails",
+        "TestRoles_CreateSameKindIsIdempotent",
+        "TestRoleStatus_UpsertAndGet"
+      ]
+    },
+    {
+      "path": "internal/db/types.go",
+      "language": "go",
+      "exports": [
+        "Binding",
+        "DeliveryMode",
+        "Message",
+        "Orchestrator",
+        "Role",
+        "RoleKind",
+        "RoleStatus",
+        "RoleStatusValue"
+      ]
+    },
+    {
+      "path": "internal/db/bindings.go",
+      "language": "go",
+      "exports": [
+        "BindingsDAO",
+        "Create",
+        "CreateBindingInput",
+        "End",
+        "GetLiveByRole",
+        "GetLiveByTaskID",
+        "GetLiveByWorktree",
+        "ListByRole"
+      ]
+    },
+    {
+      "path": "internal/db/messages.go",
+      "language": "go",
+      "exports": [
+        "CountUnreadForRole",
+        "Create",
+        "CreateMessageInput",
+        "GetByID",
+        "MarkRead",
+        "MessagesDAO",
+        "SetDelivered",
+        "UnreadForRole"
+      ]
+    },
+    {
+      "path": "internal/db/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/db/schema.go",
+      "language": "go",
+      "exports": [
+        "SchemaVersion"
+      ]
+    },
+    {
+      "path": "internal/log/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/events/adopt_test.go",
+      "language": "go",
+      "exports": [
+        "TestAdopt_HappyPath_RoleAndBindingCreated",
+        "TestAdopt_MetaSaysNotWorker_NotAdopted",
+        "TestAdopt_MissingMeta_NotAdopted",
+        "TestAdopt_ParentNotBound_NotAdopted",
+        "TestAdopt_ParentNotCoordinator_NotAdopted",
+        "TestAdopt_TaskArchived_BindingEnds"
+      ]
+    },
+    {
+      "path": "internal/events/types.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/events/adopt.go",
+      "language": "go",
+      "exports": [
+        "AdoptHandler",
+        "HandleEvent",
+        "NewAdoptHandler"
+      ]
+    },
+    {
+      "path": "internal/events/subscriber.go",
+      "language": "go",
+      "exports": [
+        "HandleEvent",
+        "Handler",
+        "HandlerFunc",
+        "NewSubscriber",
+        "Register",
+        "Run",
+        "Subscriber"
+      ]
+    },
+    {
+      "path": "internal/events/payloads.go",
+      "language": "go",
+      "exports": [
+        "LinkCreatedPayload",
+        "ParseLinkCreated",
+        "ParseResync",
+        "ParseTaskCreated",
+        "ParseTaskStatusChanged",
+        "ResyncPayload",
+        "TaskCreatedPayload",
+        "TaskStatusChangedPayload"
+      ]
+    },
+    {
+      "path": "internal/events/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/events/subscriber_test.go",
+      "language": "go",
+      "exports": [
+        "TestSubscriber_AdvancesCursor",
+        "TestSubscriber_MultipleHandlersFanOut"
+      ]
+    },
+    {
+      "path": "internal/events/resync.go",
+      "language": "go",
+      "exports": [
+        "HandleEvent",
+        "NewResyncHandler",
+        "ResyncHandler"
+      ]
+    }
+  ],
+  "spec_files": [
+    {
+      "path": "openspec/specs/hera-coordination/spec.md",
+      "capability": "hera-coordination",
+      "sections": [
+        "hera-coordination Specification",
+        "Purpose",
+        "Requirements",
+        "Requirement: Role identity outlives argus task lifecycle",
+        "Scenario: Coordinator task archived, role survives",
+        "Scenario: Same role rebound across multiple incarnations",
+        "Requirement: Five MCP tools exposed under the `hera_` prefix",
+        "Scenario: Exactly five tools registered on startup",
+        "Scenario: Tool call with no `cwd` rejected",
+        "Scenario: Tool call with unknown `cwd` rejected",
+        "Requirement: Messages auto-submitted when recipient is idle",
+        "Scenario: Recipient idle, message auto-submits",
+        "Requirement: Messages buffered when recipient is not idle",
+        "Scenario: Recipient busy, message lands in input buffer",
+        "Requirement: Injected messages identify sender",
+        "Scenario: Injected body carries sender prefix",
+        "Requirement: Auto-adopt coordinator-spawned worker tasks",
+        "Scenario: Both conditions met, task adopted",
+        "Scenario: Parent link present, meta absent — not adopted",
+        "Scenario: Meta present, parent link absent — not adopted",
+        "Requirement: Auto-adopt copies mission and constraints from task meta",
+        "Scenario: Mission and constraints meta present",
+        "Scenario: Mission and constraints meta absent",
+        "Requirement: Freelance join from an existing task",
+        "Scenario: Freelance join with all attributes",
+        "Scenario: Freelance join referencing unknown orchestrator",
+        "Scenario: Freelance join conflicts with existing role kind",
+        "Requirement: Bare `hera_join` claims existing binding",
+        "Scenario: Re-incarnation claim succeeds",
+        "Scenario: Bare join with no existing binding fails informatively",
+        "Requirement: Roles live in argus projects; orchestrators do not",
+        "Scenario: Orchestrator with roles in different projects",
+        "Scenario: Role's argus_project preserved across incarnation",
+        "Requirement: Stricter rule on auto-adoption logged",
+        "Scenario: Skipped adoption logged",
+        "Requirement: MCP tool registrations heartbeated and unregistered on shutdown",
+        "Scenario: Heartbeat keeps tools registered",
+        "Scenario: Graceful shutdown unregisters tools",
+        "Requirement: Event stream cursor persisted and replayed",
+        "Scenario: Restart resumes from cursor",
+        "Scenario: Resync triggers task snapshot",
+        "Requirement: Idle gate requires sustained `session.idle` state",
+        "Scenario: Idle for less than debounce window",
+        "Scenario: Idle for at least debounce window",
+        "Scenario: Session started after idle",
+        "Requirement: Default message routing for worker and freelance senders",
+        "Scenario: Worker without `to` routes to coordinator",
+        "Requirement: Coordinator senders must supply an explicit recipient",
+        "Scenario: Coordinator without `to` is rejected",
+        "Requirement: Tool inputs and outputs documented",
+        "Scenario: Tool registration carries description and schema",
+        "Requirement: Role metadata mirrored to argus task_meta",
+        "Scenario: Role meta written on binding",
+        "Scenario: Thread status meta updated on `hera_status`",
+        "Requirement: Scope token loaded from filesystem; missing token aborts startup",
+        "Scenario: Token file present, daemon starts",
+        "Scenario: Token file missing",
+        "Scenario: Token file empty"
+      ]
+    }
+  ],
+  "counts": {
+    "code_files": 62,
+    "spec_files": 1,
+    "exports": 255
+  }
+}

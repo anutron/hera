@@ -1,0 +1,58 @@
+{
+  "module": "internal-runtime",
+  "files": [
+    "internal/idle/doc.go",
+    "internal/idle/tracker.go",
+    "internal/idle/tracker_test.go",
+    "internal/inject/doc.go",
+    "internal/inject/inject.go",
+    "internal/inject/inject_test.go",
+    "internal/log/doc.go"
+  ],
+  "branches": {
+    "total": 26,
+    "covered": 9,
+    "uncovered_behavioral": 0,
+    "uncovered_implementation": 17,
+    "by_file": {
+      "internal/idle/tracker.go": {
+        "total": 17,
+        "covered": 5,
+        "uncovered_behavioral": 0,
+        "uncovered_implementation": 12
+      },
+      "internal/inject/inject.go": {
+        "total": 9,
+        "covered": 4,
+        "uncovered_behavioral": 0,
+        "uncovered_implementation": 5
+      },
+      "internal/idle/doc.go": {
+        "total": 0,
+        "covered": 0,
+        "uncovered_behavioral": 0,
+        "uncovered_implementation": 0
+      },
+      "internal/inject/doc.go": {
+        "total": 0,
+        "covered": 0,
+        "uncovered_behavioral": 0,
+        "uncovered_implementation": 0
+      },
+      "internal/log/doc.go": {
+        "total": 0,
+        "covered": 0,
+        "uncovered_behavioral": 0,
+        "uncovered_implementation": 0
+      }
+    }
+  },
+  "contradictions": [],
+  "unimplemented_promises": [],
+  "test_alignment_gaps": [],
+  "notes": [
+    "internal/log is doc-only in v1; spec is silent on logging mechanics. Skipped-adoption INFO logging promise is the events module's concern, not internal/log's.",
+    "Idle tracker honors all three eligibility branches (idle-not-debounced, started-after-idle, exited-after-idle) with dedicated tests asserting the spec wording.",
+    "Injector produces the exact byte sequence the spec mandates: `[hera from <sender>] <body>\\n` for idle and `[hera from <sender>] <body>` for busy, with explicit byte-level test assertions."
+  ]
+}

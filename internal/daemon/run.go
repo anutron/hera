@@ -73,7 +73,8 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 
 	// Wire handlers.
-	mcpSrv.RegisterHandler("hera_join", mcp.NewJoinHandler(resolver, database))
+	mcpSrv.RegisterHandler("hera_new_orchestrator", mcp.NewNewOrchestratorHandler(resolver, database, client))
+	mcpSrv.RegisterHandler("hera_join", mcp.NewJoinHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_send", mcp.NewSendHandler(resolver, database, injector))
 	mcpSrv.RegisterHandler("hera_inbox", mcp.NewInboxHandler(resolver, database))
 	mcpSrv.RegisterHandler("hera_mark_read", mcp.NewMarkReadHandler(resolver, database))
@@ -153,19 +154,34 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	return nil
 }
 
-// toolDefinitions returns the five hera_* tool registrations.
+// toolDefinitions returns the six hera_* tool registrations.
 func toolDefinitions() []mcp.ToolDefinition {
 	return []mcp.ToolDefinition{
 		{
+			Name:        "hera_new_orchestrator",
+			Description: "Bootstrap a new hera orchestrator from the calling argus task. Creates the orchestrator, a coordinator role with the given name, and a binding tying this argus task to that role. This is the canonical 'be an orchestrator' entry point.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"cwd":                   map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+					"name":                  map[string]any{"type": "string", "description": "Orchestrator name (e.g., the project / feature being coordinated)"},
+					"coordinator_role_name": map[string]any{"type": "string", "description": "Name for the coordinator role under the new orchestrator (e.g., 'coord' or 'foo-coordinator')"},
+					"mission":               map[string]any{"type": "string", "description": "(optional) Coordinator's mission, free-form prose"},
+					"constraints":           map[string]any{"type": "string", "description": "(optional) Coordinator's constraints, free-form prose"},
+				},
+				"required": []string{"cwd", "name", "coordinator_role_name"},
+			},
+		},
+		{
 			Name:        "hera_join",
-			Description: "Claim or create a hera role for the calling argus task. Bare call (cwd only) claims an existing binding; extended call (orchestrator + role_name + kind + optional mission/constraints/status) attaches as a freelance or coordinator.",
+			Description: "Claim an existing hera role for the calling argus task. Bare call (cwd only) claims an existing binding (re-incarnation). Extended call (orchestrator + role_name + kind=worker|freelance + optional mission/constraints/status) attaches as a worker or freelance. To bootstrap a new orchestrator, use hera_new_orchestrator instead.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"cwd":          map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
-					"orchestrator": map[string]any{"type": "string", "description": "(optional) Orchestrator to attach to / create"},
+					"orchestrator": map[string]any{"type": "string", "description": "(optional) Existing orchestrator to attach to"},
 					"role_name":    map[string]any{"type": "string", "description": "(optional) Self-chosen role name"},
-					"kind":         map[string]any{"type": "string", "enum": []string{"worker", "freelance", "coordinator"}, "description": "(optional) Role kind"},
+					"kind":         map[string]any{"type": "string", "enum": []string{"worker", "freelance"}, "description": "(optional) Role kind. coordinator is not accepted here — use hera_new_orchestrator."},
 					"mission":      map[string]any{"type": "string", "description": "(optional) Role mission, free-form prose"},
 					"constraints":  map[string]any{"type": "string", "description": "(optional) Role constraints, free-form prose"},
 					"status":       map[string]any{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "(optional) Initial role status"},

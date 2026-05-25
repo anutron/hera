@@ -1,0 +1,201 @@
+{
+  "branch_summary": {
+    "total": 150,
+    "covered": 95,
+    "uncovered_behavioral": 11,
+    "contradictions": 0,
+    "unimplemented_promises": 1,
+    "test_alignment_gaps": 17
+  },
+  "findings": [
+    {
+      "id": "internal-mcp-1",
+      "type": "unimplemented-promise",
+      "severity": "medium",
+      "code_location": "internal/mcp/handler_join.go:171",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:229-237",
+      "description": "Spec § 'Role metadata mirrored to argus task_meta' scenario 'Role meta written on binding' says: 'WHEN a new binding is created for a worker role on argus task T2 THEN hera MUST PUT {key: \"role\", value: \"worker\"} to /api/tasks/T2/meta'. The auto-adopt path (internal/events/adopt.go:128) does this correctly. The hera_join freelance/coordinator-bootstrap path also creates a binding (handler_join.go:171, Bindings.Create) but does NOT call PutTaskMeta to mirror meta:hera.role to argus task_meta. JoinHandler does not even hold an *argus.Client reference (constructor is NewJoinHandler(r *Resolver, database *db.DB)), so the call is structurally impossible at present. Fix: add *argus.Client to NewJoinHandler and call client.PutTaskMeta(ctx, argusTaskID, MetaKeyRole, string(kind)) after each successful Bindings.Create in freelance().",
+      "referenced_symbols": ["JoinHandler", "NewJoinHandler", "argus.Client", "PutTaskMeta", "events.MetaKeyRole", "db.Bindings.Create"]
+    },
+    {
+      "id": "internal-mcp-2",
+      "type": "uncovered-behavioral",
+      "severity": "medium",
+      "code_location": "internal/mcp/handler_status.go:74-79",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:238-241",
+      "description": "Spec § 'Role metadata mirrored to argus task_meta' scenario 'Thread status meta updated on hera_status' uses MUST language: 'hera MUST update role_status AND PUT {key: \"thread_status\", value: \"blocked\"} to the bound task's meta endpoint'. The code makes the meta-mirror best-effort: a PutTaskMeta failure is swallowed (`mirrored = false`) and the call returns success with meta_mirrored=false in the response. Defensible (transient argus outage shouldn't break status calls), but not strictly spec-compliant under literal MUST reading. No test exercises this failure path — see test-alignment gap Q.",
+      "referenced_symbols": ["StatusHandler", "argus.Client.PutTaskMeta", "events.MetaKeyThreadStatus"]
+    },
+    {
+      "id": "internal-mcp-3",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_send.go:86-90",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:39-55",
+      "description": "Code introduces a third delivery mode `queued_no_binding` (db.DeliveryQueuedNoBinding) when the recipient has no live binding. The base spec at openspec/specs/hera-coordination/spec.md only enumerates `idle_submit` (§ Messages auto-submitted when recipient is idle) and `busy_buffer` (§ Messages buffered when recipient is not idle). The third mode is documented in the archived hera-v1 design doc but not in the base spec. Either the base spec should enumerate this mode, or the code should not introduce it.",
+      "referenced_symbols": ["db.DeliveryQueuedNoBinding", "db.Messages.SetDelivered"]
+    },
+    {
+      "id": "internal-mcp-4",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "internal/mcp/resolve.go:35",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:34-37",
+      "description": "Cwd → task lookup uses exact-string equality on task.WorktreePath (no filepath.Clean, no symlink resolution). Spec scenario 'Tool call with unknown `cwd` rejected' says 'does not match any known argus task's worktree' without defining 'match' at the byte level. Trailing slash, relative path, or symlinked worktree variants will all produce ErrCwdUnknown. Either the spec should pin the match semantics or the resolver should normalize.",
+      "referenced_symbols": ["argus.Task.WorktreePath", "argus.Client.ListTasks"]
+    },
+    {
+      "id": "internal-mcp-5",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_inbox.go:56-60, internal/mcp/handler_mark_read.go:50-54, internal/mcp/handler_status.go:63-67",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:127-130",
+      "description": "Three handlers contain `if errors.Is(err, ErrNoBinding) { ... } return ... ` blocks where both the if-branch and the else-branch return the same wording (`hera_xxx: <err>`). This is dead-equivalent code. Spec scenario 'Bare join with no existing binding fails informatively' suggests the response should suggest invoking hera_join with explicit args — currently only handler_join.go honors this. The other three handlers degrade to a generic 'argus task at cwd is not bound to any hera role' message. Worth either equalizing-and-simplifying or differentiating to give the same suggestion.",
+      "referenced_symbols": ["ErrNoBinding"]
+    },
+    {
+      "id": "internal-mcp-6",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_join.go:125-131",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:99-117",
+      "description": "freelance() accepts kind='coordinator' as a bootstrap path (line 135: if kind == KindCoordinator { Orchestrators.Create idempotent }). Spec § 'Freelance join from an existing task' describes the extended-call form for freelance attach (kind='freelance'); the base spec does NOT explicitly say that kind='coordinator' is valid for bootstrapping a new orchestrator. The capability is real (input_schema in run.go:168 enumerates 'coordinator' as a valid kind), but only the inputs-and-outputs spec hints at it. Worth adding an explicit spec scenario for coordinator-bootstrap-via-join.",
+      "referenced_symbols": ["db.Orchestrators.Create", "db.KindCoordinator"]
+    },
+    {
+      "id": "internal-mcp-7",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_send.go:135",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:202-209",
+      "description": "resolveRecipient has a `return nil, fmt.Errorf(\"unknown sender kind %q\", sender.Kind)` defensive fallthrough. Spec § 'Default message routing' covers worker and freelance; coordinator path is separate. An unknown kind shouldn't happen at runtime (the DB stores only the three values), but the path exists. Not a contradiction, just a defensive branch beyond spec coverage.",
+      "referenced_symbols": ["db.Role.Kind"]
+    },
+    {
+      "id": "internal-mcp-8",
+      "type": "test-alignment",
+      "severity": "high",
+      "code_location": "internal/mcp/handler_send_test.go (all TestSend_* tests)",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:39-55",
+      "description": "Spec § 'Messages auto-submitted when recipient is idle' / 'Messages buffered when recipient is not idle' specifies that hera MUST record `delivery_mode = \"idle_submit\"` / `\"busy_buffer\"` on the message row. The hera_send tests assert the response JSON's delivery_mode field but DO NOT assert that the DB row was actually updated via Messages.SetDelivered. The code path is correct (line 99-101) but the test doesn't close the loop. Recommended: after a send call, fetch the message row via db.Messages and assert msg.DeliveryMode == expected. This is the highest-leverage test-alignment fix because it directly verifies a spec MUST.",
+      "referenced_symbols": ["db.Messages.SetDelivered", "db.Messages", "db.DeliveryMode"]
+    },
+    {
+      "id": "internal-mcp-9",
+      "type": "test-alignment",
+      "severity": "medium",
+      "code_location": "internal/mcp/handler_send_test.go:TestSend_CoordinatorWithoutTo_Rejected",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:215-219",
+      "description": "Spec § 'Coordinator senders must supply an explicit recipient' scenario adds 'AND no message row MUST be persisted'. Test asserts resp.IsError and a wording substring, AND asserts len(inj.calls) == 0, but does NOT verify that no message row was persisted to the DB. Recommended: query Messages.UnreadForRole(any_role.ID) and assert empty, or use a fresh DB and assert row count == 0.",
+      "referenced_symbols": ["db.Messages"]
+    },
+    {
+      "id": "internal-mcp-10",
+      "type": "test-alignment",
+      "severity": "medium",
+      "code_location": "internal/mcp/handlers_test.go:TestJoin_FreelanceAttach_OrchestratorMissing, TestJoin_FreelanceAttach_ConflictingKind",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:108-116",
+      "description": "Spec scenarios state 'no role or binding row MUST be created' (OrchestratorMissing) and 'no row MUST be modified' (ConflictingKind). Tests assert only the error wording. Recommended: after the failed call, query Roles.GetByOrchestratorAndName and Bindings.GetLiveByTaskID and assert both return ErrNotFound (OrchestratorMissing); and assert the existing role still has the original kind (ConflictingKind).",
+      "referenced_symbols": ["db.Roles.GetByOrchestratorAndName", "db.Bindings.GetLiveByTaskID"]
+    },
+    {
+      "id": "internal-mcp-11",
+      "type": "test-alignment",
+      "severity": "medium",
+      "code_location": "internal/mcp/registrar_test.go:TestRegistrar_StartRegistersAllToolsAndHeartbeats",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:220-227",
+      "description": "Spec § 'Tool inputs and outputs documented' requires every registration include description ≥ 10 chars and input_schema with properties covering every parameter. The fakeRegistry handler captures only body.Name and body.AuthHeader from argus.MCPTool, dropping Description and InputSchema. Recommended: capture and assert that each tool's description length ≥ 10 AND input_schema is a non-nil JSON object with at least a 'cwd' property. The five-tool registration is implicitly tested via internal/daemon/run_test.go, but neither test inspects the schema payload.",
+      "referenced_symbols": ["argus.MCPTool", "registrar.registerAll"]
+    },
+    {
+      "id": "internal-mcp-12",
+      "type": "test-alignment",
+      "severity": "medium",
+      "code_location": "internal/mcp/handlers_test.go:TestJoin_UnknownCwd",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:34-37",
+      "description": "Spec § 'Tool call with unknown `cwd` rejected' requires the response 'content explaining that the cwd does not map to a tracked argus task'. Test asserts only resp.IsError. Recommended: add strings.Contains(resp.Content[0].Text, \"does not map\") (or similar) to verify the explanatory-message promise.",
+      "referenced_symbols": ["ErrCwdUnknown"]
+    },
+    {
+      "id": "internal-mcp-13",
+      "type": "test-alignment",
+      "severity": "medium",
+      "code_location": "internal/mcp/handlers_test.go:TestJoin_BareReincarnation_NoBinding",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:127-130",
+      "description": "Spec § 'Bare hera_join claims existing binding' scenario 'Bare join with no existing binding fails informatively' requires content 'suggesting the caller invoke hera_join with explicit orchestrator, role_name, and kind to attach as a freelance'. Test asserts only the substring 'not bound'. Recommended: also assert the response mentions 'freelance' or 'orchestrator, role_name, kind' to verify the suggestion is present.",
+      "referenced_symbols": []
+    },
+    {
+      "id": "internal-mcp-14",
+      "type": "test-alignment",
+      "severity": "low",
+      "code_location": "internal/mcp/handlers_test.go:TestJoin_BareReincarnation_HappyPath",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:118-126",
+      "description": "Spec § 'Bare hera_join claims existing binding' scenario 'Re-incarnation claim succeeds' specifies the response includes the role's identity (orchestrator, name, kind, mission, constraints, current status, recent message count) AND that it modifies no database rows. Test asserts RoleName and Mission only — does not assert Status (the test pre-creates no RoleStatus, so this field is empty in the response), does not assert UnreadMessageCount (no pre-created messages), and does not assert 'no rows modified' (no rowcount probe). Recommended: pre-create a status and unread messages, assert both come through, and snapshot row counts pre/post to verify read-only semantics.",
+      "referenced_symbols": ["db.RoleStatus", "db.Messages.CountUnreadForRole"]
+    },
+    {
+      "id": "internal-mcp-15",
+      "type": "test-alignment",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_send_test.go",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:202-209",
+      "description": "Spec § 'Default message routing for worker and freelance senders' covers BOTH worker and freelance senders. Test suite covers only the worker case (TestSend_Worker_DefaultRoutes_ToCoordinator). Recommended: add TestSend_Freelance_DefaultRoutes_ToCoordinator to verify the same code path is exercised for the freelance kind.",
+      "referenced_symbols": ["db.KindFreelance"]
+    },
+    {
+      "id": "internal-mcp-16",
+      "type": "test-alignment",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_send.go:findCoordinator:150",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:202-209",
+      "description": "Spec § 'Default message routing' says 'The coordinator role MUST exist for the send to succeed' — the code returns 'orchestrator has no coordinator role' when default-routing finds no coord. No test exercises this path. Recommended: add a test creating only a worker (no coordinator) and asserting hera_send returns an explanatory error.",
+      "referenced_symbols": ["db.Roles.ListByOrchestrator", "db.KindCoordinator"]
+    },
+    {
+      "id": "internal-mcp-17",
+      "type": "test-alignment",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_status_test (missing)",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:229-241",
+      "description": "Spec § 'Role metadata mirrored to argus task_meta' phrases the requirement as MUST. The implementation makes the meta-mirror best-effort (handler_status.go:77-79 swallows PutTaskMeta failures, returns success with meta_mirrored=false). No test exercises this failure path. Recommended: add a test that injects a PutTaskMeta failure into the fake argus and asserts (a) the hera_status call still succeeds, (b) the response has meta_mirrored=false. Note: this test would PIN the chosen behavior, which is a spec-deviation worth deciding consciously about.",
+      "referenced_symbols": ["argus.Client.PutTaskMeta"]
+    },
+    {
+      "id": "internal-mcp-18",
+      "type": "test-alignment",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_send_test.go:TestSend_BodyRequired, handlers_test.go:TestMarkRead_RequiresMessageIDs, similar",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:29-32",
+      "description": "Several 'required-field' tests assert only resp.IsError, not the explanatory wording. Spec scenarios for 'no cwd' rejection require 'content explaining that cwd is required'. The same goes for body, message_ids, status. Recommended: add wording-substring assertions to each input-validation test for tightness.",
+      "referenced_symbols": []
+    },
+    {
+      "id": "internal-mcp-19",
+      "type": "test-alignment",
+      "severity": "low",
+      "code_location": "internal/mcp/registrar_test.go",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:155-167",
+      "description": "Spec § 'MCP tool registrations heartbeated and unregistered on shutdown' scenario 'Heartbeat keeps tools registered' uses '>5 minutes' wording. The test compresses this to a 50ms heartbeat — appropriate for unit speed — but does not test what happens when a heartbeat re-register fails (currently log.Warn only). Recommended: extend fakeRegistry to fail one specific re-register, verify the loop survives, and the next tick succeeds.",
+      "referenced_symbols": ["registrar.Start", "registrar.registerAll"]
+    },
+    {
+      "id": "internal-mcp-20",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "internal/mcp/handler_inbox.go:71-73",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:5",
+      "description": "Inbox handler falls back to 'role:<id>' when Roles.GetByID fails for the message's FromRoleID. Spec doesn't cover the case where a message's sender role row has been deleted/archived in some future migration. Defensive but unsignalled — there's no log at WARN for this lookup failure. Worth confirming the spec author wants the synthetic fallback (which suppresses information) vs an explicit '(deleted role)' marker.",
+      "referenced_symbols": ["db.Roles.GetByID"]
+    },
+    {
+      "id": "internal-mcp-21",
+      "type": "uncovered-behavioral",
+      "severity": "low",
+      "code_location": "internal/mcp/server.go:118-120",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:5",
+      "description": "Server returns 404 + ErrorResponse for any path where `name == \"\"` OR `strings.Contains(name, \"/\")`. The latter blocks nested paths like /mcp/hera_send/extra, which is correct. The wording for the empty-name case is 'hera: unknown tool' (no name to substitute). Consistent with the trailing-tool-name case. No test covers the nested-path case specifically, but the unknown-tool case is covered.",
+      "referenced_symbols": []
+    }
+  ]
+}

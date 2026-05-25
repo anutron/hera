@@ -1,0 +1,31 @@
+{
+  "branch_summary": {
+    "total": 39,
+    "covered": 13,
+    "uncovered_behavioral": 0,
+    "uncovered_implementation": 26,
+    "contradictions": 0,
+    "unimplemented_promises": 0,
+    "test_alignment_gaps": 2
+  },
+  "findings": [
+    {
+      "id": "internal-wiring-1",
+      "type": "test-alignment-gap",
+      "severity": "low",
+      "code_location": "internal/daemon/run_test.go:158",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:245",
+      "description": "TestDaemonStart_TokenMissing only asserts that the error contains 'api-token'. The spec requires the error to instruct the user to run 'argus token mint --scope hera'. The implementation does include that wording but the test does not pin it, so a regression that dropped the actionable suggestion would not fail this test. Recommend asserting strings.Contains(err.Error(), \"argus token mint --scope hera\").",
+      "referenced_symbols": []
+    },
+    {
+      "id": "internal-wiring-2",
+      "type": "test-alignment-gap",
+      "severity": "low",
+      "code_location": "internal/config/config_test.go:53",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:258",
+      "description": "TestLoadToken_FileEmpty only asserts that the error contains 'empty'. The spec's empty-token scenario requires the same instructional 'argus token mint --scope hera' wording as the missing-file case (which IS pinned in TestLoadToken_FileMissing). The implementation provides the wording in both cases; this test should match the missing-file test by also asserting strings.Contains(err.Error(), \"argus token mint\").",
+      "referenced_symbols": []
+    }
+  ]
+}

@@ -6,26 +6,34 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
+	"github.com/anutron/hera/internal/events"
 )
 
 // JoinHandler implements the hera_join MCP tool.
 //
 // Bare hera_join(cwd) is the re-incarnation claim: resolve cwd → task →
-// binding → role, return the role's identity.
+// binding → role, return the role's identity (used when an existing role
+// is being re-incarnated into a fresh argus task).
 //
-// hera_join with extended args (orchestrator, role_name, kind, ...) is
-// the freelance-attach path: validate orchestrator exists, validate
+// hera_join with extended args (orchestrator, role_name, kind=worker|freelance, ...)
+// is the freelance-attach path: validate orchestrator exists, validate
 // (orchestrator, role_name) does not already exist with a different
-// kind, create role + binding + initial status atomically.
+// kind, create role + binding + initial status atomically, then mirror
+// meta:hera.role to argus task_meta.
+//
+// Coordinator bootstrap (creating a brand-new orchestrator) is NOT done
+// via hera_join — it has its own tool, hera_new_orchestrator.
 type JoinHandler struct {
 	resolver *Resolver
 	db       *db.DB
+	client   *argus.Client
 }
 
 // NewJoinHandler constructs a JoinHandler.
-func NewJoinHandler(r *Resolver, database *db.DB) *JoinHandler {
-	return &JoinHandler{resolver: r, db: database}
+func NewJoinHandler(r *Resolver, database *db.DB, client *argus.Client) *JoinHandler {
+	return &JoinHandler{resolver: r, db: database, client: client}
 }
 
 // JoinInput is the hera_join tool's input schema.
@@ -67,9 +75,9 @@ func (h *JoinHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 		return ErrorResponse("hera_join: " + err.Error())
 	}
 
-	// Branch on freelance-attach vs re-incarnation.
+	// Branch on attach vs re-incarnation.
 	if in.Orchestrator != "" || in.RoleName != "" || in.Kind != "" {
-		return h.freelance(ctx, task.ID, task.Project, task.WorktreePath, in)
+		return h.attach(ctx, task.ID, task.Project, task.WorktreePath, in)
 	}
 	return h.reincarnation(ctx, task.ID)
 }
@@ -80,7 +88,8 @@ func (h *JoinHandler) reincarnation(ctx context.Context, taskID string) Response
 	if errors.Is(err, db.ErrNotFound) {
 		return ErrorResponse(
 			"hera_join: this argus task is not bound to any hera role. " +
-				"To attach as a freelance, call hera_join with explicit orchestrator, role_name, kind=\"freelance\", and (optional) mission/constraints/status.",
+				"To attach as a freelance, call hera_join with explicit orchestrator, role_name, kind=\"freelance\", and (optional) mission/constraints/status. " +
+				"To bootstrap a new orchestrator, call hera_new_orchestrator.",
 		)
 	}
 	if err != nil {
@@ -116,37 +125,28 @@ func (h *JoinHandler) reincarnation(ctx context.Context, taskID string) Response
 	})
 }
 
-// freelance handles hera_join with explicit (orchestrator, role_name, kind, ...) args.
-func (h *JoinHandler) freelance(ctx context.Context, argusTaskID, project, worktreePath string, in JoinInput) Response {
+// attach handles hera_join with explicit (orchestrator, role_name, kind, ...) args.
+// Kind must be worker or freelance; coordinator bootstrap lives in hera_new_orchestrator.
+func (h *JoinHandler) attach(ctx context.Context, argusTaskID, project, worktreePath string, in JoinInput) Response {
 	if in.Orchestrator == "" || in.RoleName == "" || in.Kind == "" {
-		return ErrorResponse("hera_join: orchestrator, role_name, and kind are all required for freelance attach")
+		return ErrorResponse("hera_join: orchestrator, role_name, and kind are all required for attach")
 	}
 	kind := db.RoleKind(in.Kind)
 	switch kind {
-	case db.KindWorker, db.KindFreelance, db.KindCoordinator:
+	case db.KindWorker, db.KindFreelance:
 		// ok
+	case db.KindCoordinator:
+		return ErrorResponse("hera_join: kind=coordinator is not supported by hera_join; use hera_new_orchestrator to bootstrap a new orchestrator")
 	default:
-		return ErrorResponse(fmt.Sprintf("hera_join: invalid kind %q (must be worker, freelance, or coordinator)", in.Kind))
+		return ErrorResponse(fmt.Sprintf("hera_join: invalid kind %q (must be worker or freelance)", in.Kind))
 	}
 
-	// Coordinator kinds may bootstrap a brand-new orchestrator; other
-	// kinds (worker, freelance) must attach to an existing one.
-	var orch *db.Orchestrator
-	if kind == db.KindCoordinator {
-		var err error
-		orch, err = h.db.Orchestrators.Create(ctx, in.Orchestrator) // idempotent
-		if err != nil {
-			return ErrorResponse("hera_join: " + err.Error())
-		}
-	} else {
-		var err error
-		orch, err = h.db.Orchestrators.GetByName(ctx, in.Orchestrator)
-		if errors.Is(err, db.ErrNotFound) {
-			return ErrorResponse(fmt.Sprintf("hera_join: orchestrator %q does not exist", in.Orchestrator))
-		}
-		if err != nil {
-			return ErrorResponse("hera_join: " + err.Error())
-		}
+	orch, err := h.db.Orchestrators.GetByName(ctx, in.Orchestrator)
+	if errors.Is(err, db.ErrNotFound) {
+		return ErrorResponse(fmt.Sprintf("hera_join: orchestrator %q does not exist", in.Orchestrator))
+	}
+	if err != nil {
+		return ErrorResponse("hera_join: " + err.Error())
 	}
 
 	if existing, err := h.db.Roles.GetByOrchestratorAndName(ctx, orch.ID, in.RoleName); err == nil && existing.Kind != kind {
@@ -176,6 +176,10 @@ func (h *JoinHandler) freelance(ctx context.Context, argusTaskID, project, workt
 	if err != nil {
 		return ErrorResponse("hera_join: create binding: " + err.Error())
 	}
+
+	// Mirror meta:hera.role to the bound argus task. Best-effort: a
+	// transient argus failure shouldn't undo the binding.
+	_ = h.client.PutTaskMeta(ctx, argusTaskID, events.MetaKeyRole, string(kind))
 
 	if in.Status != "" {
 		s := db.RoleStatusValue(in.Status)

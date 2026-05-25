@@ -1,0 +1,128 @@
+{
+  "module": "internal-db",
+  "branch_totals": {
+    "doc.go": 0,
+    "db.go": 14,
+    "schema.go": 13,
+    "types.go": 0,
+    "orchestrators.go": 22,
+    "roles.go": 26,
+    "bindings.go": 30,
+    "messages.go": 39,
+    "role_status.go": 8,
+    "event_cursor.go": 8,
+    "config.go": 8,
+    "total": 168
+  },
+  "coverage_summary": {
+    "covered": 124,
+    "uncovered_behavioral": 0,
+    "uncovered_implementation": 44,
+    "contradicts": 0
+  },
+  "findings": [
+    {
+      "id": "internal-db-1",
+      "type": "test-doesnt-assert-spec",
+      "severity": "low",
+      "test_location": "internal/db/db_test.go:185-220",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:10-13",
+      "description": "Scenario 'Coordinator task archived, role survives' says hera MUST set the binding's ended_at and end_reason AND leave the role row, messages addressed to the role, and the role's status row intact. TestBindings_LifecycleStartAndEnd asserts that End succeeds and GetLiveByTaskID then returns ErrNotFound — it does NOT assert (a) ended_at is non-null, (b) end_reason matches the value passed, (c) the role row still exists, or (d) any messages addressed to the role survive. The implementation is correct (bindings.go:50-53 sets both columns; foreign keys do not cascade from binding-end to role/messages), but the test does not verify the spec's wording.",
+      "referenced_symbols": ["BindingsDAO.End", "BindingsDAO.GetLiveByTaskID"]
+    },
+    {
+      "id": "internal-db-2",
+      "type": "test-doesnt-assert-spec",
+      "severity": "low",
+      "test_location": "internal/db/db_test.go",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:15-18",
+      "description": "Scenario 'Same role rebound across multiple incarnations' says hera MUST insert a new binding row with (role_id, T2, started_at) while preserving the previous binding's history. There is no test in db_test.go that ends one binding for a role then creates a second binding for the same role and asserts (a) both binding rows still exist (queryable via ListByRole) and (b) only the new one is live. The implementation supports this (bindings.go:22-44 Create does not look at prior bindings; ListByRole at 88-106 returns history ordered by started_at desc), but no test exercises the multi-incarnation path.",
+      "referenced_symbols": ["BindingsDAO.Create", "BindingsDAO.End", "BindingsDAO.ListByRole"]
+    },
+    {
+      "id": "internal-db-3",
+      "type": "test-doesnt-assert-spec",
+      "severity": "low",
+      "test_location": "internal/db/db_test.go:113-135",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:94-97",
+      "description": "Scenario 'Mission and constraints meta absent' says the created role row's mission and constraints columns MUST be empty strings (not NULL). TestRoles_CreateAndGet only asserts the populated case (mission='build the substrate'). No test asserts that omitting Mission and Constraints in CreateRoleInput results in stored empty strings (not NULL) on the resulting Role struct. The implementation is correct — schema.go:31-32 has DEFAULT '' on both columns and they are NOT NULL — but the assertion that distinguishes '' from NULL is missing.",
+      "referenced_symbols": ["RolesDAO.Create", "CreateRoleInput"]
+    },
+    {
+      "id": "internal-db-4",
+      "type": "test-doesnt-assert-spec",
+      "severity": "low",
+      "test_location": "internal/db/db_test.go",
+      "spec_location": "openspec/specs/hera-coordination/spec.md:141-144",
+      "description": "Scenario 'Role's argus_project preserved across incarnation' says when a role's first binding ends and a new binding is created for the same role, the new binding MUST be in the role's stored argus_project regardless of the current cwd. There is no test in db_test.go that asserts argus_project is immutable across rebinding. The DB layer's contribution is just 'the column is stored on the role row, never on the binding row, and no DAO method mutates it' — which is true by inspection (schema.go has argus_project only on the roles table; there is no RolesDAO.UpdateProject) — but no test fences this contract.",
+      "referenced_symbols": ["RolesDAO.Create", "Role.ArgusProject"]
+    }
+  ],
+  "spec_to_code_verifications": [
+    {
+      "requirement": "Role identity outlives argus task lifecycle",
+      "status": "implemented",
+      "evidence": [
+        "schema.go:25-37 — roles table separate from bindings; ON DELETE CASCADE only fires orchestrator->role, never bindings->role.",
+        "schema.go:39-47 — bindings.ended_at and end_reason are nullable; live vs ended is a row-marker.",
+        "bindings.go:48-63 — End() updates ended_at + end_reason and nothing else.",
+        "schema.go:53-63 — messages.to_role_id references roles(id), not bindings(id), so ending a binding leaves the inbox intact."
+      ]
+    },
+    {
+      "requirement": "Auto-adopt copies mission and constraints from task meta (data-layer half)",
+      "status": "implemented",
+      "evidence": [
+        "schema.go:31-32 — mission TEXT NOT NULL DEFAULT '', constraints TEXT NOT NULL DEFAULT ''.",
+        "roles.go:14-22 — CreateRoleInput exposes Mission/Constraints as plain strings.",
+        "roles.go:39-44 — INSERT passes them verbatim, no nil-handling."
+      ]
+    },
+    {
+      "requirement": "Roles live in argus projects; orchestrators do not",
+      "status": "implemented",
+      "evidence": [
+        "schema.go:19-23 — orchestrators columns are (id, name, created_at). No argus_project.",
+        "schema.go:25-35 — roles.argus_project TEXT NOT NULL.",
+        "No DAO method mutates argus_project after Create."
+      ]
+    },
+    {
+      "requirement": "Event stream cursor persisted and replayed",
+      "status": "implemented",
+      "evidence": [
+        "schema.go:74-78 — event_cursor is a singleton (CHECK id = 1) seeded with (1, 0).",
+        "event_cursor.go:30-40 — Set is monotonic via WHERE id = 1 AND last_seen_event_id < ?; smaller values are silently ignored.",
+        "TestEventCursor_GetSetMonotonic (db_test.go:420-457) asserts all three branches: fresh=0, advance, regress=no-op."
+      ]
+    },
+    {
+      "requirement": "NOT NULL to_role_id; no to_kind; no DeliveryUserInbox (decision delta from morning review)",
+      "status": "applied_correctly",
+      "evidence": [
+        "schema.go:53-58 — to_role_id INTEGER NOT NULL REFERENCES roles(id); no to_kind column.",
+        "types.go:29-33 — DeliveryMode constants do not include DeliveryUserInbox.",
+        "Repo grep for to_kind/DeliveryUserInbox returns only OVERNIGHT_LOG and archived design.md retrospective references."
+      ]
+    },
+    {
+      "requirement": "Coordinator senders must supply an explicit recipient (DB-layer guard)",
+      "status": "implemented",
+      "evidence": [
+        "schema.go:53-58 — to_role_id NOT NULL.",
+        "messages.go:24-29 — MessagesDAO.Create rejects ToRoleID == 0 with an explicit error, layered above the schema constraint.",
+        "TestMessages_CreateRequiresToRoleID (db_test.go:347-361) asserts the application-level guard."
+      ]
+    }
+  ],
+  "non_findings": [
+    {
+      "topic": "ConfigDAO is unused outside tests",
+      "explanation": "doc.go:11 explicitly documents the config k/v table as part of the schema. Forward-looking infrastructure, not an unimplemented spec promise — no spec scenario requires it yet."
+    },
+    {
+      "topic": "Uncovered SQL-error / scan-error branches",
+      "explanation": "44 of the 168 branches are fmt.Errorf wrappers around sql/rows errors and silently-ignored time.Parse errors on stored timestamps. These are defensive plumbing; the spec makes no behavioral promise about them and they are not flagged as gaps."
+    }
+  ]
+}

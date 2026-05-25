@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "name": "cmd",
+      "paths": [
+        "cmd/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-argus",
+      "paths": [
+        "internal/argus/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-mcp",
+      "paths": [
+        "internal/mcp/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-db",
+      "paths": [
+        "internal/db/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-events",
+      "paths": [
+        "internal/events/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-config",
+      "paths": [
+        "internal/config/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-daemon",
+      "paths": [
+        "internal/daemon/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-idle",
+      "paths": [
+        "internal/idle/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-inject",
+      "paths": [
+        "internal/inject/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    },
+    {
+      "name": "internal-log",
+      "paths": [
+        "internal/log/"
+      ],
+      "specs": [
+        "hera-coordination"
+      ]
+    }
+  ],
+  "extensions": [
+    "go"
+  ],
+  "excludes": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.next/**",
+    "**/build/**",
+    "**/vendor/**",
+    "**/coverage/**",
+    "**/*.bundle.js",
+    "**/*.min.js"
+  ],
+  "pitfalls": [],
+  "test_suites": [
+    {
+      "dir": ".",
+      "command": "cd . && go test ./..."
+    }
+  ],
+  "mapping_cache": {}
+}
