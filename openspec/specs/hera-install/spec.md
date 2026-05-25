@@ -34,6 +34,13 @@ The plist SHALL set `StandardOutPath` and `StandardErrorPath` to `~/.hera/launch
 - **AND** no `launchctl bootstrap` SHALL be invoked
 - **AND** the final summary message SHALL instruct the user to start hera manually via `hera start --foreground`
 
+#### Scenario: Plist sets EnvironmentVariables.PATH so the launchd-managed daemon can locate argus
+
+- **WHEN** `setup.sh` writes the plist during step 5
+- **THEN** the plist SHALL set `EnvironmentVariables.PATH` to a value that includes both `${HOME}/.local/bin` and Homebrew/system paths (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`)
+- **AND** the plist SHALL set `EnvironmentVariables.HOME` to `${HOME}`
+- **AND** these values SHALL be present so that the launchd-managed `hera` process can resolve `argus` on PATH at startup (launchd does not inherit the interactive shell's PATH)
+
 ### Requirement: LaunchAgent restarts hera on crash but not on clean exit
 
 The plist installed by `setup.sh` SHALL configure `KeepAlive` to restart hera only when the previous run exited with a non-zero status. A graceful shutdown (zero exit code) MUST NOT trigger an automatic restart.
@@ -95,6 +102,13 @@ The detection MUST match only the `hera start --foreground` invocation pattern (
 
 - **WHEN** no `hera start --foreground` process exists and `./setup.sh --yes` reaches step 5
 - **THEN** setup.sh SHALL proceed directly to bootstrap without sending any signals
+
+#### Scenario: Launchd-managed `herad` process is NOT matched by the detection
+
+- **WHEN** the LaunchAgent is already loaded (process command line is `<state-dir>/herad start --foreground`) and `./setup.sh --yes` runs step 5
+- **THEN** the detection pattern (`hera start --foreground`) SHALL NOT match the launchd-managed process
+- **AND** SIGTERM SHALL NOT be sent to the launchd-managed process by `stop_foreground_hera`
+- **AND** the agent SHALL be cleaned up via `launchctl bootout` instead (see [Stable symlink for launchd process identity])
 
 ### Requirement: setup.sh provides --uninstall-launchagent flag
 

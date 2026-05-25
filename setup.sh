@@ -55,8 +55,9 @@ confirm() {
 }
 
 launchagent_loaded() {
-  # On non-Darwin systems launchctl isn't present; the 2>&1 swallow makes this
-  # safely return non-zero so the rest of the script branches "not loaded".
+  # Skip the launchctl exec on non-Darwin so we never invoke launchctl off-platform
+  # (the Linux spec scenario requires zero launchctl invocations).
+  [[ "${PLATFORM}" == "Darwin" ]] || return 1
   launchctl print "${LAUNCH_TARGET}" >/dev/null 2>&1
 }
 
