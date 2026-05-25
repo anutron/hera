@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/rpc"
+	"net/rpc/jsonrpc"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,13 +29,13 @@ import (
 //   - DELETE /api/mcp/tools/{name}
 //   - GET /api/tasks (resolver fallback)
 type fakeArgusForDaemon struct {
-	mu                  sync.Mutex
-	registered          []string
-	unregister          []string
-	settingsRegistered  []string
-	settingsUnregister  []string
-	streamReqs          int
-	streamClose         chan struct{}
+	mu                 sync.Mutex
+	registered         []string
+	unregister         []string
+	settingsRegistered []string
+	settingsUnregister []string
+	streamReqs         int
+	streamClose        chan struct{}
 }
 
 func (f *fakeArgusForDaemon) handler() http.Handler {
@@ -92,10 +97,19 @@ func TestDaemonStart_RegistersAllFiveToolsAndCleansUp(t *testing.T) {
 	defer srv.Close()
 	defer close(fake.streamClose) // drain SSE handler so HTTP server can shut down
 
+	apiPort := extractPort(t, srv.URL)
+	sockSvc := &FakeArgusSocketRPC{apiPort: apiPort}
+	sockPath, stopSock := startFakeArgusSocket(t, sockSvc)
+	defer stopSock()
+
 	// Build a temp config (state dir + listen on :0).
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
 		t.Fatalf("write token: %v", err)
+	}
+	pidPath := filepath.Join(stateDir, "fake-argus.pid")
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write pid: %v", err)
 	}
 	cfg := &config.Config{
 		StateDir:        stateDir,
@@ -103,6 +117,8 @@ func TestDaemonStart_RegistersAllFiveToolsAndCleansUp(t *testing.T) {
 		ListenAddr:      "127.0.0.1:0",
 		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour, // skip heartbeat noise during this test
+		ArgusSocketPath: sockPath,
+		ArgusPIDPath:    pidPath,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -164,21 +180,32 @@ func TestDaemonStart_PersistedSettingsOverrideDefaults(t *testing.T) {
 	defer srv.Close()
 	defer close(fake.streamClose)
 
+	apiPort := extractPort(t, srv.URL)
+	sockSvc := &FakeArgusSocketRPC{apiPort: apiPort}
+	sockPath, stopSock := startFakeArgusSocket(t, sockSvc)
+	defer stopSock()
+
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
 		t.Fatalf("write token: %v", err)
+	}
+	pidPath := filepath.Join(stateDir, "fake-argus.pid")
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write pid: %v", err)
 	}
 
 	// Pre-populate the config table with persisted values that diverge
 	// from Default(): debounce 5s (vs default 2s), auto-inject off (vs
 	// default true).
 	cfg := &config.Config{
-		StateDir:     stateDir,
-		ArgusBaseURL: srv.URL,
-		ListenAddr:   "127.0.0.1:0",
-		IdleDebounce: 2 * time.Second,
-		MCPHeartbeat: 24 * time.Hour,
+		StateDir:          stateDir,
+		ArgusBaseURL:      srv.URL,
+		ListenAddr:        "127.0.0.1:0",
+		IdleDebounce:      2 * time.Second,
+		MCPHeartbeat:      24 * time.Hour,
 		AutoInjectEnabled: true, // Default — LoadPersistedSettings should flip this to false.
+		ArgusSocketPath:   sockPath,
+		ArgusPIDPath:      pidPath,
 	}
 	database, err := db.Open(cfg.StatePath())
 	if err != nil {
@@ -240,6 +267,240 @@ func TestDaemonStart_PersistedSettingsOverrideDefaults(t *testing.T) {
 	fake.mu.Unlock()
 	if len(gotUnreg) < 1 {
 		t.Fatalf("settings-section not unregistered, got %+v", gotUnreg)
+	}
+}
+
+// FakeArgusSocketRPC is the JSON-RPC service the daemon smoke test
+// exports as `Daemon` over a unix socket. It mirrors argus's Daemon.Ports
+// and Daemon.Ping methods so hera's startup discovery and runtime watcher
+// have something to talk to.
+type FakeArgusSocketRPC struct {
+	mu      sync.Mutex
+	apiPort int
+	mcpPort int
+}
+
+type FakeSocketEmpty struct{}
+
+type FakeSocketPortsResp struct {
+	MCPPort int
+	APIPort int
+}
+
+type FakeSocketPongResp struct {
+	OK bool
+}
+
+func (f *FakeArgusSocketRPC) Ports(_ *FakeSocketEmpty, resp *FakeSocketPortsResp) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	resp.APIPort = f.apiPort
+	resp.MCPPort = f.mcpPort
+	return nil
+}
+
+func (f *FakeArgusSocketRPC) Ping(_ *FakeSocketEmpty, resp *FakeSocketPongResp) error {
+	resp.OK = true
+	return nil
+}
+
+// startFakeArgusSocket binds a unix socket that mimics argus's daemon
+// JSON-RPC service. The first byte on every connection MUST be 'R' to
+// match argus's dispatch convention; the rest is jsonrpc framing.
+//
+// The socket path lives under /tmp/hera-daemon-* (not t.TempDir) because
+// macOS caps sun_path at 104 chars and /var/folders/... can overflow.
+func startFakeArgusSocket(t *testing.T, svc *FakeArgusSocketRPC) (sockPath string, stop func()) {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("/tmp", "hera-daemon-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	sockPath = filepath.Join(dir, "s")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+
+	srv := rpc.NewServer()
+	if err := srv.RegisterName("Daemon", svc); err != nil {
+		ln.Close()
+		t.Fatalf("register: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			wg.Add(1)
+			go func(c net.Conn) {
+				defer wg.Done()
+				defer c.Close()
+				var prefix [1]byte
+				if _, err := c.Read(prefix[:]); err != nil {
+					return
+				}
+				if prefix[0] != 'R' {
+					return
+				}
+				srv.ServeCodec(jsonrpc.NewServerCodec(c))
+			}(conn)
+		}
+	}()
+
+	stop = func() {
+		ln.Close()
+		wg.Wait()
+	}
+	return sockPath, stop
+}
+
+// extractPort parses the port off an httptest server's URL.
+func extractPort(t *testing.T, raw string) int {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse url %q: %v", raw, err)
+	}
+	p, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("atoi port %q: %v", u.Port(), err)
+	}
+	return p
+}
+
+// TestDaemonStart_PortDiscoveryRunsBeforeMCPRegistrar asserts the Stage 7.2
+// contract: startup must query the argus socket for the REST port BEFORE
+// constructing argus.Client and starting the MCP registrar. The fake socket
+// returns the httptest server's port; if discovery is skipped or wired
+// after the registrar, the registrar's POSTs land on the wrong URL and the
+// fake registry sees zero registrations.
+func TestDaemonStart_PortDiscoveryRunsBeforeMCPRegistrar(t *testing.T) {
+	fake := &fakeArgusForDaemon{streamClose: make(chan struct{})}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	defer close(fake.streamClose)
+
+	apiPort := extractPort(t, srv.URL)
+	sockSvc := &FakeArgusSocketRPC{apiPort: apiPort}
+	sockPath, stopSock := startFakeArgusSocket(t, sockSvc)
+	defer stopSock()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	pidPath := filepath.Join(stateDir, "fake-argus.pid")
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+
+	// ArgusBaseURL intentionally points at a closed port. If startup
+	// discovery does NOT overwrite it via SetBaseURL, the MCP registrar's
+	// POSTs fail and fake.registered stays empty.
+	cfg := &config.Config{
+		StateDir:        stateDir,
+		ArgusBaseURL:    "http://127.0.0.1:1",
+		ListenAddr:      "127.0.0.1:0",
+		IdleDebounce:    100 * time.Millisecond,
+		MCPHeartbeat:    24 * time.Hour,
+		ArgusSocketPath: sockPath,
+		ArgusPIDPath:    pidPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	d, err := Start(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer d.Stop(context.Background())
+
+	want := []string{"hera_new_orchestrator", "hera_join", "hera_send", "hera_inbox", "hera_mark_read", "hera_status"}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fake.mu.Lock()
+		n := len(fake.registered)
+		fake.mu.Unlock()
+		if n >= len(want) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fake.mu.Lock()
+	got := append([]string(nil), fake.registered...)
+	fake.mu.Unlock()
+	if len(got) < len(want) {
+		t.Fatalf("registered %d tools, want %d — startup discovery did not redirect the client to the discovered port: %+v", len(got), len(want), got)
+	}
+
+	// The discovered URL should now be live on the client.
+	gotURL := d.Argus.BaseURL()
+	wantURL := "http://127.0.0.1:" + strconv.Itoa(apiPort)
+	if gotURL != wantURL {
+		t.Fatalf("argus client baseURL = %q, want %q", gotURL, wantURL)
+	}
+}
+
+// TestDaemonStart_PortDiscoveryFailureExitsNonZero asserts the Stage 7.2
+// hard-exit contract: when the argus socket is unreachable, Start MUST
+// return an error AND no MCP registrations may have been attempted (the
+// registrar must not start before discovery succeeds).
+func TestDaemonStart_PortDiscoveryFailureExitsNonZero(t *testing.T) {
+	fake := &fakeArgusForDaemon{streamClose: make(chan struct{})}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	defer close(fake.streamClose)
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	pidPath := filepath.Join(stateDir, "fake-argus.pid")
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+
+	cfg := &config.Config{
+		StateDir:        stateDir,
+		ArgusBaseURL:    srv.URL,
+		ListenAddr:      "127.0.0.1:0",
+		IdleDebounce:    100 * time.Millisecond,
+		MCPHeartbeat:    24 * time.Hour,
+		ArgusSocketPath: filepath.Join(stateDir, "nope.sock"), // does not exist
+		ArgusPIDPath:    pidPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	d, err := Start(ctx, cfg, nil)
+	if err == nil {
+		if d != nil {
+			d.Stop(context.Background())
+		}
+		t.Fatalf("Start: expected error from socket discovery, got nil")
+	}
+	if !strings.Contains(err.Error(), "Ports") && !strings.Contains(err.Error(), "ports") && !strings.Contains(err.Error(), "socket") {
+		t.Fatalf("error should mention Ports/socket discovery, got %q", err.Error())
+	}
+
+	// Registrar must not have started — no MCP POSTs should have hit argus.
+	time.Sleep(50 * time.Millisecond)
+	fake.mu.Lock()
+	gotReg := len(fake.registered)
+	fake.mu.Unlock()
+	if gotReg != 0 {
+		t.Fatalf("registrar started despite discovery failure: %d POSTs landed", gotReg)
 	}
 }
 

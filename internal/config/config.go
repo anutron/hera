@@ -40,12 +40,25 @@ type Config struct {
 	// busy_buffer mode regardless of recipient idle state.
 	// Default: true.
 	AutoInjectEnabled bool
+
+	// ArgusSocketPath is the unix-domain socket exposed by the argus
+	// daemon for the Daemon.* RPC family (Ports, Ping). Hera queries it
+	// on startup to discover argus's dynamic REST port and again on every
+	// reconnect after argus restarts.
+	// Default: ~/.argus/daemon.sock
+	ArgusSocketPath string
+
+	// ArgusPIDPath is the pid file argus rewrites on every daemon start.
+	// Hera polls its mtime in the Watcher to detect restarts.
+	// Default: ~/.argus/daemon.pid
+	ArgusPIDPath string
 }
 
 // Default returns a Config populated with the v1 defaults.
 func Default() *Config {
 	home, _ := os.UserHomeDir()
 	stateDir := filepath.Join(home, ".hera")
+	argusDir := filepath.Join(home, ".argus")
 	return &Config{
 		StateDir:          stateDir,
 		ArgusBaseURL:      "http://127.0.0.1:7743",
@@ -53,6 +66,8 @@ func Default() *Config {
 		IdleDebounce:      2 * time.Second,
 		MCPHeartbeat:      5 * time.Minute,
 		AutoInjectEnabled: true,
+		ArgusSocketPath:   filepath.Join(argusDir, "daemon.sock"),
+		ArgusPIDPath:      filepath.Join(argusDir, "daemon.pid"),
 	}
 }
 

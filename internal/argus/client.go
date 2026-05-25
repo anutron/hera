@@ -99,7 +99,12 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return resp.StatusCode, fmt.Errorf("argus: %s %s: HTTP %d: %s", method, path, resp.StatusCode, bytes.TrimSpace(errBody))
+		return resp.StatusCode, &HTTPError{
+			Method:     method,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       string(bytes.TrimSpace(errBody)),
+		}
 	}
 
 	if out != nil {

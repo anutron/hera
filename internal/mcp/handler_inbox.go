@@ -27,11 +27,11 @@ type InboxInput struct {
 
 // InboxMessage is one row in the inbox response.
 type InboxMessage struct {
-	ID         int64  `json:"id"`
-	FromRole   string `json:"from_role"`
-	SentAt     string `json:"sent_at"`
-	Body       string `json:"body"`
-	InReplyTo  *int64 `json:"in_reply_to,omitempty"`
+	ID        int64  `json:"id"`
+	FromRole  string `json:"from_role"`
+	SentAt    string `json:"sent_at"`
+	Body      string `json:"body"`
+	InReplyTo *int64 `json:"in_reply_to,omitempty"`
 }
 
 // InboxOutput is the response payload.

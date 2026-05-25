@@ -37,11 +37,11 @@ func NewNewOrchestratorHandler(r *Resolver, database *db.DB, client *argus.Clien
 
 // NewOrchestratorInput is the tool's input schema.
 type NewOrchestratorInput struct {
-	Cwd                  string `json:"cwd"`
-	Name                 string `json:"name"`
-	CoordinatorRoleName  string `json:"coordinator_role_name"`
-	Mission              string `json:"mission,omitempty"`
-	Constraints          string `json:"constraints,omitempty"`
+	Cwd                 string `json:"cwd"`
+	Name                string `json:"name"`
+	CoordinatorRoleName string `json:"coordinator_role_name"`
+	Mission             string `json:"mission,omitempty"`
+	Constraints         string `json:"constraints,omitempty"`
 }
 
 // NewOrchestratorOutput is the success payload.

@@ -12,8 +12,8 @@
 - [x] 1.4 In `internal/mcp/registrar_test.go` and `internal/settings/registrar_test.go`, add failing tests for `ForceReregister`: invocation issues fresh POSTs without waiting for the next heartbeat tick.
 - [x] 1.5 In `internal/mcp/handler_link_state_test.go`, write failing tests for the degraded-state preamble: tool handler called with `LinkState() == recovering` returns `isError: true` with the `recovering` content block; `LinkState() == down` returns the `down` content block; `LinkState() == healthy` proceeds normally.
 - [x] 1.6 In `internal/mcp/handler_status_test.go`, add a failing test for the `argus_link` field on `hera_status` output covering all three states.
-- [ ] 1.7 In `internal/daemon/run_test.go`, add a failing smoke test that asserts startup discovery runs before the `mcp.Registrar` is started, and that a hard exit occurs when discovery fails.
-- [ ] 1.8 Validate the change: `openspec validate add-argus-reconnect --strict` MUST pass after spec text is committed (no implementation needed for this gate).
+- [x] 1.7 In `internal/daemon/run_test.go`, add a failing smoke test that asserts startup discovery runs before the `mcp.Registrar` is started, and that a hard exit occurs when discovery fails.
+- [x] 1.8 Validate the change: `openspec validate add-argus-reconnect --strict` MUST pass after spec text is committed (no implementation needed for this gate).
 
 ## 2. Socket RPC client
 
@@ -58,16 +58,16 @@
 
 **Depends on:** Stages 2-6.
 
-- [ ] 7.1 Add `internal/argus/recovery.go` with a `Recover(ctx)` function: set state to `recovering`, call `PortsClient.Ports`, call `client.SetBaseURL`, call `mcpRegistrar.ForceReregister`, call `settingsRegistrar.ForceReregister`. On any failure, set state to `down` and store the error; on full success, set state to `healthy`.
-- [ ] 7.2 In `internal/daemon/run.go`, wire startup discovery: before constructing the `argus.Client`, call `PortsClient.Ports`. On error, log and exit non-zero. On success, construct the client with the discovered baseURL.
-- [ ] 7.3 After both registrars are started, instantiate the `Watcher` with `onRestart = Recover` and start it. Stop it in the daemon's shutdown path before the registrars stop.
-- [ ] 7.4 Wire the existing 5-minute heartbeat 404 path on `mcp.Registrar` to also call `Recover` as a passive fallback.
-- [ ] 7.5 Make Stage 1.7 daemon smoke test green.
+- [x] 7.1 Add `internal/argus/recovery.go` with a `Recover(ctx)` function: set state to `recovering`, call `PortsClient.Ports`, call `client.SetBaseURL`, call `mcpRegistrar.ForceReregister`, call `settingsRegistrar.ForceReregister`. On any failure, set state to `down` and store the error; on full success, set state to `healthy`.
+- [x] 7.2 In `internal/daemon/run.go`, wire startup discovery: before constructing the `argus.Client`, call `PortsClient.Ports`. On error, log and exit non-zero. On success, construct the client with the discovered baseURL.
+- [x] 7.3 After both registrars are started, instantiate the `Watcher` with `onRestart = Recover` and start it. Stop it in the daemon's shutdown path before the registrars stop.
+- [x] 7.4 Wire the existing 5-minute heartbeat 404 path on `mcp.Registrar` to also call `Recover` as a passive fallback.
+- [x] 7.5 Make Stage 1.7 daemon smoke test green.
 
 ## 8. Validate
 
 **Depends on:** all above.
 
-- [ ] 8.1 `go test ./... -race -count=1`. All packages green.
-- [ ] 8.2 `openspec validate add-argus-reconnect --strict` still passes after all task checkboxes flip.
-- [ ] 8.3 `openspec archive add-argus-reconnect` merges the delta into `openspec/specs/hera-substrate-link/spec.md` (creating the new base spec file).
+- [x] 8.1 `go test ./... -race -count=1`. All packages green.
+- [x] 8.2 `openspec validate add-argus-reconnect --strict` still passes after all task checkboxes flip.
+- [x] 8.3 `openspec archive add-argus-reconnect` merges the delta into `openspec/specs/hera-substrate-link/spec.md` (creating the new base spec file).

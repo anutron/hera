@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,6 +164,58 @@ func TestRegistrar_ForceReregister_FiresImmediately(t *testing.T) {
 	got := map[string]bool{names[0]: true, names[1]: true}
 	if !got["hera_send"] || !got["hera_inbox"] {
 		t.Fatalf("expected both tools re-registered, got %v", names)
+	}
+}
+
+// TestRegistrar_Heartbeat404FiresCallback proves the passive-fallback
+// path: a heartbeat re-register that lands on a 404 (argus has restarted
+// to a new REST port and the old registration is gone) invokes the
+// OnHeartbeat404 callback so the daemon can run argus.Recover.
+func TestRegistrar_Heartbeat404FiresCallback(t *testing.T) {
+	mux := http.NewServeMux()
+	var calls int32
+	mux.HandleFunc("/api/mcp/tools", func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			// Initial registration on Start succeeds.
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"name":"hera_send","scope":"hera"}`)
+			return
+		}
+		// Subsequent heartbeat re-registers 404 to simulate the
+		// "argus restarted, our slot is gone" failure mode.
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := argus.New(srv.URL, "tok")
+
+	r := NewRegistrar(client, "http://127.0.0.1:9000", "Bearer test-secret", nil)
+	r.Add(ToolDefinition{Name: "hera_send", Description: "Send a hera message"})
+
+	var fired atomic.Int32
+	r.SetOnHeartbeat404(func(ctx context.Context) { fired.Add(1) })
+	r.SetHeartbeat(40 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := r.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		_ = r.Stop(stopCtx)
+		stopCancel()
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if fired.Load() >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := fired.Load(); got < 1 {
+		t.Fatalf("OnHeartbeat404 fired %d times after 404 heartbeat, want ≥1", got)
 	}
 }
 

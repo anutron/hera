@@ -18,9 +18,9 @@ import (
 // but otherwise behaves like the regular handlers fixture. Used to exercise
 // the soft-fail meta-mirror paths in hera_new_orchestrator and hera_status.
 type failingMetaArgus struct {
-	mu        *fakeArgusForHandlers
-	srv       *httptest.Server
-	client    *argus.Client
+	mu     *fakeArgusForHandlers
+	srv    *httptest.Server
+	client *argus.Client
 }
 
 func setupFailingMetaHandlers(t *testing.T) *handlerFixture {
