@@ -6,9 +6,9 @@
 
 **Depends on:** nothing.
 
-- [ ] 1.1 In `internal/settings/registrar_test.go`, write failing tests for: initial POST to `/api/plugins/settings/sections`; 5-minute heartbeat re-POST; DELETE on Stop; payload shape (one form section, two fields with right types/defaults/bounds); callback_url includes `/mcp/settings_save`.
+- [x] 1.1 In `internal/settings/registrar_test.go`, write failing tests for: initial POST to `/api/plugins/settings/sections`; 5-minute heartbeat re-POST; DELETE on Stop; payload shape (one form section, two fields with right types/defaults/bounds); callback_url includes `/mcp/settings_save`.
 - [x] 1.2 In `internal/argus/settings_test.go`, write failing tests for `RegisterSettingsSection` / `UnregisterSettingsSection` HTTP method/path/headers against an `httptest.Server` mock.
-- [ ] 1.3 In `internal/mcp/handler_settings_save_test.go`, write failing tests for: valid save updates `config` table rows AND calls `Tracker.SetDebounce` AND calls `Injector.SetAutoInjectEnabled`; out-of-range int returns `isError: true`; non-bool returns `isError: true`; missing field uses last persisted value (partial save).
+- [x] 1.3 In `internal/mcp/handler_settings_save_test.go`, write failing tests for: valid save updates `config` table rows AND calls `Tracker.SetDebounce` AND calls `Injector.SetAutoInjectEnabled`; out-of-range int returns `isError: true`; non-bool returns `isError: true`; missing field uses last persisted value (partial save).
 - [x] 1.4 In `internal/idle/tracker_test.go`, add tests for `SetDebounce(d)` changing the in-effect threshold; concurrent SetDebounce + IsIdle (race detector).
 - [x] 1.5 In `internal/inject/inject_test.go`, add tests for `SetAutoInjectEnabled(false)` forcing busy_buffer mode even when the task is idle; SetAutoInjectEnabled(true) restoring idle_submit; default value is true.
 - [ ] 1.6 In `internal/daemon/run_test.go`, add a smoke test that: persists config rows via `ConfigDAO.Set` before Start; asserts Tracker.debounce and Injector.autoInjectEnabled reflect the persisted values; asserts SettingsRegistrar is started and stopped alongside the MCP Registrar.
@@ -25,15 +25,15 @@
 
 **Depends on:** Stage 2.
 
-- [ ] 3.1 Add `internal/settings/registrar.go` mirroring `internal/mcp/registrar.go`. Struct: `{ client *argus.Client, callbackURL, authHeader string, heartbeat time.Duration, log *slog.Logger, mu sync.Mutex, sections []argus.SettingsSectionDefinition, stop chan struct{}, wg sync.WaitGroup }`.
-- [ ] 3.2 Implement `NewRegistrar(client, callbackBaseURL, authHeader, log) *Registrar`, `Add(section)`, `Start(ctx)`, `Stop(ctx)`.
-- [ ] 3.3 Start: initial registerAll → spawn heartbeat goroutine. Stop: close stop chan, wait wg, then DELETE each registered section name with a short timeout (10s like the MCP Registrar).
-- [ ] 3.4 Build the one section definition: name `hera`, type `form`, callback URL = `http://127.0.0.1:7744/mcp/settings_save`, two fields with the following exact descriptions (each describes what the field does AND the operational impact of changing it — operators read these in the settings UI and need both pieces):
+- [x] 3.1 Add `internal/settings/registrar.go` mirroring `internal/mcp/registrar.go`. Struct: `{ client *argus.Client, callbackURL, authHeader string, heartbeat time.Duration, log *slog.Logger, mu sync.Mutex, sections []argus.SettingsSectionDefinition, stop chan struct{}, wg sync.WaitGroup }`.
+- [x] 3.2 Implement `NewRegistrar(client, callbackBaseURL, authHeader, log) *Registrar`, `Add(section)`, `Start(ctx)`, `Stop(ctx)`.
+- [x] 3.3 Start: initial registerAll → spawn heartbeat goroutine. Stop: close stop chan, wait wg, then DELETE each registered section name with a short timeout (10s like the MCP Registrar).
+- [x] 3.4 Build the one section definition: name `hera`, type `form`, callback URL = `http://127.0.0.1:7744/mcp/settings_save`, two fields with the following exact descriptions (each describes what the field does AND the operational impact of changing it — operators read these in the settings UI and need both pieces):
   - `idle_debounce_seconds` (int, min 0, max 60, default 2):
     > Seconds an agent's session must stay quiet before hera auto-submits any messages waiting in its input buffer. **Lower** = faster delivery once an agent goes quiet, but higher risk of submitting while the agent is still working between bursts. **Higher** = more padding before submit, at the cost of slower message delivery. **0** submits on the first quiet event. **60** is the ceiling — past that you're working around a substrate bug, not tuning UX. Default 2 reproduces v1 behavior.
   - `auto_inject_enabled` (bool, default true):
     > When **on**, hera auto-submits cross-agent messages (presses Enter for you) once the recipient agent's session has been quiet for the debounce above. When **off**, every message is left sitting in the recipient's input buffer for you to read and submit manually — same as how busy sessions are already handled. Turn off when you want to QA every cross-agent message before it lands. Default on reproduces v1 behavior.
-- [ ] 3.5 Make Stage 1.1 tests green.
+- [x] 3.5 Make Stage 1.1 tests green.
 
 ## 4. Config + DB read-back
 
@@ -59,12 +59,12 @@
 
 **Depends on:** Stages 4, 5.
 
-- [ ] 6.1 Add `internal/mcp/handler_settings_save.go`. Implements `Handler` interface (same as the six tool handlers). Wired to the route `settings_save` via `RegisterHandler` in daemon Start.
-- [ ] 6.2 Parse the callback envelope's `input` map: extract `idle_debounce_seconds` (any-typed; tolerate JSON int or string), `auto_inject_enabled` (any-typed; tolerate bool or "true"/"false" string). Both fields optional — partial save updates only the supplied keys.
-- [ ] 6.3 Validate: int in `[0, 60]`; bool valid. Reject with `isError: true` and an explanatory content block on validation failure. No DB writes happen if validation fails.
-- [ ] 6.4 On valid input: `ConfigDAO.Set` each provided key; then call `Tracker.SetDebounce(time.Duration(seconds) * time.Second)` and `Injector.SetAutoInjectEnabled(b)` for whichever values were provided.
-- [ ] 6.5 Return success response with the new effective values (so the substrate UI can re-render with confirmed state).
-- [ ] 6.6 Make Stage 1.3 tests green.
+- [x] 6.1 Add `internal/mcp/handler_settings_save.go`. Implements `Handler` interface (same as the six tool handlers). Wired to the route `settings_save` via `RegisterHandler` in daemon Start.
+- [x] 6.2 Parse the callback envelope's `input` map: extract `idle_debounce_seconds` (any-typed; tolerate JSON int or string), `auto_inject_enabled` (any-typed; tolerate bool or "true"/"false" string). Both fields optional — partial save updates only the supplied keys.
+- [x] 6.3 Validate: int in `[0, 60]`; bool valid. Reject with `isError: true` and an explanatory content block on validation failure. No DB writes happen if validation fails.
+- [x] 6.4 On valid input: `ConfigDAO.Set` each provided key; then call `Tracker.SetDebounce(time.Duration(seconds) * time.Second)` and `Injector.SetAutoInjectEnabled(b)` for whichever values were provided.
+- [x] 6.5 Return success response with the new effective values (so the substrate UI can re-render with confirmed state).
+- [x] 6.6 Make Stage 1.3 tests green.
 
 ## 7. Daemon wiring
 
