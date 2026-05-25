@@ -6,9 +6,9 @@
 
 **Depends on:** nothing.
 
-- [ ] 1.1 In `internal/argus/socket_test.go`, write failing tests for `PortsClient.Ports` and `PortsClient.Ping` against an in-process unix-socket JSON-RPC server mock.
-- [ ] 1.2 In `internal/argus/client_setbaseurl_test.go`, write failing tests for `Client.SetBaseURL` under race detector: concurrent HTTP-issuing methods reading baseURL while a setter updates it.
-- [ ] 1.3 In `internal/argus/watcher_test.go`, write failing tests for `Watcher`: pid mtime change fires `OnRestart`; socket ping failure fires `OnRestart`; in-flight callback suppresses concurrent triggers (single-flight).
+- [x] 1.1 In `internal/argus/socket_test.go`, write failing tests for `PortsClient.Ports` and `PortsClient.Ping` against an in-process unix-socket JSON-RPC server mock.
+- [x] 1.2 In `internal/argus/client_setbaseurl_test.go`, write failing tests for `Client.SetBaseURL` under race detector: concurrent HTTP-issuing methods reading baseURL while a setter updates it.
+- [x] 1.3 In `internal/argus/watcher_test.go`, write failing tests for `Watcher`: pid mtime change fires `OnRestart`; socket ping failure fires `OnRestart`; in-flight callback suppresses concurrent triggers (single-flight).
 - [ ] 1.4 In `internal/mcp/registrar_test.go` and `internal/settings/registrar_test.go`, add failing tests for `ForceReregister`: invocation issues fresh POSTs without waiting for the next heartbeat tick.
 - [ ] 1.5 In `internal/mcp/handler_link_state_test.go`, write failing tests for the degraded-state preamble: tool handler called with `LinkState() == recovering` returns `isError: true` with the `recovering` content block; `LinkState() == down` returns the `down` content block; `LinkState() == healthy` proceeds normally.
 - [ ] 1.6 In `internal/mcp/handler_status_test.go`, add a failing test for the `argus_link` field on `hera_status` output covering all three states.
@@ -19,23 +19,23 @@
 
 **Depends on:** Stage 1.
 
-- [ ] 2.1 Add `internal/argus/socket.go` with `PortsClient` struct, constructor `NewPortsClient(socketPath string)`, and methods `Ports(ctx) (api, mcp int, err error)` and `Ping(ctx) error`. Use stdlib `net/rpc/jsonrpc` over `net.Dial("unix", ...)` with a short per-call deadline (1s).
-- [ ] 2.2 Make Stage 1.1 tests green.
+- [x] 2.1 Add `internal/argus/socket.go` with `PortsClient` struct, constructor `NewPortsClient(socketPath string)`, and methods `Ports(ctx) (api, mcp int, err error)` and `Ping(ctx) error`. Use stdlib `net/rpc/jsonrpc` over `net.Dial("unix", ...)` with a short per-call deadline (1s).
+- [x] 2.2 Make Stage 1.1 tests green.
 
 ## 3. Atomic baseURL setter
 
 **Depends on:** Stage 1.
 
-- [ ] 3.1 Add `SetBaseURL(u string)` on `internal/argus/Client` guarded by the client's existing mutex (or a new dedicated `sync.RWMutex` if the existing one doesn't fit). Convert all HTTP-issuing methods to read `baseURL` through the same lock.
-- [ ] 3.2 Make Stage 1.2 tests green (including `go test -race`).
+- [x] 3.1 Add `SetBaseURL(u string)` on `internal/argus/Client` guarded by the client's existing mutex (or a new dedicated `sync.RWMutex` if the existing one doesn't fit). Convert all HTTP-issuing methods to read `baseURL` through the same lock.
+- [x] 3.2 Make Stage 1.2 tests green (including `go test -race`).
 
 ## 4. Watcher
 
 **Depends on:** Stages 2, 3.
 
-- [ ] 4.1 Add `internal/argus/watcher.go` with `Watcher` struct: `{ pidPath string, ping func(ctx) error, interval time.Duration, onRestart func(ctx), log *slog.Logger, stop chan struct{}, wg sync.WaitGroup, inflight atomic.Bool }`.
-- [ ] 4.2 Implement `Start(ctx)` / `Stop(ctx)`. The Start loop: every `interval` (1s), `os.Stat` the pid file and capture mtime; call `ping(ctx)`; if either signal indicates restart (mtime changed OR ping returned error), invoke `onRestart(ctx)` under single-flight (`inflight.CompareAndSwap(false, true)` guard).
-- [ ] 4.3 Make Stage 1.3 tests green.
+- [x] 4.1 Add `internal/argus/watcher.go` with `Watcher` struct: `{ pidPath string, ping func(ctx) error, interval time.Duration, onRestart func(ctx), log *slog.Logger, stop chan struct{}, wg sync.WaitGroup, inflight atomic.Bool }`.
+- [x] 4.2 Implement `Start(ctx)` / `Stop(ctx)`. The Start loop: every `interval` (1s), `os.Stat` the pid file and capture mtime; call `ping(ctx)`; if either signal indicates restart (mtime changed OR ping returned error), invoke `onRestart(ctx)` under single-flight (`inflight.CompareAndSwap(false, true)` guard).
+- [x] 4.3 Make Stage 1.3 tests green.
 
 ## 5. Force-reregister on registrars
 

@@ -81,7 +81,7 @@ func (c *Client) StreamEvents(ctx context.Context, sinceID int64, handler EventH
 // request shape uniform and easier to log/replay.
 func (c *Client) streamOnce(ctx context.Context, sinceID int64, handler EventHandler, advance func(int64)) error {
 	path := fmt.Sprintf("/api/events/stream?since=%d", sinceID)
-	url := c.baseURL + path
+	url := c.BaseURL() + path
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
