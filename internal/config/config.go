@@ -20,13 +20,10 @@ type Config struct {
 	ArgusBaseURL string
 
 	// ListenAddr is the address the MCP callback HTTP listener binds to.
-	// Default: 127.0.0.1:7744
+	// Default: 127.0.0.1:7744. Use "127.0.0.1:0" in tests to bind to an
+	// arbitrary free port; the daemon derives the callback URL it
+	// advertises to argus from the actual bound address.
 	ListenAddr string
-
-	// CallbackBaseURL is what hera advertises to argus as its
-	// callback_url prefix. Usually "http://" + the actual listen address.
-	// Default: derived from ListenAddr.
-	CallbackBaseURL string
 
 	// IdleDebounce is how long session.idle must persist before a task
 	// becomes auto-submit-eligible (see design D10).
@@ -43,14 +40,12 @@ type Config struct {
 func Default() *Config {
 	home, _ := os.UserHomeDir()
 	stateDir := filepath.Join(home, ".hera")
-	listenAddr := "127.0.0.1:7744"
 	return &Config{
-		StateDir:        stateDir,
-		ArgusBaseURL:    "http://127.0.0.1:7743",
-		ListenAddr:      listenAddr,
-		CallbackBaseURL: "http://" + listenAddr,
-		IdleDebounce:    2 * time.Second,
-		MCPHeartbeat:    5 * time.Minute,
+		StateDir:     stateDir,
+		ArgusBaseURL: "http://127.0.0.1:7743",
+		ListenAddr:   "127.0.0.1:7744",
+		IdleDebounce: 2 * time.Second,
+		MCPHeartbeat: 5 * time.Minute,
 	}
 }
 

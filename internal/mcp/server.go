@@ -144,7 +144,20 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) authCheck(r *http.Request) bool {
 	got := r.Header.Get("Authorization")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.authHeader)) == 1
+	// subtle.ConstantTimeCompare returns 0 immediately if lengths differ –
+	// that's a timing side-channel that distinguishes "wrong length" from
+	// "wrong content". Not exploitable for us (the auth header is a fixed
+	// 32-hex Bearer token), but pad both sides to a fixed length so the
+	// compare is always constant-time regardless of input shape.
+	const padLen = 256
+	gotPad := make([]byte, padLen)
+	wantPad := make([]byte, padLen)
+	copy(gotPad, got)
+	copy(wantPad, s.authHeader)
+	// Constant-time content compare + constant-time length compare.
+	eqContent := subtle.ConstantTimeCompare(gotPad, wantPad)
+	eqLen := subtle.ConstantTimeEq(int32(len(got)), int32(len(s.authHeader)))
+	return eqContent&eqLen == 1
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

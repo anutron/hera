@@ -52,21 +52,27 @@ func (t *Tracker) SetClock(now func() time.Time) {
 	t.mu.Unlock()
 }
 
-// HandleEvent implements events.Handler. Only session.* events are acted
-// on; everything else is ignored.
+// HandleEvent implements events.Handler. session.* events update per-task
+// state. task.archived drops the entry (so the map doesn't grow unboundedly
+// over the daemon's lifetime as tasks come and go). Other event types are
+// ignored.
 func (t *Tracker) HandleEvent(ctx context.Context, ev argus.Event) {
 	switch ev.Type {
 	case events.TypeSessionIdle, events.TypeSessionStarted, events.TypeSessionExited:
-		// fall through
-	default:
-		return
+		if ev.TaskID == "" {
+			return
+		}
+		t.mu.Lock()
+		t.state[ev.TaskID] = sessionEvent{kind: ev.Type, at: t.now()}
+		t.mu.Unlock()
+	case events.TypeTaskArchived:
+		if ev.TaskID == "" {
+			return
+		}
+		t.mu.Lock()
+		delete(t.state, ev.TaskID)
+		t.mu.Unlock()
 	}
-	if ev.TaskID == "" {
-		return
-	}
-	t.mu.Lock()
-	t.state[ev.TaskID] = sessionEvent{kind: ev.Type, at: t.now()}
-	t.mu.Unlock()
 }
 
 // IsIdle reports whether the task is eligible for auto-submit injection.

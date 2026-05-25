@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
@@ -21,18 +22,21 @@ func NewResolver(client *argus.Client, database *db.DB) *Resolver {
 	return &Resolver{client: client, db: database}
 }
 
-// TaskForCwd returns the argus task whose worktree_path matches cwd
-// exactly. Returns ErrCwdUnknown if no task matches.
+// TaskForCwd returns the argus task whose worktree_path matches cwd,
+// after normalizing both sides via filepath.Clean (so trailing slashes,
+// redundant separators, and "." segments don't cause false misses).
+// Returns ErrCwdUnknown if no task matches.
 func (r *Resolver) TaskForCwd(ctx context.Context, cwd string) (*argus.Task, error) {
 	if cwd == "" {
 		return nil, ErrCwdMissing
 	}
+	normalized := filepath.Clean(cwd)
 	tasks, err := r.client.ListTasks(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolver.TaskForCwd: list tasks: %w", err)
 	}
 	for i := range tasks {
-		if tasks[i].WorktreePath == cwd {
+		if filepath.Clean(tasks[i].WorktreePath) == normalized {
 			return &tasks[i], nil
 		}
 	}

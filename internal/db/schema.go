@@ -15,7 +15,24 @@ type migration struct {
 var migrations = []migration{
 	{
 		name: "0001_initial",
+		sql: initialSchema,
+	},
+	{
+		name: "0002_bindings_unique_live",
 		sql: `
+-- Defense in depth: prevent two live bindings from coexisting for the
+-- same argus task, role, or worktree path. Handlers already pre-check
+-- via GetLiveByTaskID, but a race between two MCP calls could slip
+-- past the application-level guard. Partial unique indexes turn the
+-- race into a deterministic INSERT failure instead of data corruption.
+CREATE UNIQUE INDEX bindings_live_unique_task ON bindings(argus_task_id) WHERE ended_at IS NULL;
+CREATE UNIQUE INDEX bindings_live_unique_role ON bindings(role_id) WHERE ended_at IS NULL;
+CREATE UNIQUE INDEX bindings_live_unique_worktree ON bindings(worktree_path) WHERE ended_at IS NULL;
+`,
+	},
+}
+
+const initialSchema = `
 CREATE TABLE orchestrators (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
@@ -81,9 +98,7 @@ CREATE TABLE config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-`,
-	},
-}
+`
 
 // migrate runs every migration whose index exceeds the database's stored
 // user_version. user_version starts at 0 in a fresh database.

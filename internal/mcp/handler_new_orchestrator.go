@@ -86,18 +86,21 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 		return ErrorResponse("hera_new_orchestrator: lookup existing binding: " + err.Error())
 	}
 
-	// Create orchestrator (idempotent on name).
+	// Determine "newly created" before Orchestrators.Create runs – the
+	// DAO is idempotent on name, so after-the-fact inference (via "does
+	// the orchestrator have any roles already?") would falsely report
+	// Created=true for an orchestrator that existed but had zero roles.
+	existed := true
+	if _, err := h.db.Orchestrators.GetByName(ctx, in.Name); errors.Is(err, db.ErrNotFound) {
+		existed = false
+	} else if err != nil {
+		return ErrorResponse("hera_new_orchestrator: lookup orchestrator: " + err.Error())
+	}
 	orch, err := h.db.Orchestrators.Create(ctx, in.Name)
 	if err != nil {
 		return ErrorResponse("hera_new_orchestrator: create orchestrator: " + err.Error())
 	}
-	// Was it pre-existing? Orchestrators.Create returns the same row on
-	// conflict; we detect "newly created" by checking whether any roles
-	// already exist on the orchestrator.
-	created := true
-	if existing, err := h.db.Roles.ListByOrchestrator(ctx, orch.ID); err == nil && len(existing) > 0 {
-		created = false
-	}
+	created := !existed
 
 	// Check for an existing coordinator role with the same name; reject if
 	// a different role kind is already in that slot.

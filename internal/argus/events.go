@@ -28,8 +28,13 @@ type EventHandler func(Event)
 //
 // sinceID is sent as ?since=<id>. Pass 0 to receive live events only.
 //
-// On transient errors (network blip, server restart) StreamEvents
-// reconnects with exponential backoff capped at 10 seconds.
+// On transient errors (network blip, server restart) or graceful EOF (a
+// clean close from argus, e.g., from a daemon restart) StreamEvents
+// reconnects with exponential backoff capped at 10 seconds. Only ctx
+// cancellation exits the loop. The caller MUST handle the synthetic
+// `resync` event surfaced via the handler — see internal/events.ResyncHandler
+// for the reference implementation. Without resync handling, a cursor
+// that predates argus's retained event ring will silently miss replay.
 func (c *Client) StreamEvents(ctx context.Context, sinceID int64, handler EventHandler) error {
 	backoff := time.Second
 	const maxBackoff = 10 * time.Second
@@ -69,11 +74,13 @@ func (c *Client) StreamEvents(ctx context.Context, sinceID int64, handler EventH
 
 // streamOnce runs one connect-and-read cycle. Returns nil on graceful EOF,
 // an error on transient failures (caller retries).
+//
+// since=<cursor> is always emitted, including when the cursor is 0. Argus
+// treats since=0 the same as "live only" (exclusive cursor), so emitting
+// the param explicitly is harmless on the server side but makes the
+// request shape uniform and easier to log/replay.
 func (c *Client) streamOnce(ctx context.Context, sinceID int64, handler EventHandler, advance func(int64)) error {
-	path := "/api/events/stream"
-	if sinceID > 0 {
-		path += fmt.Sprintf("?since=%d", sinceID)
-	}
+	path := fmt.Sprintf("/api/events/stream?since=%d", sinceID)
 	url := c.baseURL + path
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)

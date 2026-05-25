@@ -82,7 +82,6 @@ func TestDaemonStart_RegistersAllFiveToolsAndCleansUp(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		CallbackBaseURL: "http://127.0.0.1:0",
 		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour, // skip heartbeat noise during this test
 	}

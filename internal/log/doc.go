@@ -1,6 +1,7 @@
-// Package log provides hera's structured logging helpers.
+// Package log is the placeholder for hera's structured logging helpers.
 //
-// Output goes to both stderr (for `hera start --foreground`) and the
-// rolling log file at ~/.hera/hera.log. Keys are colon-separated
-// key=value pairs for grep-friendliness; no JSON shipping in v1.
+// In v1 the daemon logs via the stdlib log/slog package directly to
+// stderr (see cmd/hera/start.go); this package has no exported API yet.
+// File logging at ~/.hera/hera.log will land alongside the launchd
+// install in a follow-up change.
 package log

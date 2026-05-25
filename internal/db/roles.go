@@ -24,6 +24,15 @@ type CreateRoleInput struct {
 // Create inserts a new role under the given orchestrator. Returns the
 // existing row if (orchestrator_id, name) already exists with the same
 // kind; returns an error if it exists with a different kind.
+//
+// Roles are write-once on mission/constraints/argus_project: if a role
+// with the same (orchestrator_id, name) already exists, the supplied
+// Mission, Constraints, and ArgusProject inputs are SILENTLY IGNORED
+// and the existing row's values are preserved. This is intentional —
+// a role is a durable identity established at first creation; subsequent
+// agents claiming the same role inherit the original mission. To change
+// a role's mission, the caller must edit the row directly (v1 has no
+// hera_update_role tool; planned for v1.1 if needed).
 func (r *RolesDAO) Create(ctx context.Context, in CreateRoleInput) (*Role, error) {
 	existing, err := r.GetByOrchestratorAndName(ctx, in.OrchestratorID, in.Name)
 	if err != nil && !errors.Is(err, ErrNotFound) {
