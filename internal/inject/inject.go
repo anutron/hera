@@ -3,6 +3,7 @@ package inject
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/anutron/hera/internal/db"
 )
@@ -21,13 +22,24 @@ type IdleChecker interface {
 
 // Injector delivers messages into argus PTYs with idle gating.
 type Injector struct {
-	pty  PTYWriter
-	idle IdleChecker
+	pty               PTYWriter
+	idle              IdleChecker
+	autoInjectEnabled atomic.Bool
 }
 
 // New constructs an Injector wired to the given dependencies.
+// autoInjectEnabled defaults to true (v1 behavior).
 func New(pty PTYWriter, idle IdleChecker) *Injector {
-	return &Injector{pty: pty, idle: idle}
+	i := &Injector{pty: pty, idle: idle}
+	i.autoInjectEnabled.Store(true)
+	return i
+}
+
+// SetAutoInjectEnabled flips the master switch over the auto-submit
+// branch of Inject. When false, every message lands in busy_buffer mode
+// regardless of recipient idle state. Lock-free at the read site.
+func (i *Injector) SetAutoInjectEnabled(b bool) {
+	i.autoInjectEnabled.Store(b)
 }
 
 // FormatBody returns the on-PTY representation of a message body. Exposed
@@ -47,7 +59,8 @@ func FormatBody(senderRoleName, body string) string {
 // decides how to retry or mark the message as failed.
 func (i *Injector) Inject(ctx context.Context, taskID, senderRoleName, body string) (db.DeliveryMode, error) {
 	formatted := FormatBody(senderRoleName, body)
-	if i.idle.IsIdle(taskID) {
+	isIdle := i.idle.IsIdle(taskID)
+	if isIdle && i.autoInjectEnabled.Load() {
 		if _, err := i.pty.PostTaskInput(ctx, taskID, []byte(formatted+"\n")); err != nil {
 			return db.DeliveryPending, fmt.Errorf("inject (idle path): %w", err)
 		}

@@ -52,6 +52,21 @@ func (t *Tracker) SetClock(now func() time.Time) {
 	t.mu.Unlock()
 }
 
+// SetDebounce updates the idle-debounce threshold in place. Negative
+// values clamp to zero — a debounce can never be negative.
+//
+// Zero means "the next session.idle event makes the task immediately
+// eligible," gated only by the absence of a more-recent session.started
+// or session.exited (see Tracker.IsIdle).
+func (t *Tracker) SetDebounce(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	t.mu.Lock()
+	t.debounce = d
+	t.mu.Unlock()
+}
+
 // HandleEvent implements events.Handler. session.* events update per-task
 // state. task.archived drops the entry (so the map doesn't grow unboundedly
 // over the daemon's lifetime as tasks come and go). Other event types are

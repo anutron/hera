@@ -120,3 +120,124 @@ func TestHandleEvent_PerTaskIsolation(t *testing.T) {
 		t.Fatalf("t2 should NOT be idle")
 	}
 }
+
+// SetDebounce hot-reload: an event recorded 1.5s ago is NOT idle under a
+// 2s debounce, but becomes idle the moment the debounce is shortened to 1s.
+// Spec scenario: "Debounce hot-reload changes behavior immediately".
+func TestSetDebounce_LoweringMakesIdleImmediately(t *testing.T) {
+	tr, clock := newTrackerWithClock(t, 2*time.Second)
+	tr.HandleEvent(context.Background(), argus.Event{Type: events.TypeSessionIdle, TaskID: "t1"})
+	clock.advance(1500 * time.Millisecond)
+	if tr.IsIdle("t1") {
+		t.Fatalf("IsIdle should be false under 2s debounce with 1.5s elapsed")
+	}
+	tr.SetDebounce(1 * time.Second)
+	if !tr.IsIdle("t1") {
+		t.Fatalf("IsIdle should be true immediately after shortening debounce to 1s")
+	}
+}
+
+// SetDebounce raising the threshold pulls a previously-idle task back
+// into the busy set without a new event.
+func TestSetDebounce_RaisingPullsTaskOutOfIdle(t *testing.T) {
+	tr, clock := newTrackerWithClock(t, 1*time.Second)
+	tr.HandleEvent(context.Background(), argus.Event{Type: events.TypeSessionIdle, TaskID: "t1"})
+	clock.advance(2 * time.Second)
+	if !tr.IsIdle("t1") {
+		t.Fatalf("IsIdle should be true under 1s debounce with 2s elapsed")
+	}
+	tr.SetDebounce(5 * time.Second)
+	if tr.IsIdle("t1") {
+		t.Fatalf("IsIdle should flip to false after raising debounce to 5s")
+	}
+}
+
+// Spec scenario: "Zero debounce, idle event makes task immediately eligible".
+// A zero debounce does NOT mean "always idle" — session.started/.exited still
+// gate it. Verify both halves.
+func TestSetDebounce_ZeroMakesIdleEventImmediatelyEligible(t *testing.T) {
+	tr, clock := newTrackerWithClock(t, 2*time.Second)
+	tr.SetDebounce(0)
+	tr.HandleEvent(context.Background(), argus.Event{Type: events.TypeSessionIdle, TaskID: "t1"})
+	if !tr.IsIdle("t1") {
+		t.Fatalf("with 0 debounce, an idle event MUST make task immediately eligible")
+	}
+	// session.started overrides idle even under zero debounce.
+	tr.HandleEvent(context.Background(), argus.Event{Type: events.TypeSessionStarted, TaskID: "t1"})
+	if tr.IsIdle("t1") {
+		t.Fatalf("session.started must override idle even with 0 debounce")
+	}
+	// Subsequent session.idle re-enables eligibility immediately.
+	tr.HandleEvent(context.Background(), argus.Event{Type: events.TypeSessionIdle, TaskID: "t1"})
+	if !tr.IsIdle("t1") {
+		t.Fatalf("subsequent idle event must re-enable eligibility under 0 debounce")
+	}
+	_ = clock
+}
+
+// Negative debounce values clamp to zero (never go negative).
+func TestSetDebounce_NegativeClampsToZero(t *testing.T) {
+	tr, _ := newTrackerWithClock(t, 2*time.Second)
+	tr.HandleEvent(context.Background(), argus.Event{Type: events.TypeSessionIdle, TaskID: "t1"})
+	tr.SetDebounce(-5 * time.Second)
+	// Should behave exactly like 0 (idle event makes task immediately eligible).
+	if !tr.IsIdle("t1") {
+		t.Fatalf("negative debounce should clamp to 0 and treat idle event as eligible")
+	}
+}
+
+// Concurrent SetDebounce + IsIdle + HandleEvent must be race-free under -race.
+func TestSetDebounce_RaceFreeUnderConcurrentReads(t *testing.T) {
+	tr := New()
+	tr.HandleEvent(context.Background(), argus.Event{Type: events.TypeSessionIdle, TaskID: "t1"})
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = tr.IsIdle("t1")
+				}
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					tr.HandleEvent(context.Background(), argus.Event{Type: events.TypeSessionIdle, TaskID: "t1"})
+				}
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				select {
+				case <-stop:
+					return
+				default:
+					tr.SetDebounce(time.Duration(j%5) * time.Millisecond)
+				}
+			}
+		}(i)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}

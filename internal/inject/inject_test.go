@@ -94,3 +94,84 @@ func TestInject_PropagatesPTYErrors(t *testing.T) {
 		t.Fatalf("on error, mode should remain pending, got %s", mode)
 	}
 }
+
+// Default constructor value for autoInjectEnabled is true (v1 behavior).
+func TestInject_DefaultAutoInjectEnabledIsTrue(t *testing.T) {
+	pty := &fakePTY{}
+	in := New(pty, fakeIdle{idle: true})
+	mode, err := in.Inject(context.Background(), "task-1", "foo", "ping")
+	if err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if mode != db.DeliveryIdleSubmit {
+		t.Fatalf("default auto-inject should be true (idle_submit), got %s", mode)
+	}
+	if got := string(pty.writes[0]); got != "[hera from foo] ping\n" {
+		t.Fatalf("default auto-inject should append newline; got %q", got)
+	}
+}
+
+// Spec scenario: "Auto-inject off, idle recipient still busy-buffers".
+// With auto-inject disabled, an idle recipient must receive the formatted
+// body without a trailing newline, and the delivery mode must be busy_buffer.
+func TestInject_AutoInjectDisabledForcesBusyBufferEvenWhenIdle(t *testing.T) {
+	pty := &fakePTY{}
+	in := New(pty, fakeIdle{idle: true})
+	in.SetAutoInjectEnabled(false)
+
+	mode, err := in.Inject(context.Background(), "task-1", "foo-coord", "ping")
+	if err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if mode != db.DeliveryBusyBuffer {
+		t.Fatalf("with auto-inject off and idle recipient, mode should be busy_buffer, got %s", mode)
+	}
+	if got := string(pty.writes[0]); got != "[hera from foo-coord] ping" {
+		t.Fatalf("body should have no trailing newline; got %q", got)
+	}
+}
+
+// Spec scenario: "Auto-inject toggles back to true, behavior restored".
+func TestInject_AutoInjectReEnabledRestoresIdleSubmit(t *testing.T) {
+	pty := &fakePTY{}
+	in := New(pty, fakeIdle{idle: true})
+
+	in.SetAutoInjectEnabled(false)
+	mode, err := in.Inject(context.Background(), "task-1", "foo-coord", "first")
+	if err != nil {
+		t.Fatalf("Inject (off): %v", err)
+	}
+	if mode != db.DeliveryBusyBuffer {
+		t.Fatalf("first call (auto-inject off) should be busy_buffer, got %s", mode)
+	}
+
+	in.SetAutoInjectEnabled(true)
+	mode, err = in.Inject(context.Background(), "task-1", "foo-coord", "second")
+	if err != nil {
+		t.Fatalf("Inject (back-on): %v", err)
+	}
+	if mode != db.DeliveryIdleSubmit {
+		t.Fatalf("after re-enabling, mode should be idle_submit, got %s", mode)
+	}
+	if got := string(pty.writes[1]); got != "[hera from foo-coord] second\n" {
+		t.Fatalf("re-enabled body should have trailing newline; got %q", got)
+	}
+}
+
+// Auto-inject ON but recipient busy still busy_buffers (unchanged v1 path).
+func TestInject_AutoInjectOnButBusyStillBuffers(t *testing.T) {
+	pty := &fakePTY{}
+	in := New(pty, fakeIdle{idle: false})
+	in.SetAutoInjectEnabled(true)
+
+	mode, err := in.Inject(context.Background(), "task-1", "foo", "ping")
+	if err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if mode != db.DeliveryBusyBuffer {
+		t.Fatalf("busy recipient should always busy_buffer, got %s", mode)
+	}
+	if got := string(pty.writes[0]); got != "[hera from foo] ping" {
+		t.Fatalf("busy path body should have no newline; got %q", got)
+	}
+}

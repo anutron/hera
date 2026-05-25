@@ -9,8 +9,8 @@
 - [ ] 1.1 In `internal/settings/registrar_test.go`, write failing tests for: initial POST to `/api/plugins/settings/sections`; 5-minute heartbeat re-POST; DELETE on Stop; payload shape (one form section, two fields with right types/defaults/bounds); callback_url includes `/mcp/settings_save`.
 - [x] 1.2 In `internal/argus/settings_test.go`, write failing tests for `RegisterSettingsSection` / `UnregisterSettingsSection` HTTP method/path/headers against an `httptest.Server` mock.
 - [ ] 1.3 In `internal/mcp/handler_settings_save_test.go`, write failing tests for: valid save updates `config` table rows AND calls `Tracker.SetDebounce` AND calls `Injector.SetAutoInjectEnabled`; out-of-range int returns `isError: true`; non-bool returns `isError: true`; missing field uses last persisted value (partial save).
-- [ ] 1.4 In `internal/idle/tracker_test.go`, add tests for `SetDebounce(d)` changing the in-effect threshold; concurrent SetDebounce + IsIdle (race detector).
-- [ ] 1.5 In `internal/inject/inject_test.go`, add tests for `SetAutoInjectEnabled(false)` forcing busy_buffer mode even when the task is idle; SetAutoInjectEnabled(true) restoring idle_submit; default value is true.
+- [x] 1.4 In `internal/idle/tracker_test.go`, add tests for `SetDebounce(d)` changing the in-effect threshold; concurrent SetDebounce + IsIdle (race detector).
+- [x] 1.5 In `internal/inject/inject_test.go`, add tests for `SetAutoInjectEnabled(false)` forcing busy_buffer mode even when the task is idle; SetAutoInjectEnabled(true) restoring idle_submit; default value is true.
 - [ ] 1.6 In `internal/daemon/run_test.go`, add a smoke test that: persists config rows via `ConfigDAO.Set` before Start; asserts Tracker.debounce and Injector.autoInjectEnabled reflect the persisted values; asserts SettingsRegistrar is started and stopped alongside the MCP Registrar.
 - [ ] 1.7 Validate the change: `openspec validate hera-settings --strict` MUST pass after spec text is committed (no implementation needed for this gate).
 
@@ -49,11 +49,11 @@
 
 **Depends on:** Stage 1.
 
-- [ ] 5.1 Add `Tracker.SetDebounce(d time.Duration)` to `internal/idle/tracker.go`. Acquire write-lock on existing mutex; update `t.debounce`. Document zero-and-negative behavior (clamp to 0 — never go negative).
-- [ ] 5.2 Convert `Tracker.IsIdle` to read-lock `debounce` along with the state map (it already does state-map read-lock; extend to cover debounce).
-- [ ] 5.3 Add `autoInjectEnabled atomic.Bool` field to `internal/inject/inject.Injector`. Constructor sets it true. Add `SetAutoInjectEnabled(b bool)`.
-- [ ] 5.4 In `Injector.Inject`, after computing `isIdle`, replace the branch with `if isIdle && i.autoInjectEnabled.Load() { ... } else { ... }`. Body of `else` is the existing busy_buffer path.
-- [ ] 5.5 Make Stage 1.4 and 1.5 tests green.
+- [x] 5.1 Add `Tracker.SetDebounce(d time.Duration)` to `internal/idle/tracker.go`. Acquire write-lock on existing mutex; update `t.debounce`. Document zero-and-negative behavior (clamp to 0 — never go negative).
+- [x] 5.2 Convert `Tracker.IsIdle` to read-lock `debounce` along with the state map (it already does state-map read-lock; extend to cover debounce).
+- [x] 5.3 Add `autoInjectEnabled atomic.Bool` field to `internal/inject/inject.Injector`. Constructor sets it true. Add `SetAutoInjectEnabled(b bool)`.
+- [x] 5.4 In `Injector.Inject`, after computing `isIdle`, replace the branch with `if isIdle && i.autoInjectEnabled.Load() { ... } else { ... }`. Body of `else` is the existing busy_buffer path.
+- [x] 5.5 Make Stage 1.4 and 1.5 tests green.
 
 ## 6. Save handler
 
