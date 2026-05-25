@@ -34,6 +34,12 @@ type Config struct {
 	// to argus to stay within the substrate's idle sweep window.
 	// Default: 5m.
 	MCPHeartbeat time.Duration
+
+	// AutoInjectEnabled is the master switch over the auto-submit branch
+	// of Injector.Inject. When false, every message is delivered in
+	// busy_buffer mode regardless of recipient idle state.
+	// Default: true.
+	AutoInjectEnabled bool
 }
 
 // Default returns a Config populated with the v1 defaults.
@@ -41,11 +47,12 @@ func Default() *Config {
 	home, _ := os.UserHomeDir()
 	stateDir := filepath.Join(home, ".hera")
 	return &Config{
-		StateDir:     stateDir,
-		ArgusBaseURL: "http://127.0.0.1:7743",
-		ListenAddr:   "127.0.0.1:7744",
-		IdleDebounce: 2 * time.Second,
-		MCPHeartbeat: 5 * time.Minute,
+		StateDir:          stateDir,
+		ArgusBaseURL:      "http://127.0.0.1:7743",
+		ListenAddr:        "127.0.0.1:7744",
+		IdleDebounce:      2 * time.Second,
+		MCPHeartbeat:      5 * time.Minute,
+		AutoInjectEnabled: true,
 	}
 }
 

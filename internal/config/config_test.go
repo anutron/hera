@@ -24,6 +24,9 @@ func TestDefault_ReasonableValues(t *testing.T) {
 	if cfg.StateDir == "" {
 		t.Fatalf("StateDir empty")
 	}
+	if cfg.AutoInjectEnabled != true {
+		t.Fatalf("AutoInjectEnabled = %v, want true", cfg.AutoInjectEnabled)
+	}
 }
 
 func TestLoadToken_FileMissing(t *testing.T) {
