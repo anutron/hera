@@ -17,36 +17,42 @@ Coordinator/overlay daemon for [argus](https://github.com/drn/argus). Provides r
 - **Not a plugin view yet.** The embedded-terminal split view is deferred to a follow-up change.
 - **Not a daemon supervisor.** `hera install` (launchd auto-start) is deferred.
 
-## Building
+## Getting started
+
+```sh
+./setup.sh
+```
+
+That's the whole install. The script builds the binary, copies it to `~/bin/hera`, creates `~/.hera/` (mode 0700), and mints a scope token via `argus token mint --scope hera` (saved to `~/.hera/api-token`, mode 0600). It's idempotent — safe to re-run any time.
+
+Then start hera in the foreground:
+
+```sh
+hera start --foreground
+```
+
+Keep that terminal open. From any argus task with MCP access, bootstrap an orchestrator:
+
+```
+hera_new_orchestrator(cwd=$PWD, name="my-project", coordinator_role_name="coord", mission="...")
+```
+
+Inspect state any time:
+
+```sh
+hera status   # daemon + orchestrator counts
+hera list     # orchestrators + roles + live binding state
+```
+
+## Building from source (without setup.sh)
 
 ```sh
 make build         # produces ./bin/hera
-make test          # runs the full test suite
+make test          # runs the full test suite with -race
 make install-dev   # copies ./bin/hera to ~/bin/
 ```
 
-## Running
-
-1. Mint a scope token from argus (one time):
-
-   ```sh
-   argus token mint --scope hera > ~/.hera/api-token
-   chmod 600 ~/.hera/api-token
-   ```
-
-2. Start hera in the foreground (for development):
-
-   ```sh
-   hera start --foreground
-   ```
-
-   For background mode (no foreground flag), hera writes its PID to `~/.hera/hera.pid`.
-
-3. Verify:
-
-   ```sh
-   hera status
-   ```
+Then create `~/.hera/`, mint a token (`argus token mint --scope hera | awk '/^token:/ {print $2}' > ~/.hera/api-token`), and `chmod 600` it. `setup.sh` does all of this for you.
 
 ## Repository layout
 
