@@ -18,4 +18,4 @@ go.work.sum
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-.ludwig/
+.hera/
