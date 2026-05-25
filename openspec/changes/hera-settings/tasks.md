@@ -7,7 +7,7 @@
 **Depends on:** nothing.
 
 - [ ] 1.1 In `internal/settings/registrar_test.go`, write failing tests for: initial POST to `/api/plugins/settings/sections`; 5-minute heartbeat re-POST; DELETE on Stop; payload shape (one form section, two fields with right types/defaults/bounds); callback_url includes `/mcp/settings_save`.
-- [ ] 1.2 In `internal/argus/settings_test.go`, write failing tests for `RegisterSettingsSection` / `UnregisterSettingsSection` HTTP method/path/headers against an `httptest.Server` mock.
+- [x] 1.2 In `internal/argus/settings_test.go`, write failing tests for `RegisterSettingsSection` / `UnregisterSettingsSection` HTTP method/path/headers against an `httptest.Server` mock.
 - [ ] 1.3 In `internal/mcp/handler_settings_save_test.go`, write failing tests for: valid save updates `config` table rows AND calls `Tracker.SetDebounce` AND calls `Injector.SetAutoInjectEnabled`; out-of-range int returns `isError: true`; non-bool returns `isError: true`; missing field uses last persisted value (partial save).
 - [ ] 1.4 In `internal/idle/tracker_test.go`, add tests for `SetDebounce(d)` changing the in-effect threshold; concurrent SetDebounce + IsIdle (race detector).
 - [ ] 1.5 In `internal/inject/inject_test.go`, add tests for `SetAutoInjectEnabled(false)` forcing busy_buffer mode even when the task is idle; SetAutoInjectEnabled(true) restoring idle_submit; default value is true.
@@ -18,8 +18,8 @@
 
 **Depends on:** Stage 1.
 
-- [ ] 2.1 Add `internal/argus/settings.go` with `SettingsSectionDefinition`, `SettingField`, `RegisterSettingsSection(ctx, def)`, `UnregisterSettingsSection(ctx, name)`. Use the existing `c.doJSON` helper. Endpoints: `POST /api/plugins/settings/sections` and `DELETE /api/plugins/settings/sections/{name}`.
-- [ ] 2.2 Make Stage 1.2 tests green.
+- [x] 2.1 Add `internal/argus/settings.go` with `SettingsSectionDefinition`, `SettingField`, `RegisterSettingsSection(ctx, def)`, `UnregisterSettingsSection(ctx, name)`. Use the existing `c.doJSON` helper. Endpoints: `POST /api/plugins/settings/sections` and `DELETE /api/plugins/settings/sections/{name}`.
+- [x] 2.2 Make Stage 1.2 tests green.
 
 ## 3. Settings registrar package
 
