@@ -15,11 +15,14 @@ import (
 )
 
 // fakeSettingsRegistry stubs argus's settings-section CRUD surface:
-//   POST   /api/plugins/settings/sections        -> register/heartbeat
-//   DELETE /api/plugins/settings/sections/{name} -> unregister
+//
+//	POST   /api/plugins/settings/sections                  -> register/heartbeat
+//	DELETE /api/plugins/settings/sections/{scope}/{title}  -> unregister
 //
 // It records every body argus receives so tests can assert payload shape,
 // callback_url, auth_header, heartbeat counts, and unregister calls.
+// Unregister calls are captured as "{scope}/{title}" strings so tests can
+// assert both segments at once.
 type fakeSettingsRegistry struct {
 	mu          sync.Mutex
 	registered  []argus.SettingsSectionDefinition
@@ -44,16 +47,16 @@ func (f *fakeSettingsRegistry) handler() http.Handler {
 		f.authHeaders = append(f.authHeaders, body.AuthHeader)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"name":"`+body.Name+`","scope":"hera"}`)
+		_, _ = io.WriteString(w, `{"scope":"hera","title":"`+body.Title+`","id":1}`)
 	})
 	mux.HandleFunc("/api/plugins/settings/sections/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			http.Error(w, "method", http.StatusMethodNotAllowed)
 			return
 		}
-		name := strings.TrimPrefix(r.URL.Path, "/api/plugins/settings/sections/")
+		path := strings.TrimPrefix(r.URL.Path, "/api/plugins/settings/sections/")
 		f.mu.Lock()
-		f.unregister = append(f.unregister, name)
+		f.unregister = append(f.unregister, path)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})
@@ -74,11 +77,12 @@ func (f *fakeSettingsRegistry) snapshot() ([]argus.SettingsSectionDefinition, []
 func fixtureSection() argus.SettingsSectionDefinition {
 	return argus.SettingsSectionDefinition{
 		Name:        "hera",
+		Title:       "Hera",
 		Type:        "form",
 		CallbackURL: "http://127.0.0.1:7744/mcp/settings_save",
 		AuthHeader:  "Bearer test-secret",
 		Fields: []argus.SettingField{
-			{Name: "f", Type: "int", Description: "d", Default: 1},
+			{Key: "f", Label: "Field f", Type: "int", Description: "d", Default: 1},
 		},
 	}
 }
@@ -137,6 +141,7 @@ func TestRegistrar_StopDeletesEachRegisteredSection(t *testing.T) {
 	// Second section to verify each section gets its own DELETE.
 	r.Add(argus.SettingsSectionDefinition{
 		Name:        "hera-extra",
+		Title:       "Hera Extra",
 		Type:        "form",
 		CallbackURL: "http://127.0.0.1:7744/mcp/settings_save",
 		AuthHeader:  "Bearer test-secret",
@@ -155,9 +160,12 @@ func TestRegistrar_StopDeletesEachRegisteredSection(t *testing.T) {
 	if len(un) != 2 {
 		t.Fatalf("expected 2 unregister calls, got %d (%v)", len(un), un)
 	}
+	// Unregister path is /api/plugins/settings/sections/{scope}/{title};
+	// the fake captures the "{scope}/{title}" tail. Scope is the hera
+	// plugin-token scope per HeraSectionScope.
 	got := map[string]bool{un[0]: true, un[1]: true}
-	if !got["hera"] || !got["hera-extra"] {
-		t.Fatalf("expected DELETEs for both sections, got %v", un)
+	if !got["hera/Hera"] || !got["hera/Hera Extra"] {
+		t.Fatalf("expected DELETEs for both sections by scope/title, got %v", un)
 	}
 }
 
@@ -214,8 +222,13 @@ func TestRegistrar_PayloadShapeMatchesSpec(t *testing.T) {
 	}
 
 	f0 := s.Fields[0]
-	if f0.Name != "idle_debounce_seconds" {
-		t.Errorf("field[0].name = %q", f0.Name)
+	if f0.Key != "idle_debounce_seconds" {
+		t.Errorf("field[0].key = %q, want idle_debounce_seconds", f0.Key)
+	}
+	// Label is the short user-facing field name argus renders next to the
+	// input. Argus rejects fields with an empty label.
+	if f0.Label == "" {
+		t.Errorf("field[0].label is empty; argus requires a non-empty label")
 	}
 	if f0.Type != "int" {
 		t.Errorf("field[0].type = %q", f0.Type)
@@ -243,8 +256,11 @@ func TestRegistrar_PayloadShapeMatchesSpec(t *testing.T) {
 	}
 
 	f1 := s.Fields[1]
-	if f1.Name != "auto_inject_enabled" {
-		t.Errorf("field[1].name = %q", f1.Name)
+	if f1.Key != "auto_inject_enabled" {
+		t.Errorf("field[1].key = %q, want auto_inject_enabled", f1.Key)
+	}
+	if f1.Label == "" {
+		t.Errorf("field[1].label is empty; argus requires a non-empty label")
 	}
 	if f1.Type != "bool" {
 		t.Errorf("field[1].type = %q", f1.Type)
@@ -280,7 +296,7 @@ func TestRegistrar_HeartbeatSurvivesTransientArgusError(t *testing.T) {
 		fake.registered = append(fake.registered, body)
 		fake.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"name":"`+body.Name+`","scope":"hera"}`)
+		_, _ = io.WriteString(w, `{"scope":"hera","title":"`+body.Title+`","id":1}`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

@@ -24,13 +24,22 @@ const DefaultHeartbeat = 5 * time.Minute
 
 // HeraSectionName is the locked section name hera registers under. Pinned
 // because the spec's "Exactly one settings-section registered on startup"
-// scenario asserts on it and the substrate UI keys off of it.
+// scenario asserts on it and hera's registrar lists by Name internally.
+// Argus itself derives section identity from (scope-from-token, Title),
+// not Name — see argus.SettingsSectionDefinition.
 const HeraSectionName = "hera"
 
 // HeraSectionTitle is the human-readable label argus renders for the
 // section header in its settings UI. Argus rejects empty titles with
-// HTTP 400 "settings: title must be non-empty".
+// HTTP 400 "settings: title must be non-empty". Argus also uses Title
+// alongside the auth-token scope as the section's identity for unregister.
 const HeraSectionTitle = "Hera"
+
+// HeraSectionScope is the plugin scope hera's argus token is minted under
+// (setup.sh: `argus token mint --scope hera`). Argus derives the scope from
+// the token at registration time; this constant is used on the unregister
+// path which is keyed by (scope, title).
+const HeraSectionScope = "hera"
 
 // HeraCallbackURL is the locked callback URL the substrate POSTs into
 // when the operator saves the settings form. Routes to the settings_save
@@ -54,8 +63,9 @@ func HeraSection(authHeader string) argus.SettingsSectionDefinition {
 		AuthHeader:  authHeader,
 		Fields: []argus.SettingField{
 			{
-				Name: "idle_debounce_seconds",
-				Type: "int",
+				Key:   "idle_debounce_seconds",
+				Label: "Idle debounce (seconds)",
+				Type:  "int",
 				Description: "Seconds an agent's session must stay quiet before hera auto-submits any messages waiting in its input buffer. " +
 					"**Lower** = faster delivery once an agent goes quiet, but higher risk of submitting while the agent is still working between bursts. " +
 					"**Higher** = more padding before submit, at the cost of slower message delivery. " +
@@ -67,8 +77,9 @@ func HeraSection(authHeader string) argus.SettingsSectionDefinition {
 				Max:     &maxSixty,
 			},
 			{
-				Name: "auto_inject_enabled",
-				Type: "bool",
+				Key:   "auto_inject_enabled",
+				Label: "Auto-inject cross-agent messages",
+				Type:  "bool",
 				Description: "When **on**, hera auto-submits cross-agent messages (presses Enter for you) once the recipient agent's session has been quiet for the debounce above. " +
 					"When **off**, every message is left sitting in the recipient's input buffer for you to read and submit manually — same as how busy sessions are already handled. " +
 					"Turn off when you want to QA every cross-agent message before it lands. " +
@@ -197,13 +208,17 @@ func (r *Registrar) Stop(ctx context.Context) error {
 
 	var firstErr error
 	for _, s := range sections {
-		if err := r.client.UnregisterSettingsSection(ctx, s.Name); err != nil {
-			r.log.Warn("settings unregister failed", "section", s.Name, "err", err)
+		// Argus's unregister route is keyed by (scope, title). Scope is hera's
+		// plugin-token scope (HeraSectionScope); title is the section's
+		// human-readable header. Section.Name is hera-internal bookkeeping
+		// and is NOT part of argus's identity.
+		if err := r.client.UnregisterSettingsSection(ctx, HeraSectionScope, s.Title); err != nil {
+			r.log.Warn("settings unregister failed", "section", s.Name, "title", s.Title, "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}
 		} else {
-			r.log.Info("settings unregistered", "section", s.Name)
+			r.log.Info("settings unregistered", "section", s.Name, "title", s.Title)
 		}
 	}
 	return firstErr
