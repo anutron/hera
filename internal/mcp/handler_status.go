@@ -30,12 +30,17 @@ type StatusInput struct {
 	Status string `json:"status"`
 }
 
-// StatusOutput is the success payload.
+// StatusOutput is the success payload. ArgusLink reflects the current
+// hera <-> argus link state at the time of the call; ArgusLinkError is
+// populated only when ArgusLink == "down", carrying the most recent
+// recovery failure so the caller can diagnose.
 type StatusOutput struct {
-	RoleName     string `json:"role_name"`
-	Status       string `json:"status"`
-	UpdatedAt    string `json:"updated_at"`
-	MetaMirrored bool   `json:"meta_mirrored"`
+	RoleName       string `json:"role_name"`
+	Status         string `json:"status"`
+	UpdatedAt      string `json:"updated_at"`
+	MetaMirrored   bool   `json:"meta_mirrored"`
+	ArgusLink      string `json:"argus_link"`
+	ArgusLinkError string `json:"argus_link_error,omitempty"`
 }
 
 // Handle implements Handler.
@@ -79,10 +84,18 @@ func (h *StatusHandler) Handle(ctx context.Context, raw json.RawMessage) Respons
 		updatedAt = rs.UpdatedAt.Format("2006-01-02T15:04:05.000Z07:00")
 	}
 
-	return jsonText(StatusOutput{
+	link := argus.GetLinkState()
+	out := StatusOutput{
 		RoleName:     role.Name,
 		Status:       in.Status,
 		UpdatedAt:    updatedAt,
 		MetaMirrored: mirrored,
-	})
+		ArgusLink:    link.String(),
+	}
+	if link == argus.LinkDown {
+		if err := argus.LinkLastError(); err != nil {
+			out.ArgusLinkError = err.Error()
+		}
+	}
+	return jsonText(out)
 }

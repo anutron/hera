@@ -324,6 +324,71 @@ func TestRegistrar_HeartbeatSurvivesTransientArgusError(t *testing.T) {
 	}
 }
 
+// TestRegistrar_ForceReregister_FiresImmediately checks that the
+// settings registrar's ForceReregister POSTs every section synchronously,
+// without waiting for the heartbeat tick. The recovery routine calls
+// this after argus restarts.
+func TestRegistrar_ForceReregister_FiresImmediately(t *testing.T) {
+	fake := &fakeSettingsRegistry{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	client := argus.New(srv.URL, "tok")
+
+	r := NewRegistrar(client, nil)
+	r.Add(fixtureSection())
+	r.SetHeartbeat(time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := r.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = r.Stop(context.Background()) }()
+
+	reg, _, _ := fake.snapshot()
+	initial := len(reg)
+	if initial != 1 {
+		t.Fatalf("expected 1 registration after Start, got %d", initial)
+	}
+
+	if err := r.ForceReregister(ctx); err != nil {
+		t.Fatalf("ForceReregister: %v", err)
+	}
+
+	reg2, _, _ := fake.snapshot()
+	if len(reg2) != initial+1 {
+		t.Fatalf("expected 1 new registration after ForceReregister, got %d (total %d)",
+			len(reg2)-initial, len(reg2))
+	}
+	if reg2[initial].Name != "hera" {
+		t.Fatalf("new registration name = %q, want hera", reg2[initial].Name)
+	}
+}
+
+// TestRegistrar_ForceReregister_ReturnsErrorOnArgusFailure verifies that
+// a failing POST surfaces back to the caller.
+func TestRegistrar_ForceReregister_ReturnsErrorOnArgusFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/plugins/settings/sections", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"boom"}`, http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := argus.New(srv.URL, "tok")
+
+	r := NewRegistrar(client, nil)
+	r.Add(fixtureSection())
+	r.SetHeartbeat(time.Hour)
+
+	err := r.ForceReregister(context.Background())
+	if err == nil {
+		t.Fatalf("ForceReregister: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "hera") {
+		t.Fatalf("error should name the failing section, got %q", err.Error())
+	}
+}
+
 // atomic is a tiny bool-flag helper for the transient-error test.
 type atomic struct {
 	mu sync.Mutex

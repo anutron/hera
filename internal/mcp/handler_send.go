@@ -49,6 +49,9 @@ type SendOutput struct {
 
 // Handle implements Handler.
 func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response {
+	if resp, gated := LinkGate(); gated {
+		return resp
+	}
 	var in SendInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return ErrorResponse("hera_send: invalid input JSON: " + err.Error())
