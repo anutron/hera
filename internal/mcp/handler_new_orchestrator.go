@@ -58,6 +58,9 @@ type NewOrchestratorOutput struct {
 
 // Handle implements Handler.
 func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage) Response {
+	if resp, gated := LinkGate(); gated {
+		return resp
+	}
 	var in NewOrchestratorInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return ErrorResponse("hera_new_orchestrator: invalid input JSON: " + err.Error())

@@ -155,6 +155,15 @@ func (r *Registrar) Stop(ctx context.Context) error {
 	return firstErr
 }
 
+// ForceReregister POSTs every registered tool to argus immediately,
+// bypassing the heartbeat ticker. The argus-link recovery routine calls
+// this after argus restarts so the new daemon's tool catalog is
+// repopulated without waiting up to 5 minutes for the next heartbeat.
+// The returned error is the first POST failure, if any.
+func (r *Registrar) ForceReregister(ctx context.Context) error {
+	return r.registerAll(ctx)
+}
+
 // registerAll POSTs every tool registration to argus. Idempotent on the
 // argus side (re-POST refreshes the LastSeenAt heartbeat).
 func (r *Registrar) registerAll(ctx context.Context) error {

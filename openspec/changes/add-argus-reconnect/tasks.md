@@ -9,9 +9,9 @@
 - [ ] 1.1 In `internal/argus/socket_test.go`, write failing tests for `PortsClient.Ports` and `PortsClient.Ping` against an in-process unix-socket JSON-RPC server mock.
 - [ ] 1.2 In `internal/argus/client_setbaseurl_test.go`, write failing tests for `Client.SetBaseURL` under race detector: concurrent HTTP-issuing methods reading baseURL while a setter updates it.
 - [ ] 1.3 In `internal/argus/watcher_test.go`, write failing tests for `Watcher`: pid mtime change fires `OnRestart`; socket ping failure fires `OnRestart`; in-flight callback suppresses concurrent triggers (single-flight).
-- [ ] 1.4 In `internal/mcp/registrar_test.go` and `internal/settings/registrar_test.go`, add failing tests for `ForceReregister`: invocation issues fresh POSTs without waiting for the next heartbeat tick.
-- [ ] 1.5 In `internal/mcp/handler_link_state_test.go`, write failing tests for the degraded-state preamble: tool handler called with `LinkState() == recovering` returns `isError: true` with the `recovering` content block; `LinkState() == down` returns the `down` content block; `LinkState() == healthy` proceeds normally.
-- [ ] 1.6 In `internal/mcp/handler_status_test.go`, add a failing test for the `argus_link` field on `hera_status` output covering all three states.
+- [x] 1.4 In `internal/mcp/registrar_test.go` and `internal/settings/registrar_test.go`, add failing tests for `ForceReregister`: invocation issues fresh POSTs without waiting for the next heartbeat tick.
+- [x] 1.5 In `internal/mcp/handler_link_state_test.go`, write failing tests for the degraded-state preamble: tool handler called with `LinkState() == recovering` returns `isError: true` with the `recovering` content block; `LinkState() == down` returns the `down` content block; `LinkState() == healthy` proceeds normally.
+- [x] 1.6 In `internal/mcp/handler_status_test.go`, add a failing test for the `argus_link` field on `hera_status` output covering all three states.
 - [ ] 1.7 In `internal/daemon/run_test.go`, add a failing smoke test that asserts startup discovery runs before the `mcp.Registrar` is started, and that a hard exit occurs when discovery fails.
 - [ ] 1.8 Validate the change: `openspec validate add-argus-reconnect --strict` MUST pass after spec text is committed (no implementation needed for this gate).
 
@@ -41,18 +41,18 @@
 
 **Depends on:** Stage 1.
 
-- [ ] 5.1 Add `(r *Registrar) ForceReregister(ctx) error` on `internal/mcp/Registrar`. Implementation: call the same `registerAll` helper the heartbeat goroutine uses, return the aggregated error.
-- [ ] 5.2 Add the same `ForceReregister` on `internal/settings/Registrar`.
-- [ ] 5.3 Make Stage 1.4 tests green.
+- [x] 5.1 Add `(r *Registrar) ForceReregister(ctx) error` on `internal/mcp/Registrar`. Implementation: call the same `registerAll` helper the heartbeat goroutine uses, return the aggregated error.
+- [x] 5.2 Add the same `ForceReregister` on `internal/settings/Registrar`.
+- [x] 5.3 Make Stage 1.4 tests green.
 
 ## 6. Link state + degraded MCP path
 
 **Depends on:** Stage 1.
 
-- [ ] 6.1 Add `internal/argus/linkstate.go` with `LinkState` enum (`healthy | recovering | down`), an `atomic.Int32`-backed setter/getter, and a `LastError() error` accessor for surfacing the `down` reason.
-- [ ] 6.2 Add a shared preamble used by every MCP tool handler that returns `isError: true` with the `argus link recovering, retry in a moment` content block when the state is `recovering`, and `argus link down: <last error>` when the state is `down`. Wire it ahead of every existing tool handler's body.
-- [ ] 6.3 Add the `argus_link` field to the `hera_status` response payload, sourced from `LinkState()`.
-- [ ] 6.4 Make Stages 1.5 and 1.6 tests green.
+- [x] 6.1 Add `internal/argus/linkstate.go` with `LinkState` enum (`healthy | recovering | down`), an `atomic.Int32`-backed setter/getter, and a `LastError() error` accessor for surfacing the `down` reason.
+- [x] 6.2 Add a shared preamble used by every MCP tool handler that returns `isError: true` with the `argus link recovering, retry in a moment` content block when the state is `recovering`, and `argus link down: <last error>` when the state is `down`. Wire it ahead of every existing tool handler's body.
+- [x] 6.3 Add the `argus_link` field to the `hera_status` response payload, sourced from `LinkState()`.
+- [x] 6.4 Make Stages 1.5 and 1.6 tests green.
 
 ## 7. Recovery routine + daemon wiring
 
