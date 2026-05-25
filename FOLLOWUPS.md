@@ -14,6 +14,16 @@ Items the spec-audit and ralph-review passes surfaced and we consciously chose t
 
 **Escalate when:** Already — slated as the next change after `hera-settings` archive.
 
+### Argus settings-callback proxy drops registered auth_header
+
+**Status:** Substrate-side bug. Discovered during hera-settings live-install.
+
+**What:** When argus's TUI submits a settings form, its callback proxy POSTs the values to the section's registered `callback_url` with NO `Authorization` header — even though the registration payload carries an `auth_header` field. Hera's MCP callback listener requires `Authorization: <auth_header>` on `/mcp/*` requests, so every settings-save form submit from the argus UI will 401 against hera's `/mcp/settings_save` handler. Registration round-trip works (the daemon boots cleanly and the section renders in the UI), but saving values does not.
+
+**Why escalate now:** Hera-settings is functionally broken end-to-end until either (a) argus forwards `auth_header`, or (b) hera special-cases the `settings_save` route to skip auth. (a) is the cleaner contract — every plugin will hit this. Filed against argus by drn / via the substrate coordinator agent task.
+
+**Workaround until fixed:** Operators can `INSERT` rows into `~/.hera/state.sqlite` `config` table directly, restart hera, and the persisted values still flow through `LoadPersistedSettings` on the next boot. Painful but unblocked.
+
 ### Possible auto-execute regression / idle-gate misclassification
 
 **Status:** Reported but unconfirmed. Flagged by a worker during hera-settings.
