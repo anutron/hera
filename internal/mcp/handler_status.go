@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/anutron/hera/internal/argus"
@@ -61,9 +60,6 @@ func (h *StatusHandler) Handle(ctx context.Context, raw json.RawMessage) Respons
 
 	_, role, bnd, err := h.resolver.CallerRole(ctx, in.Cwd)
 	if err != nil {
-		if errors.Is(err, ErrNoBinding) {
-			return ErrorResponse("hera_status: " + err.Error())
-		}
 		return ErrorResponse("hera_status: " + err.Error())
 	}
 

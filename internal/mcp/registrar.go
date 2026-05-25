@@ -34,6 +34,7 @@ type Registrar struct {
 	mu    sync.Mutex
 	tools []ToolDefinition
 	stop  chan struct{}
+	wg    sync.WaitGroup // tracks the heartbeat goroutine so Stop can wait
 }
 
 // NewRegistrar constructs a Registrar. callbackBaseURL is the URL prefix
@@ -89,7 +90,9 @@ func (r *Registrar) Start(ctx context.Context) error {
 	hb := r.heartbeat
 	r.mu.Unlock()
 
+	r.wg.Add(1)
 	go func() {
+		defer r.wg.Done()
 		ticker := time.NewTicker(hb)
 		defer ticker.Stop()
 		for {
@@ -108,8 +111,10 @@ func (r *Registrar) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop halts the heartbeat goroutine and DELETEs every registered tool
-// from argus.
+// Stop halts the heartbeat goroutine, waits for any in-flight re-register
+// to complete, and then DELETEs every registered tool from argus. The
+// passed ctx bounds the unregister loop; callers should supply a short
+// deadline (e.g., 5–10s total) so a stuck argus doesn't block shutdown.
 func (r *Registrar) Stop(ctx context.Context) error {
 	r.mu.Lock()
 	if r.stop != nil {
@@ -118,6 +123,23 @@ func (r *Registrar) Stop(ctx context.Context) error {
 	}
 	tools := append([]ToolDefinition(nil), r.tools...)
 	r.mu.Unlock()
+
+	// Wait for the heartbeat goroutine to exit so an in-flight registerAll
+	// can't re-POST a tool after we DELETE it. The wait is bounded by ctx
+	// (registerAll obeys the same ctx via the http client).
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		// Caller's deadline elapsed before the heartbeat exited; proceed
+		// with unregister anyway. A leftover heartbeat tick would only
+		// happen if argus is unresponsive, in which case the DELETE
+		// loop below will also drain quickly via the ctx.
+	}
 
 	var firstErr error
 	for _, t := range tools {

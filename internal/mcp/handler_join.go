@@ -141,6 +141,18 @@ func (h *JoinHandler) attach(ctx context.Context, argusTaskID, project, worktree
 		return ErrorResponse(fmt.Sprintf("hera_join: invalid kind %q (must be worker or freelance)", in.Kind))
 	}
 
+	// Reject if the calling argus task already has a live binding. Without
+	// this guard, an attach call from a task that is already bound (e.g.,
+	// from a previous freelance attach or an auto-adoption) would create a
+	// second live binding for the same argus task — there's no DB-level
+	// uniqueness constraint preventing that. hera_new_orchestrator has the
+	// same guard; this keeps the two attach paths symmetric.
+	if _, err := h.db.Bindings.GetLiveByTaskID(ctx, argusTaskID); err == nil {
+		return ErrorResponse("hera_join: this argus task is already bound to a hera role; call hera_join(cwd) with no other args to claim the existing binding")
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return ErrorResponse("hera_join: lookup existing binding: " + err.Error())
+	}
+
 	orch, err := h.db.Orchestrators.GetByName(ctx, in.Orchestrator)
 	if errors.Is(err, db.ErrNotFound) {
 		return ErrorResponse(fmt.Sprintf("hera_join: orchestrator %q does not exist", in.Orchestrator))

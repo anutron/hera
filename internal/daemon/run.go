@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/config"
@@ -119,13 +120,17 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 }
 
 // Stop gracefully shuts every subsystem down in reverse order. Safe to
-// call multiple times.
+// call multiple times. The unregister loop is bounded to 10 seconds so a
+// stuck argus doesn't block shutdown indefinitely; the MCP server and DB
+// teardown have their own internal bounds.
 func (d *Daemon) Stop(ctx context.Context) {
 	if d == nil {
 		return
 	}
 	if d.Registrar != nil {
-		_ = d.Registrar.Stop(ctx)
+		unregCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = d.Registrar.Stop(unregCtx)
+		cancel()
 	}
 	if d.MCPServer != nil {
 		_ = d.MCPServer.Stop()
@@ -191,13 +196,13 @@ func toolDefinitions() []mcp.ToolDefinition {
 		},
 		{
 			Name:        "hera_send",
-			Description: "Send a message to another hera role. Default routing: worker/freelance → coordinator of same orchestrator; coordinator → user pseudo-recipient.",
+			Description: "Send a message to another hera role within the same orchestrator. Worker and freelance senders default-route to the orchestrator's coordinator if `to` is omitted. Coordinator senders MUST supply an explicit `to` (talking to the human happens in the coordinator's own Claude pane, not via hera_send).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"cwd":         map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
 					"body":        map[string]any{"type": "string", "description": "Message body"},
-					"to":          map[string]any{"type": "string", "description": "(optional) Recipient role name within the same orchestrator, or 'user'"},
+					"to":          map[string]any{"type": "string", "description": "(optional for worker/freelance, required for coordinator) Recipient role name within the same orchestrator"},
 					"in_reply_to": map[string]any{"type": "integer", "description": "(optional) Message id this is a reply to"},
 				},
 				"required": []string{"cwd", "body"},

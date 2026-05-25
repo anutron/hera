@@ -90,8 +90,8 @@ type postTaskInputResponse struct {
 	Bytes  int    `json:"bytes"`
 }
 
-func (c *Client) PostTaskInput(ctx context.Context, taskID string, bytes []byte) (int, error) {
-	req, err := newRequest(ctx, "POST", c.baseURL+"/api/tasks/"+url.PathEscape(taskID)+"/input", bytes)
+func (c *Client) PostTaskInput(ctx context.Context, taskID string, payload []byte) (int, error) {
+	req, err := newRequest(ctx, "POST", c.baseURL+"/api/tasks/"+url.PathEscape(taskID)+"/input", payload)
 	if err != nil {
 		return 0, err
 	}

@@ -40,11 +40,18 @@ func (c *Client) StreamEvents(ctx context.Context, sinceID int64, handler EventH
 		}
 
 		err := c.streamOnce(ctx, sinceID, handler, func(id int64) { sinceID = id })
-		if err == nil {
-			return nil // EOF without error; treat as graceful close
-		}
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		// Graceful EOF (err == nil) AND transient errors both reconnect.
+		// Only ctx cancellation exits the loop. A graceful close from
+		// the argus side (e.g., daemon restart) is exactly what should
+		// trigger reconnection-with-cursor; returning nil here would
+		// silently stop the subscription. Reset backoff on a clean EOF
+		// so the first reconnect attempt is immediate.
+		if err == nil {
+			backoff = time.Second
+			continue
 		}
 
 		// Transient error; wait and retry.

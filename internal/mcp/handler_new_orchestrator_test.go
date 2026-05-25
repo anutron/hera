@@ -216,6 +216,36 @@ func TestJoin_RejectsKindCoordinator(t *testing.T) {
 	}
 }
 
+func TestJoin_RejectsAttachWhenAlreadyBound(t *testing.T) {
+	ctx := context.Background()
+	e := setupHandlers(t)
+	// Seed: task is already bound to a worker role under another orchestrator.
+	other, _ := e.db.Orchestrators.Create(ctx, "other")
+	otherRole, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: other.ID, Name: "x", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: otherRole.ID, ArgusTaskID: "t-bound", WorktreePath: "/tmp/bound",
+	})
+	// Set up orchestrator we'd try to attach to.
+	foo, _ := e.db.Orchestrators.Create(ctx, "foo")
+	_, _ = e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: foo.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	e.fake.addTask(argus.Task{ID: "t-bound", Project: "p", WorktreePath: "/tmp/bound"})
+
+	h := NewJoinHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, JoinInput{
+		Cwd: "/tmp/bound", Orchestrator: "foo", RoleName: "scout", Kind: "freelance",
+	}))
+	if !resp.IsError {
+		t.Fatalf("expected error: task is already bound, attach should reject")
+	}
+	if !strings.Contains(resp.Content[0].Text, "already bound") {
+		t.Fatalf("error wording should say 'already bound', got: %q", resp.Content[0].Text)
+	}
+}
+
 func TestJoin_FreelanceAttach_MirrorsRoleMeta(t *testing.T) {
 	ctx := context.Background()
 	e := setupHandlers(t)

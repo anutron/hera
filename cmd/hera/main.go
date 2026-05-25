@@ -1,7 +1,7 @@
 // Command hera is a coordinator/overlay daemon for argus. It registers as
 // an argus plugin via a scope token, owns role-as-identity coordination
 // (orchestrators, roles, bindings, messages) in its own SQLite, and exposes a
-// five-tool MCP surface to agents inside argus tasks.
+// six-tool MCP surface to agents inside argus tasks.
 //
 // See openspec/changes/hera-v1/design.md for the design doc and the
 // openspec/changes/hera-v1/specs/hera-coordination/spec.md delta spec

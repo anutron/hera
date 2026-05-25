@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/anutron/hera/internal/db"
@@ -54,9 +53,6 @@ func (h *InboxHandler) Handle(ctx context.Context, raw json.RawMessage) Response
 
 	_, role, _, err := h.resolver.CallerRole(ctx, in.Cwd)
 	if err != nil {
-		if errors.Is(err, ErrNoBinding) {
-			return ErrorResponse("hera_inbox: " + err.Error())
-		}
 		return ErrorResponse("hera_inbox: " + err.Error())
 	}
 
@@ -82,8 +78,5 @@ func (h *InboxHandler) Handle(ctx context.Context, raw json.RawMessage) Response
 	if out.Messages == nil {
 		out.Messages = []InboxMessage{}
 	}
-
-	// silence "unused" on db.ErrNotFound when the role has zero unread messages.
-	_ = db.ErrNotFound
 	return jsonText(out)
 }

@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	"github.com/anutron/hera/internal/db"
 )
@@ -48,9 +47,6 @@ func (h *MarkReadHandler) Handle(ctx context.Context, raw json.RawMessage) Respo
 
 	_, role, _, err := h.resolver.CallerRole(ctx, in.Cwd)
 	if err != nil {
-		if errors.Is(err, ErrNoBinding) {
-			return ErrorResponse("hera_mark_read: " + err.Error())
-		}
 		return ErrorResponse("hera_mark_read: " + err.Error())
 	}
 
@@ -59,6 +55,5 @@ func (h *MarkReadHandler) Handle(ctx context.Context, raw json.RawMessage) Respo
 		return ErrorResponse("hera_mark_read: db: " + err.Error())
 	}
 
-	_ = db.ErrNotFound // appease lint when no other use
 	return jsonText(MarkReadOutput{RoleName: role.Name, MarkedReadCount: n})
 }

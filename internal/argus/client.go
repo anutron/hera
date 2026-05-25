@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -92,15 +91,3 @@ func (c *Client) applyAuth(req *http.Request) {
 	req.Header.Set("X-Argus-Plugin-Version", PluginVersion)
 }
 
-// withTokenQuery returns a URL with ?token=<token> appended to support SSE
-// callers (some clients can't set headers).
-func (c *Client) withTokenQuery(path string) string {
-	u, err := url.Parse(c.baseURL + path)
-	if err != nil {
-		return c.baseURL + path
-	}
-	q := u.Query()
-	q.Set("token", c.token)
-	u.RawQuery = q.Encode()
-	return u.String()
-}
