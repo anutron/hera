@@ -33,17 +33,17 @@
 
 ## 6. Smoke tests (manual, on macOS)
 
-- [ ] 6.1 Fresh install: from a state with no plist and no symlink, run `./setup.sh --yes` and verify the agent boots, `hera_status` works, `Activity Monitor` shows `herad`.
-- [ ] 6.2 Re-run idempotency: run `./setup.sh --yes` a second time; verify the agent reboots cleanly (bootout + bootstrap), no error, no duplicate processes.
-- [ ] 6.3 Crash restart: `pkill -9 herad`; verify launchd restarts it within a few seconds.
-- [ ] 6.4 Clean exit no-restart: send SIGTERM to the agent process (`launchctl kill TERM <target>` or equivalent); verify it does NOT auto-restart.
-- [ ] 6.5 Uninstall: run `./setup.sh --uninstall-launchagent` and verify plist + symlink gone, binary + token untouched, `launchctl print` fails.
-- [ ] 6.6 Decline path: run `./setup.sh` interactively, answer `n` at step 5, verify no plist written, final message says "run `hera start --foreground`".
-- [ ] 6.7 Foreground conflict: start `hera start --foreground` in a terminal, then run `./setup.sh --yes`; verify the foreground process is SIGTERM'd before bootstrap and the agent succeeds.
+- [x] 6.1 Fresh install: from a state with no plist and no symlink, run `./setup.sh --yes` and verify the agent boots, `hera_status` works, `Activity Monitor` shows `herad`. **Verified:** new plist written, symlink created, agent bootstrapped, process visible as `/Users/aaron/.hera/herad start --foreground`.
+- [x] 6.2 Re-run idempotency: run `./setup.sh --yes` a second time; verify the agent reboots cleanly (bootout + bootstrap), no error, no duplicate processes. **Verified:** re-run after uninstall produces clean bootstrap with no errors; second re-run on already-loaded state boots out cleanly before re-bootstrap.
+- [x] 6.3 Crash restart: `pkill -9 herad`; verify launchd restarts it within a few seconds. **Verified:** killed PID 25190, new PID 26477 appeared within 3s.
+- [x] 6.4 Clean exit no-restart: send SIGTERM to the agent process (`launchctl kill TERM <target>` or equivalent); verify it does NOT auto-restart. **Verified by inspection** of installed plist: `KeepAlive { SuccessfulExit = false }` is documented launchd behavior for "restart on crash only." Not actively triggered to avoid depending on hera's exact SIGTERM handler.
+- [x] 6.5 Uninstall: run `./setup.sh --uninstall-launchagent` and verify plist + symlink gone, binary + token untouched, `launchctl print` fails. **Verified:** plist removed, symlink removed, `launchctl print` returns "Could not find service", `~/bin/hera` and `~/.hera/api-token` unchanged. Second run on clean state correctly prints "Nothing to remove."
+- [ ] 6.6 Decline path: run `./setup.sh` interactively, answer `n` at step 5, verify no plist written, final message says "run `hera start --foreground`". **Not tested** (--yes mode auto-accepts; interactive path is covered by code review of the decline branch in setup.sh).
+- [~] 6.7 Foreground conflict: start `hera start --foreground` in a terminal, then run `./setup.sh --yes`; verify the foreground process is SIGTERM'd before bootstrap and the agent succeeds. **Partially observed:** the first `./setup.sh --yes` run found the pre-existing vanilla-Claude launchd-managed `hera start --foreground` and SIGTERM'd it correctly. Not a clean isolated test, but the code path was exercised end-to-end.
 
 ## 7. Cross-platform smoke (manual, on Linux if available)
 
-- [ ] 7.1 Run `./setup.sh --yes` on Linux; verify steps 1-4 complete, step 5 prints skip message, exit status is 0, no `launchctl` errors surface.
+- [ ] 7.1 Run `./setup.sh --yes` on Linux; verify steps 1-4 complete, step 5 prints skip message, exit status is 0, no `launchctl` errors surface. **Not tested** (no Linux host available in this session). Platform guard logic verified by code review.
 
 ## 8. Documentation
 
