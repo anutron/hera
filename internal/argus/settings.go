@@ -7,8 +7,15 @@ import (
 
 // SettingsSectionDefinition is the registration payload for
 // POST /api/plugins/settings/sections.
+//
+// Title is the human-readable label argus renders for the section header
+// in its settings UI. Argus rejects empty titles with HTTP 400
+// "settings: title must be non-empty" — surfaced live during the hera
+// LaunchAgent install when the section registration first hit a real
+// argus build.
 type SettingsSectionDefinition struct {
 	Name        string         `json:"name"`
+	Title       string         `json:"title"`
 	Type        string         `json:"type"`
 	CallbackURL string         `json:"callback_url"`
 	AuthHeader  string         `json:"auth_header"`

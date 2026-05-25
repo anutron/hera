@@ -27,6 +27,11 @@ const DefaultHeartbeat = 5 * time.Minute
 // scenario asserts on it and the substrate UI keys off of it.
 const HeraSectionName = "hera"
 
+// HeraSectionTitle is the human-readable label argus renders for the
+// section header in its settings UI. Argus rejects empty titles with
+// HTTP 400 "settings: title must be non-empty".
+const HeraSectionTitle = "Hera"
+
 // HeraCallbackURL is the locked callback URL the substrate POSTs into
 // when the operator saves the settings form. Routes to the settings_save
 // handler on the existing 7744 MCP listener.
@@ -43,6 +48,7 @@ func HeraSection(authHeader string) argus.SettingsSectionDefinition {
 	maxSixty := 60
 	return argus.SettingsSectionDefinition{
 		Name:        HeraSectionName,
+		Title:       HeraSectionTitle,
 		Type:        "form",
 		CallbackURL: HeraCallbackURL,
 		AuthHeader:  authHeader,

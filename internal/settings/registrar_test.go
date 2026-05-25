@@ -194,6 +194,12 @@ func TestRegistrar_PayloadShapeMatchesSpec(t *testing.T) {
 	if s.Name != "hera" {
 		t.Errorf("section name = %q, want hera", s.Name)
 	}
+	// Title must be non-empty — argus rejects empty titles with HTTP 400.
+	// Regression: hera v1 omitted this field and crash-looped on startup
+	// once the section registration first hit a real argus build.
+	if s.Title == "" {
+		t.Errorf("section title is empty; argus requires non-empty title")
+	}
 	if s.Type != "form" {
 		t.Errorf("section type = %q, want form", s.Type)
 	}
