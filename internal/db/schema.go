@@ -15,7 +15,7 @@ type migration struct {
 var migrations = []migration{
 	{
 		name: "0001_initial",
-		sql: initialSchema,
+		sql:  initialSchema,
 	},
 	{
 		name: "0002_bindings_unique_live",

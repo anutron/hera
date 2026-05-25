@@ -62,6 +62,9 @@ type JoinOutput struct {
 
 // Handle implements Handler.
 func (h *JoinHandler) Handle(ctx context.Context, raw json.RawMessage) Response {
+	if resp, gated := LinkGate(); gated {
+		return resp
+	}
 	var in JoinInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return ErrorResponse("hera_join: invalid input JSON: " + err.Error())

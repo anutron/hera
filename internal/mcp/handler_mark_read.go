@@ -34,6 +34,9 @@ type MarkReadOutput struct {
 
 // Handle implements Handler.
 func (h *MarkReadHandler) Handle(ctx context.Context, raw json.RawMessage) Response {
+	if resp, gated := LinkGate(); gated {
+		return resp
+	}
 	var in MarkReadInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return ErrorResponse("hera_mark_read: invalid input JSON: " + err.Error())

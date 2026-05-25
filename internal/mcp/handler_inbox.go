@@ -27,11 +27,11 @@ type InboxInput struct {
 
 // InboxMessage is one row in the inbox response.
 type InboxMessage struct {
-	ID         int64  `json:"id"`
-	FromRole   string `json:"from_role"`
-	SentAt     string `json:"sent_at"`
-	Body       string `json:"body"`
-	InReplyTo  *int64 `json:"in_reply_to,omitempty"`
+	ID        int64  `json:"id"`
+	FromRole  string `json:"from_role"`
+	SentAt    string `json:"sent_at"`
+	Body      string `json:"body"`
+	InReplyTo *int64 `json:"in_reply_to,omitempty"`
 }
 
 // InboxOutput is the response payload.
@@ -43,6 +43,9 @@ type InboxOutput struct {
 
 // Handle implements Handler.
 func (h *InboxHandler) Handle(ctx context.Context, raw json.RawMessage) Response {
+	if resp, gated := LinkGate(); gated {
+		return resp
+	}
 	var in InboxInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return ErrorResponse("hera_inbox: invalid input JSON: " + err.Error())

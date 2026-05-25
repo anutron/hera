@@ -25,11 +25,13 @@ type Daemon struct {
 	Log               *slog.Logger
 	DB                *db.DB
 	Argus             *argus.Client
+	Ports             *argus.PortsClient
 	IdleTrack         *idle.Tracker
 	Injector          *inject.Injector
 	MCPServer         *mcp.Server
 	Registrar         *mcp.Registrar
 	SettingsRegistrar *settings.Registrar
+	Watcher           *argus.Watcher
 	Subscriber        *events.Subscriber
 }
 
@@ -64,7 +66,21 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		return nil, fmt.Errorf("hera: load persisted settings: %w", err)
 	}
 
-	client := argus.New(cfg.ArgusBaseURL, token)
+	// Discover argus's REST port before constructing the HTTP client.
+	// argus picks its REST port dynamically via bindWithRetry, so the
+	// daemon socket is the only authoritative source on every boot.
+	// A failure here is fatal: hera cannot operate without argus.
+	ports := argus.NewPortsClient(cfg.ArgusSocketPath)
+	discoverCtx, discoverCancel := context.WithTimeout(ctx, 5*time.Second)
+	apiPort, _, err := ports.Ports(discoverCtx)
+	discoverCancel()
+	if err != nil {
+		database.Close()
+		return nil, fmt.Errorf("hera: argus socket Ports: %w", err)
+	}
+	argusBaseURL := fmt.Sprintf("http://127.0.0.1:%d", apiPort)
+
+	client := argus.New(argusBaseURL, token)
 
 	tracker := idle.NewWithDebounce(cfg.IdleDebounce)
 	injector := inject.New(client, tracker)
@@ -132,17 +148,33 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		}
 	}()
 
+	// Wire recovery: the watcher fires on pid-mtime change or socket-ping
+	// failure; the registrar heartbeat fires the same callback as a
+	// passive fallback on 404 responses.
+	recover := argus.RecoverFunc(ports, client, registrar, settingsReg, log)
+	registrar.SetOnHeartbeat404(recover)
+
+	watcher := &argus.Watcher{
+		PidPath:   cfg.ArgusPIDPath,
+		Ping:      ports.Ping,
+		Interval:  argus.DefaultWatcherInterval,
+		OnRestart: recover,
+		Log:       log,
+	}
+	watcher.Start(ctx)
+
 	log.Info("hera ready",
-		"argus_base_url", cfg.ArgusBaseURL,
+		"argus_base_url", argusBaseURL,
 		"mcp_addr", mcpSrv.Addr(),
 		"state", cfg.StatePath(),
 	)
 
 	return &Daemon{
-		Cfg: cfg, Log: log, DB: database, Argus: client,
+		Cfg: cfg, Log: log, DB: database, Argus: client, Ports: ports,
 		IdleTrack: tracker, Injector: injector,
 		MCPServer: mcpSrv, Registrar: registrar,
-		SettingsRegistrar: settingsReg, Subscriber: subscriber,
+		SettingsRegistrar: settingsReg, Watcher: watcher,
+		Subscriber: subscriber,
 	}, nil
 }
 
@@ -153,6 +185,14 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 func (d *Daemon) Stop(ctx context.Context) {
 	if d == nil {
 		return
+	}
+	// Stop the watcher first: once it can no longer fire OnRestart, no
+	// further ForceReregister calls race with the registrars' own Stop
+	// teardown.
+	if d.Watcher != nil {
+		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		d.Watcher.Stop(stopCtx)
+		cancel()
 	}
 	if d.SettingsRegistrar != nil {
 		unregCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

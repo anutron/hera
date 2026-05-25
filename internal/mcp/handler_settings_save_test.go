@@ -308,7 +308,9 @@ func TestSettingsSave_TolerantBoolDecoding(t *testing.T) {
 // TestSettingsSave_ResponseEchoesEffectiveValues covers task 6.5:
 // success response carries the new effective values so the substrate UI
 // can re-render. The response shape we expect:
-//   {"idle_debounce_seconds": 3, "auto_inject_enabled": false}
+//
+//	{"idle_debounce_seconds": 3, "auto_inject_enabled": false}
+//
 // surfaced as a JSON text block.
 func TestSettingsSave_ResponseEchoesEffectiveValues(t *testing.T) {
 	h, _, _, _ := newSaveHandlerWithStubs(t, nil)

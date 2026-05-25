@@ -284,7 +284,9 @@ func TestSend_BodyRequired(t *testing.T) {
 }
 
 // taskFor builds an argus.Task with a specific id and worktree path.
-func taskFor(id, worktree string) argusTask { return argusTask{ID: id, WorktreePath: worktree, Project: "p", Name: id} }
+func taskFor(id, worktree string) argusTask {
+	return argusTask{ID: id, WorktreePath: worktree, Project: "p", Name: id}
+}
 
 // We re-export argus.Task here as argusTask so the test file doesn't
 // need an extra import (handlers_test.go already imports argus). The

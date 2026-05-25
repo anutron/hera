@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,10 +20,18 @@ const PluginVersion = "1"
 const DefaultBaseURL = "http://127.0.0.1:7743"
 
 // Client is a typed HTTP client for argus's REST API.
+//
+// baseURL is mutable at runtime via SetBaseURL — argus picks its REST
+// port dynamically and the recovery loop swaps the URL on a restart.
+// All reads and writes of baseURL go through baseURLMu so the race
+// detector stays clean when the watcher updates the URL while in-flight
+// HTTP calls are constructing requests.
 type Client struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	baseURLMu sync.RWMutex
+	baseURL   string
+
+	token string
+	http  *http.Client
 }
 
 // New constructs a Client. baseURL is the daemon's HTTP root (no trailing
@@ -42,7 +51,24 @@ func New(baseURL, token string) *Client {
 }
 
 // BaseURL returns the configured base URL (for log/diagnostic use).
-func (c *Client) BaseURL() string { return c.baseURL }
+func (c *Client) BaseURL() string {
+	c.baseURLMu.RLock()
+	defer c.baseURLMu.RUnlock()
+	return c.baseURL
+}
+
+// SetBaseURL updates the client's HTTP base URL. Subsequent HTTP-issuing
+// methods read the new value; in-flight requests already on the wire are
+// unaffected (their URL was resolved before this call).
+//
+// Trailing slashes are trimmed to mirror New so callers can pass either
+// "http://host:7745" or "http://host:7745/" interchangeably.
+func (c *Client) SetBaseURL(u string) {
+	u = strings.TrimRight(u, "/")
+	c.baseURLMu.Lock()
+	c.baseURL = u
+	c.baseURLMu.Unlock()
+}
 
 // doJSON issues an HTTP request with JSON body (optional) and parses a JSON
 // response (optional) into out. Returns the HTTP status code and any error.
@@ -56,7 +82,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 		reqBody = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL()+path, reqBody)
 	if err != nil {
 		return 0, fmt.Errorf("argus: new request: %w", err)
 	}
@@ -73,7 +99,12 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return resp.StatusCode, fmt.Errorf("argus: %s %s: HTTP %d: %s", method, path, resp.StatusCode, bytes.TrimSpace(errBody))
+		return resp.StatusCode, &HTTPError{
+			Method:     method,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       string(bytes.TrimSpace(errBody)),
+		}
 	}
 
 	if out != nil {
@@ -90,4 +121,3 @@ func (c *Client) applyAuth(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("X-Argus-Plugin-Version", PluginVersion)
 }
-

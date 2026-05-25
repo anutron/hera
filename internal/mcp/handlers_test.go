@@ -25,9 +25,9 @@ type handlerFixture struct {
 }
 
 type fakeArgusForHandlers struct {
-	mu        sync.Mutex
-	tasks     []argus.Task
-	metaPuts  []struct{ taskID, key, value string }
+	mu       sync.Mutex
+	tasks    []argus.Task
+	metaPuts []struct{ taskID, key, value string }
 }
 
 func (f *fakeArgusForHandlers) addTask(task argus.Task) {
