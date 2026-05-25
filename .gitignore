@@ -19,3 +19,6 @@ go.work.sum
 *.sqlite-wal
 *.sqlite-shm
 .hera/
+
+# Local-only ralph-review reports
+.claude/reviews/
