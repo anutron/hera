@@ -150,6 +150,29 @@ func TestClient_PostTaskInput(t *testing.T) {
 	}
 }
 
+// TestClient_PostTaskInput_BytesAsString regresses the v1 dogfood bug
+// where argus encodes the `bytes` field as a JSON string (e.g.
+// `{"bytes":"12"}`). The original `Bytes int` struct tag rejected this
+// with "cannot unmarshal string into Go struct field
+// postTaskInputResponse.bytes of type int", surfacing as a hera_send
+// tool-call error even though the underlying POST succeeded. The
+// flexInt-style tolerant unmarshaler keeps the call green for either
+// shape on the wire.
+func TestClient_PostTaskInput_BytesAsString(t *testing.T) {
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"ok","bytes":"12"}`)
+	})
+	defer srv.Close()
+
+	n, err := c.PostTaskInput(context.Background(), "t1", []byte("hello"))
+	if err != nil {
+		t.Fatalf("PostTaskInput with stringified bytes: %v", err)
+	}
+	if n != 12 {
+		t.Fatalf("n = %d, want 12", n)
+	}
+}
+
 func TestClient_RegisterTool(t *testing.T) {
 	var gotBody MCPTool
 	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {

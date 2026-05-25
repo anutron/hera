@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 )
 
 // Task is the subset of argus's task representation that hera consumes.
@@ -85,9 +86,34 @@ func (c *Client) PutTaskMeta(ctx context.Context, taskID, key, value string) err
 
 // PostTaskInput writes raw bytes to a task's PTY. Returns the byte count
 // argus accepted, or an error.
+//
+// The `bytes` field on the wire is tolerated as either a JSON int or a
+// JSON string (argus has historically emitted it as a string; hera v1
+// declared it as int, which surfaced as a decode error on every call
+// during the hera-settings dogfood loop even though the inject side
+// effect succeeded). flexInt accepts either shape.
 type postTaskInputResponse struct {
-	Status string `json:"status"`
-	Bytes  int    `json:"bytes"`
+	Status string  `json:"status"`
+	Bytes  flexInt `json:"bytes"`
+}
+
+// flexInt decodes a numeric value from JSON whether it arrives as a
+// number (e.g. 12) or a quoted string (e.g. "12"). Use only for fields
+// where the wire format is observed-tolerant; do NOT use as a default
+// for new fields — prefer a typed int and tighten the contract.
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	s := string(data)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("flexInt: cannot parse %q: %w", string(data), err)
+	}
+	*f = flexInt(n)
+	return nil
 }
 
 func (c *Client) PostTaskInput(ctx context.Context, taskID string, payload []byte) (int, error) {
@@ -112,5 +138,5 @@ func (c *Client) PostTaskInput(ctx context.Context, taskID string, payload []byt
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return 0, fmt.Errorf("argus.PostTaskInput: decode: %w", err)
 	}
-	return out.Bytes, nil
+	return int(out.Bytes), nil
 }
