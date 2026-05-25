@@ -15,7 +15,7 @@ Coordinator/overlay daemon for [argus](https://github.com/drn/argus). Provides r
 
 - **Not a chat surface for the user.** Users talk to coordinator agents; coordinators talk to hera via MCP tools.
 - **Not a plugin view yet.** The embedded-terminal split view is deferred to a follow-up change.
-- **Not a daemon supervisor.** `hera install` (launchd auto-start) is deferred.
+- **Not a `hera install` CLI subcommand.** Daemon lifecycle is driven by `setup.sh` (which can install a per-user macOS LaunchAgent — see below). Linux/systemd is deferred.
 
 ## Getting started
 
@@ -23,15 +23,27 @@ Coordinator/overlay daemon for [argus](https://github.com/drn/argus). Provides r
 ./setup.sh
 ```
 
-That's the whole install. The script builds the binary, copies it to `~/bin/hera`, creates `~/.hera/` (mode 0700), and mints a scope token via `argus token mint --scope hera` (saved to `~/.hera/api-token`, mode 0600). It's idempotent — safe to re-run any time.
+That's the whole install. The script:
 
-Then start hera in the foreground:
+1. Builds the binary
+2. Copies it to `~/bin/hera`
+3. Creates `~/.hera/` (mode 0700)
+4. Mints a scope token via `argus token mint --scope hera` (saved to `~/.hera/api-token`, mode 0600)
+5. **(macOS only)** Offers to install a per-user LaunchAgent at `~/Library/LaunchAgents/com.anutron.hera.plist` so hera runs at login and auto-restarts on crash. Decline to keep the manual `hera start --foreground` flow.
+
+It's idempotent — safe to re-run any time. To remove just the LaunchAgent without touching anything else:
+
+```sh
+./setup.sh --uninstall-launchagent
+```
+
+If you accepted the LaunchAgent prompt, hera is already running. Otherwise, start it in the foreground:
 
 ```sh
 hera start --foreground
 ```
 
-Keep that terminal open. From any argus task with MCP access, bootstrap an orchestrator:
+Keep that terminal open (foreground mode). From any argus task with MCP access, bootstrap an orchestrator:
 
 ```
 hera_new_orchestrator(cwd=$PWD, name="my-project", coordinator_role_name="coord", mission="...")

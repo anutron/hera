@@ -8,7 +8,7 @@ Read this first if you're starting a fresh session on hera. The committed files 
 - **Repo renamed** ludwig → hera on disk (`~/Development/Personal/hera`) and on GitHub (`anutron/hera`). The argus-owned branch slug `argus/ludwig-argus-coordinator` and the argus worktree path `~/.argus/worktrees/Ludwig/ludwig-argus-coordinator` stay as-is — they're argus's task slug from when this work spawned.
 - **`./bin/hera` is built** and copied to `~/bin/hera` via `setup.sh` (idempotent — re-run any time).
 - **`~/.hera/` is set up** with mode 0700, scope token at `api-token` with mode 0600.
-- **`launchctl`** plist installed by vanilla Claude (outside this repo) — hera now starts on login.
+- **LaunchAgent install** is now managed by `setup.sh` step 5 — see the `add-launchagent-install` change folder / archived spec. The previous "installed by vanilla Claude outside this repo" plumbing is superseded.
 - **OpenSpec base spec** at `openspec/specs/hera-coordination/spec.md` covers everything that shipped. The hera-v1 change folder is archived at `openspec/changes/archive/2026-05-25-hera-v1/`.
 
 ## Locked design decisions (do not re-litigate)
@@ -21,7 +21,7 @@ These were settled across the v1 build, morning review, spec-audit, and ralph-re
 - **No coord → user routing.** Coordinators talk to the human through their own Claude pane. Coordinator senders of `hera_send` without an explicit `to` are rejected.
 - **Two-second idle debounce.** Auto-injection (body + `\n`) fires only when `session.idle` has been the active state for ≥2 seconds. Tunable via `Config.IdleDebounce` but not yet via the settings UI (that's hera-settings).
 - **Meta mirror is best-effort.** `meta:hera.role=<kind>` on binding create and `meta:hera.thread_status=<status>` on `hera_status` — failure does not undo the local state. Spec amended to reflect this explicitly.
-- **Build order for follow-ups: settings → view → install.** Settings first (smallest substrate footprint), view second (biggest UX payoff), install third (polish). Install is partially done by vanilla Claude already via launchctl; may not need a formal change folder.
+- **Build order for follow-ups: settings → view.** Settings first (smallest substrate footprint), view second (biggest UX payoff). Install (`add-launchagent-install`) shipped via setup.sh.
 
 ## What to build next: `hera-settings`
 
@@ -78,17 +78,14 @@ The plugin view is the biggest UX payoff but has open design questions that the 
 
 **Brainstorm prompt for hera-view:** "Brainstorm hera-view. Shape is roughly settled (rail + two embedded Claude PTYs). Open questions: TUI library choice, PTY proxy implementation pattern, key bindings. Need a design pass before scaffolding the change folder."
 
-## `hera-install`
+## `hera-install` (shipped)
 
-Vanilla Claude already installed hera via launchctl outside this repo. If that approach is sticking, hera-install may not need a formal change folder — it's plumbing that doesn't change hera's behavior.
+The `add-launchagent-install` change folder added a per-user macOS LaunchAgent install path to `setup.sh` (step 5) plus a `--uninstall-launchagent` flag. Lifecycle is driven by setup.sh — no `hera install` / `hera uninstall` CLI subcommands.
 
-If it DOES need a change folder later (e.g., to add `hera install` and `hera uninstall` verbs that manage the plist programmatically), the scope is:
+Future work that would justify reopening this:
 
-- `cmd/hera/install.go`: write `~/Library/LaunchAgents/com.aaron.hera.plist`, load with `launchctl`
-- `cmd/hera/uninstall.go`: unload, remove
-- Tests against a fake plist target dir
-
-Deferred until needed.
+- **Linux/systemd parity.** The current implementation is macOS-only with a non-Darwin skip. Adding a `linux-systemd` requirement to the `hera-install` capability is the next reasonable extension.
+- **Programmatic install verbs.** If users ever need to install/uninstall the LaunchAgent from a script without running setup.sh end-to-end, a `hera install` / `hera uninstall` pair of subcommands would be the right shape.
 
 ## Dogfood operating model
 

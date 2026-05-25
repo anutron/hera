@@ -47,8 +47,8 @@
 
 ## 8. Documentation
 
-- [ ] 8.1 Update README install path to mention the LaunchAgent option in step 5 of setup.sh and the `--uninstall-launchagent` flag (one short paragraph; the script's prompts are the primary documentation).
-- [ ] 8.2 Verify NEXT.md / handoff docs don't need updates (this change is contained to setup.sh and the new spec).
+- [x] 8.1 Update README install path to mention the LaunchAgent option in step 5 of setup.sh and the `--uninstall-launchagent` flag (one short paragraph; the script's prompts are the primary documentation).
+- [x] 8.2 Verify NEXT.md / handoff docs don't need updates (this change is contained to setup.sh and the new spec).
 
 ## 9. Archive
 
