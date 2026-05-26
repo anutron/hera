@@ -9,7 +9,10 @@ import (
 )
 
 // RolesDAO is the typed accessor for the roles table.
-type RolesDAO struct{ db *sql.DB }
+type RolesDAO struct {
+	db     *sql.DB
+	events *Broadcaster
+}
 
 // CreateInput captures the fields a Create call must supply.
 type CreateRoleInput struct {
@@ -59,6 +62,9 @@ func (r *RolesDAO) Create(ctx context.Context, in CreateRoleInput) (*Role, error
 		return nil, err
 	}
 	t, _ := time.Parse(time.RFC3339Nano, now)
+	if r.events != nil {
+		r.events.Emit(Event{Entity: EntityRole, Op: OpInsert, ID: id})
+	}
 	return &Role{
 		ID:             id,
 		OrchestratorID: in.OrchestratorID,
