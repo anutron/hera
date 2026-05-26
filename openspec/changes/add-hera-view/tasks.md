@@ -50,12 +50,12 @@
 
 ## 7. Stage G — Focus + key routing
 
-- [ ] 7.1 Add `internal/view/focus.go` — three-state machine (`RAIL`, `COORD`, `AGENT`) with `Advance()` / `Retreat()` / `ToRAIL()` / `JumpToAGENT()` transitions.
-- [ ] 7.2 Add `internal/view/keys.go` — top-level key handler attached to the tview Application; routes Cmd/Ctrl-←/→, Enter, Ctrl-Q to focus transitions and forwards all other keystrokes in `COORD` / `AGENT` focus to the bound task's input endpoint via `internal/argus/client.go`.
-- [ ] 7.3 Colored border on the focused element via `SetBorderColor` driven by the focus state.
-- [ ] 7.4 Mutation keys `n`/`r`/`^d`/`a`/`l`/`?` are intercepted only when focus is `RAIL`; in `COORD` / `AGENT` they fall through to keystroke forwarding (as ordinary characters).
-- [ ] 7.5 Tests: `internal/view/keys_test.go` — drive the focus state machine; assert mutation keys are no-ops in pane focus; assert focus-traversal keys are not forwarded as bytes.
-- [ ] 7.6 Run `go test ./internal/view/... -race -count=1` until green.
+- [x] 7.1 Add `internal/view/focus.go` — three-state machine (`RAIL`, `COORD`, `AGENT`) with `Advance()` / `Retreat()` / `ToRAIL()` / `JumpToAGENT()` transitions.
+- [x] 7.2 Add `internal/view/keys.go` — top-level key handler attached to the tview Application; routes Cmd/Ctrl-←/→, Enter, Ctrl-Q to focus transitions and forwards all other keystrokes in `COORD` / `AGENT` focus to the bound task's input endpoint via `internal/argus/client.go`.
+- [x] 7.3 Colored border on the focused element via `SetBorderColor` driven by the focus state.
+- [x] 7.4 Mutation keys `n`/`r`/`^d`/`a`/`l`/`?` are intercepted only when focus is `RAIL`; in `COORD` / `AGENT` they fall through to keystroke forwarding (as ordinary characters).
+- [x] 7.5 Tests: `internal/view/keys_test.go` — drive the focus state machine; assert mutation keys are no-ops in pane focus; assert focus-traversal keys are not forwarded as bytes.
+- [x] 7.6 Run `go test ./internal/view/... -race -count=1` until green.
 
 ## 8. Stage H — Rail operations
 
