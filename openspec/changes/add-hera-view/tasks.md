@@ -59,16 +59,16 @@
 
 ## 8. Stage H — Rail operations
 
-- [ ] 8.1 Extend `internal/argus/client.go` with `CreateTask(project, prompt, meta)` (HTTP POST to `/api/tasks`). If the shape doesn't match what design.md D5 assumes, stub it and `hera_send` to coord with the substrate question; do NOT improvise the wire format.
-- [ ] 8.2 Add `internal/view/ops/new.go` — modal flow for `n`: prompt for name + mission, validate uniqueness against non-archived orchestrators, spawn argus task via `CreateTask` whose prompt invokes `hera_new_orchestrator`.
-- [ ] 8.3 Add `internal/view/ops/rename.go` — modal flow for `r`: prompt for new name, validate uniqueness scope (global for orchestrators, per-orchestrator for roles), call DAO `RenameOrchestrator` / `RenameRole`.
-- [ ] 8.4 Add `internal/view/ops/delete.go` — modal flow for `^d`: confirmation modal listing what will be removed; on confirm: end binding(s), set `archived_at`, `git worktree remove --force` via `os/exec` (daemon is unsandboxed under launchd). Log every `git worktree remove` invocation with the path. If the worktree path is empty or the directory does not exist, log + skip (soft no-op).
-- [ ] 8.5 Add `internal/view/ops/archive.go` — `a` toggle: set/clear `archived_at` via DAO and call argus's `POST /api/tasks/{id}/archive` for non-archived → archived transitions on the bound argus_task_id.
-- [ ] 8.6 Add `internal/view/ops/listall.go` — pure view-state toggle for `l`; no DB writes.
-- [ ] 8.7 Add `internal/view/ops/help.go` — `?` modal listing all bindings by focus state; dismiss via `q`.
-- [ ] 8.8 Add `internal/view/ops/resurrect.go` — Enter on archived coord row when Archive section visible: confirm, clear `archived_at` on orchestrator + coord role, spawn argus task via `CreateTask` in the role's stored `argus_project` with a prompt invoking `hera_join(cwd=$PWD)`.
-- [ ] 8.9 Tests per file: `ops/new_test.go`, `ops/rename_test.go`, `ops/delete_test.go`, `ops/archive_test.go`, `ops/resurrect_test.go`. For `delete_test.go` use a temp git worktree fixture to exercise the `git worktree remove` step.
-- [ ] 8.10 Run `go test ./internal/view/ops/... -race -count=1` until green.
+- [x] 8.1 Extend `internal/argus/client.go` with `CreateTask(project, prompt, meta)` (HTTP POST to `/api/tasks`). If the shape doesn't match what design.md D5 assumes, stub it and `hera_send` to coord with the substrate question; do NOT improvise the wire format.
+- [x] 8.2 Add `internal/view/ops/new.go` — modal flow for `n`: prompt for name + mission, validate uniqueness against non-archived orchestrators, spawn argus task via `CreateTask` whose prompt invokes `hera_new_orchestrator`.
+- [x] 8.3 Add `internal/view/ops/rename.go` — modal flow for `r`: prompt for new name, validate uniqueness scope (global for orchestrators, per-orchestrator for roles), call DAO `RenameOrchestrator` / `RenameRole`.
+- [x] 8.4 Add `internal/view/ops/delete.go` — modal flow for `^d`: confirmation modal listing what will be removed; on confirm: end binding(s), set `archived_at`, `git worktree remove --force` via `os/exec` (daemon is unsandboxed under launchd). Log every `git worktree remove` invocation with the path. If the worktree path is empty or the directory does not exist, log + skip (soft no-op).
+- [x] 8.5 Add `internal/view/ops/archive.go` — `a` toggle: set/clear `archived_at` via DAO and call argus's `POST /api/tasks/{id}/archive` for non-archived → archived transitions on the bound argus_task_id.
+- [x] 8.6 Add `internal/view/ops/listall.go` — pure view-state toggle for `l`; no DB writes.
+- [x] 8.7 Add `internal/view/ops/help.go` — `?` modal listing all bindings by focus state; dismiss via `q`.
+- [x] 8.8 Add `internal/view/ops/resurrect.go` — Enter on archived coord row when Archive section visible: confirm, clear `archived_at` on orchestrator + coord role, spawn argus task via `CreateTask` in the role's stored `argus_project` with a prompt invoking `hera_join(cwd=$PWD)`.
+- [x] 8.9 Tests per file: `ops/new_test.go`, `ops/rename_test.go`, `ops/delete_test.go`, `ops/archive_test.go`, `ops/resurrect_test.go`. For `delete_test.go` use a temp git worktree fixture to exercise the `git worktree remove` step.
+- [x] 8.10 Run `go test ./internal/view/ops/... -race -count=1` until green.
 
 ## 9. Stage I — Dynamic rail updates
 
