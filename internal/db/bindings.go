@@ -83,6 +83,29 @@ func (b *BindingsDAO) GetLiveByRole(ctx context.Context, roleID int64) (*Binding
 		 FROM bindings WHERE role_id = ? AND ended_at IS NULL`, roleID)
 }
 
+// ListLive returns every binding whose ended_at is NULL. Ordered by
+// started_at ascending so callers iterating for startup-seed purposes
+// see oldest bindings first (the order is informational, not contract).
+func (b *BindingsDAO) ListLive(ctx context.Context) ([]*Binding, error) {
+	rows, err := b.db.QueryContext(ctx,
+		`SELECT id, role_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM bindings WHERE ended_at IS NULL ORDER BY started_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("bindings.ListLive: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Binding
+	for rows.Next() {
+		bnd, err := scanBindingRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bnd)
+	}
+	return out, rows.Err()
+}
+
 // ListByRole returns every binding for a role ordered by started_at desc.
 // The first row is the live binding (if any).
 func (b *BindingsDAO) ListByRole(ctx context.Context, roleID int64) ([]*Binding, error) {

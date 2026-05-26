@@ -25,7 +25,17 @@ type Server struct {
 	mu       sync.RWMutex
 	handlers map[string]Handler
 
+	// extraMounts holds additional routes mounted by callers via Mount()
+	// before Start. The plugin-view WebSocket lives here so it shares the
+	// same listener as the MCP tool callbacks.
+	extraMounts []extraMount
+
 	httpSrv *http.Server
+}
+
+type extraMount struct {
+	pattern string
+	handler http.Handler
 }
 
 // NewServer constructs a server. authHeader is the full header value (e.g.,
@@ -50,6 +60,16 @@ func (s *Server) RegisterHandler(name string, h Handler) {
 	s.mu.Unlock()
 }
 
+// Mount registers an additional HTTP route on the listener. MUST be called
+// before Start; routes registered after Start are ignored. Used by the
+// daemon to attach the plugin-view WebSocket (`/view`) to the same
+// listener as MCP callbacks.
+func (s *Server) Mount(pattern string, h http.Handler) {
+	s.mu.Lock()
+	s.extraMounts = append(s.extraMounts, extraMount{pattern: pattern, handler: h})
+	s.mu.Unlock()
+}
+
 // Start begins listening on s.addr. Returns once the HTTP server has
 // confirmed it can bind. Subsequent shutdown happens via Stop.
 func (s *Server) Start(ctx context.Context) error {
@@ -59,6 +79,11 @@ func (s *Server) Start(ctx context.Context) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	s.mu.RLock()
+	for _, m := range s.extraMounts {
+		mux.Handle(m.pattern, m.handler)
+	}
+	s.mu.RUnlock()
 
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
