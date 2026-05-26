@@ -77,6 +77,17 @@ With `hera-settings` and `hera-substrate-link` both shipped, `hera-view` is the 
 - **Linux/systemd parity.** Current implementation is macOS-only with a non-Darwin skip. Adding a `linux-systemd` requirement to the `hera-install` capability is the next reasonable extension.
 - **Programmatic install verbs.** If users ever need to install/uninstall the LaunchAgent from a script without running setup.sh end-to-end, a `hera install` / `hera uninstall` pair of subcommands would be the right shape.
 
+## Backlog (post-1.0 polish)
+
+- **Hera-aware skills.** Today, when a sub-agent is spawned via `/fixit` (or any other skill that backgrounds an agent), the spawning prompt has to explicitly tell the worker to call `hera_join`. A hera-aware integration would have those skills auto-detect they're running in a hera-coordinated project and self-join the orchestrator without prompt plumbing. Three ways to land it, from lowest-touch to highest:
+  - (a) Project-level `CLAUDE.md` snippet teaching general skills to look for hera (e.g., "if `~/.hera/api-token` exists and you're a sub-agent spawned by argus task_create, call `hera_join` before doing anything"). Zero changes to upstream skills.
+  - (b) Modify individual skills (`/fixit`, etc.) to detect hera and self-join. Cleaner but touches many skills and they aren't all in our control.
+  - (c) Ship a thin wrapper skill (`/hera-fixit`, `/hera-debug`, …) that wraps the upstream skill with a `hera_join` preamble. Adds a layer of indirection but lets us roll out one skill at a time.
+
+  Bookmarked 2026-05-25 after Aaron noticed /fixit's worker had to be hand-told to join. Picking the right path is itself worth a quick brainstorm — defer until after `hera-view` ships.
+
+- **Host-ops argus plugin** (separate concern, captured in memory). A future argus plugin that lets sandboxed Claude sessions perform trusted host-side ops (git merge, build, push) without manual paste. Substrate-scope, not hera-scope. Parked.
+
 ## Dogfood operating model
 
 Once hera is running:
