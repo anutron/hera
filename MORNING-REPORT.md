@@ -23,15 +23,15 @@ Each row will be updated as the worker reports done (or blocked) into the coord 
 
 | Stage | Task ID | Branch | Status | Commit | Notes |
 |-------|---------|--------|--------|--------|-------|
-| A — Migration + DAOs | `1779783499697319000` | `argus/hera-view-stage-a-migration` | spawned | – | |
-| B — PTY proxy | `1779783511038358000` | `argus/hera-view-stage-b-pty-proxy` | spawned | – | |
-| C — Plugin view registrar | `1779783521722828000` | `argus/hera-view-stage-c-view` | spawned | – | |
-| D — wsscreen | `1779783534043050000` | `argus/hera-view-stage-d-wsscreen` | spawned | – | HIGH RISK — D9 wsscreen, worker was told to halt-and-flag rather than push through if stuck |
-| E — WS server route | `1779783591683239000` | `argus/hera-view-stage-e-ws-server` | pending (deps C+D) | – | |
-| F — tview layout | `1779783604871053000` | `argus/hera-view-stage-f-tview-layout` | pending (deps A+B+D) | – | |
+| A — Migration + DAOs | `1779783499697319000` | `hera-view-stage-a-migration-dao` (note: no `argus/` prefix — worker pushed under the role-slug, not the argus-task name) | **done** | `4f0abae` (+ tick `e27dcdf`) | Migration 0003_archived_at: nullable archived_at on orchestrators+roles, indexes, partial UNIQUE indexes scoped to active rows. DAOs: Archive/Unarchive/Rename on both. List + GetByName default to active-only; ListInclusive variants added. Worker also tightened GetByName/GetByOrchestratorAndName to active-only (spec only requires for List*; tightening preserves "newly created" check in hera_new_orchestrator once archived rows exist). |
+| B — PTY proxy | `1779783511038358000` | `argus/hera-view-stage-b-pty-proxy` | **done** | `a260a1f` (+ tick `e4f37ab`) | Per-task Subscription with snapshot+SSE upstream loop; fan-out to N listeners over single upstream; ring buffer 256 KiB; bounded reconnect backoff (250ms→10s); snapshot-reconnect dedup via localTotal cursor; drop-on-full listener channels. Atomic Subscribe pairs ring snapshot with chunks channel (no gap, no overlap). `go test` + `go vet` clean. |
+| C — Plugin view registrar | `1779783521722828000` | `argus/hera-view-stage-c-view` | **done** | `44c73f5` (+ tick `4d9137d`) | Tests green. Worker flagged: argus's plugin-view substrate has no separate heartbeat endpoint — `RegisterView` itself is the heartbeat shape (idempotent on 409 via GET-and-match). `HeartbeatView` is a passive liveness check (returns `ErrPluginViewMissing` if gone). `DeleteView` idempotent on 404. Stage J should call `RegisterView` every 5 min directly. |
+| D — wsscreen | `1779783534043050000` | `argus/hera-view-stage-d-wsscreen` | **done** | `5a9ea9b` (+ tick `3bfa8a5`) | High-risk piece landed clean. Wraps `tcell.NewTerminfoScreenFromTtyTerminfo("xterm-256color")` via a custom Tty; Show/Sync flush as a single binary WebSocket frame. Inbound binary → tcell.EventKey via the tcell parser; text envelopes → EventResize / EventFocus. Conn is an interface for testability. Deps added: `github.com/gdamore/tcell/v2 v2.13.10`, `github.com/coder/websocket v1.8.14`. Tests green. Unblocks E + K. |
+| E — WS server route | `1779783591683239000` | `argus/hera-view-stage-e-ws-server` | **WIP — needs attention** | `2d65867` (coord-salvaged) | Worker session called `task_complete` without committing or pushing. Code (server.go + server_test.go) was sitting uncommitted in the worktree; I salvaged it on the coord side. **One test fails consistently:** `TestServer_RunnerInvokedPerConnection` times out waiting for runner 2 start — looks like a teardown/synchronization issue around `prior.done`. Needs human eyes before merging. Implementation is otherwise present and mostly working. |
+| F — tview layout | `1779783604871053000` | `argus/hera-view-stage-f-tview-layout` | **done** | `840d893` (+ tick `e0b1bfe`) | Adds tview (first consumer in hera) — `github.com/rivo/tview v0.42.0`. Defines `PaneSource` interface in `internal/view/types.go` for Stage J to wire (`SubscribeTask(taskID) → (snapshot, ch, unsub)`). `StreamPane.Replace(snapshot, ch)` for rail-nav pane swaps. Rail uses `tview.TreeView` with `roleReference{OrchestratorID, RoleID, RoleKind, ArgusTaskID}` payloads for Stage G/H. Live bindings marked `* `. archived_at filtering deferred to Stage A merge (default `List()` returns all rows on this branch). `BuildApp` returns `*App` not raw `*tview.Application`; `App.Close()` releases subscriptions + stops StreamPane goroutines. Tests green. |
 | G — Focus + keys | `1779783666646818000` | `argus/hera-view-stage-g-focus-keys` | pending (deps F) | – | |
 | H — Rail operations | `1779783682291226000` | `argus/hera-view-stage-h-rail-ops` | pending (deps A+F) | – | substrate question on `POST /api/tasks` body shape — worker was told to STUB and flag if it doesn't match D5 assumptions |
-| I — Rail events | `1779783693718489000` | `argus/hera-view-stage-i-rail-events` | pending (deps A+F) | – | |
+| I — Rail events | `1779783693718489000` | `argus/hera-view-stage-i-rail-events` | **done** | `8d5e4a6` (+ tick `74eee4b`) | Broadcaster {Emit, Subscribe, Close} on `*db.DB`. Non-blocking drop-on-full for slow subscribers. Emits on Orchestrators.Create, Roles.Create, Bindings.Create, Bindings.End. Idempotent Creates don't emit (tested). `internal/view/rail.go` adds `RailRefresher` with ~100ms debounce — tview-agnostic; Stage J wraps callback in `QueueUpdateDraw`. **Integration gap:** Stage A's Archive/Unarchive/Rename DAO methods do NOT emit yet (this branch didn't see A's code). Stage J merge needs to add `db.Events.Emit(...)` calls to those methods. |
 | J — Daemon wire-up | `1779783745520579000` | `argus/hera-view-stage-j-daemon` | pending (deps A,B,C,D,E,F,G,H,I) | – | |
 | K — Smoke test | `1779783759162447000` | `argus/hera-view-stage-k-smoke-test` | pending (deps J) | – | |
 
@@ -88,7 +88,7 @@ cd ~/Development/Personal/hera && \
   git pull --ff-only origin main && \
   git merge --no-ff origin/argus/find-resume-orchestrator-role -m "Merge add-hera-view spec deltas + tasks" && \
   for b in \
-    argus/hera-view-stage-a-migration \
+    hera-view-stage-a-migration-dao \
     argus/hera-view-stage-b-pty-proxy \
     argus/hera-view-stage-c-view \
     argus/hera-view-stage-d-wsscreen \
@@ -127,6 +127,29 @@ These were flagged in `design.md` and I did not decide unilaterally. Pick one be
 - **Confirm-delete UX.** Tentative `y/N` confirm. For cascade-delete-of-coord, type-the-name-to-confirm may be safer.
 - **`^d` on orchestrator: actually delete worktrees, or just archive aggressively?** Design.md D5 says delete via `git worktree remove --force`; that's destructive. Stage H is wired to delete. Re-read the audit-log story before live-firing on a real orchestrator.
 - **Bottom-bar overflow at narrow widths.** Truncate vs two-line.
+
+## Worker premature task_complete bug (NEW)
+
+Two workers (E, F) finished but **did not commit or push** before calling `task_complete`. They left their work in the worktree as uncommitted changes, then exited. F's case was a race — F actually completed and pushed correctly while I was looking. **E genuinely skipped steps 5–6 of its prompt** (commit + push) and went straight to step 9 (task_complete).
+
+I salvaged E's code from its worktree, committed + pushed it from the coord side, and marked it WIP in the table above. The salvaged commit (`2d65867`) has one failing test that needs human review before merge.
+
+This is a worker-discipline bug worth filing as a follow-up. Hypotheses for a real fix:
+
+- Tighten the prompt's "PROCESS" block — currently steps are numbered but workers can skip without obvious tripwire. A required `git rev-parse HEAD@{u}` check or a substrate-side post-task_complete hook that verifies a push happened would catch this.
+- Alternatively: the hera-view design's `^d del` operation calls `git worktree remove --force` on the binding's worktree — if E's worktree is removed before the salvage was possible, this work would have been lost. Argues for an "auto-stash + branch on task_complete" substrate behavior.
+
+## Integration gaps to close during merge
+
+The stages were sliced with no shared base after the spec deltas, so several seams require small additions at merge time:
+
+1. **Stage A's Archive/Unarchive/Rename DAOs do NOT emit broadcaster events.** Stage I added `db.Events.Emit(...)` calls to Create/End paths only — A's branch didn't see I's code, and vice versa. Add `Emit(Event{Entity: "orchestrator", Op: OpUpdate, ID: id})` (and the role equivalent) at the end of each Archive/Unarchive/Rename method during merge. Without this, the rail won't refresh when archive/rename operations succeed.
+
+2. **Stage F's rail does NOT filter `archived_at`.** Stage F said: "archived_at filtering deferred to Stage A merge (default `List()` returns all rows on this branch)." After A merges, F's `BuildApp` rail-building code needs to switch from `List()` (now active-only) to `ListInclusive()` plus an in-memory partition (for the `l` toggle behavior). This may be cleaner as a small follow-up commit after the merge.
+
+3. **Stage E has a failing test** (see table). Look at `TestServer_RunnerInvokedPerConnection`. Likely a race around `prior.done` being closed before the new session's runner reaches the "started" marker.
+
+4. **Stage H (rail ops) is still in flight** as of report-write. If it lands successfully it adds `CreateTask` to `internal/argus/client.go` — if the HTTP shape doesn't match what was assumed in design.md D5, the worker was instructed to STUB and flag.
 
 ## Confidence-low spots flagged for inspection
 
