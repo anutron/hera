@@ -99,7 +99,7 @@ cd ~/Development/Personal/hera && \
     argus/hera-view-stage-h-rail-ops \
     argus/hera-view-stage-i-rail-events \
     argus/hera-view-stage-j-daemon \
-    argus/hera-view-stage-k-smoke-test; do \
+    argus/hera-view-stage-k-v2-smoke; do \
     if git rev-parse --verify "origin/$b" >/dev/null 2>&1; then \
       git merge --no-ff "origin/$b" -m "Merge $b (add-hera-view stage)" || { echo "Conflict on $b — resolve and continue"; break; }; \
     else \
