@@ -2,9 +2,11 @@ package view
 
 import (
 	"context"
+	"io"
 	"log/slog"
 
 	"github.com/coder/websocket"
+	"github.com/gdamore/tcell/v2"
 
 	"github.com/anutron/hera/internal/db"
 	"github.com/anutron/hera/internal/view/screen"
@@ -72,25 +74,26 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, poster InputPoster, 
 		app.OnFocusChanged(focus.State())
 		tApp.SetInputCapture(router.HandleKey)
 
-		// When ctx fires (Stop or supersede), gracefully stop the tview
-		// event loop. tApp.Run returns shortly after.
-		stopped := make(chan struct{})
+		// Bridge ctx cancellation into tview's event loop by queueing an
+		// EventError. tview's EventLoop handles EventError by calling
+		// Application.Stop inline, which keeps the Stop / Run.cleanup
+		// pair on the same goroutine — calling tApp.Stop directly from
+		// our supervisor races with Run's unprotected a.screen=nil
+		// cleanup write under -race (a known tview implementation
+		// quirk).
+		stopQueued, stopQueuedCancel := context.WithCancel(context.Background())
 		go func() {
-			defer close(stopped)
-			<-ctx.Done()
-			tApp.Stop()
+			select {
+			case <-stopQueued.Done():
+			case <-ctx.Done():
+				tApp.QueueEvent(tcell.NewEventError(io.EOF))
+			}
 		}()
 
-		if err := tApp.Run(); err != nil {
-			log.Warn("view: tview run", "err", err)
-		}
-		// Drain the supervisor goroutine so we don't leave it dangling when
-		// the peer closed the conn before ctx fired.
-		select {
-		case <-stopped:
-		default:
-			tApp.Stop()
-			<-stopped
+		runErr := tApp.Run()
+		stopQueuedCancel()
+		if runErr != nil && runErr != io.EOF {
+			log.Warn("view: tview run", "err", runErr)
 		}
 		scr.Fini()
 	}
