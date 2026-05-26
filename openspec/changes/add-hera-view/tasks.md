@@ -18,10 +18,10 @@
 
 ## 3. Stage C — Plugin view registration in argus client
 
-- [ ] 3.1 Add `internal/argus/views.go` with `RegisterView(title, hotkey, callbackURL)`, `HeartbeatView(id)`, `DeleteView(id)` matching the existing MCP-tool registrar pattern (see `internal/mcp/registrar.go`).
-- [ ] 3.2 Use the existing scope token for auth; treat 409 on re-register as "already registered, fall back to heartbeat" the same way the MCP registrar does.
-- [ ] 3.3 Tests: `internal/argus/views_test.go` against a fake argus HTTP server; assert request shape, error handling, idempotency on re-register.
-- [ ] 3.4 Run `go test ./internal/argus/... -race -count=1` until green.
+- [x] 3.1 Add `internal/argus/views.go` with `RegisterView(title, hotkey, callbackURL)`, `HeartbeatView(id)`, `DeleteView(id)` matching the existing MCP-tool registrar pattern (see `internal/mcp/registrar.go`).
+- [x] 3.2 Use the existing scope token for auth; treat 409 on re-register as "already registered, fall back to heartbeat" the same way the MCP registrar does.
+- [x] 3.3 Tests: `internal/argus/views_test.go` against a fake argus HTTP server; assert request shape, error handling, idempotency on re-register.
+- [x] 3.4 Run `go test ./internal/argus/... -race -count=1` until green.
 
 ## 4. Stage D — Custom `tcell.Screen` backed by WebSocket
 
