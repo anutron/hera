@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/anutron/hera/internal/db"
@@ -221,6 +222,44 @@ func (a *App) bindInitialSelection(database *db.DB) {
 		}
 		a.bindPanes(coordTask, firstAgentTask)
 		return
+	}
+}
+
+// CoordTaskID returns the argus task id currently bound to the COORD
+// pane, or "" if none. Satisfies the KeyRouter.PaneTargets contract so
+// pane-focus keystrokes route to the right task.
+func (a *App) CoordTaskID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.coordTask
+}
+
+// AgentTaskID returns the argus task id currently bound to the AGENT
+// pane, or "" if none.
+func (a *App) AgentTaskID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.agentTask
+}
+
+// OnFocusChanged repaints the colored focus border so the operator sees
+// which of the three elements is active. Satisfies the
+// KeyRouter.BorderUpdater contract. Called from the tview input pump.
+func (a *App) OnFocusChanged(state FocusState) {
+	const focused = tcell.ColorYellow
+	const unfocused = tcell.ColorWhite
+
+	a.pieces.rail.SetBorderColor(unfocused)
+	a.pieces.coord.SetBorderColor(unfocused)
+	a.pieces.agent.SetBorderColor(unfocused)
+
+	switch state {
+	case FocusRAIL:
+		a.pieces.rail.SetBorderColor(focused)
+	case FocusCOORD:
+		a.pieces.coord.SetBorderColor(focused)
+	case FocusAGENT:
+		a.pieces.agent.SetBorderColor(focused)
 	}
 }
 
