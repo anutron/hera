@@ -157,6 +157,20 @@ If any of these surfaced as a worker blocker, the report row above will say "blo
 - **Stage H — `git worktree remove --force` from the daemon.** Should work — daemon is unsandboxed under launchd. The smoke test (Stage K) was supposed to exercise this deliberately.
 - **Stage B — pre-loading SSE for every task across every orchestrator at daemon startup.** Design assumed ≤15 tasks. If session has many more, escalate.
 
+## Worker base_branch / fan-out merge missing (NEW design follow-up)
+
+Every worker was spawned with `base_branch="origin/argus/find-resume-orchestrator-role"` — which carries the spec deltas, but not the implementation code from any other stage. So integration workers (J in particular, which depends on 9 upstream stages) start their session with a tree that doesn't compile against the deps they're supposed to wire up. J handled this by manually inspecting each dep branch via `git show origin/argus/hera-view-stage-<x>:internal/...` and merging selectively, but that's expensive token-wise and error-prone.
+
+Three durable fixes:
+
+1. **Prompt step 0.5: merge deps.** Add a "before implementing, `git merge origin/argus/hera-view-stage-<dep>` for each dep" step to the worker prompt template. Cheapest, ships immediately. Cost: conflicts must be resolved by the worker (rare for non-overlapping stages, common at the J integration point).
+
+2. **Argus `merge_branches` list at task_create.** A new field that the depswatcher uses to pre-merge into the worker's branch before starting the session. Argus already prepares the worktree; merging deps is a small extension. Right durable fix.
+
+3. **Workers branch off the dep tip.** Only works when there's a single dep — fails for J. Could be combined with (2) for the multi-dep case.
+
+I'd ship (1) tomorrow and design (2) for the next overnight run.
+
 ## Worker status-flip kills session (NEW substrate follow-up)
 
 Aaron observed: Stage J's first run transitioned its argus task status to `<checked>` mid-work, which killed the worker process. Manual restart was needed. None of the worker prompts asked workers to set task status; the transition came from elsewhere. Two hypotheses for the substrate behavior:
