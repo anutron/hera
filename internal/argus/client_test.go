@@ -313,3 +313,184 @@ func mustJSON(v any) string {
 	}
 	return string(b)
 }
+
+func TestClient_CreateTask(t *testing.T) {
+	var gotMethod, gotPath, gotCT string
+	var gotBody CreateTaskInput
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotCT = r.Header.Get("Content-Type")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"t42","name":"foo-coord","status":"in_progress"}`)
+	})
+	defer srv.Close()
+
+	got, err := c.CreateTask(context.Background(), CreateTaskInput{
+		Project: "foo",
+		Name:    "foo-coord",
+		Prompt:  "hera_new_orchestrator(cwd=$PWD, name=\"foo\", coord_role_name=\"coord\")",
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if gotMethod != "POST" || gotPath != "/api/tasks" {
+		t.Fatalf("method/path = %s %s", gotMethod, gotPath)
+	}
+	if gotCT != "application/json" {
+		t.Fatalf("Content-Type = %q", gotCT)
+	}
+	if gotBody.Project != "foo" || gotBody.Name != "foo-coord" {
+		t.Fatalf("body = %+v", gotBody)
+	}
+	if !strings.Contains(gotBody.Prompt, "hera_new_orchestrator") {
+		t.Fatalf("prompt missing bootstrap: %q", gotBody.Prompt)
+	}
+	if got.ID != "t42" || got.Name != "foo-coord" {
+		t.Fatalf("response = %+v", got)
+	}
+}
+
+func TestClient_CreateTask_ValidatesProject(t *testing.T) {
+	c := New("http://unused", "tok")
+	_, err := c.CreateTask(context.Background(), CreateTaskInput{Prompt: "x"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "project is required") {
+		t.Fatalf("expected project-required error, got %v", err)
+	}
+}
+
+func TestClient_CreateTask_ValidatesPromptOrName(t *testing.T) {
+	c := New("http://unused", "tok")
+	_, err := c.CreateTask(context.Background(), CreateTaskInput{Project: "p"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "prompt or name is required") {
+		t.Fatalf("expected prompt-or-name-required error, got %v", err)
+	}
+}
+
+func TestClient_CreateTask_PutsMeta(t *testing.T) {
+	var metaCalls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/tasks":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"id":"t1","name":"n","status":"in_progress"}`)
+		case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/api/tasks/t1/meta"):
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			metaCalls = append(metaCalls, body["key"]+"="+body["value"])
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok")
+	_, err := c.CreateTask(context.Background(), CreateTaskInput{
+		Project: "p", Prompt: "go",
+	}, map[string]string{"hera.role": "coordinator"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if len(metaCalls) != 1 || metaCalls[0] != "hera.role=coordinator" {
+		t.Fatalf("meta calls = %v", metaCalls)
+	}
+}
+
+func TestClient_CreateTask_MetaErrorReturnsTaskID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/tasks":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"id":"t1","name":"n","status":"in_progress"}`)
+		default:
+			http.Error(w, `{"error":"meta failed"}`, http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok")
+	task, err := c.CreateTask(context.Background(), CreateTaskInput{
+		Project: "p", Prompt: "go",
+	}, map[string]string{"k": "v"})
+	if err == nil {
+		t.Fatalf("expected meta-PUT error")
+	}
+	if task == nil || task.ID != "t1" {
+		t.Fatalf("partial task id should be returned even on meta failure; got %+v", task)
+	}
+}
+
+func TestClient_CreateProject(t *testing.T) {
+	var gotPath string
+	var gotBody CreateProjectInput
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+	})
+	defer srv.Close()
+
+	err := c.CreateProject(context.Background(), CreateProjectInput{Name: "foo", Path: "/tmp/foo"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if gotPath != "/api/projects" {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if gotBody.Name != "foo" || gotBody.Path != "/tmp/foo" {
+		t.Fatalf("body = %+v", gotBody)
+	}
+}
+
+func TestClient_CreateProject_ValidatesInput(t *testing.T) {
+	c := New("http://unused", "tok")
+	if err := c.CreateProject(context.Background(), CreateProjectInput{Name: "x"}); err == nil {
+		t.Fatalf("expected validation error when Path empty")
+	}
+	if err := c.CreateProject(context.Background(), CreateProjectInput{Path: "/tmp"}); err == nil {
+		t.Fatalf("expected validation error when Name empty")
+	}
+}
+
+func TestClient_ArchiveTask(t *testing.T) {
+	var gotMethod, gotPath string
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+
+	if err := c.ArchiveTask(context.Background(), "t1"); err != nil {
+		t.Fatalf("ArchiveTask: %v", err)
+	}
+	if gotMethod != "POST" {
+		t.Fatalf("method = %s", gotMethod)
+	}
+	if gotPath != "/api/tasks/t1/archive" {
+		t.Fatalf("path = %s", gotPath)
+	}
+}
+
+func TestClient_UnarchiveTask(t *testing.T) {
+	var gotMethod, gotPath string
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+
+	if err := c.UnarchiveTask(context.Background(), "t1"); err != nil {
+		t.Fatalf("UnarchiveTask: %v", err)
+	}
+	if gotMethod != "POST" {
+		t.Fatalf("method = %s", gotMethod)
+	}
+	if gotPath != "/api/tasks/t1/unarchive" {
+		t.Fatalf("path = %s", gotPath)
+	}
+}
