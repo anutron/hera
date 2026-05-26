@@ -10,11 +10,11 @@
 
 ## 2. Stage B — PTY proxy package
 
-- [ ] 2.1 Create `internal/view/proxy/proxy.go` exposing `NewSubscription`, `Subscribe`, `Close`. One subscription per argus task; fan-out listeners over the same upstream snapshot+SSE.
-- [ ] 2.2 Create `internal/view/proxy/ring.go` — circular byte buffer with ~256 KiB cap; oldest bytes dropped when full.
-- [ ] 2.3 Wire the snapshot fetch (`GET /api/tasks/{id}/output`) + SSE consumer (`GET /api/tasks/{id}/stream?since=N`) via the existing `internal/argus/client.go`. Snapshot returns `X-Output-Total`; pass to the SSE consumer as `since`.
-- [ ] 2.4 Tests: `internal/view/proxy/proxy_test.go` — fake argus HTTP/SSE server, assert snapshot-then-stream sequencing, ring boundedness, multi-listener fan-out.
-- [ ] 2.5 Run `go test ./internal/view/proxy/... -race -count=1` until green.
+- [x] 2.1 Create `internal/view/proxy/proxy.go` exposing `NewSubscription`, `Subscribe`, `Close`. One subscription per argus task; fan-out listeners over the same upstream snapshot+SSE.
+- [x] 2.2 Create `internal/view/proxy/ring.go` — circular byte buffer with ~256 KiB cap; oldest bytes dropped when full.
+- [x] 2.3 Wire the snapshot fetch (`GET /api/tasks/{id}/output`) + SSE consumer (`GET /api/tasks/{id}/stream?since=N`) via the existing `internal/argus/client.go`. Snapshot returns `X-Output-Total`; pass to the SSE consumer as `since`.
+- [x] 2.4 Tests: `internal/view/proxy/proxy_test.go` — fake argus HTTP/SSE server, assert snapshot-then-stream sequencing, ring boundedness, multi-listener fan-out.
+- [x] 2.5 Run `go test ./internal/view/proxy/... -race -count=1` until green.
 
 ## 3. Stage C — Plugin view registration in argus client
 
