@@ -180,13 +180,9 @@ fi
 # --- 1. build hera -----------------------------------------------------------
 
 bold "1/5  Build"
-if [[ -x "${BUILT_BIN}" ]]; then
-  green "  ✓ ${BUILT_BIN} already exists"
-else
-  echo "  building ${BUILT_BIN}…"
-  (cd "${SCRIPT_DIR}" && go build -o "${BUILT_BIN}" ./cmd/hera)
-  green "  ✓ built ${BUILT_BIN}"
-fi
+echo "  building ${BUILT_BIN}…"
+(cd "${SCRIPT_DIR}" && go build -o "${BUILT_BIN}" ./cmd/hera)
+green "  ✓ built ${BUILT_BIN}"
 echo
 
 # --- 2. install to ~/bin -----------------------------------------------------
