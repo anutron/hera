@@ -47,34 +47,37 @@ type session struct {
 }
 
 // NewServer constructs a Server with the given logger and per-connection
-// runner. A nil runner is replaced by a noop that blocks on ctx — useful
-// for tests and for daemon wiring that hasn't installed the real session
-// yet.
+// runner. A nil runner is replaced by a default that exits on either ctx
+// cancellation or peer close — useful for tests and for daemon wiring
+// that hasn't installed the real Stage-D/F session yet.
 func NewServer(log *slog.Logger, runner SessionFunc) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
 	if runner == nil {
-		// Default runner exits on either ctx cancellation OR peer close so a
-		// daemon that hasn't installed the real Stage-D/F session still tears
-		// the conn down cleanly when the WebSocket peer goes away.
-		runner = func(ctx context.Context, conn *websocket.Conn) {
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				for {
-					if _, _, err := conn.Read(ctx); err != nil {
-						return
-					}
-				}
-			}()
-			select {
-			case <-ctx.Done():
-			case <-done:
-			}
-		}
+		runner = defaultRunner
 	}
 	return &Server{log: log, runner: runner}
+}
+
+// defaultRunner discards incoming frames and returns on either ctx
+// cancellation or peer close. It exists so the route is usable in tests
+// (and in the daemon during early bring-up) without the real wsscreen +
+// tview.Application stack wired in.
+func defaultRunner(ctx context.Context, conn *websocket.Conn) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+	case <-done:
+	}
 }
 
 // Handler returns the http.Handler for /view. Caller mounts it on the
@@ -129,14 +132,11 @@ func (s *Server) runSession(ctx context.Context, sess *session) {
 	defer sess.cancel()
 	defer func() {
 		// CloseNow tears down the underlying conn without waiting on the
-		// close handshake. The supersede path already wrote a graceful
-		// close frame in the background; this guarantees we don't leak
-		// the TCP socket if the peer never echoes back.
+		// close handshake, which would block when the peer is not
+		// actively reading (e.g., during last-writer-wins teardown).
 		_ = sess.conn.CloseNow()
 	}()
-	s.log.Info("view: runner starting")
 	s.runner(ctx, sess.conn)
-	s.log.Info("view: runner returned")
 }
 
 // Stop closes the active session, if any. Safe to call multiple times.
@@ -149,9 +149,6 @@ func (s *Server) Stop() {
 	if cur == nil {
 		return
 	}
-	go func(c *websocket.Conn) {
-		_ = c.Close(websocket.StatusGoingAway, "server stopping")
-	}(cur.conn)
 	cur.cancel()
 	<-cur.done
 }
