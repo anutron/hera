@@ -80,11 +80,11 @@
 
 ## 10. Stage J — Daemon wire-up
 
-- [ ] 10.1 In `internal/daemon/run.go`: at startup, after the existing MCP registrar starts, also start the plugin-view registrar (Stage C) and mount the WebSocket route (Stage E) on the existing `:7744` listener.
-- [ ] 10.2 At startup, walk live bindings and seed the Stage-B PTY proxy with snapshot + SSE subscriptions for each.
-- [ ] 10.3 At shutdown, unregister the plugin view (DELETE) and tear down proxy subscriptions cleanly.
-- [ ] 10.4 Tests: `internal/daemon/run_test.go` asserts the plugin view registers on startup and unregisters on shutdown via a fake argus HTTP server.
-- [ ] 10.5 Run `go test ./internal/daemon/... -race -count=1` until green.
+- [x] 10.1 In `internal/daemon/run.go`: at startup, after the existing MCP registrar starts, also start the plugin-view registrar (Stage C) and mount the WebSocket route (Stage E) on the existing `:7744` listener.
+- [x] 10.2 At startup, walk live bindings and seed the Stage-B PTY proxy with snapshot + SSE subscriptions for each.
+- [x] 10.3 At shutdown, unregister the plugin view (DELETE) and tear down proxy subscriptions cleanly.
+- [x] 10.4 Tests: `internal/daemon/run_test.go` asserts the plugin view registers on startup and unregisters on shutdown via a fake argus HTTP server.
+- [x] 10.5 Run `go test ./internal/daemon/... -race -count=1` until green.
 
 ## 11. Stage K — Smoke test
 
