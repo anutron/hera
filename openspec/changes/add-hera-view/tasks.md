@@ -25,11 +25,11 @@
 
 ## 4. Stage D — Custom `tcell.Screen` backed by WebSocket
 
-- [ ] 4.1 Create `internal/view/screen/wsscreen.go` — a `tcell.Screen` implementation whose `Show()`/`Sync()` emit a full-surface ANSI byte buffer as a WebSocket binary frame; whose event queue receives `tcell.EventKey` events translated from inbound binary frames.
-- [ ] 4.2 Translate text-frame control envelopes (`resize`/`focus`/`blur`) into `tcell.EventResize` and focus state changes.
-- [ ] 4.3 Tests: `internal/view/screen/wsscreen_test.go` — drive Show/Sync against a fake WebSocket connection, assert ANSI bytes well-formed; inject inbound binary frames, assert tcell events delivered.
-- [ ] 4.4 Run `go test ./internal/view/screen/... -race -count=1` until green.
-- [ ] 4.5 If implementing the WS-backed Screen proves infeasible in this stage, stop and `hera_send` to coord with the blocker rather than push through — do NOT improvise. Stage J / K remain blocked.
+- [x] 4.1 Create `internal/view/screen/wsscreen.go` — a `tcell.Screen` implementation whose `Show()`/`Sync()` emit a full-surface ANSI byte buffer as a WebSocket binary frame; whose event queue receives `tcell.EventKey` events translated from inbound binary frames.
+- [x] 4.2 Translate text-frame control envelopes (`resize`/`focus`/`blur`) into `tcell.EventResize` and focus state changes.
+- [x] 4.3 Tests: `internal/view/screen/wsscreen_test.go` — drive Show/Sync against a fake WebSocket connection, assert ANSI bytes well-formed; inject inbound binary frames, assert tcell events delivered.
+- [x] 4.4 Run `go test ./internal/view/screen/... -race -count=1` until green.
+- [x] 4.5 If implementing the WS-backed Screen proves infeasible in this stage, stop and `hera_send` to coord with the blocker rather than push through — do NOT improvise. Stage J / K remain blocked.
 
 ## 5. Stage E — WebSocket server route
 
