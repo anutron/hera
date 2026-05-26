@@ -10,18 +10,18 @@
 
 ## 2. Stage B — PTY proxy package
 
-- [ ] 2.1 Create `internal/view/proxy/proxy.go` exposing `NewSubscription`, `Subscribe`, `Close`. One subscription per argus task; fan-out listeners over the same upstream snapshot+SSE.
-- [ ] 2.2 Create `internal/view/proxy/ring.go` — circular byte buffer with ~256 KiB cap; oldest bytes dropped when full.
-- [ ] 2.3 Wire the snapshot fetch (`GET /api/tasks/{id}/output`) + SSE consumer (`GET /api/tasks/{id}/stream?since=N`) via the existing `internal/argus/client.go`. Snapshot returns `X-Output-Total`; pass to the SSE consumer as `since`.
-- [ ] 2.4 Tests: `internal/view/proxy/proxy_test.go` — fake argus HTTP/SSE server, assert snapshot-then-stream sequencing, ring boundedness, multi-listener fan-out.
-- [ ] 2.5 Run `go test ./internal/view/proxy/... -race -count=1` until green.
+- [x] 2.1 Create `internal/view/proxy/proxy.go` exposing `NewSubscription`, `Subscribe`, `Close`. One subscription per argus task; fan-out listeners over the same upstream snapshot+SSE.
+- [x] 2.2 Create `internal/view/proxy/ring.go` — circular byte buffer with ~256 KiB cap; oldest bytes dropped when full.
+- [x] 2.3 Wire the snapshot fetch (`GET /api/tasks/{id}/output`) + SSE consumer (`GET /api/tasks/{id}/stream?since=N`) via the existing `internal/argus/client.go`. Snapshot returns `X-Output-Total`; pass to the SSE consumer as `since`.
+- [x] 2.4 Tests: `internal/view/proxy/proxy_test.go` — fake argus HTTP/SSE server, assert snapshot-then-stream sequencing, ring boundedness, multi-listener fan-out.
+- [x] 2.5 Run `go test ./internal/view/proxy/... -race -count=1` until green.
 
 ## 3. Stage C — Plugin view registration in argus client
 
-- [ ] 3.1 Add `internal/argus/views.go` with `RegisterView(title, hotkey, callbackURL)`, `HeartbeatView(id)`, `DeleteView(id)` matching the existing MCP-tool registrar pattern (see `internal/mcp/registrar.go`).
-- [ ] 3.2 Use the existing scope token for auth; treat 409 on re-register as "already registered, fall back to heartbeat" the same way the MCP registrar does.
-- [ ] 3.3 Tests: `internal/argus/views_test.go` against a fake argus HTTP server; assert request shape, error handling, idempotency on re-register.
-- [ ] 3.4 Run `go test ./internal/argus/... -race -count=1` until green.
+- [x] 3.1 Add `internal/argus/views.go` with `RegisterView(title, hotkey, callbackURL)`, `HeartbeatView(id)`, `DeleteView(id)` matching the existing MCP-tool registrar pattern (see `internal/mcp/registrar.go`).
+- [x] 3.2 Use the existing scope token for auth; treat 409 on re-register as "already registered, fall back to heartbeat" the same way the MCP registrar does.
+- [x] 3.3 Tests: `internal/argus/views_test.go` against a fake argus HTTP server; assert request shape, error handling, idempotency on re-register.
+- [x] 3.4 Run `go test ./internal/argus/... -race -count=1` until green.
 
 ## 4. Stage D — Custom `tcell.Screen` backed by WebSocket
 
@@ -33,11 +33,11 @@
 
 ## 5. Stage E — WebSocket server route
 
-- [ ] 5.1 Add `internal/view/server.go` mounting `GET /view` on the existing `:7744` HTTP listener; accept WebSocket upgrade via `github.com/coder/websocket`.
-- [ ] 5.2 Per connection: construct a Stage-D `wsscreen`, then a `tview.Application` bound to it, then run the app's event loop on a goroutine; on connection close, stop the app and tear down the goroutine.
-- [ ] 5.3 Last-writer-wins: maintain a single-active-session reference; on new upgrade, close the prior session before accepting the new one.
-- [ ] 5.4 Tests: `internal/view/server_test.go` — start the route on an `httptest.Server`, open two consecutive WebSocket clients, assert the first connection is closed when the second connects.
-- [ ] 5.5 Run `go test ./internal/view/... -race -count=1` until green.
+- [x] 5.1 Add `internal/view/server.go` mounting `GET /view` on the existing `:7744` HTTP listener; accept WebSocket upgrade via `github.com/coder/websocket`.
+- [~] 5.2 Per connection: construct a Stage-D `wsscreen`, then a `tview.Application` bound to it, then run the app's event loop on a goroutine; on connection close, stop the app and tear down the goroutine. (Per-connection lifecycle — goroutine spawn, ctx-cancel on supersede, defer-close on exit — implemented behind a `SessionFunc` injection point. The wsscreen + tview construction is deferred to Stage J daemon wire-up so this stage doesn't block on Stage D / F.)
+- [x] 5.3 Last-writer-wins: maintain a single-active-session reference; on new upgrade, close the prior session before accepting the new one.
+- [x] 5.4 Tests: `internal/view/server_test.go` — start the route on an `httptest.Server`, open two consecutive WebSocket clients, assert the first connection is closed when the second connects.
+- [x] 5.5 Run `go test ./internal/view/... -race -count=1` until green.
 
 ## 6. Stage F — tview app + 3-column layout
 
