@@ -15,6 +15,15 @@ import (
 	"github.com/anutron/hera/internal/inject"
 	"github.com/anutron/hera/internal/mcp"
 	"github.com/anutron/hera/internal/settings"
+	"github.com/anutron/hera/internal/view"
+)
+
+// Plugin-view registration parameters. Title is shown in argus's UI;
+// the hotkey is the argus-side keyboard shortcut the operator presses
+// to open hera-view (tentative `Ctrl-H` per design D8 / Open Questions).
+const (
+	viewTitle  = "Hera"
+	viewHotkey = "ctrl+h"
 )
 
 // Daemon bundles every running component so the caller can introspect or
@@ -31,6 +40,10 @@ type Daemon struct {
 	MCPServer         *mcp.Server
 	Registrar         *mcp.Registrar
 	SettingsRegistrar *settings.Registrar
+	ViewRegistrar     *view.Registrar
+	ViewServer        *view.Server
+	ViewProxy         *view.ProxyManager
+	viewProxyCancel   context.CancelFunc
 	Watcher           *argus.Watcher
 	Subscriber        *events.Subscriber
 }
@@ -94,6 +107,13 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 
 	mcpSrv := mcp.NewServer(cfg.ListenAddr, auth, log)
+
+	// Mount the plugin-view WebSocket route on the same listener as MCP
+	// callbacks. Mount MUST happen before mcpSrv.Start, since Start is
+	// what builds the ServeMux and binds the listener.
+	viewSrv := view.NewServer(log, nil)
+	mcpSrv.Mount("/view", viewSrv.Handler())
+
 	if err := mcpSrv.Start(ctx); err != nil {
 		database.Close()
 		return nil, fmt.Errorf("hera: start mcp server: %w", err)
@@ -136,6 +156,46 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		return nil, fmt.Errorf("hera: register settings section: %w", err)
 	}
 
+	// Register the plugin view with argus on the same callback listener.
+	// Callback is the ws:// scheme on the same address; argus dials this
+	// URL on hotkey press to open the per-connection rendering session.
+	viewCallback := "ws://" + mcpSrv.Addr() + "/view"
+	viewReg := view.NewRegistrar(client, viewTitle, viewHotkey, viewCallback, log)
+	viewReg.SetHeartbeat(cfg.MCPHeartbeat)
+	if err := viewReg.Start(ctx); err != nil {
+		unregCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = settingsReg.Stop(unregCtx)
+		_ = registrar.Stop(unregCtx)
+		cancel()
+		_ = mcpSrv.Stop()
+		database.Close()
+		return nil, fmt.Errorf("hera: register plugin view: %w", err)
+	}
+
+	// Walk live bindings and seed the PTY proxy with one
+	// snapshot+SSE subscription per binding. Subscriptions outlive any
+	// single view session — they buffer bytes into in-memory rings the
+	// per-connection runner reads from.
+	proxyCtx, proxyCancel := context.WithCancel(context.Background())
+	viewProxy := view.NewProxyManager(client, log)
+	live, err := database.Bindings.ListLive(ctx)
+	if err != nil {
+		proxyCancel()
+		unregCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = viewReg.Stop(unregCtx)
+		_ = settingsReg.Stop(unregCtx)
+		_ = registrar.Stop(unregCtx)
+		cancel()
+		_ = mcpSrv.Stop()
+		database.Close()
+		return nil, fmt.Errorf("hera: list live bindings: %w", err)
+	}
+	taskIDs := make([]string, 0, len(live))
+	for _, b := range live {
+		taskIDs = append(taskIDs, b.ArgusTaskID)
+	}
+	viewProxy.Seed(proxyCtx, taskIDs)
+
 	subscriber := events.NewSubscriber(client, database, log)
 	subscriber.Register(events.NewAdoptHandler(client, database, log))
 	subscriber.Register(events.NewResyncHandler(client, database, log))
@@ -174,7 +234,11 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		IdleTrack: tracker, Injector: injector,
 		MCPServer: mcpSrv, Registrar: registrar,
 		SettingsRegistrar: settingsReg, Watcher: watcher,
-		Subscriber: subscriber,
+		Subscriber:      subscriber,
+		ViewRegistrar:   viewReg,
+		ViewServer:      viewSrv,
+		ViewProxy:       viewProxy,
+		viewProxyCancel: proxyCancel,
 	}, nil
 }
 
@@ -193,6 +257,20 @@ func (d *Daemon) Stop(ctx context.Context) {
 		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		d.Watcher.Stop(stopCtx)
 		cancel()
+	}
+	if d.ViewRegistrar != nil {
+		unregCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = d.ViewRegistrar.Stop(unregCtx)
+		cancel()
+	}
+	if d.ViewServer != nil {
+		d.ViewServer.Stop()
+	}
+	if d.ViewProxy != nil {
+		d.ViewProxy.Close()
+	}
+	if d.viewProxyCancel != nil {
+		d.viewProxyCancel()
 	}
 	if d.SettingsRegistrar != nil {
 		unregCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

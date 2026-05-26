@@ -259,6 +259,50 @@ func TestBindings_GetLiveByWorktree(t *testing.T) {
 	}
 }
 
+func TestBindings_ListLiveExcludesEnded(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+	r1, _ := d.Roles.Create(ctx, CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: KindCoordinator, ArgusProject: "foo",
+	})
+	r2, _ := d.Roles.Create(ctx, CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: KindWorker, ArgusProject: "foo",
+	})
+	r3, _ := d.Roles.Create(ctx, CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w2", Kind: KindWorker, ArgusProject: "foo",
+	})
+
+	live, _ := d.Bindings.Create(ctx, CreateBindingInput{RoleID: r1.ID, ArgusTaskID: "live-1", WorktreePath: "/tmp/1"})
+	_, _ = d.Bindings.Create(ctx, CreateBindingInput{RoleID: r2.ID, ArgusTaskID: "live-2", WorktreePath: "/tmp/2"})
+	ended, _ := d.Bindings.Create(ctx, CreateBindingInput{RoleID: r3.ID, ArgusTaskID: "ended-1", WorktreePath: "/tmp/3"})
+	if err := d.Bindings.End(ctx, ended.ID, "test"); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+	_ = live // keep the linter happy; we care about the visible side-effects below
+
+	got, err := d.Bindings.ListLive(ctx)
+	if err != nil {
+		t.Fatalf("ListLive: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListLive returned %d rows, want 2 (excluding ended)", len(got))
+	}
+	seen := map[string]bool{}
+	for _, b := range got {
+		seen[b.ArgusTaskID] = true
+		if b.EndedAt != nil {
+			t.Errorf("ListLive returned ended binding %s", b.ArgusTaskID)
+		}
+	}
+	if !seen["live-1"] || !seen["live-2"] {
+		t.Fatalf("ListLive missing expected ids: %+v", seen)
+	}
+	if seen["ended-1"] {
+		t.Fatalf("ListLive included ended binding")
+	}
+}
+
 func TestMessages_CreateInboxMarkRead(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
