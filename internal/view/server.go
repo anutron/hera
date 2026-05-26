@@ -60,6 +60,22 @@ func NewServer(log *slog.Logger, runner SessionFunc) *Server {
 	return &Server{log: log, runner: runner}
 }
 
+// SetRunner swaps the per-connection runner. Used by the daemon to wire
+// the real wsscreen+tview session in once every dependency (proxy
+// manager, argus client, db) has been constructed — by that point Mount
+// has already attached the Server's Handler to the listener, so we can't
+// rebuild it. A nil runner restores the no-op default. Existing active
+// sessions are unaffected; the new runner takes effect on the next
+// upgrade.
+func (s *Server) SetRunner(runner SessionFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if runner == nil {
+		runner = defaultRunner
+	}
+	s.runner = runner
+}
+
 // defaultRunner discards incoming frames and returns on either ctx
 // cancellation or peer close. It exists so the route is usable in tests
 // (and in the daemon during early bring-up) without the real wsscreen +
@@ -136,7 +152,10 @@ func (s *Server) runSession(ctx context.Context, sess *session) {
 		// actively reading (e.g., during last-writer-wins teardown).
 		_ = sess.conn.CloseNow()
 	}()
-	s.runner(ctx, sess.conn)
+	s.mu.Lock()
+	runner := s.runner
+	s.mu.Unlock()
+	runner(ctx, sess.conn)
 }
 
 // Stop closes the active session, if any. Safe to call multiple times.

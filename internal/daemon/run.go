@@ -111,6 +111,8 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	// Mount the plugin-view WebSocket route on the same listener as MCP
 	// callbacks. Mount MUST happen before mcpSrv.Start, since Start is
 	// what builds the ServeMux and binds the listener.
+	//
+	// The session runner is filled in below once the proxy manager exists.
 	viewSrv := view.NewServer(log, nil)
 	mcpSrv.Mount("/view", viewSrv.Handler())
 
@@ -195,6 +197,11 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		taskIDs = append(taskIDs, b.ArgusTaskID)
 	}
 	viewProxy.Seed(proxyCtx, taskIDs)
+
+	// Now that the proxy manager exists, swap the per-connection session
+	// runner so each accepted WebSocket gets a real wsscreen + tview
+	// surface (Stages D + F + G stitched together).
+	viewSrv.SetRunner(view.NewSessionFunc(database, viewProxy, client, log))
 
 	subscriber := events.NewSubscriber(client, database, log)
 	subscriber.Register(events.NewAdoptHandler(client, database, log))
