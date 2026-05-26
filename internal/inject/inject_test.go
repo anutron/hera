@@ -55,7 +55,7 @@ func TestInject_IdleSubmits(t *testing.T) {
 		t.Fatalf("got %d writes, want 1", len(pty.writes))
 	}
 	got := string(pty.writes[0])
-	want := "[hera from foo-coord] ping\n"
+	want := "[hera from foo-coord] ping\r"
 	if got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
@@ -106,8 +106,8 @@ func TestInject_DefaultAutoInjectEnabledIsTrue(t *testing.T) {
 	if mode != db.DeliveryIdleSubmit {
 		t.Fatalf("default auto-inject should be true (idle_submit), got %s", mode)
 	}
-	if got := string(pty.writes[0]); got != "[hera from foo] ping\n" {
-		t.Fatalf("default auto-inject should append newline; got %q", got)
+	if got := string(pty.writes[0]); got != "[hera from foo] ping\r" {
+		t.Fatalf("default auto-inject should terminate idle path with CR; got %q", got)
 	}
 }
 
@@ -153,8 +153,8 @@ func TestInject_AutoInjectReEnabledRestoresIdleSubmit(t *testing.T) {
 	if mode != db.DeliveryIdleSubmit {
 		t.Fatalf("after re-enabling, mode should be idle_submit, got %s", mode)
 	}
-	if got := string(pty.writes[1]); got != "[hera from foo-coord] second\n" {
-		t.Fatalf("re-enabled body should have trailing newline; got %q", got)
+	if got := string(pty.writes[1]); got != "[hera from foo-coord] second\r" {
+		t.Fatalf("re-enabled body should have trailing CR; got %q", got)
 	}
 }
 

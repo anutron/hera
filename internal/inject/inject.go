@@ -51,9 +51,12 @@ func FormatBody(senderRoleName, body string) string {
 // Inject delivers a message into the recipient task's PTY. Returns the
 // chosen delivery mode so the caller can persist it on the message row.
 //
-//   - DeliveryIdleSubmit: PTY was idle, body+"\n" injected, auto-submits.
-//   - DeliveryBusyBuffer: PTY was not idle, body injected without "\n",
-//     the user submits when ready.
+//   - DeliveryIdleSubmit: PTY was idle, body+"\r" injected, auto-submits.
+//     CR (not LF) is the byte the keyboard's Return key emits, and the
+//     recipient's TUI runs the PTY in raw mode so termios does not
+//     translate CR<->LF — only CR triggers submit.
+//   - DeliveryBusyBuffer: PTY was not idle, body injected with no
+//     trailing terminator, the user submits when ready.
 //
 // Errors are returned without choosing a fallback mode – the caller
 // decides how to retry or mark the message as failed.
@@ -61,7 +64,7 @@ func (i *Injector) Inject(ctx context.Context, taskID, senderRoleName, body stri
 	formatted := FormatBody(senderRoleName, body)
 	isIdle := i.idle.IsIdle(taskID)
 	if isIdle && i.autoInjectEnabled.Load() {
-		if _, err := i.pty.PostTaskInput(ctx, taskID, []byte(formatted+"\n")); err != nil {
+		if _, err := i.pty.PostTaskInput(ctx, taskID, []byte(formatted+"\r")); err != nil {
 			return db.DeliveryPending, fmt.Errorf("inject (idle path): %w", err)
 		}
 		return db.DeliveryIdleSubmit, nil
