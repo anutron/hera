@@ -88,9 +88,9 @@
 
 ## 11. Stage K — Smoke test
 
-- [ ] 11.1 Add `internal/daemon/view_smoke_test.go` — spawn the daemon in-process pointed at a fake argus HTTP+SSE server; open a real WebSocket against `/view`; send a `resize` envelope; assert outbound binary frames are well-formed ANSI; send an inbound key envelope; assert the daemon routes it to the right task's input endpoint on the fake argus server.
-- [ ] 11.2 Confirm the smoke test also exercises the last-writer-wins close on a second connection.
-- [ ] 11.3 Run `go test ./internal/daemon/... -race -count=1` until green.
+- [x] 11.1 Add `internal/daemon/view_smoke_test.go` — spawn the daemon in-process pointed at a fake argus HTTP+SSE server; open a real WebSocket against `/view`; send a `resize` envelope; assert outbound binary frames are well-formed ANSI; send an inbound key envelope; assert the daemon routes it to the right task's input endpoint on the fake argus server.
+- [x] 11.2 Confirm the smoke test also exercises the last-writer-wins close on a second connection.
+- [x] 11.3 Run `go test ./internal/daemon/... -race -count=1` until green.
 
 ## 12. Validation + archive
 
