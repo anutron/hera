@@ -41,12 +41,12 @@
 
 ## 6. Stage F — tview app + 3-column layout
 
-- [ ] 6.1 Add `internal/view/streampane.go` — a tview Box widget that renders an ANSI byte stream from a channel (port / fork of argus's `streampane.StreamPane`; see `~/Development/Personal/argus/internal/tui/streampane/`).
-- [ ] 6.2 Add `internal/view/layout.go` — tview Flex composing: top bar (literal `HERA` left-aligned, 1 row) + body (rail width ~22, coord pane and agent pane equal-split, remaining rows) + bottom bar (1 row, focus-state-aware hints).
-- [ ] 6.3 Add `internal/view/app.go` exposing `BuildApp(db, proxy)` returning a `*tview.Application`. Wire rail data from the orchestrators/roles/bindings DAOs (active-only on first render); wire StreamPane data from Stage B proxy subscriptions.
-- [ ] 6.4 Tests: `internal/view/app_test.go` — build the app, drive a fake screen, assert layout cells render the expected content (rail header, top-bar text, pane placeholders when no bindings exist).
-- [ ] 6.5 Defer focus, key routing, and rail-state-aware bottom bar to stages G and H respectively; first cut wires layout only.
-- [ ] 6.6 Run `go test ./internal/view/... -race -count=1` until green.
+- [x] 6.1 Add `internal/view/streampane.go` — a tview Box widget that renders an ANSI byte stream from a channel (port / fork of argus's `streampane.StreamPane`; see `~/Development/Personal/argus/internal/tui/streampane/`).
+- [x] 6.2 Add `internal/view/layout.go` — tview Flex composing: top bar (literal `HERA` left-aligned, 1 row) + body (rail width ~22, coord pane and agent pane equal-split, remaining rows) + bottom bar (1 row, focus-state-aware hints).
+- [x] 6.3 Add `internal/view/app.go` exposing `BuildApp(db, proxy)` returning a `*tview.Application`. Wire rail data from the orchestrators/roles/bindings DAOs (active-only on first render); wire StreamPane data from Stage B proxy subscriptions.
+- [x] 6.4 Tests: `internal/view/app_test.go` — build the app, drive a fake screen, assert layout cells render the expected content (rail header, top-bar text, pane placeholders when no bindings exist).
+- [x] 6.5 Defer focus, key routing, and rail-state-aware bottom bar to stages G and H respectively; first cut wires layout only.
+- [x] 6.6 Run `go test ./internal/view/... -race -count=1` until green.
 
 ## 7. Stage G — Focus + key routing
 
