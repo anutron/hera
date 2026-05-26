@@ -32,15 +32,18 @@ const (
 	DeliveryQueuedNoBinding DeliveryMode = "queued_no_binding"
 )
 
-// Orchestrator is one coordination group.
+// Orchestrator is one coordination group. ArchivedAt is non-nil for
+// archived orchestrators.
 type Orchestrator struct {
-	ID        int64
-	Name      string
-	CreatedAt time.Time
+	ID         int64
+	Name       string
+	CreatedAt  time.Time
+	ArchivedAt *time.Time
 }
 
 // Role is a participant in an orchestrator. Mission and Constraints are
-// optional; both default to empty strings.
+// optional; both default to empty strings. ArchivedAt is non-nil for
+// archived roles.
 type Role struct {
 	ID             int64
 	OrchestratorID int64
@@ -50,6 +53,7 @@ type Role struct {
 	Mission        string
 	Constraints    string
 	CreatedAt      time.Time
+	ArchivedAt     *time.Time
 }
 
 // Binding is one (role, argus task) incarnation.

@@ -30,6 +30,58 @@ CREATE UNIQUE INDEX bindings_live_unique_role ON bindings(role_id) WHERE ended_a
 CREATE UNIQUE INDEX bindings_live_unique_worktree ON bindings(worktree_path) WHERE ended_at IS NULL;
 `,
 	},
+	{
+		name: "0003_archived_at",
+		sql: `
+-- Add nullable archived_at (RFC3339 string) to orchestrators and roles,
+-- and replace the column-level UNIQUE constraints with partial unique
+-- indexes scoped to active (archived_at IS NULL) rows. This lets an
+-- archived row coexist with a fresh active row of the same name, which
+-- the hera-view rename/archive/resurrect semantics require.
+--
+-- SQLite cannot drop a column-level UNIQUE constraint in place, so we
+-- follow the documented table-recreation pattern. FK enforcement is
+-- deferred for the duration of this transaction so the intermediate
+-- DROP/RENAME steps do not fail integrity checks; at commit, every
+-- parent table is restored under its original name with all original
+-- IDs intact, so child rows still resolve their FKs.
+PRAGMA defer_foreign_keys = ON;
+
+-- Recreate orchestrators: archived_at column + name UNIQUE becomes partial.
+CREATE TABLE orchestrators_new (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    archived_at TEXT
+);
+INSERT INTO orchestrators_new (id, name, created_at)
+    SELECT id, name, created_at FROM orchestrators;
+DROP TABLE orchestrators;
+ALTER TABLE orchestrators_new RENAME TO orchestrators;
+CREATE UNIQUE INDEX orchestrators_active_name ON orchestrators(name) WHERE archived_at IS NULL;
+CREATE INDEX orchestrators_by_archived ON orchestrators(archived_at);
+
+-- Recreate roles: archived_at column + (orchestrator_id, name) UNIQUE becomes partial.
+CREATE TABLE roles_new (
+    id              INTEGER PRIMARY KEY,
+    orchestrator_id INTEGER NOT NULL REFERENCES orchestrators(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('coordinator','worker','freelance')),
+    argus_project   TEXT NOT NULL,
+    mission         TEXT NOT NULL DEFAULT '',
+    constraints     TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    archived_at     TEXT
+);
+INSERT INTO roles_new (id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at)
+    SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at FROM roles;
+DROP TABLE roles;
+ALTER TABLE roles_new RENAME TO roles;
+CREATE INDEX roles_by_kind ON roles(orchestrator_id, kind);
+CREATE UNIQUE INDEX roles_active_name ON roles(orchestrator_id, name) WHERE archived_at IS NULL;
+CREATE INDEX roles_by_archived ON roles(archived_at);
+`,
+	},
 }
 
 const initialSchema = `

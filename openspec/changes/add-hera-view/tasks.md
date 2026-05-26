@@ -1,12 +1,12 @@
 ## 1. Stage A — Migration + DAOs
 
-- [ ] 1.1 Add migration `0003_archived_at.sql` to `internal/db/schema.go` adding nullable `archived_at TEXT` columns to `orchestrators` and `roles`, with an index on each.
-- [ ] 1.2 Add `ArchiveOrchestrator(id)`, `UnarchiveOrchestrator(id)`, `RenameOrchestrator(id, newName)` to `internal/db/orchestrators.go`.
-- [ ] 1.3 Add `ArchiveRole(id)`, `UnarchiveRole(id)`, `RenameRole(id, newName)` to `internal/db/roles.go`.
-- [ ] 1.4 Update default `List*` paths on orchestrators and roles to filter `archived_at IS NULL` by default; expose `IncludeArchived bool` option (or `*Inclusive` method).
-- [ ] 1.5 Tests: `internal/db/orchestrators_test.go`, `internal/db/roles_test.go` exercise archive / unarchive / rename plus uniqueness across archived/non-archived rows.
-- [ ] 1.6 Tests: confirm `Get(id)` resolves archived rows; confirm default `List*` filters them out.
-- [ ] 1.7 Run `go test ./internal/db/... -race -count=1` until green.
+- [x] 1.1 Add migration `0003_archived_at.sql` to `internal/db/schema.go` adding nullable `archived_at TEXT` columns to `orchestrators` and `roles`, with an index on each.
+- [x] 1.2 Add `ArchiveOrchestrator(id)`, `UnarchiveOrchestrator(id)`, `RenameOrchestrator(id, newName)` to `internal/db/orchestrators.go`.
+- [x] 1.3 Add `ArchiveRole(id)`, `UnarchiveRole(id)`, `RenameRole(id, newName)` to `internal/db/roles.go`.
+- [x] 1.4 Update default `List*` paths on orchestrators and roles to filter `archived_at IS NULL` by default; expose `IncludeArchived bool` option (or `*Inclusive` method).
+- [x] 1.5 Tests: `internal/db/orchestrators_test.go`, `internal/db/roles_test.go` exercise archive / unarchive / rename plus uniqueness across archived/non-archived rows.
+- [x] 1.6 Tests: confirm `Get(id)` resolves archived rows; confirm default `List*` filters them out.
+- [x] 1.7 Run `go test ./internal/db/... -race -count=1` until green.
 
 ## 2. Stage B — PTY proxy package
 
