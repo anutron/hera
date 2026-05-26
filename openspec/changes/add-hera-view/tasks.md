@@ -33,11 +33,11 @@
 
 ## 5. Stage E — WebSocket server route
 
-- [ ] 5.1 Add `internal/view/server.go` mounting `GET /view` on the existing `:7744` HTTP listener; accept WebSocket upgrade via `github.com/coder/websocket`.
-- [ ] 5.2 Per connection: construct a Stage-D `wsscreen`, then a `tview.Application` bound to it, then run the app's event loop on a goroutine; on connection close, stop the app and tear down the goroutine.
-- [ ] 5.3 Last-writer-wins: maintain a single-active-session reference; on new upgrade, close the prior session before accepting the new one.
-- [ ] 5.4 Tests: `internal/view/server_test.go` — start the route on an `httptest.Server`, open two consecutive WebSocket clients, assert the first connection is closed when the second connects.
-- [ ] 5.5 Run `go test ./internal/view/... -race -count=1` until green.
+- [x] 5.1 Add `internal/view/server.go` mounting `GET /view` on the existing `:7744` HTTP listener; accept WebSocket upgrade via `github.com/coder/websocket`.
+- [~] 5.2 Per connection: construct a Stage-D `wsscreen`, then a `tview.Application` bound to it, then run the app's event loop on a goroutine; on connection close, stop the app and tear down the goroutine. (Per-connection lifecycle — goroutine spawn, ctx-cancel on supersede, defer-close on exit — implemented behind a `SessionFunc` injection point. The wsscreen + tview construction is deferred to Stage J daemon wire-up so this stage doesn't block on Stage D / F.)
+- [x] 5.3 Last-writer-wins: maintain a single-active-session reference; on new upgrade, close the prior session before accepting the new one.
+- [x] 5.4 Tests: `internal/view/server_test.go` — start the route on an `httptest.Server`, open two consecutive WebSocket clients, assert the first connection is closed when the second connects.
+- [x] 5.5 Run `go test ./internal/view/... -race -count=1` until green.
 
 ## 6. Stage F — tview app + 3-column layout
 
