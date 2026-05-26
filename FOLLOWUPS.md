@@ -24,15 +24,13 @@ Items the spec-audit and ralph-review passes surfaced and we consciously chose t
 
 **Workaround until fixed:** Operators can `INSERT` rows into `~/.hera/state.sqlite` `config` table directly, restart hera, and the persisted values still flow through `LoadPersistedSettings` on the next boot. Painful but unblocked.
 
-### Possible auto-execute regression / idle-gate misclassification
+### Possible auto-execute regression / idle-gate misclassification — RESOLVED
 
-**Status:** Reported but unconfirmed. Flagged by a worker during hera-settings.
+**Status:** Closed. Smoke-confirmed working post-decode-fix.
 
-**What:** A worker reported "auto-execute doesn't seem to be working" — the trailing-`\n` submit on idle did not auto-submit their buffered hera_send message. Observed direction unclear; coordinator-side auto-execute was confirmed working (every worker→coord message arrived as a new turn). Two suspects: (1) the response-decode bug above masking a partial-fail in the inject path, (2) the idle gate misreading the worker session as still-busy when it had quieted. Needs reproduction.
+**Resolution:** The original "auto-execute doesn't seem to be working" report was almost certainly the response-decode bug masquerading. After that bug was fixed (commit fb04c27 — `flexInt` in `internal/argus/tasks.go`, regression test `TestClient_PostTaskInput_BytesAsString` in `internal/argus/client_test.go`), the `hera-smoke-decode-fix` worker re-ran a cross-agent `hera_send` and confirmed the coordinator's PTY received it as a new turn with `delivery_mode: idle_submit`. The inject path is behaving correctly; the idle gate is not misclassifying. Existing coverage at `internal/inject/inject_test.go` (`TestInject_IdleSubmits`, `TestInject_DefaultAutoInjectEnabledIsTrue`) and `internal/mcp/handler_send_test.go` (`TestSend_Worker_DefaultRoutes_ToCoordinator`) asserts the idle → `idle_submit` path end-to-end through the handler.
 
-**Why deferred from hera-settings:** Out of scope; settings ships the *knob* for the debounce, not a behavior change.
-
-**Escalate when:** Same change as the decode-error fix — both live in the inject path.
+**Audit trail:** Originally flagged by a worker during hera-settings as "trailing-`\n` submit on idle did not auto-submit". The decode bug surfaced an error to the tool caller even though the POST succeeded, which made the send *look* failed; that is the most plausible cause of the original report. No second-source reproduction has materialized. If a fresh reproduction does appear, suspect: (1) the idle tracker reading a still-busy session as quieted (window-edge race), (2) a regression in `FormatBody` newline semantics.
 
 ## Architecture (deferred to v1.1+)
 
