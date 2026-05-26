@@ -25,6 +25,11 @@ type DB struct {
 	RoleStatus    *RoleStatusDAO
 	EventCursor   *EventCursorDAO
 	Config        *ConfigDAO
+
+	// Events broadcasts DAO writes on the rail-watched tables
+	// (orchestrators, roles, bindings) to in-process subscribers
+	// such as the rail UI. See internal/db/events.go.
+	Events *Broadcaster
 }
 
 // Open returns a DB connected to the SQLite file at path. If the file does
@@ -56,9 +61,10 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db.Open: migrate: %w", err)
 	}
 
-	d.Orchestrators = &OrchestratorsDAO{db: sqldb}
-	d.Roles = &RolesDAO{db: sqldb}
-	d.Bindings = &BindingsDAO{db: sqldb}
+	d.Events = NewBroadcaster()
+	d.Orchestrators = &OrchestratorsDAO{db: sqldb, events: d.Events}
+	d.Roles = &RolesDAO{db: sqldb, events: d.Events}
+	d.Bindings = &BindingsDAO{db: sqldb, events: d.Events}
 	d.Messages = &MessagesDAO{db: sqldb}
 	d.RoleStatus = &RoleStatusDAO{db: sqldb}
 	d.EventCursor = &EventCursorDAO{db: sqldb}
@@ -67,10 +73,13 @@ func Open(path string) (*DB, error) {
 	return d, nil
 }
 
-// Close shuts down the underlying *sql.DB.
+// Close shuts down the underlying *sql.DB and the events broadcaster.
 func (d *DB) Close() error {
 	if d == nil || d.sqldb == nil {
 		return nil
+	}
+	if d.Events != nil {
+		d.Events.Close()
 	}
 	return d.sqldb.Close()
 }

@@ -72,11 +72,11 @@
 
 ## 9. Stage I — Dynamic rail updates
 
-- [ ] 9.1 Add `internal/db/events.go` exposing a `Broadcaster` type with `Emit(event)` and `Subscribe() chan Event`. Event types cover orchestrator/role/binding insert/update/delete.
-- [ ] 9.2 Integrate `Broadcaster.Emit` into the relevant DAO methods (insert / update / delete on orchestrators, roles, bindings, including the new Stage A methods).
-- [ ] 9.3 Add `internal/view/rail.go` subscribing to the broadcaster from `BuildApp`; debounce refreshes (~100 ms) and re-render the rail in tview's `QueueUpdateDraw`.
-- [ ] 9.4 Tests: `internal/db/events_test.go` (broadcast fan-out, no blocking on slow subscribers); `internal/view/rail_test.go` (insert orchestrator → rail refreshes within ~150 ms; idle 1s → no DB reads).
-- [ ] 9.5 Run `go test ./internal/... -race -count=1` until green.
+- [x] 9.1 Add `internal/db/events.go` exposing a `Broadcaster` type with `Emit(event)` and `Subscribe() chan Event`. Event types cover orchestrator/role/binding insert/update/delete.
+- [x] 9.2 Integrate `Broadcaster.Emit` into the relevant DAO methods (insert / update / delete on orchestrators, roles, bindings, including the new Stage A methods).
+- [x] 9.3 Add `internal/view/rail.go` subscribing to the broadcaster from `BuildApp`; debounce refreshes (~100 ms) and re-render the rail in tview's `QueueUpdateDraw`.
+- [x] 9.4 Tests: `internal/db/events_test.go` (broadcast fan-out, no blocking on slow subscribers); `internal/view/rail_test.go` (insert orchestrator → rail refreshes within ~150 ms; idle 1s → no DB reads).
+- [x] 9.5 Run `go test ./internal/... -race -count=1` until green.
 
 ## 10. Stage J — Daemon wire-up
 

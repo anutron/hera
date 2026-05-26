@@ -9,7 +9,10 @@ import (
 )
 
 // BindingsDAO is the typed accessor for the bindings table.
-type BindingsDAO struct{ db *sql.DB }
+type BindingsDAO struct {
+	db     *sql.DB
+	events *Broadcaster
+}
 
 // CreateBindingInput captures the fields needed to start a binding.
 type CreateBindingInput struct {
@@ -34,6 +37,9 @@ func (b *BindingsDAO) Create(ctx context.Context, in CreateBindingInput) (*Bindi
 		return nil, err
 	}
 	t, _ := time.Parse(time.RFC3339Nano, now)
+	if b.events != nil {
+		b.events.Emit(Event{Entity: EntityBinding, Op: OpInsert, ID: id})
+	}
 	return &Binding{
 		ID:           id,
 		RoleID:       in.RoleID,
@@ -58,6 +64,9 @@ func (b *BindingsDAO) End(ctx context.Context, bindingID int64, reason string) e
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
+	}
+	if b.events != nil {
+		b.events.Emit(Event{Entity: EntityBinding, Op: OpUpdate, ID: bindingID})
 	}
 	return nil
 }

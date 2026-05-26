@@ -16,7 +16,10 @@ var ErrNotFound = errors.New("db: row not found")
 var ErrNameConflict = errors.New("db: name already in use by an active row")
 
 // OrchestratorsDAO is the typed accessor for the orchestrators table.
-type OrchestratorsDAO struct{ db *sql.DB }
+type OrchestratorsDAO struct {
+	db     *sql.DB
+	events *Broadcaster
+}
 
 // Create inserts a new active orchestrator. If an active orchestrator with
 // the same name already exists, Create returns the existing row
@@ -44,6 +47,9 @@ func (o *OrchestratorsDAO) Create(ctx context.Context, name string) (*Orchestrat
 		return nil, fmt.Errorf("orchestrators.Create: LastInsertId: %w", err)
 	}
 	t, _ := time.Parse(time.RFC3339Nano, now)
+	if o.events != nil {
+		o.events.Emit(Event{Entity: EntityOrchestrator, Op: OpInsert, ID: id})
+	}
 	return &Orchestrator{ID: id, Name: name, CreatedAt: t}, nil
 }
 
