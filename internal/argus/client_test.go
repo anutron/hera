@@ -133,7 +133,7 @@ func TestClient_ResizeTask(t *testing.T) {
 	if gotMethod != "POST" {
 		t.Fatalf("method = %s", gotMethod)
 	}
-	if gotPath != "/api/tasks/t1/size" {
+	if gotPath != "/api/tasks/t1/resize" {
 		t.Fatalf("path = %s", gotPath)
 	}
 	if gotCT != "application/json" {
