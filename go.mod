@@ -1,8 +1,9 @@
 module github.com/anutron/hera
 
-go 1.25.0
+go 1.26.0
 
 require (
+	github.com/anutron/argus-sdk v0.0.1
 	github.com/coder/websocket v1.8.14
 	github.com/gdamore/tcell/v2 v2.13.10
 	github.com/rivo/tview v0.42.0
