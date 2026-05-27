@@ -141,16 +141,13 @@ func (a *App) Close() {
 }
 
 // populateRail walks the orchestrators / roles / bindings tables and
-// inserts a node per orchestrator with each role nested underneath.
-// Live bindings (ended_at IS NULL) are marked with a "*" prefix on
-// the role row. When a.showArchived is true, archived orchestrators
-// and roles are also included (suffixed with " [archived]"); when
-// false (the default at session start per design.md D5) archived rows
-// are filtered out.
+// hands the result to the rail widget. Live bindings (ended_at IS
+// NULL) drive the moon-stars icon on the role row; idle roles get the
+// moon-outline icon. When a.showArchived is true, archived
+// orchestrators and roles render below the Archive separator;
+// otherwise archived rows are filtered (default per design.md D5).
 func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
-	root := a.pieces.rootRoot
-	root.ClearChildren()
 
 	var (
 		orchs []*db.Orchestrator
@@ -165,17 +162,13 @@ func (a *App) populateRail(database *db.DB) error {
 		return fmt.Errorf("list orchestrators: %w", err)
 	}
 
+	entries := make([]*orchEntry, 0, len(orchs))
 	for _, orch := range orchs {
-		label := orch.Name
-		if orch.ArchivedAt != nil {
-			label += " [archived]"
-		}
-		node := tview.NewTreeNode(label)
-		node.SetReference(orchReference{
+		entry := &orchEntry{
 			ID:       orch.ID,
 			Name:     orch.Name,
 			Archived: orch.ArchivedAt != nil,
-		})
+		}
 
 		var roles []*db.Role
 		if a.showArchived {
@@ -187,40 +180,29 @@ func (a *App) populateRail(database *db.DB) error {
 			return fmt.Errorf("list roles for orch %d: %w", orch.ID, err)
 		}
 		for _, role := range roles {
-			bnd, err := database.Bindings.GetLiveByRole(ctx, role.ID)
-			live := err == nil && bnd != nil
-			label := role.Name
-			if live {
-				label = "* " + label
-			} else {
-				label = "  " + label
-			}
-			if role.ArchivedAt != nil {
-				label += " [archived]"
-			}
-			roleNode := tview.NewTreeNode(label)
-			ref := roleReference{
+			bnd, _ := database.Bindings.GetLiveByRole(ctx, role.ID)
+			live := bnd != nil
+			r := &roleEntry{
 				OrchestratorID: orch.ID,
 				RoleID:         role.ID,
 				RoleKind:       string(role.Kind),
 				Name:           role.Name,
+				Live:           live,
 				Archived:       role.ArchivedAt != nil,
+				StartedAt:      role.CreatedAt,
 			}
 			if live {
-				ref.ArgusTaskID = bnd.ArgusTaskID
+				r.ArgusTaskID = bnd.ArgusTaskID
+				r.StartedAt = bnd.StartedAt
 			}
-			roleNode.SetReference(ref)
-			node.AddChild(roleNode)
+			entry.Roles = append(entry.Roles, r)
 		}
 
-		root.AddChild(node)
+		entries = append(entries, entry)
 	}
 
-	if len(orchs) == 0 {
-		empty := tview.NewTreeNode("(no projects)").SetSelectable(false)
-		root.AddChild(empty)
-	}
-
+	a.pieces.rail.SetShowArchived(a.showArchived)
+	a.pieces.rail.SetOrchestrators(entries)
 	return nil
 }
 
@@ -245,26 +227,22 @@ func (a *App) RepopulateRail() {
 
 // CurrentRailSelection returns the bridge's view of the currently-
 // highlighted rail row. Returns a zero-value railSelection when the
-// node is not addressable (rail root, empty placeholder).
+// cursor is not on an addressable row (archive separator, empty).
 //
 // Satisfies the railSelector contract used by the mutation bridge.
 func (a *App) CurrentRailSelection() railSelection {
 	if a.pieces.rail == nil {
 		return railSelection{}
 	}
-	node := a.pieces.rail.GetCurrentNode()
-	if node == nil {
-		return railSelection{}
-	}
-	switch ref := node.GetReference().(type) {
-	case orchReference:
+	switch ref := a.pieces.rail.CurrentRef().(type) {
+	case *orchEntry:
 		return railSelection{
 			Kind:           selOrchestrator,
 			OrchestratorID: ref.ID,
 			Name:           ref.Name,
 			Archived:       ref.Archived,
 		}
-	case roleReference:
+	case *roleEntry:
 		return railSelection{
 			Kind:           selRole,
 			OrchestratorID: ref.OrchestratorID,
@@ -275,25 +253,6 @@ func (a *App) CurrentRailSelection() railSelection {
 		}
 	}
 	return railSelection{}
-}
-
-// orchReference is attached to an orchestrator tree node so Stage G/H/I
-// operations can resolve the row from the selected node.
-type orchReference struct {
-	ID       int64
-	Name     string
-	Archived bool
-}
-
-// roleReference is attached to a role tree node so pane bindings + later
-// mutation operations can be routed.
-type roleReference struct {
-	OrchestratorID int64
-	RoleID         int64
-	RoleKind       string
-	ArgusTaskID    string // empty when no live binding
-	Name           string
-	Archived       bool
 }
 
 // findInitialSelection picks the argus task IDs to bind to the coord and
@@ -436,12 +395,8 @@ func (a *App) OnRailSelectEnter() FocusState {
 	if a.pieces.rail == nil {
 		return FocusRAIL
 	}
-	node := a.pieces.rail.GetCurrentNode()
-	if node == nil {
-		return FocusRAIL
-	}
-	ref, ok := node.GetReference().(roleReference)
-	if !ok || ref.ArgusTaskID == "" {
+	ref, ok := a.pieces.rail.CurrentRef().(*roleEntry)
+	if !ok || ref == nil || ref.ArgusTaskID == "" {
 		return FocusRAIL
 	}
 	// Browsing flow: Enter rebinds the appropriate pane but KEEPS focus
