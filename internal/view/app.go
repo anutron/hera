@@ -36,6 +36,18 @@ type App struct {
 
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool
+
+	// database is retained for RepopulateRail so the bridge can ask
+	// for a refresh without round-tripping back through the daemon.
+	// Set by BuildApp; nil-safe at the use sites.
+	database *db.DB
+
+	// showArchived is flipped by the `l` rail key. When true,
+	// populateRail walks ListInclusive variants so archived
+	// orchestrators and roles render in the rail; when false,
+	// archived rows are filtered out (the default at session start
+	// per design.md D5).
+	showArchived bool
 }
 
 // BuildApp constructs the hera-view tview Application. It reads the
@@ -63,7 +75,7 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 	pieces := buildLayout(coordPane, agentPane)
 
 	tApp := tview.NewApplication()
-	tApp.SetRoot(pieces.root, true)
+	tApp.SetRoot(pieces.pages, true)
 	tApp.EnableMouse(false)
 
 	a := &App{
@@ -76,6 +88,7 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		agentUnsub:  agentUnsub,
 		coordBridge: coordBridge,
 		agentBridge: agentBridge,
+		database:    database,
 	}
 
 	if err := a.populateRail(database); err != nil {
@@ -127,27 +140,49 @@ func (a *App) Close() {
 	a.pieces.agent.Close()
 }
 
-// populateRail walks the orchestrators / roles / bindings tables once at
-// build time and inserts a node per orchestrator with each role nested
-// underneath. Live bindings (ended_at IS NULL) are marked with a "*"
-// prefix on the role row; archived rows are omitted (Stage A's
-// archived_at filter is not yet merged on this branch — caller-side
-// filtering on bindings' ended_at suffices for the initial render).
+// populateRail walks the orchestrators / roles / bindings tables and
+// inserts a node per orchestrator with each role nested underneath.
+// Live bindings (ended_at IS NULL) are marked with a "*" prefix on
+// the role row. When a.showArchived is true, archived orchestrators
+// and roles are also included (suffixed with " [archived]"); when
+// false (the default at session start per design.md D5) archived rows
+// are filtered out.
 func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
 	root := a.pieces.rootRoot
 	root.ClearChildren()
 
-	orchs, err := database.Orchestrators.List(ctx)
+	var (
+		orchs []*db.Orchestrator
+		err   error
+	)
+	if a.showArchived {
+		orchs, err = database.Orchestrators.ListInclusive(ctx)
+	} else {
+		orchs, err = database.Orchestrators.List(ctx)
+	}
 	if err != nil {
 		return fmt.Errorf("list orchestrators: %w", err)
 	}
 
 	for _, orch := range orchs {
-		node := tview.NewTreeNode(orch.Name)
-		node.SetReference(orchReference{ID: orch.ID})
+		label := orch.Name
+		if orch.ArchivedAt != nil {
+			label += " [archived]"
+		}
+		node := tview.NewTreeNode(label)
+		node.SetReference(orchReference{
+			ID:       orch.ID,
+			Name:     orch.Name,
+			Archived: orch.ArchivedAt != nil,
+		})
 
-		roles, err := database.Roles.ListByOrchestrator(ctx, orch.ID)
+		var roles []*db.Role
+		if a.showArchived {
+			roles, err = database.Roles.ListByOrchestratorInclusive(ctx, orch.ID)
+		} else {
+			roles, err = database.Roles.ListByOrchestrator(ctx, orch.ID)
+		}
 		if err != nil {
 			return fmt.Errorf("list roles for orch %d: %w", orch.ID, err)
 		}
@@ -160,11 +195,16 @@ func (a *App) populateRail(database *db.DB) error {
 			} else {
 				label = "  " + label
 			}
+			if role.ArchivedAt != nil {
+				label += " [archived]"
+			}
 			roleNode := tview.NewTreeNode(label)
 			ref := roleReference{
 				OrchestratorID: orch.ID,
 				RoleID:         role.ID,
 				RoleKind:       string(role.Kind),
+				Name:           role.Name,
+				Archived:       role.ArchivedAt != nil,
 			}
 			if live {
 				ref.ArgusTaskID = bnd.ArgusTaskID
@@ -184,10 +224,65 @@ func (a *App) populateRail(database *db.DB) error {
 	return nil
 }
 
+// RepopulateRail re-renders the rail from the current DB state. Safe
+// to call from any goroutine — it bounces through QueueUpdateDraw so
+// the actual node-tree mutation happens on the tview event loop.
+//
+// Satisfies the repopulator contract used by the mutation bridge.
+func (a *App) RepopulateRail() {
+	if a.database == nil {
+		return
+	}
+	body := func() {
+		_ = a.populateRail(a.database)
+	}
+	if a.app == nil {
+		body()
+		return
+	}
+	a.app.QueueUpdateDraw(body)
+}
+
+// CurrentRailSelection returns the bridge's view of the currently-
+// highlighted rail row. Returns a zero-value railSelection when the
+// node is not addressable (rail root, empty placeholder).
+//
+// Satisfies the railSelector contract used by the mutation bridge.
+func (a *App) CurrentRailSelection() railSelection {
+	if a.pieces.rail == nil {
+		return railSelection{}
+	}
+	node := a.pieces.rail.GetCurrentNode()
+	if node == nil {
+		return railSelection{}
+	}
+	switch ref := node.GetReference().(type) {
+	case orchReference:
+		return railSelection{
+			Kind:           selOrchestrator,
+			OrchestratorID: ref.ID,
+			Name:           ref.Name,
+			Archived:       ref.Archived,
+		}
+	case roleReference:
+		return railSelection{
+			Kind:           selRole,
+			OrchestratorID: ref.OrchestratorID,
+			RoleID:         ref.RoleID,
+			Name:           ref.Name,
+			RoleKind:       ref.RoleKind,
+			Archived:       ref.Archived,
+		}
+	}
+	return railSelection{}
+}
+
 // orchReference is attached to an orchestrator tree node so Stage G/H/I
 // operations can resolve the row from the selected node.
 type orchReference struct {
-	ID int64
+	ID       int64
+	Name     string
+	Archived bool
 }
 
 // roleReference is attached to a role tree node so pane bindings + later
@@ -197,6 +292,8 @@ type roleReference struct {
 	RoleID         int64
 	RoleKind       string
 	ArgusTaskID    string // empty when no live binding
+	Name           string
+	Archived       bool
 }
 
 // findInitialSelection picks the argus task IDs to bind to the coord and

@@ -2,6 +2,7 @@ package view
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 
@@ -10,7 +11,9 @@ import (
 
 	"github.com/anutron/argus-sdk/pluginview"
 
+	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
+	"github.com/anutron/hera/internal/view/ops"
 )
 
 // NewSessionFunc returns a SessionFunc that drives one hera-view session
@@ -33,7 +36,7 @@ import (
 // or the WebSocket peer closes. On exit it tears down the pluginview, the
 // tview Application, and every pane subscription owned by this session;
 // the daemon-level proxy subscriptions survive.
-func NewSessionFunc(database *db.DB, manager *ProxyManager, poster InputPoster, log *slog.Logger) SessionFunc {
+func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client, log *slog.Logger) SessionFunc {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -62,13 +65,26 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, poster InputPoster, 
 		// will use this screen rather than building a default tcell one.
 		tApp.SetScreen(scr)
 
+		// Build the rail-mutation surface: ops.Service over a *db.DB
+		// adapter + argus client adapter, wrapped by a bridge that
+		// drives input / confirm / help modals through the App.
+		opsService := ops.NewService(
+			newDBAdapter(database),
+			newArgusAdapter(client),
+			ops.ExecWorktreeRemover{},
+			slogLogger{log: log},
+		)
+		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, log)
+
 		focus := NewFocusMachine()
 		router := &KeyRouter{
 			Focus:      focus,
 			Targets:    app,
-			Poster:     poster,
+			Poster:     client,
+			Mutations:  bridge,
 			Border:     app,
 			RailSelect: app,
+			Modal:      app,
 			Ctx:        ctx,
 		}
 		// Paint the initial RAIL border so the operator sees focus on first
@@ -150,4 +166,16 @@ func (p managerPaneSource) IsTaskAlive(taskID string) bool {
 		return false
 	}
 	return p.mgr.IsTaskAlive(p.ctx, taskID)
+}
+
+// slogLogger adapts *slog.Logger to the ops.Logger interface. The ops
+// package only needs Printf; we map every audit-log line to a single
+// Info-level event under the "view.ops" prefix.
+type slogLogger struct{ log *slog.Logger }
+
+func (l slogLogger) Printf(format string, args ...any) {
+	if l.log == nil {
+		return
+	}
+	l.log.Info("view.ops", "msg", fmt.Sprintf(format, args...))
 }

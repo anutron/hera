@@ -35,6 +35,14 @@ type MutationHandler interface {
 	OnHelp()
 }
 
+// ModalGate is consulted on every key event so the router can yield to
+// any active modal overlay (input field, confirm modal, help modal).
+// When IsModalActive returns true HandleKey passes the event through
+// unchanged so the focused modal widget consumes it directly.
+type ModalGate interface {
+	IsModalActive() bool
+}
+
 // BorderUpdater is invoked every time the focus state changes so the
 // rendered surface can repaint the colored focus border. Stage F provides
 // the concrete implementation against tview Box widgets.
@@ -68,6 +76,7 @@ type KeyRouter struct {
 	Mutations  MutationHandler
 	Border     BorderUpdater
 	RailSelect RailSelectHandler
+	Modal      ModalGate
 
 	// Ctx is the context used when calling Poster.PostTaskInput. Defaults
 	// to context.Background() when nil.
@@ -81,6 +90,15 @@ type KeyRouter struct {
 func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 	if event == nil {
 		return nil
+	}
+
+	// While any modal overlay is up the focused tview primitive (input
+	// field, confirm modal, help text view) owns the keyboard. Yield
+	// every event unchanged so the modal can read its own keys
+	// (Enter / Esc / q / button focus) without the router stealing
+	// them.
+	if r.Modal != nil && r.Modal.IsModalActive() {
+		return event
 	}
 
 	// Focus-traversal keys take precedence over everything else and apply

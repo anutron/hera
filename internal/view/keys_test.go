@@ -574,6 +574,51 @@ func TestKeyRouter_NoBorderUpdate_OnNonFocusKey(t *testing.T) {
 	}
 }
 
+// --- Modal gate ---
+
+type fakeModalGate struct{ active bool }
+
+func (f *fakeModalGate) IsModalActive() bool { return f.active }
+
+func TestKeyRouter_ModalActive_YieldsAllEvents(t *testing.T) {
+	r, p, m, b := newRouter()
+	gate := &fakeModalGate{active: true}
+	r.Modal = gate
+
+	cases := []*tcell.EventKey{
+		tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyRune, 'r', tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModCtrl),
+		tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl),
+		tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone),
+		tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone),
+	}
+	for _, ev := range cases {
+		out := r.HandleKey(ev)
+		if out != ev {
+			t.Fatalf("modal-active must yield event %v unchanged; got %v", ev, out)
+		}
+	}
+	if m.new+m.rename+m.del+m.archive+m.listAll+m.help != 0 {
+		t.Fatalf("no mutation should fire while modal is active")
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("no byte forwarding while modal is active; got %d calls", len(p.Calls()))
+	}
+	if len(b.states) != 0 {
+		t.Fatalf("no focus changes while modal is active; got %v", b.states)
+	}
+}
+
+func TestKeyRouter_ModalInactive_NormalDispatch(t *testing.T) {
+	r, _, m, _ := newRouter()
+	r.Modal = &fakeModalGate{active: false}
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone))
+	if m.new != 1 {
+		t.Fatalf("modal-inactive must let n fire OnNew; got count %d", m.new)
+	}
+}
+
 // --- helpers ---
 
 func payloadOf(c []postCall) [][]byte {
