@@ -46,6 +46,11 @@ func main() {
 	defer c.CloseNow()
 	c.SetReadLimit(-1)
 
+	// Print the quit hint BEFORE raw mode + before the daemon's first
+	// frame paints over the screen. Operators forget the key otherwise —
+	// this is the only place it gets surfaced in-band.
+	fmt.Fprintln(os.Stderr, "[hera-view-client] connected. Press Ctrl-] to quit.")
+
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "raw mode:", err)
