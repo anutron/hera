@@ -18,6 +18,11 @@ type fakeFetcher struct {
 	streamIDs   []string
 	resizeCalls []resizeCall
 	resizeErr   error
+
+	// taskStatusByID maps argus task id → Status string returned from
+	// GetTask. An unset id falls back to "in_progress" (alive).
+	taskStatusByID map[string]string
+	getTaskErr     error
 }
 
 func (f *fakeFetcher) GetTaskOutput(_ context.Context, taskID string) (argus.TaskOutputSnapshot, error) {
@@ -45,6 +50,19 @@ func (f *fakeFetcher) ResizeTask(_ context.Context, taskID string, cols, rows in
 	err := f.resizeErr
 	f.mu.Unlock()
 	return err
+}
+
+func (f *fakeFetcher) GetTask(_ context.Context, taskID string) (*argus.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getTaskErr != nil {
+		return nil, f.getTaskErr
+	}
+	status, ok := f.taskStatusByID[taskID]
+	if !ok {
+		status = "in_progress"
+	}
+	return &argus.Task{ID: taskID, Status: status}, nil
 }
 
 type resizeCall struct {
@@ -245,4 +263,38 @@ func TestProxyManager_CloseClearsAndReleases(t *testing.T) {
 	}
 	// Calling Close again must not panic / double-close.
 	m.Close()
+}
+
+func TestProxyManager_IsTaskAlive(t *testing.T) {
+	ff := &fakeFetcher{
+		taskStatusByID: map[string]string{
+			"alive":     "in_progress",
+			"unknown":   "some-new-status",
+			"completed": "complete",
+			"failed":    "failed",
+			"archived":  "archived",
+		},
+	}
+	m := NewProxyManager(ff, nil)
+	ctx := context.Background()
+	cases := []struct {
+		taskID string
+		want   bool
+	}{
+		{"alive", true},
+		{"unknown", true}, // unknown statuses default to alive (conservative)
+		{"completed", false},
+		{"failed", false},
+		{"archived", false},
+	}
+	for _, c := range cases {
+		got := m.IsTaskAlive(ctx, c.taskID)
+		if got != c.want {
+			t.Errorf("IsTaskAlive(%q): got %v, want %v", c.taskID, got, c.want)
+		}
+	}
+	// Empty taskID is dead.
+	if m.IsTaskAlive(ctx, "") {
+		t.Errorf("IsTaskAlive(\"\"): expected false")
+	}
 }

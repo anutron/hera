@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/anutron/hera/internal/db"
 )
@@ -341,6 +342,275 @@ func TestBuildApp_NoLiveAgentLeavesPlaceholders(t *testing.T) {
 	got := renderApp(t, a, 80, 24)
 	if !strings.Contains(got, "(no coord selected)") {
 		t.Fatalf("expected coord pane placeholder; got:\n%s", got)
+	}
+}
+
+// alivePaneSource is a fakePaneSource extended with TaskAliveChecker so
+// findInitialSelection can filter recently-completed tasks.
+type alivePaneSource struct {
+	fakePaneSource
+	alive map[string]bool // taskID → alive?
+}
+
+func (a *alivePaneSource) IsTaskAlive(taskID string) bool {
+	if a.alive == nil {
+		return true
+	}
+	return a.alive[taskID]
+}
+
+func TestFindInitialSelection_PrefersLiveWorker(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	deadRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w-dead", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	liveRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w-live", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: deadRole.ID, ArgusTaskID: "task-dead", WorktreePath: "/x"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: liveRole.ID, ArgusTaskID: "task-live", WorktreePath: "/y"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "task-coord", WorktreePath: "/c"})
+
+	src := &alivePaneSource{alive: map[string]bool{
+		"task-dead":  false,
+		"task-live":  true,
+		"task-coord": true,
+	}}
+
+	coord, agent := findInitialSelection(d, src)
+	if agent != "task-live" {
+		t.Fatalf("agent: want task-live (the only alive worker), got %q", agent)
+	}
+	if coord != "task-coord" {
+		t.Fatalf("coord: want task-coord, got %q", coord)
+	}
+}
+
+func TestFindInitialSelection_FallsBackToCoordWhenNoLiveWorker(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	workerRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: workerRole.ID, ArgusTaskID: "task-w", WorktreePath: "/w"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "task-c", WorktreePath: "/c"})
+
+	src := &alivePaneSource{alive: map[string]bool{
+		"task-w": false,
+		"task-c": true,
+	}}
+
+	coord, agent := findInitialSelection(d, src)
+	if coord != "task-c" {
+		t.Fatalf("coord: want task-c, got %q", coord)
+	}
+	if agent != "task-c" {
+		t.Fatalf("agent fallback: want task-c (coord task used for agent pane when no live worker), got %q", agent)
+	}
+}
+
+func TestFindInitialSelection_NothingLiveReturnsEmpty(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	workerRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: workerRole.ID, ArgusTaskID: "task-w", WorktreePath: "/w"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "task-c", WorktreePath: "/c"})
+
+	src := &alivePaneSource{alive: map[string]bool{
+		"task-w": false,
+		"task-c": false,
+	}}
+
+	coord, agent := findInitialSelection(d, src)
+	if coord != "" || agent != "" {
+		t.Fatalf("everything dead must return empty pair; got (%q, %q)", coord, agent)
+	}
+}
+
+func TestFindInitialSelection_NoCheckerKeepsLegacyBehavior(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj"})
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "task-w", WorktreePath: "/w"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "task-c", WorktreePath: "/c"})
+
+	// fakePaneSource does NOT implement TaskAliveChecker; selection should
+	// treat the worker binding as live and pick it.
+	src := &fakePaneSource{}
+	coord, agent := findInitialSelection(d, src)
+	if coord != "task-c" || agent != "task-w" {
+		t.Fatalf("no checker should mirror DB-only behavior; got (%q, %q), want (task-c, task-w)", coord, agent)
+	}
+}
+
+func TestFindInitialSelection_PrefersSecondOrchestratorWithLiveWorker(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	o1, _ := d.Orchestrators.Create(ctx, "first")
+	o2, _ := d.Orchestrators.Create(ctx, "second")
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o1.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "first"})
+	w2, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o2.ID, Name: "w2", Kind: db.KindWorker, ArgusProject: "second"})
+	c2, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o2.ID, Name: "coord2", Kind: db.KindCoordinator, ArgusProject: "second"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "t1", WorktreePath: "/1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w2.ID, ArgusTaskID: "t2", WorktreePath: "/2"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c2.ID, ArgusTaskID: "t2c", WorktreePath: "/2c"})
+
+	// Only second orchestrator's worker is alive.
+	src := &alivePaneSource{alive: map[string]bool{
+		"t1": false,
+		"t2": true,
+	}}
+
+	coord, agent := findInitialSelection(d, src)
+	if agent != "t2" {
+		t.Fatalf("must prefer second orchestrator's live worker; got agent=%q", agent)
+	}
+	if coord != "t2c" {
+		t.Fatalf("coord should come from second orchestrator; got %q", coord)
+	}
+}
+
+func TestApp_OnRailSelectEnter_WorkerRebindsAgent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	w2, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w2", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "t1", WorktreePath: "/1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w2.ID, ArgusTaskID: "t2", WorktreePath: "/2"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// findInitialSelection should have picked w1 (first worker). Move the
+	// rail's current node to w2's tree node and fire Enter.
+	startAgent := a.AgentTaskID()
+	if startAgent != "t1" {
+		t.Fatalf("baseline AgentTaskID: want t1, got %q", startAgent)
+	}
+
+	// Find the w2 tree node and mark it current.
+	var w2Node *tview.TreeNode
+	walkTree(a.pieces.rootRoot, func(n *tview.TreeNode) {
+		if ref, ok := n.GetReference().(roleReference); ok && ref.RoleID == w2.ID {
+			w2Node = n
+		}
+	})
+	if w2Node == nil {
+		t.Fatalf("could not locate w2 role node in rail tree")
+	}
+	a.pieces.rail.SetCurrentNode(w2Node)
+
+	got := a.OnRailSelectEnter()
+	if got != FocusAGENT {
+		t.Fatalf("Enter on worker row: want FocusAGENT, got %s", got)
+	}
+	if a.AgentTaskID() != "t2" {
+		t.Fatalf("agent task after rebind: want t2, got %q", a.AgentTaskID())
+	}
+}
+
+func TestApp_OnRailSelectEnter_CoordRebindsCoord(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj"})
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Initial coord pane is bound to tc (the only coord). Move selection
+	// to the coord row anyway and confirm Enter returns FocusCOORD.
+	var coordNode *tview.TreeNode
+	walkTree(a.pieces.rootRoot, func(n *tview.TreeNode) {
+		if ref, ok := n.GetReference().(roleReference); ok && ref.RoleID == c.ID {
+			coordNode = n
+		}
+	})
+	if coordNode == nil {
+		t.Fatalf("could not locate coord role node in rail tree")
+	}
+	a.pieces.rail.SetCurrentNode(coordNode)
+
+	if got := a.OnRailSelectEnter(); got != FocusCOORD {
+		t.Fatalf("Enter on coord row: want FocusCOORD, got %s", got)
+	}
+	if a.CoordTaskID() != "tc" {
+		t.Fatalf("coord task after rebind: want tc, got %q", a.CoordTaskID())
+	}
+}
+
+func TestApp_OnRailSelectEnter_OrchHeaderPropagates(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Position cursor on the orchestrator header (which carries an
+	// orchReference, not a roleReference).
+	var orchNode *tview.TreeNode
+	walkTree(a.pieces.rootRoot, func(n *tview.TreeNode) {
+		if _, ok := n.GetReference().(orchReference); ok {
+			orchNode = n
+		}
+	})
+	if orchNode == nil {
+		t.Fatalf("could not locate orchestrator header node")
+	}
+	a.pieces.rail.SetCurrentNode(orchNode)
+
+	if got := a.OnRailSelectEnter(); got != FocusRAIL {
+		t.Fatalf("Enter on orchestrator header: want FocusRAIL (let tree fold/unfold), got %s", got)
+	}
+}
+
+// walkTree visits every descendant of root (excluding root itself).
+func walkTree(root *tview.TreeNode, fn func(*tview.TreeNode)) {
+	for _, child := range root.GetChildren() {
+		fn(child)
+		walkTree(child, fn)
 	}
 }
 
