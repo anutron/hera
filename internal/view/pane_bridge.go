@@ -88,8 +88,13 @@ func pumpPaneBridge(ctx context.Context, out chan []byte, snapshot []byte, upstr
 	}
 }
 
-// newBoundPane builds a terminalpane wrapped around a fresh paneBridge.
-// taskID == "" produces a detached pane carrying placeholder text. The
+// newBoundPane builds a terminalpane wrapped around a fresh paneBridge,
+// then wraps that terminalpane in a pinnedTerminalPane so the emulator
+// surface stays pinned to the worker's real PTY size rather than auto-
+// tracking the tview inner rect.
+//
+// taskID == "" produces a detached pane carrying placeholder text and
+// pinned to the default 80x24 surface (no upstream to query). The
 // returned unsub releases the proxy subscription registered for taskID
 // (no-op when no subscription was opened).
 //
@@ -98,26 +103,29 @@ func pumpPaneBridge(ctx context.Context, out chan []byte, snapshot []byte, upstr
 // after BuildApp sees the initial cells already painted. The wait is
 // bounded; if the terminalpane never catches up the function returns
 // anyway — Draw will simply show an empty grid until later frames land.
-func newBoundPane(title, placeholder, taskID string, src PaneSource) (*terminalpane.TerminalPane, *paneBridge, func()) {
+func newBoundPane(title, placeholder, taskID string, src PaneSource) (*pinnedTerminalPane, *paneBridge, func()) {
 	var snap []byte
 	var upstream <-chan []byte
 	unsub := func() {}
+	var cols, rows int
 	if taskID != "" && src != nil {
 		snap, upstream, unsub = src.SubscribeTask(taskID)
 		if unsub == nil {
 			unsub = func() {}
 		}
+		cols, rows = src.TaskSize(taskID)
 	}
 
 	bridge := startPaneBridge(snap, upstream, placeholder)
 	tp := terminalpane.New(bridge.out)
 	tp.SetTitle(title)
+	pinned := newPinnedTerminalPane(tp, cols, rows)
 
 	if len(snap) > 0 || (upstream == nil && placeholder != "") {
 		waitForInitialChunk(tp)
 	}
 
-	return tp, bridge, unsub
+	return pinned, bridge, unsub
 }
 
 // waitForInitialChunk polls Touched until it observes the consumer goroutine

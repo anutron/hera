@@ -1,6 +1,14 @@
 package argus
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrNoTaskSize is returned by GetTaskSize when argus reports 404 — the
+// task exists but no PTY session is active, so no size is available. The
+// caller treats this as a signal to fall back to a default surface size.
+var ErrNoTaskSize = errors.New("argus: no PTY size for task")
 
 // HTTPError is the error type doJSON returns when argus responds with a
 // non-2xx status. Callers that need to discriminate by status code

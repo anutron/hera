@@ -3,6 +3,7 @@ package argus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -77,6 +78,40 @@ func TestClient_GetTask(t *testing.T) {
 	}
 	if task.ID != "t1" {
 		t.Fatalf("task.ID = %q", task.ID)
+	}
+}
+
+func TestClient_GetTaskSize(t *testing.T) {
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tasks/t1/size" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"cols":189,"rows":69}`)
+	})
+	defer srv.Close()
+
+	cols, rows, err := c.GetTaskSize(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("GetTaskSize: %v", err)
+	}
+	if cols != 189 || rows != 69 {
+		t.Fatalf("cols=%d rows=%d, want 189x69", cols, rows)
+	}
+}
+
+func TestClient_GetTaskSize_404(t *testing.T) {
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"no active session"}`)
+	})
+	defer srv.Close()
+
+	_, _, err := c.GetTaskSize(context.Background(), "t1")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !errors.Is(err, ErrNoTaskSize) {
+		t.Fatalf("err = %v, want ErrNoTaskSize", err)
 	}
 }
 
