@@ -444,12 +444,19 @@ func (a *App) OnRailSelectEnter() FocusState {
 	if !ok || ref.ArgusTaskID == "" {
 		return FocusRAIL
 	}
+	// Browsing flow: Enter rebinds the appropriate pane but KEEPS focus
+	// on RAIL so subsequent j/k continues to navigate the tree and
+	// subsequent Enter rebinds again. To start typing into a pane, the
+	// operator uses the Ctrl-arrow ladder to move focus explicitly. (The
+	// original D4 design said Enter jumps to AGENT; live testing showed
+	// that broke the browse-many-roles flow because the second Enter was
+	// consumed by the focused pane instead of triggering another rebind.)
 	if ref.RoleKind == string(db.KindCoordinator) {
 		a.rebindCoord(ref.ArgusTaskID)
-		return FocusCOORD
+	} else {
+		a.rebindAgent(ref.ArgusTaskID)
 	}
-	a.rebindAgent(ref.ArgusTaskID)
-	return FocusAGENT
+	return FocusRAIL
 }
 
 // rebindCoord swaps the COORD pane's underlying paneBridge / subscription
