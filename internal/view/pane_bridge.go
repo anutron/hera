@@ -90,13 +90,23 @@ func pumpPaneBridge(ctx context.Context, out chan []byte, snapshot []byte, upstr
 
 // newBoundPane builds a terminalpane wrapped around a fresh paneBridge,
 // then wraps that terminalpane in a pinnedTerminalPane so the emulator
-// surface stays pinned to the worker's real PTY size rather than auto-
-// tracking the tview inner rect.
+// surface tracks the size hera negotiated with argus for this pane's
+// worker PTY (Option 1: hera tells argus the desired size via POST
+// /api/tasks/{id}/size and the worker re-renders at that width).
 //
 // taskID == "" produces a detached pane carrying placeholder text and
 // pinned to the default 80x24 surface (no upstream to query). The
 // returned unsub releases the proxy subscription registered for taskID
 // (no-op when no subscription was opened).
+//
+// The construction-time pinned size is the queried PTY size from argus.
+// It's only relevant as a transient until the first Draw learns the real
+// inner rect — at which point the pinned pane both pins to that size
+// and asks argus to resize the worker PTY to match (via src.ResizeTask,
+// dispatched on a background goroutine inside the pane source). The
+// queried-size fallback covers the path where src has no ResizeTask sink
+// or argus reports 404 / failure: the wider worker PTY just letterboxes
+// inside hera's narrower allocation.
 //
 // The call waits briefly for the terminalpane's consume goroutine to
 // ingest the first chunk (snapshot or placeholder) so the first Draw
@@ -108,18 +118,20 @@ func newBoundPane(title, placeholder, taskID string, src PaneSource) (*pinnedTer
 	var upstream <-chan []byte
 	unsub := func() {}
 	var cols, rows int
+	var resizer paneResizer
 	if taskID != "" && src != nil {
 		snap, upstream, unsub = src.SubscribeTask(taskID)
 		if unsub == nil {
 			unsub = func() {}
 		}
 		cols, rows = src.TaskSize(taskID)
+		resizer = src
 	}
 
 	bridge := startPaneBridge(snap, upstream, placeholder)
 	tp := terminalpane.New(bridge.out)
 	tp.SetTitle(title)
-	pinned := newPinnedTerminalPane(tp, cols, rows)
+	pinned := newBoundPinnedTerminalPane(tp, cols, rows, taskID, resizer)
 
 	if len(snap) > 0 || (upstream == nil && placeholder != "") {
 		waitForInitialChunk(tp)

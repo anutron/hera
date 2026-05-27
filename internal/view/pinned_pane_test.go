@@ -1,12 +1,34 @@
 package view
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/anutron/argus-sdk/terminalpane"
 )
+
+// fakePaneResizer records every ResizeTask call so tests can assert
+// dispatch counts and dimensions.
+type fakePaneResizer struct {
+	mu    sync.Mutex
+	calls []paneResizeCall
+}
+
+func (f *fakePaneResizer) ResizeTask(taskID string, cols, rows int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, paneResizeCall{TaskID: taskID, Cols: cols, Rows: rows})
+}
+
+func (f *fakePaneResizer) Calls() []paneResizeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]paneResizeCall, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
 
 // TestPinnedTerminalPane_KeepsPinnedSizeAcrossDraw pins the core contract:
 // the SDK's Draw auto-resizes the emulator to its inner rect, but our
@@ -67,6 +89,174 @@ func TestPinnedTerminalPane_ZeroDefaultsTo80x24(t *testing.T) {
 	if c != defaultPinnedCols || r != defaultPinnedRows {
 		t.Fatalf("PinnedSize = %dx%d, want %dx%d (default fallback)",
 			c, r, defaultPinnedCols, defaultPinnedRows)
+	}
+}
+
+// TestPinnedTerminalPane_DrawFiresResizeWithInnerRect pins the Option 1
+// resize-on-Draw path: when the pane is bound to a taskID and a resizer
+// is wired, the first Draw with a fresh inner rect asks argus to resize
+// the worker PTY to (inner.W, inner.H) and re-pins the emulator to the
+// same dimensions.
+func TestPinnedTerminalPane_DrawFiresResizeWithInnerRect(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	// Construction-time pinned = queried PTY size of 189x69 — the
+	// production-shape state where the worker PTY is wider than hera's
+	// allocation.
+	r := &fakePaneResizer{}
+	p := newBoundPinnedTerminalPane(tp, 189, 69, "task-X", r)
+
+	const allocW, allocH = 80, 24
+	p.SetRect(0, 0, allocW, allocH)
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(allocW, allocH)
+	p.Draw(sim)
+
+	calls := r.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("resize calls = %d, want 1: %+v", len(calls), calls)
+	}
+	wantCall := paneResizeCall{TaskID: "task-X", Cols: allocW - 2, Rows: allocH - 2}
+	if calls[0] != wantCall {
+		t.Fatalf("call = %+v, want %+v", calls[0], wantCall)
+	}
+
+	// Pinned size should now track the inner rect, not the queried PTY.
+	if c, r := p.PinnedSize(); c != allocW-2 || r != allocH-2 {
+		t.Fatalf("pinned size = %dx%d, want %dx%d", c, r, allocW-2, allocH-2)
+	}
+}
+
+// TestPinnedTerminalPane_DrawSkipsResizeWhenInnerMatchesQueriedSize pins
+// the idempotency contract: when argus's currently-reported PTY size
+// (= the construction-time pinned size) already matches the layout-
+// allocated inner rect, Draw does NOT fire a ResizeTask. Argus would
+// cache that as a no-op, but skipping it locally avoids waking a
+// goroutine and emitting the "redundant" log noise on every frame.
+func TestPinnedTerminalPane_DrawSkipsResizeWhenInnerMatchesQueriedSize(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	// Queried size 78x22 → allocated outer 80x24 → inner 78x22.
+	r := &fakePaneResizer{}
+	p := newBoundPinnedTerminalPane(tp, 78, 22, "task-X", r)
+
+	const allocW, allocH = 80, 24
+	p.SetRect(0, 0, allocW, allocH)
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(allocW, allocH)
+	p.Draw(sim)
+
+	if calls := r.Calls(); len(calls) != 0 {
+		t.Fatalf("resize calls = %+v, want zero (inner == queried)", calls)
+	}
+}
+
+// TestPinnedTerminalPane_DrawDedupesAcrossFrames pins that repeated
+// Draws at the same allocation only dispatch a single ResizeTask. tview
+// re-Draws on every frame; we must not flood argus with identical
+// requests.
+func TestPinnedTerminalPane_DrawDedupesAcrossFrames(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	r := &fakePaneResizer{}
+	p := newBoundPinnedTerminalPane(tp, 189, 69, "task-X", r)
+
+	const allocW, allocH = 80, 24
+	p.SetRect(0, 0, allocW, allocH)
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(allocW, allocH)
+
+	for i := 0; i < 5; i++ {
+		p.SetRect(0, 0, allocW, allocH)
+		p.Draw(sim)
+	}
+
+	if calls := r.Calls(); len(calls) != 1 {
+		t.Fatalf("resize calls = %d, want 1 (dedup failed across frames): %+v",
+			len(calls), calls)
+	}
+}
+
+// TestPinnedTerminalPane_DrawRefiresOnAllocChange pins the WS-resize
+// envelope path: when hera's outer rect changes (terminal resize → tview
+// recomputes layout → pane gets a new allocation), Draw must re-fire
+// ResizeTask with the new inner dimensions.
+func TestPinnedTerminalPane_DrawRefiresOnAllocChange(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	r := &fakePaneResizer{}
+	p := newBoundPinnedTerminalPane(tp, 189, 69, "task-X", r)
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(200, 60)
+
+	p.SetRect(0, 0, 80, 24)
+	p.Draw(sim)
+
+	p.SetRect(0, 0, 100, 30)
+	p.Draw(sim)
+
+	calls := r.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("resize calls = %d, want 2: %+v", len(calls), calls)
+	}
+	if calls[0] != (paneResizeCall{TaskID: "task-X", Cols: 78, Rows: 22}) {
+		t.Fatalf("call[0] = %+v, want {task-X, 78, 22}", calls[0])
+	}
+	if calls[1] != (paneResizeCall{TaskID: "task-X", Cols: 98, Rows: 28}) {
+		t.Fatalf("call[1] = %+v, want {task-X, 98, 28}", calls[1])
+	}
+}
+
+// TestPinnedTerminalPane_DrawSkipsResizeWhenNoTaskID pins that detached
+// (placeholder) panes never dispatch a resize — the resizer hook only
+// applies to bound panes.
+func TestPinnedTerminalPane_DrawSkipsResizeWhenNoTaskID(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	r := &fakePaneResizer{}
+	p := newBoundPinnedTerminalPane(tp, 189, 69, "", r)
+
+	p.SetRect(0, 0, 80, 24)
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(80, 24)
+	p.Draw(sim)
+
+	if calls := r.Calls(); len(calls) != 0 {
+		t.Fatalf("resize calls = %+v, want zero (empty taskID)", calls)
 	}
 }
 

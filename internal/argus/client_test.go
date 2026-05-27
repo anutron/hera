@@ -115,6 +115,112 @@ func TestClient_GetTaskSize_404(t *testing.T) {
 	}
 }
 
+func TestClient_ResizeTask(t *testing.T) {
+	var gotMethod, gotPath, gotCT string
+	var gotBody resizeTaskInput
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotCT = r.Header.Get("Content-Type")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = io.WriteString(w, `{"cols":145,"rows":50,"rerendered":true}`)
+	})
+	defer srv.Close()
+
+	if err := c.ResizeTask(context.Background(), "t1", 145, 50); err != nil {
+		t.Fatalf("ResizeTask: %v", err)
+	}
+	if gotMethod != "POST" {
+		t.Fatalf("method = %s", gotMethod)
+	}
+	if gotPath != "/api/tasks/t1/size" {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if gotCT != "application/json" {
+		t.Fatalf("Content-Type = %q", gotCT)
+	}
+	if gotBody.Cols != 145 || gotBody.Rows != 50 {
+		t.Fatalf("body = %+v, want {Cols:145,Rows:50}", gotBody)
+	}
+}
+
+func TestClient_ResizeTask_404(t *testing.T) {
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"no active session"}`)
+	})
+	defer srv.Close()
+
+	err := c.ResizeTask(context.Background(), "t1", 145, 50)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !errors.Is(err, ErrNoTaskSize) {
+		t.Fatalf("err = %v, want ErrNoTaskSize", err)
+	}
+}
+
+func TestClient_ResizeTask_400(t *testing.T) {
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"cols out of range"}`)
+	})
+	defer srv.Close()
+
+	err := c.ResizeTask(context.Background(), "t1", 145, 50)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("err = %v, want *HTTPError", err)
+	}
+	if httpErr.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", httpErr.StatusCode)
+	}
+}
+
+func TestClient_ResizeTask_5xx(t *testing.T) {
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"boom"}`)
+	})
+	defer srv.Close()
+
+	err := c.ResizeTask(context.Background(), "t1", 145, 50)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("err = %v, want *HTTPError", err)
+	}
+	if httpErr.StatusCode != 500 {
+		t.Fatalf("status = %d, want 500", httpErr.StatusCode)
+	}
+}
+
+func TestClient_ResizeTask_RejectsOutOfBoundDims(t *testing.T) {
+	c := New("http://unused", "tok")
+	cases := []struct {
+		name       string
+		cols, rows int
+	}{
+		{"zero cols", 0, 24},
+		{"zero rows", 80, 0},
+		{"negative cols", -1, 24},
+		{"oversized cols", 1001, 24},
+		{"oversized rows", 80, 1001},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := c.ResizeTask(context.Background(), "t1", tc.cols, tc.rows); err == nil {
+				t.Fatalf("expected validation error for %dx%d", tc.cols, tc.rows)
+			}
+		})
+	}
+}
+
 func TestClient_PutTaskMeta(t *testing.T) {
 	var gotMethod, gotPath string
 	var gotBody map[string]any

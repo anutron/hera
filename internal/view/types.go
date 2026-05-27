@@ -22,6 +22,13 @@ type PaneSource interface {
 	// implementations MUST return (0, 0); callers fall back to a default
 	// surface size in that case.
 	TaskSize(taskID string) (cols, rows int)
+
+	// ResizeTask asks the underlying argus task to resize its worker PTY
+	// to (cols, rows). Implementations dispatch the call asynchronously
+	// and dedupe redundant requests; failures are logged but not
+	// surfaced to the caller. taskID == "" or non-positive dimensions
+	// are no-ops.
+	ResizeTask(taskID string, cols, rows int)
 }
 
 // nilPaneSource is the do-nothing source used when no proxy is wired
@@ -37,3 +44,7 @@ func (nilPaneSource) SubscribeTask(string) ([]byte, <-chan []byte, func()) {
 // TaskSize satisfies PaneSource. Always returns (0, 0) so callers letterbox
 // to the default surface size.
 func (nilPaneSource) TaskSize(string) (int, int) { return 0, 0 }
+
+// ResizeTask satisfies PaneSource. No-op for the nil source; tests and
+// daemon startup paths without a live argus connection use this.
+func (nilPaneSource) ResizeTask(string, int, int) {}

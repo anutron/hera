@@ -129,3 +129,13 @@ func (p managerPaneSource) TaskSize(taskID string) (int, int) {
 	}
 	return p.mgr.TaskSize(p.ctx, taskID)
 }
+
+// ResizeTask delegates to the proxy manager, which asks argus to resize
+// the worker PTY to (cols, rows). The manager dispatches the call on a
+// goroutine bound by p.ctx, so Draw paths stay non-blocking.
+func (p managerPaneSource) ResizeTask(taskID string, cols, rows int) {
+	if p.mgr == nil || taskID == "" {
+		return
+	}
+	p.mgr.ResizeTask(p.ctx, taskID, cols, rows)
+}

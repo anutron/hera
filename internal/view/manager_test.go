@@ -16,6 +16,8 @@ type fakeFetcher struct {
 	mu          sync.Mutex
 	snapshotIDs []string
 	streamIDs   []string
+	resizeCalls []resizeCall
+	resizeErr   error
 }
 
 func (f *fakeFetcher) GetTaskOutput(_ context.Context, taskID string) (argus.TaskOutputSnapshot, error) {
@@ -35,6 +37,20 @@ func (f *fakeFetcher) StreamTaskOutput(ctx context.Context, taskID string, _ uin
 
 func (f *fakeFetcher) GetTaskSize(_ context.Context, _ string) (int, int, error) {
 	return 0, 0, nil
+}
+
+func (f *fakeFetcher) ResizeTask(_ context.Context, taskID string, cols, rows int) error {
+	f.mu.Lock()
+	f.resizeCalls = append(f.resizeCalls, resizeCall{TaskID: taskID, Cols: cols, Rows: rows})
+	err := f.resizeErr
+	f.mu.Unlock()
+	return err
+}
+
+type resizeCall struct {
+	TaskID string
+	Cols   int
+	Rows   int
 }
 
 // TestProxyManager_SeedCreatesOnePerTaskID pins the seed path: every
@@ -95,6 +111,121 @@ func TestProxyManager_EnsureIdempotent(t *testing.T) {
 	}
 	if got := m.TaskIDs(); len(got) != 1 {
 		t.Fatalf("TaskIDs len = %d, want 1", len(got))
+	}
+}
+
+// TestProxyManager_ResizeTaskDispatchesToFetcher pins that ResizeTask
+// hits the fetcher's ResizeTask with the requested taskID and dimensions.
+// The manager dispatches on a goroutine, so the test polls until the
+// fake records the call.
+func TestProxyManager_ResizeTaskDispatchesToFetcher(t *testing.T) {
+	ff := &fakeFetcher{}
+	m := NewProxyManager(ff, nil)
+	defer m.Close()
+
+	m.ResizeTask(context.Background(), "task-A", 145, 50)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		ff.mu.Lock()
+		n := len(ff.resizeCalls)
+		ff.mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ff.mu.Lock()
+	defer ff.mu.Unlock()
+	if len(ff.resizeCalls) != 1 {
+		t.Fatalf("resize calls = %d, want 1", len(ff.resizeCalls))
+	}
+	got := ff.resizeCalls[0]
+	if got != (resizeCall{TaskID: "task-A", Cols: 145, Rows: 50}) {
+		t.Fatalf("call = %+v, want {task-A, 145, 50}", got)
+	}
+}
+
+// TestProxyManager_ResizeTaskDedupesRepeatedDims pins that repeated
+// ResizeTask calls for the same (taskID, cols, rows) short-circuit
+// locally rather than spamming argus.
+func TestProxyManager_ResizeTaskDedupesRepeatedDims(t *testing.T) {
+	ff := &fakeFetcher{}
+	m := NewProxyManager(ff, nil)
+	defer m.Close()
+
+	m.ResizeTask(context.Background(), "task-A", 145, 50)
+	m.ResizeTask(context.Background(), "task-A", 145, 50)
+	m.ResizeTask(context.Background(), "task-A", 145, 50)
+
+	// Let any goroutines drain. Only the first call should have been
+	// dispatched; the others must short-circuit.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		ff.mu.Lock()
+		n := len(ff.resizeCalls)
+		ff.mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // give late dispatches a chance
+
+	ff.mu.Lock()
+	defer ff.mu.Unlock()
+	if len(ff.resizeCalls) != 1 {
+		t.Fatalf("resize calls = %d, want 1 (dedup failed)", len(ff.resizeCalls))
+	}
+}
+
+// TestProxyManager_ResizeTaskDispatchesOnDimChange pins that changing
+// the dimensions for a previously-resized task triggers a new dispatch.
+func TestProxyManager_ResizeTaskDispatchesOnDimChange(t *testing.T) {
+	ff := &fakeFetcher{}
+	m := NewProxyManager(ff, nil)
+	defer m.Close()
+
+	m.ResizeTask(context.Background(), "task-A", 145, 50)
+	m.ResizeTask(context.Background(), "task-A", 100, 40)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		ff.mu.Lock()
+		n := len(ff.resizeCalls)
+		ff.mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ff.mu.Lock()
+	defer ff.mu.Unlock()
+	if len(ff.resizeCalls) != 2 {
+		t.Fatalf("resize calls = %d, want 2", len(ff.resizeCalls))
+	}
+}
+
+// TestProxyManager_ResizeTaskIgnoresBadInputs pins that empty taskID or
+// non-positive dimensions are dropped locally without dispatch.
+func TestProxyManager_ResizeTaskIgnoresBadInputs(t *testing.T) {
+	ff := &fakeFetcher{}
+	m := NewProxyManager(ff, nil)
+	defer m.Close()
+
+	m.ResizeTask(context.Background(), "", 100, 40)
+	m.ResizeTask(context.Background(), "task-A", 0, 40)
+	m.ResizeTask(context.Background(), "task-A", 100, 0)
+	m.ResizeTask(context.Background(), "task-A", -5, 40)
+
+	time.Sleep(50 * time.Millisecond) // give any stray dispatch time
+
+	ff.mu.Lock()
+	defer ff.mu.Unlock()
+	if len(ff.resizeCalls) != 0 {
+		t.Fatalf("resize calls = %d, want 0 (bad inputs should drop)", len(ff.resizeCalls))
 	}
 }
 

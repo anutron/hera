@@ -14,21 +14,30 @@ const (
 	defaultPinnedRows = 24
 )
 
+// paneResizer is the narrow capability newPinnedTerminalPane needs to
+// inform argus that the worker PTY should track this pane's inner rect.
+// In production, managerPaneSource (PaneSource) satisfies this; tests pass
+// a recording fake.
+type paneResizer interface {
+	ResizeTask(taskID string, cols, rows int)
+}
+
 // pinnedTerminalPane wraps an SDK terminalpane so its emulator surface is
-// kept at the worker's real PTY size (queried from argus) instead of the
-// tview inner rect.
+// kept at the size hera negotiated with argus for this pane's worker PTY,
+// rather than letting the SDK auto-track the tview inner rect.
+//
+// Option 1 (this stage): the pane treats the tview inner rect as the
+// authoritative pane allocation, asks argus to resize the worker PTY to
+// match (POST /api/tasks/{id}/size), and pins the emulator at that same
+// size so worker bytes line up cell-for-cell.
+//
+// Option 2 fallback (no taskID, no resizer wired, or argus 404 / failure):
+// the emulator stays at the queried PTY size we got at construction and
+// any cells outside the layout-allocated rect are dropped — the wider
+// worker PTY just letterboxes inside the narrower hera pane.
 //
 // The SDK terminalpane's Draw calls Resize(inner.W, inner.H) on every
-// invocation so a Flex layout shuffle just-works for normal nested
-// widgets. In hera that's wrong: hera's coord column is narrower than the
-// worker's PTY, so emulator-width-tracking-inner-rect makes the emulator
-// wrap content that the worker emitted column-positioned for its own
-// (wider) PTY. The result on-screen is long horizontal bar runs and
-// vertical text spilling down the right edge.
-//
-// The fix is letterboxing: keep the emulator at the worker's PTY size and
-// only paint the portion that fits inside hera's allocated rect. We do
-// that without forking the SDK by lying about the rect for the duration
+// invocation. We override that by lying about the rect for the duration
 // of one Draw call (so the SDK's auto-resize lands on the pinned size)
 // and wrapping the tcell screen so any cell writes outside hera's
 // allocated rect are dropped.
@@ -37,11 +46,39 @@ type pinnedTerminalPane struct {
 
 	pinnedCols int
 	pinnedRows int
+
+	// taskID identifies the argus task this pane is bound to, for use
+	// with the resizer. Empty when no task is bound (placeholder pane).
+	taskID string
+
+	// resizer dispatches POST /api/tasks/{id}/size on every alloc
+	// change. nil when no upstream resize sink is wired (e.g., daemon
+	// startup with the nil source, or in tests).
+	resizer paneResizer
+
+	// lastDesiredCols / lastDesiredRows record the most recent (cols,
+	// rows) we asked the resizer to apply. Used to short-circuit
+	// redundant calls when Draw fires repeatedly at the same allocation.
+	lastDesiredCols int
+	lastDesiredRows int
 }
 
 // newPinnedTerminalPane wraps tp and pins its emulator surface to
 // cols x rows. Values <= 0 fall back to defaultPinnedCols / defaultPinnedRows.
+//
+// The initial cols/rows are the construction-time fallback: argus's
+// currently-reported PTY size from GET /api/tasks/{id}/size, or the
+// 80x24 default when argus has no live session. The pinned size shifts
+// to the layout-allocated inner rect on the first Draw (Option 1).
 func newPinnedTerminalPane(tp *terminalpane.TerminalPane, cols, rows int) *pinnedTerminalPane {
+	return newBoundPinnedTerminalPane(tp, cols, rows, "", nil)
+}
+
+// newBoundPinnedTerminalPane is newPinnedTerminalPane with the resizer +
+// taskID wiring for Option 1 PTY-resize-on-bind. Production code paths
+// call this from newBoundPane; the no-arg shim above stays for tests that
+// only exercise the letterbox behavior.
+func newBoundPinnedTerminalPane(tp *terminalpane.TerminalPane, cols, rows int, taskID string, resizer paneResizer) *pinnedTerminalPane {
 	if cols <= 0 {
 		cols = defaultPinnedCols
 	}
@@ -52,6 +89,16 @@ func newPinnedTerminalPane(tp *terminalpane.TerminalPane, cols, rows int) *pinne
 		TerminalPane: tp,
 		pinnedCols:   cols,
 		pinnedRows:   rows,
+		taskID:       taskID,
+		resizer:      resizer,
+		// Seed lastDesired with the construction-time pinned size so
+		// the first Draw observing an inner rect equal to argus's
+		// already-current PTY size short-circuits the resize call.
+		// argus would also cache that dispatch as a no-op, but skipping
+		// it locally avoids waking a goroutine and emitting the
+		// "redundant" predicate trace.
+		lastDesiredCols: cols,
+		lastDesiredRows: rows,
 	}
 	// Pre-size the emulator now so the first frame after BuildApp paints
 	// at the worker's PTY size rather than the SDK's 80x24 default.
@@ -76,20 +123,54 @@ func (p *pinnedTerminalPane) PinnedSize() (int, int) {
 // margin. The mutated rect is restored before returning so the surrounding
 // Flex layout never observes the lie.
 //
-// Any SetContent calls that the SDK Draw issues outside the allocated
-// rect (right/bottom border pieces when pinned size > allocated, cells
-// past the visible window) are discarded by clippingScreen. Cells that
-// fit are painted normally.
+// Option 1 PTY-resize: when this pane is bound to a task and a resizer
+// is wired, Draw tells argus the worker PTY should be sized to the inner
+// rect and re-pins the emulator surface to that same size. Subsequent
+// worker bytes then line up cell-for-cell with hera's allocation, so no
+// content needs to be clipped. The resizer dedupes redundant calls; we
+// additionally skip the dispatch when the inner rect hasn't changed
+// since the previous Draw.
+//
+// When no taskID / resizer is wired (Option 2 fallback), the emulator
+// stays at its construction-time pinned size and any SetContent calls
+// the SDK Draw issues outside the allocated rect (right/bottom border
+// pieces when pinned size > allocated, cells past the visible window)
+// are discarded by clippingScreen.
 func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 	x, y, w, h := p.GetRect()
 	if w <= 0 || h <= 0 {
 		return
 	}
 
-	// Borders consume one row/column on each side; the inner rect width
-	// the SDK derives is (rect.W - 2). Setting rect.W = pinnedCols + 2
-	// produces inner.W == pinnedCols, which is what tp.Resize is called
-	// with inside SDK Draw.
+	// Compute the inner rect the SDK would derive from this allocation.
+	// Borders consume one row/column on each side; minimum 1x1 keeps
+	// pathological tiny allocations from breaking the emulator math.
+	innerCols := w - 2
+	innerRows := h - 2
+	if innerCols < 1 {
+		innerCols = 1
+	}
+	if innerRows < 1 {
+		innerRows = 1
+	}
+
+	// Option 1: when bound to a task with a resizer wired, ask argus to
+	// resize the worker PTY to match this pane's inner rect, then track
+	// the emulator surface to the same dimensions. Skip the dispatch
+	// when the dimensions haven't changed since the previous Draw —
+	// avoids waking a goroutine on every frame.
+	if p.taskID != "" && p.resizer != nil {
+		if innerCols != p.lastDesiredCols || innerRows != p.lastDesiredRows {
+			p.resizer.ResizeTask(p.taskID, innerCols, innerRows)
+			p.lastDesiredCols = innerCols
+			p.lastDesiredRows = innerRows
+		}
+		p.pinnedCols = innerCols
+		p.pinnedRows = innerRows
+	}
+
+	// Setting rect.W = pinnedCols + 2 produces inner.W == pinnedCols,
+	// which is what tp.Resize is called with inside SDK Draw.
 	p.SetRect(x, y, p.pinnedCols+2, p.pinnedRows+2)
 	defer p.SetRect(x, y, w, h)
 
