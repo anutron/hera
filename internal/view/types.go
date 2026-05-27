@@ -16,6 +16,12 @@ package view
 // rather than panic.
 type PaneSource interface {
 	SubscribeTask(taskID string) (snapshot []byte, bytes <-chan []byte, unsub func())
+
+	// TaskSize returns the worker PTY's current cols/rows. When argus has
+	// no live session for taskID (or the source has no upstream wired)
+	// implementations MUST return (0, 0); callers fall back to a default
+	// surface size in that case.
+	TaskSize(taskID string) (cols, rows int)
 }
 
 // nilPaneSource is the do-nothing source used when no proxy is wired
@@ -27,3 +33,7 @@ type nilPaneSource struct{}
 func (nilPaneSource) SubscribeTask(string) ([]byte, <-chan []byte, func()) {
 	return nil, nil, nil
 }
+
+// TaskSize satisfies PaneSource. Always returns (0, 0) so callers letterbox
+// to the default surface size.
+func (nilPaneSource) TaskSize(string) (int, int) { return 0, 0 }

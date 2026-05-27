@@ -41,6 +41,28 @@ func (c *Client) GetTask(ctx context.Context, taskID string) (*Task, error) {
 	return &t, nil
 }
 
+// taskSizeResponse mirrors argus's GET /api/tasks/{id}/size payload.
+type taskSizeResponse struct {
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
+}
+
+// GetTaskSize fetches the worker PTY's current cols/rows from argus. Argus
+// returns 404 with `{"error":"no active session"}` when the task has no
+// live session — that case is reported as ErrNoTaskSize so callers can
+// pick a default surface size without spamming logs.
+func (c *Client) GetTaskSize(ctx context.Context, taskID string) (int, int, error) {
+	var out taskSizeResponse
+	status, err := c.doJSON(ctx, "GET", "/api/tasks/"+url.PathEscape(taskID)+"/size", nil, &out)
+	if err != nil {
+		if status == 404 {
+			return 0, 0, ErrNoTaskSize
+		}
+		return 0, 0, err
+	}
+	return out.Cols, out.Rows, nil
+}
+
 // MetaEntry is one row from a task's metadata sidecar.
 type MetaEntry struct {
 	Namespace string `json:"namespace"`

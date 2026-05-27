@@ -33,6 +33,10 @@ func (f *fakeFetcher) StreamTaskOutput(ctx context.Context, taskID string, _ uin
 	return ctx.Err()
 }
 
+func (f *fakeFetcher) GetTaskSize(_ context.Context, _ string) (int, int, error) {
+	return 0, 0, nil
+}
+
 // TestProxyManager_SeedCreatesOnePerTaskID pins the seed path: every
 // taskID gets a Subscription, and the fetcher sees one snapshot per id.
 func TestProxyManager_SeedCreatesOnePerTaskID(t *testing.T) {

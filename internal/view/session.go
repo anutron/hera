@@ -120,3 +120,12 @@ func (p managerPaneSource) SubscribeTask(taskID string) ([]byte, <-chan []byte, 
 	lst := sub.Subscribe()
 	return lst.Snapshot, lst.Bytes, func() { sub.Unsubscribe(lst) }
 }
+
+// TaskSize delegates to the proxy manager, which queries argus for the
+// worker PTY's cols/rows.
+func (p managerPaneSource) TaskSize(taskID string) (int, int) {
+	if p.mgr == nil || taskID == "" {
+		return 0, 0
+	}
+	return p.mgr.TaskSize(p.ctx, taskID)
+}

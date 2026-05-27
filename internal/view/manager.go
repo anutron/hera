@@ -73,6 +73,20 @@ func (m *ProxyManager) TaskIDs() []string {
 	return out
 }
 
+// TaskSize asks argus for the worker PTY's current cols/rows. Errors
+// (404 from the API, transport failures) collapse to (0, 0) so the
+// caller can fall back to a default surface size without unwrapping.
+func (m *ProxyManager) TaskSize(ctx context.Context, taskID string) (cols, rows int) {
+	if m == nil || m.fetcher == nil || taskID == "" {
+		return 0, 0
+	}
+	c, r, err := m.fetcher.GetTaskSize(ctx, taskID)
+	if err != nil {
+		return 0, 0
+	}
+	return c, r
+}
+
 // Close tears down every subscription. Safe to call multiple times; after
 // Close, the manager's subscription map is empty.
 func (m *ProxyManager) Close() {
