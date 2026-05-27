@@ -529,8 +529,8 @@ func TestApp_OnRailSelectEnter_WorkerRebindsAgent(t *testing.T) {
 	a.pieces.rail.SetCurrentNode(w2Node)
 
 	got := a.OnRailSelectEnter()
-	if got != FocusAGENT {
-		t.Fatalf("Enter on worker row: want FocusAGENT, got %s", got)
+	if got != FocusRAIL {
+		t.Fatalf("Enter on worker row: want FocusRAIL (keep focus to browse), got %s", got)
 	}
 	if a.AgentTaskID() != "t2" {
 		t.Fatalf("agent task after rebind: want t2, got %q", a.AgentTaskID())
@@ -567,8 +567,8 @@ func TestApp_OnRailSelectEnter_CoordRebindsCoord(t *testing.T) {
 	}
 	a.pieces.rail.SetCurrentNode(coordNode)
 
-	if got := a.OnRailSelectEnter(); got != FocusCOORD {
-		t.Fatalf("Enter on coord row: want FocusCOORD, got %s", got)
+	if got := a.OnRailSelectEnter(); got != FocusRAIL {
+		t.Fatalf("Enter on coord row: want FocusRAIL (keep focus to browse), got %s", got)
 	}
 	if a.CoordTaskID() != "tc" {
 		t.Fatalf("coord task after rebind: want tc, got %q", a.CoordTaskID())
