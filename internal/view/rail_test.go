@@ -2,23 +2,12 @@ package view
 
 import (
 	"context"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/anutron/hera/internal/db"
 )
-
-func openTestDB(t *testing.T) *db.DB {
-	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "test.sqlite"))
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	t.Cleanup(func() { d.Close() })
-	return d
-}
 
 // An orchestrator insert reaches the rail's refresh callback within
 // the debounce window plus a small slop. The design requires ~100 ms.
