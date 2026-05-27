@@ -302,16 +302,26 @@ The system SHALL subscribe the rail to an in-process broadcaster fed by the orch
 - **WHEN** the daemon is idle (no DAO writes) for 60 seconds
 - **THEN** the rail subsystem MUST NOT issue any DB read for the purpose of rail refresh during that interval
 
-### Requirement: Resize envelope re-lays out the local view only
+### Requirement: Resize envelope re-lays out the local view and source PTYs
 
-The system SHALL handle a `{type:"resize", cols, rows}` text-frame envelope from argus by recalculating the tview Application's layout (top bar, bottom bar, fixed-width rail, equal-split coord + agent panes). The system MUST NOT issue any `POST /api/tasks/{id}/resize` (or equivalent) call to the source task PTYs when the view's own viewport changes; the source PTYs are owned by their own operators and MUST NOT be driven by hera-view's pane sizes.
+The system SHALL handle a `{type:"resize", cols, rows}` text-frame envelope from argus by recalculating the tview Application's layout (top bar, bottom bar, fixed-width rail, equal-split coord + agent panes). For each task bound to a coord or agent pane, the system SHALL also request that the task's source PTY be resized to match the pane's allocated cols/rows via `POST /api/tasks/{id}/size`. The system MUST dedupe redundant resize requests (same cols/rows as the last value sent for that task).
 
 #### Scenario: Resize re-lays out panes
 
 - **WHEN** argus sends `{type:"resize", cols:120, rows:40}` over the WebSocket
 - **THEN** the view MUST re-render the layout with the new dimensions on the next frame
 
-#### Scenario: Resize does not resize source PTYs
+#### Scenario: Initial bind aligns source PTY to pane allocation
 
-- **WHEN** argus sends a resize envelope to the view's WebSocket
-- **THEN** the daemon MUST NOT issue any HTTP call to any `/api/tasks/{id}` endpoint as a consequence of that envelope
+- **WHEN** a coord or agent pane is bound to an argus task and rendered for the first time
+- **THEN** the daemon MUST issue `POST /api/tasks/{id}/size` with the pane's allocated cols/rows unless that size already matches the task's current PTY size
+
+#### Scenario: Layout change re-aligns source PTY
+
+- **WHEN** the bound pane's allocated cols/rows change (whether from a WebSocket resize envelope or any other layout shift)
+- **THEN** the daemon MUST issue `POST /api/tasks/{id}/size` with the new allocation
+
+#### Scenario: Redundant resize is deduped
+
+- **WHEN** the daemon would issue `POST /api/tasks/{id}/size` with cols/rows equal to the last value it sent for that task
+- **THEN** the daemon MUST skip the HTTP call
