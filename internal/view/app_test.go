@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
 
 	"github.com/anutron/hera/internal/db"
 )
@@ -157,9 +156,6 @@ func TestBuildApp_RailHeaderRendered(t *testing.T) {
 	defer a.Close()
 
 	got := renderApp(t, a, 80, 24)
-	if !strings.Contains(got, "Projects") {
-		t.Fatalf("expected rail root label 'Projects' visible; got:\n%s", got)
-	}
 	if !strings.Contains(got, "Rail") {
 		t.Fatalf("expected rail title 'Rail' visible in border; got:\n%s", got)
 	}
@@ -302,12 +298,22 @@ func TestBuildApp_LiveBindingMarksRoleAndSubscribesPanes(t *testing.T) {
 		t.Fatalf("expected worker snapshot rendered in agent pane; got:\n%s", got)
 	}
 
-	// The live role should be marked with the "*" prefix in the rail.
-	if !strings.Contains(got, "* coord") {
-		t.Errorf("expected live coord role to be marked '* coord'; got:\n%s", got)
+	// Both role rows should be marked live (moon-stars icon, driven by
+	// roleEntry.Live). Inspect the widget rather than the rendered text
+	// so the assertion is robust against icon-font / theme changes.
+	gotLive := map[string]bool{}
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.Live {
+				gotLive[r.Name] = true
+			}
+		}
 	}
-	if !strings.Contains(got, "* w1") {
-		t.Errorf("expected live worker role to be marked '* w1'; got:\n%s", got)
+	if !gotLive["coord"] {
+		t.Errorf("expected live coord role; rail orchestrators=%+v", a.pieces.rail.orchestrators)
+	}
+	if !gotLive["w1"] {
+		t.Errorf("expected live worker role; rail orchestrators=%+v", a.pieces.rail.orchestrators)
 	}
 }
 
@@ -510,23 +516,15 @@ func TestApp_OnRailSelectEnter_WorkerRebindsAgent(t *testing.T) {
 	defer a.Close()
 
 	// findInitialSelection should have picked w1 (first worker). Move the
-	// rail's current node to w2's tree node and fire Enter.
+	// rail's cursor to w2 and fire Enter.
 	startAgent := a.AgentTaskID()
 	if startAgent != "t1" {
 		t.Fatalf("baseline AgentTaskID: want t1, got %q", startAgent)
 	}
 
-	// Find the w2 tree node and mark it current.
-	var w2Node *tview.TreeNode
-	walkTree(a.pieces.rootRoot, func(n *tview.TreeNode) {
-		if ref, ok := n.GetReference().(roleReference); ok && ref.RoleID == w2.ID {
-			w2Node = n
-		}
-	})
-	if w2Node == nil {
-		t.Fatalf("could not locate w2 role node in rail tree")
+	if !a.pieces.rail.SelectByRoleID(w2.ID) {
+		t.Fatalf("could not locate w2 role row in rail")
 	}
-	a.pieces.rail.SetCurrentNode(w2Node)
 
 	got := a.OnRailSelectEnter()
 	if got != FocusRAIL {
@@ -556,16 +554,9 @@ func TestApp_OnRailSelectEnter_CoordRebindsCoord(t *testing.T) {
 
 	// Initial coord pane is bound to tc (the only coord). Move selection
 	// to the coord row anyway and confirm Enter returns FocusCOORD.
-	var coordNode *tview.TreeNode
-	walkTree(a.pieces.rootRoot, func(n *tview.TreeNode) {
-		if ref, ok := n.GetReference().(roleReference); ok && ref.RoleID == c.ID {
-			coordNode = n
-		}
-	})
-	if coordNode == nil {
-		t.Fatalf("could not locate coord role node in rail tree")
+	if !a.pieces.rail.SelectByRoleID(c.ID) {
+		t.Fatalf("could not locate coord role row in rail")
 	}
-	a.pieces.rail.SetCurrentNode(coordNode)
 
 	if got := a.OnRailSelectEnter(); got != FocusRAIL {
 		t.Fatalf("Enter on coord row: want FocusRAIL (keep focus to browse), got %s", got)
@@ -588,29 +579,13 @@ func TestApp_OnRailSelectEnter_OrchHeaderPropagates(t *testing.T) {
 	}
 	defer a.Close()
 
-	// Position cursor on the orchestrator header (which carries an
-	// orchReference, not a roleReference).
-	var orchNode *tview.TreeNode
-	walkTree(a.pieces.rootRoot, func(n *tview.TreeNode) {
-		if _, ok := n.GetReference().(orchReference); ok {
-			orchNode = n
-		}
-	})
-	if orchNode == nil {
-		t.Fatalf("could not locate orchestrator header node")
+	// Position cursor on the orchestrator header row.
+	if !a.pieces.rail.SelectByOrchID(orch.ID) {
+		t.Fatalf("could not locate orchestrator header row")
 	}
-	a.pieces.rail.SetCurrentNode(orchNode)
 
 	if got := a.OnRailSelectEnter(); got != FocusRAIL {
 		t.Fatalf("Enter on orchestrator header: want FocusRAIL (let tree fold/unfold), got %s", got)
-	}
-}
-
-// walkTree visits every descendant of root (excluding root itself).
-func walkTree(root *tview.TreeNode, fn func(*tview.TreeNode)) {
-	for _, child := range root.GetChildren() {
-		fn(child)
-		walkTree(child, fn)
 	}
 }
 

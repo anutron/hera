@@ -14,14 +14,13 @@ const RailWidth = 22
 // drive updates (rail refresh, pane swap) without recomposing the Flex
 // each time.
 type layoutPieces struct {
-	root     *tview.Flex
-	topBar   *tview.TextView
-	rail     *tview.TreeView
-	coord    *pinnedTerminalPane
-	agent    *pinnedTerminalPane
-	bottom   *tview.TextView
-	body     *tview.Flex
-	rootRoot *tview.TreeNode // rail's root node
+	root   *tview.Flex
+	topBar *tview.TextView
+	rail   *railList
+	coord  *pinnedTerminalPane
+	agent  *pinnedTerminalPane
+	bottom *tview.TextView
+	body   *tview.Flex
 	// pages wraps the root layout so the mutation bridge can overlay
 	// input / confirm / help / error modals via AddPage. The base
 	// layout lives at page "base" (visible by default); each modal is
@@ -51,13 +50,7 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 	top.SetTextAlign(tview.AlignLeft)
 	top.SetTextColor(tcell.ColorWhite)
 
-	rootNode := tview.NewTreeNode("Projects").SetSelectable(false)
-	rail := tview.NewTreeView().
-		SetRoot(rootNode).
-		SetCurrentNode(rootNode)
-	rail.SetBorder(true)
-	rail.SetTitle("Rail")
-	rail.SetTopLevel(0)
+	rail := newRailList()
 
 	coord.SetTitle("Coord")
 	agent.SetTitle("Agent")
@@ -81,15 +74,14 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 		AddPage(pageBase, root, true, true)
 
 	return layoutPieces{
-		root:     root,
-		topBar:   top,
-		rail:     rail,
-		coord:    coord,
-		agent:    agent,
-		bottom:   bottom,
-		body:     body,
-		rootRoot: rootNode,
-		pages:    pages,
+		root:   root,
+		topBar: top,
+		rail:   rail,
+		coord:  coord,
+		agent:  agent,
+		bottom: bottom,
+		body:   body,
+		pages:  pages,
 	}
 }
 
