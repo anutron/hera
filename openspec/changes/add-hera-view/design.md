@@ -25,7 +25,7 @@ The shape — three columns + chrome — was settled during the v1 brainstorm an
 - Custom rendering inside the PTY panes (syntax highlighting hera-side, message-summarization overlays). The panes are dumb passthroughs.
 - A web UI or any non-TUI surface. hera-view exists only inside argus.
 - Multi-operator concurrent access. Single-instance assumed; if argus opens a second WebSocket the older one is closed.
-- Resizing the source argus task PTYs to match hera's pane dimensions. We render whatever bytes the source produces; if the source's terminal is wider than our pane, content clips on the right (see Risks).
+- Multi-operator-aware resize coordination. Hera resizes source PTYs to its pane allocation (see D7); a second operator viewing the same task in argus's native view will compete on PTY size (last-writer-wins). Acceptable under v1's single-operator-single-host assumption.
 - Replicating argus's full task management surface. We do project + agent lifecycle for hera-managed tasks only; other argus tasks remain invisible to hera-view.
 
 ## Decisions
@@ -126,11 +126,16 @@ Alternative: poll the DB on a timer. Rejected — laggy UX (visible delay when a
 
 ### D7 — Resize policy
 
-When argus sends a `{type:"resize", cols, rows}` envelope, the view's tview Application receives a screen-size change. The tview Flex layout recalculates the rail width (fixed ~22 chars), top bar (1 row), bottom bar (1 row), and divides the remaining horizontal space evenly between coord pane and agent pane. Each pane's StreamPane re-renders its current buffer at the new size.
+When argus sends a `{type:"resize", cols, rows}` envelope, the view's tview Application receives a screen-size change. The tview Flex layout recalculates the rail width (fixed ~22 chars), top bar (1 row), bottom bar (1 row), and divides the remaining horizontal space evenly between coord pane and agent pane. Each pane's terminalpane re-renders its current buffer at the new size.
 
-**We do NOT resize the source argus task PTYs to match hera-view's pane sizes.** Reasons: (1) each argus task has its own legitimate operator (the developer who spawned that argus task may also be looking at it directly); resizing under them would be hostile. (2) Even on a single operator, the task PTY's bubbletea/tview application typically does its own line-wrapping based on COLS, and forcing a re-wrap on every hera-view resize would cause flicker.
+**For each task bound to a coord or agent pane, the daemon ALSO issues `POST /api/tasks/{id}/size` with the pane's new allocation** so the source PTY emits content at the pane's column count rather than at whatever width argus originally allocated. This was reversed from the original design after live testing showed the no-resize policy produces unusable artifacts: a worker PTY at 189 cols rendered into a 145-col hera pane wraps cursor-positioned content at the wrong column, producing long horizontal-bar runs and vertical text fragments along the right edge.
 
-Consequence: if a task PTY is wider than hera-view's pane, content clips at the pane edge. If narrower, the rest of the pane is blank. The first case is the bigger UX hit (you can't see the right edge of a worker's output). Tolerable for v1; if it becomes annoying, a follow-up could add an optional "scale-to-fit" rendering mode.
+Concerns that originally argued against resizing — and why they're addressed:
+
+1. *"Resizing under another operator looking at the same task in argus's native view is hostile."* — Argus's native view ALSO resizes the PTY to match the visible pane. The two views compete for size, last-writer-wins. In the single-operator-single-host model assumed for v1, this is no worse than what argus already does.
+2. *"Forcing a re-wrap on every hera-view resize causes flicker."* — Argus's resize endpoint includes a `maybeKickRerender` predicate gated on (delta >= 15 cols, agent IsIdle, once-per-cols cache). Repeated resizes to the same width are no-ops; mid-tool-call agents are not interrupted; first resize at a new width transparently re-emits scrollback via `--session-id`. The flicker concern is mitigated by argus's existing predicate.
+
+Hera's resize call is debounced inside the view layer by a `lastDesired` cache per pane plus a `ProxyManager` dedupe per task, so a flapping layout doesn't generate a burst of HTTP traffic.
 
 ### D8 — Plugin view registration + heartbeat
 
@@ -173,7 +178,7 @@ Two new DAO methods on `Orchestrators` and `Roles`: `Archive(id, at)`, `Unarchiv
 
 - **Custom `tcell.Screen` backed by WebSocket frames is the highest-risk piece of code in this change.** → Plan to crib from charm/wish's SSH-backed Screen which has the same shape. Add a unit test that runs the tview app against a fake WebSocket and asserts the output bytes are well-formed ANSI. If we hit unsolvable edge cases, fall back to a virtual PTY pair + bridge approach (more layers, more debuggable).
 
-- **Source task PTY size != hera-view pane size means content clips.** → Accepted for v1. If it's an immediate problem, follow-up adds an optional resize-source-to-pane mode (with a UI affordance so the operator knows their task PTY is being driven by hera-view).
+- **Hera resizes source PTYs; argus's native view may resize them too.** → In single-operator-single-host (v1's assumption), last-writer-wins is acceptable: whichever view was most recently focused dictates the PTY size, and argus's `maybeKickRerender` predicate caches the last size per task so back-and-forth produces at most one transparent `--session-id` rerender per focus switch. If multi-operator becomes a real scenario, the follow-up is to add a UI affordance (hera signals to the operator that it is driving the PTY size) and possibly a `prefer-passive` mode that disables the resize call.
 
 - **`n new` requires hera to call argus's REST `POST /api/tasks` directly.** → Hera already has an argus REST client (`internal/argus/client.go`); add the `CreateTask` method. The auth token is hera's existing scope token. If argus's `task_create` HTTP route requires a different shape than the MCP tool, file a substrate-clarity ticket; otherwise this is a thin wrapper.
 

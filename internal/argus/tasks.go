@@ -63,6 +63,44 @@ func (c *Client) GetTaskSize(ctx context.Context, taskID string) (int, int, erro
 	return out.Cols, out.Rows, nil
 }
 
+// resizeTaskInput is the body of POST /api/tasks/{id}/size.
+type resizeTaskInput struct {
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
+}
+
+// minResizeDim / maxResizeDim mirror argus's accepted bounds for /size.
+// Callers passing values outside [1, 1000] short-circuit with a local
+// error rather than burning a roundtrip on a guaranteed 400.
+const (
+	minResizeDim = 1
+	maxResizeDim = 1000
+)
+
+// ResizeTask asks argus to resize the worker PTY for taskID to the given
+// cols/rows via POST /api/tasks/{id}/size. Argus applies the SIGWINCH
+// directly to the worker process and (when the agent is idle and the
+// delta crosses argus's RerenderMargin) auto-kicks a clean rerender via
+// the agent's --session-id path so scrollback re-emits at the new width.
+//
+// Returns ErrNoTaskSize when argus reports 404 (no active session for
+// the task). Other non-2xx statuses surface as *HTTPError. Out-of-bound
+// dimensions short-circuit locally with a typed error.
+func (c *Client) ResizeTask(ctx context.Context, taskID string, cols, rows int) error {
+	if cols < minResizeDim || cols > maxResizeDim || rows < minResizeDim || rows > maxResizeDim {
+		return fmt.Errorf("argus.ResizeTask: cols/rows must be in [%d, %d]: got %dx%d", minResizeDim, maxResizeDim, cols, rows)
+	}
+	body := resizeTaskInput{Cols: cols, Rows: rows}
+	status, err := c.doJSON(ctx, "POST", "/api/tasks/"+url.PathEscape(taskID)+"/size", body, nil)
+	if err != nil {
+		if status == 404 {
+			return ErrNoTaskSize
+		}
+		return err
+	}
+	return nil
+}
+
 // MetaEntry is one row from a task's metadata sidecar.
 type MetaEntry struct {
 	Namespace string `json:"namespace"`

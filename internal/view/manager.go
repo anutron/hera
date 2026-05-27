@@ -23,6 +23,12 @@ type ProxyManager struct {
 
 	mu   sync.Mutex
 	subs map[string]*proxy.Subscription
+	// lastResize records the (cols, rows) most-recently dispatched to
+	// argus per taskID. ResizeTask short-circuits when the requested
+	// dimensions match the last successful dispatch — argus also caches
+	// redundant calls, but the local dedup avoids waking a goroutine and
+	// burning an HTTP roundtrip on every Draw.
+	lastResize map[string][2]int
 }
 
 // NewProxyManager constructs a ProxyManager. fetcher is the source for
@@ -32,9 +38,10 @@ func NewProxyManager(fetcher proxy.Fetcher, log *slog.Logger) *ProxyManager {
 		log = slog.Default()
 	}
 	return &ProxyManager{
-		fetcher: fetcher,
-		log:     log,
-		subs:    make(map[string]*proxy.Subscription),
+		fetcher:    fetcher,
+		log:        log,
+		subs:       make(map[string]*proxy.Subscription),
+		lastResize: make(map[string][2]int),
 	}
 }
 
@@ -85,6 +92,41 @@ func (m *ProxyManager) TaskSize(ctx context.Context, taskID string) (cols, rows 
 		return 0, 0
 	}
 	return c, r
+}
+
+// ResizeTask asks argus to resize the worker PTY for taskID to (cols, rows).
+// The HTTP call is dispatched on a background goroutine so Draw paths
+// stay non-blocking; the result is logged at debug. Calls that repeat
+// the most-recently dispatched dimensions for the same taskID short-
+// circuit locally (argus also caches redundant calls, but skipping the
+// goroutine and the HTTP roundtrip reduces churn during a resize-drag).
+//
+// ctx bounds the dispatched HTTP request. Callers typically pass the
+// session-scoped context so resize requests are abandoned when the
+// hera-view session ends.
+func (m *ProxyManager) ResizeTask(ctx context.Context, taskID string, cols, rows int) {
+	if m == nil || m.fetcher == nil || taskID == "" {
+		return
+	}
+	if cols <= 0 || rows <= 0 {
+		return
+	}
+	m.mu.Lock()
+	prev, ok := m.lastResize[taskID]
+	if ok && prev[0] == cols && prev[1] == rows {
+		m.mu.Unlock()
+		return
+	}
+	m.lastResize[taskID] = [2]int{cols, rows}
+	m.mu.Unlock()
+
+	go func() {
+		if err := m.fetcher.ResizeTask(ctx, taskID, cols, rows); err != nil {
+			// 404 (no active session) is expected for inactive workers;
+			// log at debug so we don't spam on every pane swap.
+			m.log.Debug("argus resize task failed", "task_id", taskID, "cols", cols, "rows", rows, "err", err)
+		}
+	}()
 }
 
 // Close tears down every subscription. Safe to call multiple times; after

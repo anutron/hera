@@ -34,6 +34,14 @@ type fakePaneSource struct {
 	channels map[string]chan []byte
 	// sizes, if set, supplies the (cols, rows) returned per taskID.
 	sizes map[string][2]int
+	// resizes records every ResizeTask call in order.
+	resizes []paneResizeCall
+}
+
+type paneResizeCall struct {
+	TaskID string
+	Cols   int
+	Rows   int
 }
 
 func (f *fakePaneSource) SubscribeTask(taskID string) ([]byte, <-chan []byte, func()) {
@@ -60,6 +68,10 @@ func (f *fakePaneSource) TaskSize(taskID string) (int, int) {
 		return 0, 0
 	}
 	return s[0], s[1]
+}
+
+func (f *fakePaneSource) ResizeTask(taskID string, cols, rows int) {
+	f.resizes = append(f.resizes, paneResizeCall{TaskID: taskID, Cols: cols, Rows: rows})
 }
 
 // renderApp drives one Draw cycle on the App's root primitive against a
