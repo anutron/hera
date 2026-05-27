@@ -91,7 +91,9 @@ func (c *Client) ResizeTask(ctx context.Context, taskID string, cols, rows int) 
 		return fmt.Errorf("argus.ResizeTask: cols/rows must be in [%d, %d]: got %dx%d", minResizeDim, maxResizeDim, cols, rows)
 	}
 	body := resizeTaskInput{Cols: cols, Rows: rows}
-	status, err := c.doJSON(ctx, "POST", "/api/tasks/"+url.PathEscape(taskID)+"/size", body, nil)
+	// Argus mounts the resize handler at POST /api/tasks/{id}/resize.
+	// The /size route is GET-only (for reads) and returns 405 on POST.
+	status, err := c.doJSON(ctx, "POST", "/api/tasks/"+url.PathEscape(taskID)+"/resize", body, nil)
 	if err != nil {
 		if status == 404 {
 			return ErrNoTaskSize
