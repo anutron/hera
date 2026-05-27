@@ -155,6 +155,17 @@ func (f *fakeArgusForSmoke) handler() http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"status":"ok","bytes":`+strconv.Itoa(len(body))+`}`)
+		case path != "" && !strings.Contains(path, "/"):
+			// Bare /api/tasks/{id} — hera calls this from
+			// findInitialSelection to filter out completed tasks. The fake
+			// has no per-task state machine, so report every seeded task
+			// as still in_progress.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w,
+				`{"id":`+strconv.Quote(path)+
+					`,"name":`+strconv.Quote(path)+
+					`,"status":"in_progress"}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

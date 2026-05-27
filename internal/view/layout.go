@@ -22,6 +22,11 @@ type layoutPieces struct {
 	bottom   *tview.TextView
 	body     *tview.Flex
 	rootRoot *tview.TreeNode // rail's root node
+	// pages wraps the root layout so the mutation bridge can overlay
+	// input / confirm / help / error modals via AddPage. The base
+	// layout lives at page "base" (visible by default); each modal is
+	// added/removed by name.
+	pages *tview.Pages
 }
 
 // buildLayout composes the tview Flex tree described in design.md D7:
@@ -72,6 +77,9 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 		AddItem(body, 0, 1, false).
 		AddItem(bottom, 1, 0, false)
 
+	pages := tview.NewPages().
+		AddPage(pageBase, root, true, true)
+
 	return layoutPieces{
 		root:     root,
 		topBar:   top,
@@ -81,6 +89,7 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 		bottom:   bottom,
 		body:     body,
 		rootRoot: rootNode,
+		pages:    pages,
 	}
 }
 

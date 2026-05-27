@@ -35,11 +35,31 @@ type MutationHandler interface {
 	OnHelp()
 }
 
+// ModalGate is consulted on every key event so the router can yield to
+// any active modal overlay (input field, confirm modal, help modal).
+// When IsModalActive returns true HandleKey passes the event through
+// unchanged so the focused modal widget consumes it directly.
+type ModalGate interface {
+	IsModalActive() bool
+}
+
 // BorderUpdater is invoked every time the focus state changes so the
 // rendered surface can repaint the colored focus border. Stage F provides
 // the concrete implementation against tview Box widgets.
 type BorderUpdater interface {
 	OnFocusChanged(state FocusState)
+}
+
+// RailSelectHandler is fired when the operator presses Enter while RAIL
+// is focused. The implementation reads the rail's currently-highlighted
+// node and (when appropriate) rebinds the COORD or AGENT pane to that
+// row's argus task before returning the focus state the operator should
+// land in: FocusAGENT after rebinding a worker, FocusCOORD after
+// rebinding a coordinator, or FocusRAIL when the row is not bindable
+// (orchestrator header, dead binding) — in which case Enter propagates
+// to the tree so it can fold/unfold the node.
+type RailSelectHandler interface {
+	OnRailSelectEnter() FocusState
 }
 
 // KeyRouter is the top-level input capture handler. It owns the focus
@@ -50,11 +70,13 @@ type BorderUpdater interface {
 //
 // HandleKey is the function passed to tview.Application.SetInputCapture.
 type KeyRouter struct {
-	Focus     *FocusMachine
-	Targets   PaneTargets
-	Poster    InputPoster
-	Mutations MutationHandler
-	Border    BorderUpdater
+	Focus      *FocusMachine
+	Targets    PaneTargets
+	Poster     InputPoster
+	Mutations  MutationHandler
+	Border     BorderUpdater
+	RailSelect RailSelectHandler
+	Modal      ModalGate
 
 	// Ctx is the context used when calling Poster.PostTaskInput. Defaults
 	// to context.Background() when nil.
@@ -68,6 +90,15 @@ type KeyRouter struct {
 func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 	if event == nil {
 		return nil
+	}
+
+	// While any modal overlay is up the focused tview primitive (input
+	// field, confirm modal, help text view) owns the keyboard. Yield
+	// every event unchanged so the modal can read its own keys
+	// (Enter / Esc / q / button focus) without the router stealing
+	// them.
+	if r.Modal != nil && r.Modal.IsModalActive() {
+		return event
 	}
 
 	// Focus-traversal keys take precedence over everything else and apply
@@ -97,19 +128,36 @@ func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 	return r.handlePane(event)
 }
 
-// handleRail dispatches keys when focus is RAIL. Enter (with a live agent
-// target) jumps to AGENT; the six mutation keys fire their handlers;
-// everything else (including bare j/k/↑/↓ and Enter with no agent) is
-// propagated for the focused widget to interpret.
+// handleRail dispatches keys when focus is RAIL. Enter consults the
+// RailSelectHandler (when wired) to rebind the appropriate pane and
+// returns the focus target; the six mutation keys fire their handlers;
+// j/k are translated to KeyDown/KeyUp so the tree moves selection even
+// if the focused widget's bare-rune handler is suppressed; everything
+// else (↑/↓, PgUp/PgDn) propagates so the tree-view native handling
+// applies.
 func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyEnter {
-		if r.Targets != nil && r.Targets.AgentTaskID() != "" {
+		target := FocusRAIL
+		if r.RailSelect != nil {
+			target = r.RailSelect.OnRailSelectEnter()
+		} else if r.Targets != nil && r.Targets.AgentTaskID() != "" {
+			target = FocusAGENT
+		}
+		switch target {
+		case FocusAGENT:
 			r.Focus.JumpToAGENT()
 			r.notifyBorder()
 			return nil
+		case FocusCOORD:
+			if r.Focus.State() != FocusCOORD {
+				r.Focus.Advance() // RAIL → COORD
+				r.notifyBorder()
+			}
+			return nil
 		}
-		// No live agent (e.g. operator is on an archived coord row). Let
-		// the rail handle Enter — Stage H wires the resurrect flow there.
+		// Selection not bindable (orchestrator header, dead row). Let the
+		// tree handle Enter so it can fold/unfold the node — Stage H also
+		// wires the archived-coord resurrect flow off this propagation.
 		return event
 	}
 
@@ -122,6 +170,14 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 
 	if event.Key() == tcell.KeyRune {
 		switch event.Rune() {
+		case 'j':
+			// Translate to KeyDown so the focused tree-view moves selection
+			// even when its default 'j' handling is suppressed by tview's
+			// focus dispatch (the SDK-installed input capture takes the
+			// rune events first).
+			return tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone)
+		case 'k':
+			return tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone)
 		case 'n':
 			if r.Mutations != nil {
 				r.Mutations.OnNew()
@@ -151,7 +207,7 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	// Anything not bound here propagates to the focused widget (the rail
-	// tree consumes j/k/↑/↓ for selection movement).
+	// tree consumes ↑/↓/PgUp/PgDn for selection movement).
 	return event
 }
 
