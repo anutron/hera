@@ -252,18 +252,23 @@ func wrapStripped(b []byte, width int) []string {
 		lines   []string
 		current []rune
 	)
-	for _, by := range clean {
-		switch by {
+	// Iterate runes, not bytes — `for _, by := range clean` over a []byte
+	// emits individual bytes, which decomposes every UTF-8 multi-byte
+	// sequence (box drawing, arrows, anything outside ASCII) into its raw
+	// bytes and renders them as garbage. Casting `string(clean)` makes the
+	// range emit code points instead.
+	for _, r := range string(clean) {
+		switch r {
 		case '\n':
 			lines = append(lines, string(current))
 			current = current[:0]
 		case '\r':
 			// drop
 		default:
-			if by < 0x20 {
+			if r < 0x20 {
 				continue
 			}
-			current = append(current, rune(by))
+			current = append(current, r)
 			if len(current) >= width {
 				lines = append(lines, string(current))
 				current = current[:0]

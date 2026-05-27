@@ -298,6 +298,44 @@ func TestStreamPane_DrawHandlesZeroRect(t *testing.T) {
 	sp.Draw(sim) // must not panic
 }
 
+func TestWrapStripped_PreservesUTF8MultiByteGlyphs(t *testing.T) {
+	// Box-drawing characters and arrows are multi-byte UTF-8. The previous
+	// byte-iterating loop in wrapStripped exploded each into individual
+	// bytes, producing mojibake like `â`/`Â`. Assert the exact runes survive.
+	in := []byte("─→│┌┘")
+	lines := wrapStripped(in, 20)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(lines), lines)
+	}
+	want := "─→│┌┘"
+	if lines[0] != want {
+		t.Fatalf("rendered line mojibake'd: got %q want %q", lines[0], want)
+	}
+	runes := []rune(lines[0])
+	if len(runes) != 5 {
+		t.Fatalf("expected 5 runes, got %d (%v)", len(runes), runes)
+	}
+}
+
+func TestStreamPane_DrawShowsUTF8Glyphs(t *testing.T) {
+	src := make(chan []byte, 1)
+	sp := NewStreamPane(src)
+	defer sp.Close()
+
+	src <- []byte("┌─┘\n")
+	waitForTouched(t, sp, 1)
+
+	sim := newSimScreen(t, 20, 4)
+	sp.SetRect(0, 0, 20, 4)
+	sp.Draw(sim)
+	sim.Show()
+
+	row := readRow(sim, 0, 20)
+	if !strings.Contains(row, "┌─┘") {
+		t.Errorf("expected box-drawing glyphs in row, got %q", row)
+	}
+}
+
 func TestWrapStripped_ZeroWidthIsNoOp(t *testing.T) {
 	got := wrapStripped([]byte("abc"), 0)
 	if len(got) != 0 {
