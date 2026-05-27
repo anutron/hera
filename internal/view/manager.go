@@ -2,9 +2,11 @@ package view
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 
+	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/view/proxy"
 )
 
@@ -92,6 +94,48 @@ func (m *ProxyManager) TaskSize(ctx context.Context, taskID string) (cols, rows 
 		return 0, 0
 	}
 	return c, r
+}
+
+// IsTaskAlive reports whether argus considers taskID still active. An
+// alive task has a session that can serve /output and /input; a dead one
+// (status "complete" / "failed" / "halted" / "killed" / "archived" /
+// "stopped" / "cancelled") returns 404 from /output and is a poor
+// initial-selection candidate.
+//
+// Argus 404 on GetTask means the task is gone — treat as dead. Other
+// errors (transport, 5xx) are inconclusive: assume alive so a transient
+// argus hiccup doesn't strand the operator on an empty rail.
+func (m *ProxyManager) IsTaskAlive(ctx context.Context, taskID string) bool {
+	if m == nil || m.fetcher == nil || taskID == "" {
+		return false
+	}
+	t, err := m.fetcher.GetTask(ctx, taskID)
+	if err != nil {
+		var he *argus.HTTPError
+		if errors.As(err, &he) && he.StatusCode == 404 {
+			return false
+		}
+		return true
+	}
+	if t == nil {
+		return false
+	}
+	return taskStatusAlive(t.Status)
+}
+
+// taskStatusAlive maps an argus task.Status string to a coarse alive/dead
+// classification. Conservative: any unknown status counts as alive so a
+// new argus state doesn't silently filter every binding out of the rail.
+func taskStatusAlive(status string) bool {
+	switch status {
+	case "complete", "completed",
+		"complete:success", "complete:failure",
+		"failed", "halted", "killed",
+		"archived", "stopped",
+		"cancelled", "canceled":
+		return false
+	}
+	return true
 }
 
 // ResizeTask asks argus to resize the worker PTY for taskID to (cols, rows).

@@ -31,6 +31,17 @@ type PaneSource interface {
 	ResizeTask(taskID string, cols, rows int)
 }
 
+// TaskAliveChecker is an optional capability some PaneSource (or other)
+// values may also implement. When the runtime PaneSource passed to
+// BuildApp satisfies it, findInitialSelection filters worker bindings to
+// only those whose argus task is still alive. A nil checker (i.e. the
+// PaneSource doesn't satisfy the interface) means "no aliveness info";
+// callers fall back to treating every live binding in the DB as live,
+// which matches the pre-stage-K behavior the tests depend on.
+type TaskAliveChecker interface {
+	IsTaskAlive(taskID string) bool
+}
+
 // nilPaneSource is the do-nothing source used when no proxy is wired
 // (e.g., tests that only exercise layout, or daemon startup before any
 // bindings exist). Its SubscribeTask returns zero values for every taskID.

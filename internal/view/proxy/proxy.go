@@ -16,6 +16,7 @@ type Fetcher interface {
 	StreamTaskOutput(ctx context.Context, taskID string, since uint64, handler argus.TaskOutputHandler) error
 	GetTaskSize(ctx context.Context, taskID string) (cols, rows int, err error)
 	ResizeTask(ctx context.Context, taskID string, cols, rows int) error
+	GetTask(ctx context.Context, taskID string) (*argus.Task, error)
 }
 
 // DefaultListenerBufferSize is the per-listener channel depth used when no

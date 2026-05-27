@@ -64,11 +64,12 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, poster InputPoster, 
 
 		focus := NewFocusMachine()
 		router := &KeyRouter{
-			Focus:   focus,
-			Targets: app,
-			Poster:  poster,
-			Border:  app,
-			Ctx:     ctx,
+			Focus:      focus,
+			Targets:    app,
+			Poster:     poster,
+			Border:     app,
+			RailSelect: app,
+			Ctx:        ctx,
 		}
 		// Paint the initial RAIL border so the operator sees focus on first
 		// frame.
@@ -138,4 +139,15 @@ func (p managerPaneSource) ResizeTask(taskID string, cols, rows int) {
 		return
 	}
 	p.mgr.ResizeTask(p.ctx, taskID, cols, rows)
+}
+
+// IsTaskAlive delegates to the proxy manager, which calls argus's
+// GET /api/tasks/{id} and classifies the returned Status. Satisfies
+// view.TaskAliveChecker so findInitialSelection can filter recently-
+// completed bindings from initial pane selection.
+func (p managerPaneSource) IsTaskAlive(taskID string) bool {
+	if p.mgr == nil || taskID == "" {
+		return false
+	}
+	return p.mgr.IsTaskAlive(p.ctx, taskID)
 }

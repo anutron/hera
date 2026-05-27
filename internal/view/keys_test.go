@@ -413,11 +413,14 @@ func TestKeyRouter_MutationKey_CtrlD_InCOORD_NoMutationOnlyForward(t *testing.T)
 
 // --- Rail navigation keys propagate (so tview's tree can handle them) ---
 
-func TestKeyRouter_RailNavKey_J_Propagates(t *testing.T) {
+func TestKeyRouter_RailNavKey_J_PropagatesAsKeyDown(t *testing.T) {
 	r, p, m, _ := newRouter()
 	out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone))
 	if out == nil {
 		t.Fatalf("j in RAIL must propagate so the tree can move selection down")
+	}
+	if out.Key() != tcell.KeyDown {
+		t.Fatalf("j in RAIL must propagate as KeyDown (so tree-view tabular navigation kicks in); got %v", out.Key())
 	}
 	if m.new+m.rename+m.del+m.archive+m.listAll+m.help != 0 {
 		t.Fatalf("j must not fire any mutation handler")
@@ -427,11 +430,14 @@ func TestKeyRouter_RailNavKey_J_Propagates(t *testing.T) {
 	}
 }
 
-func TestKeyRouter_RailNavKey_K_Propagates(t *testing.T) {
+func TestKeyRouter_RailNavKey_K_PropagatesAsKeyUp(t *testing.T) {
 	r, _, _, _ := newRouter()
 	out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone))
 	if out == nil {
 		t.Fatalf("k in RAIL must propagate")
+	}
+	if out.Key() != tcell.KeyUp {
+		t.Fatalf("k in RAIL must propagate as KeyUp; got %v", out.Key())
 	}
 }
 
@@ -448,6 +454,69 @@ func TestKeyRouter_RailNavKey_UpArrow_Propagates(t *testing.T) {
 	out := r.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
 	if out == nil {
 		t.Fatalf("bare Up in RAIL must propagate")
+	}
+}
+
+// --- RailSelectHandler drives Enter target ---
+
+type fakeRailSelect struct {
+	calls  int
+	target FocusState
+}
+
+func (f *fakeRailSelect) OnRailSelectEnter() FocusState {
+	f.calls++
+	return f.target
+}
+
+func TestKeyRouter_EnterInRAIL_WithHandler_AGENT(t *testing.T) {
+	r, _, _, b := newRouter()
+	sel := &fakeRailSelect{target: FocusAGENT}
+	r.RailSelect = sel
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if out != nil {
+		t.Fatalf("Enter with handler returning AGENT must be consumed")
+	}
+	if sel.calls != 1 {
+		t.Fatalf("handler must have been invoked once; got %d", sel.calls)
+	}
+	if r.Focus.State() != FocusAGENT {
+		t.Fatalf("Enter+AGENT target: want AGENT, got %s", r.Focus.State())
+	}
+	if len(b.states) != 1 || b.states[0] != FocusAGENT {
+		t.Fatalf("border updater notification: want [AGENT], got %v", b.states)
+	}
+}
+
+func TestKeyRouter_EnterInRAIL_WithHandler_COORD(t *testing.T) {
+	r, _, _, b := newRouter()
+	sel := &fakeRailSelect{target: FocusCOORD}
+	r.RailSelect = sel
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if out != nil {
+		t.Fatalf("Enter with handler returning COORD must be consumed")
+	}
+	if r.Focus.State() != FocusCOORD {
+		t.Fatalf("Enter+COORD target: want COORD, got %s", r.Focus.State())
+	}
+	if len(b.states) != 1 || b.states[0] != FocusCOORD {
+		t.Fatalf("border updater notification: want [COORD], got %v", b.states)
+	}
+}
+
+func TestKeyRouter_EnterInRAIL_WithHandler_RAIL_Propagates(t *testing.T) {
+	r, _, _, b := newRouter()
+	sel := &fakeRailSelect{target: FocusRAIL}
+	r.RailSelect = sel
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if out == nil {
+		t.Fatalf("Enter with handler returning RAIL must propagate so the tree-view folds/unfolds")
+	}
+	if r.Focus.State() != FocusRAIL {
+		t.Fatalf("Enter+RAIL target: focus must remain RAIL, got %s", r.Focus.State())
+	}
+	if len(b.states) != 0 {
+		t.Fatalf("no border update expected when focus did not change; got %v", b.states)
 	}
 }
 
