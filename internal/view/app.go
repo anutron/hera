@@ -12,7 +12,7 @@ import (
 )
 
 // App is the hera-view tview application plus its bound layout primitives,
-// the open per-pane proxy subscriptions, and the StreamPanes consuming
+// the open per-pane proxy subscriptions, and the terminalpanes consuming
 // them. Stage F builds the layout and a one-shot rail snapshot; Stage G
 // wires focus and key routing on top; Stage I hooks up dynamic rail
 // refresh.
@@ -24,14 +24,15 @@ type App struct {
 	// when no proxy is wired (tests; daemon startup with no bindings).
 	src PaneSource
 
-	// coordSrc, agentSrc and coordChan, agentChan track the channels
-	// currently bound to the coord and agent StreamPanes so they can be
-	// swapped on rail navigation in later stages.
-	mu         sync.Mutex
-	coordTask  string
-	agentTask  string
-	coordUnsub func()
-	agentUnsub func()
+	// mu guards the binding bookkeeping (currently-bound task IDs, the
+	// proxy unsubscribe handles, and the bridges feeding each pane).
+	mu          sync.Mutex
+	coordTask   string
+	agentTask   string
+	coordUnsub  func()
+	agentUnsub  func()
+	coordBridge *paneBridge
+	agentBridge *paneBridge
 
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool
@@ -42,9 +43,10 @@ type App struct {
 // populate the rail (Stage I wires live updates). If src is nil, a no-op
 // PaneSource is used and panes render placeholder text.
 //
-// The returned *App owns the tview.Application, the StreamPane
-// goroutines, and the proxy subscription handles. Callers MUST invoke
-// Close to release them when the WebSocket session ends.
+// The returned *App owns the tview.Application, the terminalpane
+// consumer goroutines, the bridge pump goroutines, and the proxy
+// subscription handles. Callers MUST invoke Close to release them when
+// the WebSocket session ends.
 func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 	if database == nil {
 		return nil, fmt.Errorf("view.BuildApp: nil db")
@@ -53,13 +55,10 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		src = nilPaneSource{}
 	}
 
-	// Stage F panes start with no source channel; they'll be wired on
-	// the first rail selection (live or initial). Until then they render
-	// a placeholder.
-	coordPane := NewStreamPane(nil)
-	coordPane.SetPlaceholder("(no coord selected)")
-	agentPane := NewStreamPane(nil)
-	agentPane.SetPlaceholder("(no agent selected)")
+	coordTask, agentTask := findInitialSelection(database)
+
+	coordPane, coordBridge, coordUnsub := newBoundPane("Coord", "(no coord selected)", coordTask, src)
+	agentPane, agentBridge, agentUnsub := newBoundPane("Agent", "(no agent selected)", agentTask, src)
 
 	pieces := buildLayout(coordPane, agentPane)
 
@@ -68,19 +67,20 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 	tApp.EnableMouse(false)
 
 	a := &App{
-		app:    tApp,
-		pieces: pieces,
-		src:    src,
+		app:         tApp,
+		pieces:      pieces,
+		src:         src,
+		coordTask:   coordTask,
+		agentTask:   agentTask,
+		coordUnsub:  coordUnsub,
+		agentUnsub:  agentUnsub,
+		coordBridge: coordBridge,
+		agentBridge: agentBridge,
 	}
 
 	if err := a.populateRail(database); err != nil {
 		return nil, fmt.Errorf("view.BuildApp: populate rail: %w", err)
 	}
-
-	// On a fresh open with at least one live binding, bind the panes to
-	// the first agent's project's coord + the first agent. If no live
-	// bindings exist, the panes keep their placeholders.
-	a.bindInitialSelection(database)
 
 	return a, nil
 }
@@ -92,8 +92,8 @@ func (a *App) Application() *tview.Application {
 	return a.app
 }
 
-// Close stops the StreamPane consumer goroutines and cancels every open
-// proxy subscription. Idempotent.
+// Close stops the terminalpane consumer goroutines, cancels each pane's
+// bridge pump, and releases every open proxy subscription. Idempotent.
 func (a *App) Close() {
 	a.mu.Lock()
 	if a.closed {
@@ -103,8 +103,12 @@ func (a *App) Close() {
 	a.closed = true
 	coordUnsub := a.coordUnsub
 	agentUnsub := a.agentUnsub
+	coordBridge := a.coordBridge
+	agentBridge := a.agentBridge
 	a.coordUnsub = nil
 	a.agentUnsub = nil
+	a.coordBridge = nil
+	a.agentBridge = nil
 	a.mu.Unlock()
 
 	if coordUnsub != nil {
@@ -112,6 +116,12 @@ func (a *App) Close() {
 	}
 	if agentUnsub != nil {
 		agentUnsub()
+	}
+	if coordBridge != nil {
+		coordBridge.stop()
+	}
+	if agentBridge != nil {
+		agentBridge.stop()
 	}
 	a.pieces.coord.Close()
 	a.pieces.agent.Close()
@@ -189,40 +199,40 @@ type roleReference struct {
 	ArgusTaskID    string // empty when no live binding
 }
 
-// bindInitialSelection picks the first live agent (worker role) on the
-// first non-archived orchestrator that has one, and binds the coord and
-// agent panes to the appropriate ring buffers. If no live agent exists,
-// the panes keep their placeholders.
-func (a *App) bindInitialSelection(database *db.DB) {
+// findInitialSelection picks the first live agent (worker role) on the
+// first non-archived orchestrator that has one and returns the argus
+// task IDs to bind to the coord and agent panes. Both return values are
+// empty when no live agent is found anywhere.
+func findInitialSelection(database *db.DB) (coordTask, agentTask string) {
 	ctx := context.Background()
 	orchs, err := database.Orchestrators.List(ctx)
 	if err != nil {
-		return
+		return "", ""
 	}
 	for _, orch := range orchs {
 		roles, err := database.Roles.ListByOrchestrator(ctx, orch.ID)
 		if err != nil {
 			continue
 		}
-		var coordTask string
-		var firstAgentTask string
+		var coord string
+		var firstAgent string
 		for _, role := range roles {
 			bnd, err := database.Bindings.GetLiveByRole(ctx, role.ID)
 			if err != nil || bnd == nil {
 				continue
 			}
 			if role.Kind == db.KindCoordinator {
-				coordTask = bnd.ArgusTaskID
-			} else if firstAgentTask == "" {
-				firstAgentTask = bnd.ArgusTaskID
+				coord = bnd.ArgusTaskID
+			} else if firstAgent == "" {
+				firstAgent = bnd.ArgusTaskID
 			}
 		}
-		if firstAgentTask == "" {
+		if firstAgent == "" {
 			continue
 		}
-		a.bindPanes(coordTask, firstAgentTask)
-		return
+		return coord, firstAgent
 	}
+	return "", ""
 }
 
 // CoordTaskID returns the argus task id currently bound to the COORD
@@ -245,6 +255,11 @@ func (a *App) AgentTaskID() string {
 // OnFocusChanged repaints the colored focus border so the operator sees
 // which of the three elements is active. Satisfies the
 // KeyRouter.BorderUpdater contract. Called from the tview input pump.
+//
+// The terminalpane widget paints its own border via the SDK's theme
+// styles based on its HasFocus() state, so SetBorderColor on the coord
+// and agent panes is mostly cosmetic on top of that. The rail (a plain
+// TreeView) still relies on Box.SetBorderColor for focus feedback.
 func (a *App) OnFocusChanged(state FocusState) {
 	const focused = tcell.ColorYellow
 	const unfocused = tcell.ColorWhite
@@ -260,42 +275,5 @@ func (a *App) OnFocusChanged(state FocusState) {
 		a.pieces.coord.SetBorderColor(focused)
 	case FocusAGENT:
 		a.pieces.agent.SetBorderColor(focused)
-	}
-}
-
-// bindPanes attaches the coord and agent panes to the proxy
-// subscriptions for the given argus task IDs. An empty taskID detaches
-// the corresponding pane (placeholder rendered). Old subscriptions are
-// released.
-func (a *App) bindPanes(coordTask, agentTask string) {
-	a.mu.Lock()
-	prevCoordUnsub := a.coordUnsub
-	prevAgentUnsub := a.agentUnsub
-	a.coordUnsub = nil
-	a.agentUnsub = nil
-	a.coordTask = coordTask
-	a.agentTask = agentTask
-	a.mu.Unlock()
-
-	if prevCoordUnsub != nil {
-		prevCoordUnsub()
-	}
-	if prevAgentUnsub != nil {
-		prevAgentUnsub()
-	}
-
-	if coordTask != "" {
-		snap, ch, unsub := a.src.SubscribeTask(coordTask)
-		a.pieces.coord.replaceSource(snap, ch)
-		a.mu.Lock()
-		a.coordUnsub = unsub
-		a.mu.Unlock()
-	}
-	if agentTask != "" {
-		snap, ch, unsub := a.src.SubscribeTask(agentTask)
-		a.pieces.agent.replaceSource(snap, ch)
-		a.mu.Lock()
-		a.agentUnsub = unsub
-		a.mu.Unlock()
 	}
 }

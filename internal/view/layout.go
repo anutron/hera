@@ -3,6 +3,8 @@ package view
 import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/anutron/argus-sdk/terminalpane"
 )
 
 // RailWidth is the fixed character width of the navigation rail column.
@@ -17,8 +19,8 @@ type layoutPieces struct {
 	root     *tview.Flex
 	topBar   *tview.TextView
 	rail     *tview.TreeView
-	coord    *StreamPane
-	agent    *StreamPane
+	coord    *terminalpane.TerminalPane
+	agent    *terminalpane.TerminalPane
 	bottom   *tview.TextView
 	body     *tview.Flex
 	rootRoot *tview.TreeNode // rail's root node
@@ -37,8 +39,10 @@ type layoutPieces struct {
 // Coord and agent panes split the remaining horizontal space evenly.
 // The TopBar contains the literal text "HERA"; the BottomBar carries
 // focus-state-aware hints (placeholder text in Stage F; Stage G/H wires
-// real focus state).
-func buildLayout(coord, agent *StreamPane) layoutPieces {
+// real focus state). The two terminalpanes own their own border and
+// title rendering, so this layer only wires titles and arranges them in
+// the Flex.
+func buildLayout(coord, agent *terminalpane.TerminalPane) layoutPieces {
 	top := tview.NewTextView()
 	top.SetText("HERA")
 	top.SetTextAlign(tview.AlignLeft)
@@ -52,9 +56,7 @@ func buildLayout(coord, agent *StreamPane) layoutPieces {
 	rail.SetTitle("Rail")
 	rail.SetTopLevel(0)
 
-	coord.SetBorder(true)
 	coord.SetTitle("Coord")
-	agent.SetBorder(true)
 	agent.SetTitle("Agent")
 
 	body := tview.NewFlex().SetDirection(tview.FlexColumn).

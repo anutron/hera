@@ -8,15 +8,16 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gdamore/tcell/v2"
 
+	"github.com/anutron/argus-sdk/pluginview"
+
 	"github.com/anutron/hera/internal/db"
-	"github.com/anutron/hera/internal/view/screen"
 )
 
 // NewSessionFunc returns a SessionFunc that drives one hera-view session
 // per accepted WebSocket connection. It composes the four substrates the
 // previous stages produced:
 //
-//   - Stage D's wsscreen.Screen translates WebSocket frames to a
+//   - argus-sdk/pluginview translates WebSocket frames to a
 //     tcell.Screen.
 //   - Stage F's BuildApp constructs a tview.Application with the three-
 //     column layout, populated from the DB and (where present) from a
@@ -29,7 +30,7 @@ import (
 //     panes.
 //
 // The function blocks until ctx is cancelled (last-writer-wins supersede)
-// or the WebSocket peer closes. On exit it tears down the wsscreen, the
+// or the WebSocket peer closes. On exit it tears down the pluginview, the
 // tview Application, and every pane subscription owned by this session;
 // the daemon-level proxy subscriptions survive.
 func NewSessionFunc(database *db.DB, manager *ProxyManager, poster InputPoster, log *slog.Logger) SessionFunc {
@@ -37,9 +38,9 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, poster InputPoster, 
 		log = slog.Default()
 	}
 	return func(ctx context.Context, conn *websocket.Conn) {
-		scr, err := screen.New(ctx, conn)
+		scr, err := pluginview.New(ctx, conn)
 		if err != nil {
-			log.Warn("view: wsscreen construct", "err", err)
+			log.Warn("view: pluginview construct", "err", err)
 			return
 		}
 
