@@ -26,8 +26,9 @@ func NewStatusHandler(r *Resolver, database *db.DB, client *argus.Client) *Statu
 
 // StatusInput is the tool's input schema.
 type StatusInput struct {
-	Cwd    string `json:"cwd"`
-	Status string `json:"status"`
+	Cwd          string `json:"cwd"`
+	Status       string `json:"status"`
+	Orchestrator string `json:"orchestrator,omitempty"`
 }
 
 // StatusOutput is the success payload. ArgusLink reflects the current
@@ -63,7 +64,7 @@ func (h *StatusHandler) Handle(ctx context.Context, raw json.RawMessage) Respons
 		return ErrorResponse(fmt.Sprintf("hera_status: invalid status %q (must be one of: idle, working, blocked, done)", in.Status))
 	}
 
-	_, role, bnd, err := h.resolver.CallerRole(ctx, in.Cwd)
+	_, role, bnd, err := h.resolver.CallerRole(ctx, in.Cwd, in.Orchestrator)
 	if err != nil {
 		return ErrorResponse("hera_status: " + err.Error())
 	}

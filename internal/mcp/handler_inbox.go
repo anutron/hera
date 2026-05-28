@@ -22,7 +22,8 @@ func NewInboxHandler(r *Resolver, database *db.DB) *InboxHandler {
 
 // InboxInput is the tool's input schema.
 type InboxInput struct {
-	Cwd string `json:"cwd"`
+	Cwd          string `json:"cwd"`
+	Orchestrator string `json:"orchestrator,omitempty"`
 }
 
 // InboxMessage is one row in the inbox response.
@@ -54,7 +55,7 @@ func (h *InboxHandler) Handle(ctx context.Context, raw json.RawMessage) Response
 		return ErrorResponse("hera_inbox: cwd is required")
 	}
 
-	_, role, _, err := h.resolver.CallerRole(ctx, in.Cwd)
+	_, role, _, err := h.resolver.CallerRole(ctx, in.Cwd, in.Orchestrator)
 	if err != nil {
 		return ErrorResponse("hera_inbox: " + err.Error())
 	}

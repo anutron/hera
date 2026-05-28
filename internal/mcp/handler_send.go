@@ -34,10 +34,11 @@ func NewSendHandler(r *Resolver, database *db.DB, injector MessageInjector) *Sen
 
 // SendInput is the tool's input schema.
 type SendInput struct {
-	Cwd       string `json:"cwd"`
-	Body      string `json:"body"`
-	To        string `json:"to,omitempty"`
-	InReplyTo *int64 `json:"in_reply_to,omitempty"`
+	Cwd          string `json:"cwd"`
+	Body         string `json:"body"`
+	To           string `json:"to,omitempty"`
+	InReplyTo    *int64 `json:"in_reply_to,omitempty"`
+	Orchestrator string `json:"orchestrator,omitempty"`
 }
 
 // SendOutput is the success payload.
@@ -63,7 +64,7 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 		return ErrorResponse("hera_send: body is required")
 	}
 
-	_, senderRole, _, err := h.resolver.CallerRole(ctx, in.Cwd)
+	_, senderRole, _, err := h.resolver.CallerRole(ctx, in.Cwd, in.Orchestrator)
 	if err != nil {
 		return ErrorResponse("hera_send: " + err.Error())
 	}

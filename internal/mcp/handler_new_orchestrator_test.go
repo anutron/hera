@@ -103,11 +103,11 @@ func TestNewOrchestrator_RequiredArgs(t *testing.T) {
 	}
 }
 
-func TestNewOrchestrator_RejectsAlreadyBoundTask(t *testing.T) {
+func TestNewOrchestrator_RejectsAlreadyBoundToSameOrchestrator(t *testing.T) {
 	ctx := context.Background()
 	e := setupHandlers(t)
-	// Pre-seed a binding on this task.
-	orch, _ := e.db.Orchestrators.Create(ctx, "other")
+	// Pre-seed a binding for this task to orchestrator "foo".
+	orch, _ := e.db.Orchestrators.Create(ctx, "foo")
 	role, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "x", Kind: db.KindWorker, ArgusProject: "p",
 	})
@@ -118,13 +118,44 @@ func TestNewOrchestrator_RejectsAlreadyBoundTask(t *testing.T) {
 
 	h := NewNewOrchestratorHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, NewOrchestratorInput{
-		Cwd: "/tmp/bound", Name: "new-orch", CoordinatorRoleName: "coord",
+		Cwd: "/tmp/bound", Name: "foo", CoordinatorRoleName: "coord",
 	}))
 	if !resp.IsError {
-		t.Fatalf("expected error for already-bound task")
+		t.Fatalf("expected error: task already bound to orchestrator foo")
 	}
-	if !strings.Contains(resp.Content[0].Text, "already bound") {
+	if !strings.Contains(resp.Content[0].Text, "already bound to orchestrator") {
 		t.Fatalf("error wording: %q", resp.Content[0].Text)
+	}
+}
+
+func TestNewOrchestrator_AllowsBootstrapWhenBoundToDifferentOrchestrator(t *testing.T) {
+	// Multi-binding: a task already bound to orchestrator A may still
+	// bootstrap a new orchestrator B.
+	ctx := context.Background()
+	e := setupHandlers(t)
+	orchA, _ := e.db.Orchestrators.Create(ctx, "A")
+	roleA, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orchA.ID, Name: "worker", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: roleA.ID, ArgusTaskID: "t-multi", WorktreePath: "/tmp/multi",
+	})
+	e.fake.addTask(argus.Task{ID: "t-multi", Project: "p", WorktreePath: "/tmp/multi"})
+
+	h := NewNewOrchestratorHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, NewOrchestratorInput{
+		Cwd: "/tmp/multi", Name: "B", CoordinatorRoleName: "coord",
+	}))
+	if resp.IsError {
+		t.Fatalf("expected success bootstrapping B while bound to A; got error: %q", resp.Content[0].Text)
+	}
+	// Verify both bindings now live for the same task.
+	got, err := e.db.Bindings.ListLiveByTaskID(ctx, "t-multi")
+	if err != nil {
+		t.Fatalf("ListLiveByTaskID: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 live bindings for t-multi, got %d", len(got))
 	}
 }
 
@@ -216,21 +247,16 @@ func TestJoin_RejectsKindCoordinator(t *testing.T) {
 	}
 }
 
-func TestJoin_RejectsAttachWhenAlreadyBound(t *testing.T) {
+func TestJoin_RejectsAttachWhenAlreadyBoundToSameOrchestrator(t *testing.T) {
 	ctx := context.Background()
 	e := setupHandlers(t)
-	// Seed: task is already bound to a worker role under another orchestrator.
-	other, _ := e.db.Orchestrators.Create(ctx, "other")
-	otherRole, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
-		OrchestratorID: other.ID, Name: "x", Kind: db.KindWorker, ArgusProject: "p",
+	// Seed: task is already bound to a worker role under orchestrator "foo".
+	foo, _ := e.db.Orchestrators.Create(ctx, "foo")
+	worker, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: foo.ID, Name: "x", Kind: db.KindWorker, ArgusProject: "p",
 	})
 	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
-		RoleID: otherRole.ID, ArgusTaskID: "t-bound", WorktreePath: "/tmp/bound",
-	})
-	// Set up orchestrator we'd try to attach to.
-	foo, _ := e.db.Orchestrators.Create(ctx, "foo")
-	_, _ = e.db.Roles.Create(ctx, db.CreateRoleInput{
-		OrchestratorID: foo.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p",
+		RoleID: worker.ID, ArgusTaskID: "t-bound", WorktreePath: "/tmp/bound",
 	})
 	e.fake.addTask(argus.Task{ID: "t-bound", Project: "p", WorktreePath: "/tmp/bound"})
 
@@ -239,10 +265,44 @@ func TestJoin_RejectsAttachWhenAlreadyBound(t *testing.T) {
 		Cwd: "/tmp/bound", Orchestrator: "foo", RoleName: "scout", Kind: "freelance",
 	}))
 	if !resp.IsError {
-		t.Fatalf("expected error: task is already bound, attach should reject")
+		t.Fatalf("expected error: task is already bound to foo, attach should reject")
 	}
-	if !strings.Contains(resp.Content[0].Text, "already bound") {
-		t.Fatalf("error wording should say 'already bound', got: %q", resp.Content[0].Text)
+	if !strings.Contains(resp.Content[0].Text, "already bound to orchestrator") {
+		t.Fatalf("error wording should say 'already bound to orchestrator', got: %q", resp.Content[0].Text)
+	}
+}
+
+func TestJoin_AllowsAttachWhenBoundToDifferentOrchestrator(t *testing.T) {
+	// Multi-binding: a task already bound to orchestrator A may attach
+	// as a worker/freelance under orchestrator B.
+	ctx := context.Background()
+	e := setupHandlers(t)
+	other, _ := e.db.Orchestrators.Create(ctx, "A")
+	otherRole, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: other.ID, Name: "x", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: otherRole.ID, ArgusTaskID: "t-multi", WorktreePath: "/tmp/multi",
+	})
+	foo, _ := e.db.Orchestrators.Create(ctx, "B")
+	_, _ = e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: foo.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	e.fake.addTask(argus.Task{ID: "t-multi", Project: "p", WorktreePath: "/tmp/multi"})
+
+	h := NewJoinHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, JoinInput{
+		Cwd: "/tmp/multi", Orchestrator: "B", RoleName: "scout", Kind: "freelance",
+	}))
+	if resp.IsError {
+		t.Fatalf("expected success attaching to B while bound to A; got: %q", resp.Content[0].Text)
+	}
+	got, err := e.db.Bindings.ListLiveByTaskID(ctx, "t-multi")
+	if err != nil {
+		t.Fatalf("ListLiveByTaskID: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 live bindings, got %d", len(got))
 	}
 }
 

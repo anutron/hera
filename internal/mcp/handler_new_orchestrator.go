@@ -80,15 +80,6 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 		return ErrorResponse("hera_new_orchestrator: " + err.Error())
 	}
 
-	// Reject if the calling argus task already has a live binding – we
-	// don't want to silently overwrite an existing role's relationship
-	// to this worktree.
-	if _, err := h.db.Bindings.GetLiveByTaskID(ctx, task.ID); err == nil {
-		return ErrorResponse("hera_new_orchestrator: this argus task is already bound to a hera role; resume that role via hera_join(cwd) instead of creating a new orchestrator here")
-	} else if !errors.Is(err, db.ErrNotFound) {
-		return ErrorResponse("hera_new_orchestrator: lookup existing binding: " + err.Error())
-	}
-
 	// Determine "newly created" before Orchestrators.Create runs – the
 	// DAO is idempotent on name, so after-the-fact inference (via "does
 	// the orchestrator have any roles already?") would falsely report
@@ -104,6 +95,19 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 		return ErrorResponse("hera_new_orchestrator: create orchestrator: " + err.Error())
 	}
 	created := !existed
+
+	// Reject only if the calling argus task is already bound to THIS
+	// orchestrator. Bindings to other orchestrators are fine — that's
+	// the whole point of multi-binding (an argus task can be worker in
+	// foo and coord in bar simultaneously).
+	if _, err := h.db.Bindings.GetLiveByTaskAndOrchestrator(ctx, task.ID, orch.ID); err == nil {
+		return ErrorResponse(fmt.Sprintf(
+			"hera_new_orchestrator: this argus task is already bound to orchestrator %q; resume via hera_join(cwd, orchestrator=%q) instead",
+			in.Name, in.Name,
+		))
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return ErrorResponse("hera_new_orchestrator: lookup existing binding: " + err.Error())
+	}
 
 	// Check for an existing coordinator role with the same name; reject if
 	// a different role kind is already in that slot.
@@ -139,9 +143,10 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 	}
 
 	bnd, err := h.db.Bindings.Create(ctx, db.CreateBindingInput{
-		RoleID:       role.ID,
-		ArgusTaskID:  task.ID,
-		WorktreePath: task.WorktreePath,
+		RoleID:         role.ID,
+		OrchestratorID: orch.ID,
+		ArgusTaskID:    task.ID,
+		WorktreePath:   task.WorktreePath,
 	})
 	if err != nil {
 		return ErrorResponse("hera_new_orchestrator: create binding: " + err.Error())

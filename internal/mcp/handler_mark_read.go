@@ -22,8 +22,9 @@ func NewMarkReadHandler(r *Resolver, database *db.DB) *MarkReadHandler {
 
 // MarkReadInput is the tool's input schema.
 type MarkReadInput struct {
-	Cwd        string  `json:"cwd"`
-	MessageIDs []int64 `json:"message_ids"`
+	Cwd          string  `json:"cwd"`
+	MessageIDs   []int64 `json:"message_ids"`
+	Orchestrator string  `json:"orchestrator,omitempty"`
 }
 
 // MarkReadOutput is the success payload.
@@ -48,7 +49,7 @@ func (h *MarkReadHandler) Handle(ctx context.Context, raw json.RawMessage) Respo
 		return ErrorResponse("hera_mark_read: message_ids must contain at least one id")
 	}
 
-	_, role, _, err := h.resolver.CallerRole(ctx, in.Cwd)
+	_, role, _, err := h.resolver.CallerRole(ctx, in.Cwd, in.Orchestrator)
 	if err != nil {
 		return ErrorResponse("hera_mark_read: " + err.Error())
 	}

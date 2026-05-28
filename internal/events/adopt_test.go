@@ -330,5 +330,110 @@ func TestAdopt_TaskArchived_BindingEnds(t *testing.T) {
 	}
 }
 
+func TestAdopt_ParentHasMultipleCoordinatorBindings_NotAdopted(t *testing.T) {
+	// Multi-binding edge case: parent task holds TWO live coordinator
+	// bindings (under orchestrators foo and bar). Adoption MUST skip
+	// because the child's orchestrator is ambiguous.
+	ctx := context.Background()
+	e := setupAdopt(t)
+
+	orchFoo, _ := e.db.Orchestrators.Create(ctx, "foo")
+	coordFoo, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orchFoo.ID, Name: "coord-foo", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	orchBar, _ := e.db.Orchestrators.Create(ctx, "bar")
+	coordBar, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orchBar.ID, Name: "coord-bar", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	// Same parent task bound to both coordinator roles.
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coordFoo.ID, ArgusTaskID: "task-multi", WorktreePath: "/tmp/m",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coordBar.ID, ArgusTaskID: "task-multi", WorktreePath: "/tmp/m",
+	})
+	e.fake.addTask(argus.Task{ID: "task-multi", Project: "p", WorktreePath: "/tmp/m"})
+
+	childTask := "task-child"
+	e.fake.addTask(argus.Task{ID: childTask, Name: "impl", Project: "p", WorktreePath: "/tmp/c"})
+	e.fake.setMeta(childTask, MetaKeyRole, string(db.KindWorker))
+
+	e.handler.HandleEvent(ctx, linkCreatedEvent("task-multi", childTask, 300))
+
+	// No role should have been created for the child.
+	_, errFoo := e.db.Roles.GetByOrchestratorAndName(ctx, orchFoo.ID, "impl")
+	_, errBar := e.db.Roles.GetByOrchestratorAndName(ctx, orchBar.ID, "impl")
+	if errFoo == nil || errBar == nil {
+		t.Fatalf("expected no impl role to be created in either orchestrator (foo err=%v, bar err=%v)", errFoo, errBar)
+	}
+}
+
+func TestAdopt_ParentHasWorkerAndCoordinator_AdoptUnderCoordinator(t *testing.T) {
+	// Parent task is a worker in orch A AND a coordinator in orch B.
+	// Adoption picks the coordinator binding (orch B); worker bindings
+	// don't spawn workers.
+	ctx := context.Background()
+	e := setupAdopt(t)
+
+	orchA, _ := e.db.Orchestrators.Create(ctx, "A")
+	workerA, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orchA.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	orchB, _ := e.db.Orchestrators.Create(ctx, "B")
+	coordB, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orchB.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: workerA.ID, ArgusTaskID: "task-multi", WorktreePath: "/tmp/m",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coordB.ID, ArgusTaskID: "task-multi", WorktreePath: "/tmp/m",
+	})
+	e.fake.addTask(argus.Task{ID: "task-multi", Project: "p", WorktreePath: "/tmp/m"})
+
+	childTask := "task-child"
+	e.fake.addTask(argus.Task{ID: childTask, Name: "impl", Project: "p", WorktreePath: "/tmp/c"})
+	e.fake.setMeta(childTask, MetaKeyRole, string(db.KindWorker))
+
+	e.handler.HandleEvent(ctx, linkCreatedEvent("task-multi", childTask, 301))
+
+	// Worker role 'impl' must exist under orch B (not A).
+	if _, err := e.db.Roles.GetByOrchestratorAndName(ctx, orchB.ID, "impl"); err != nil {
+		t.Fatalf("expected impl role under B, got %v", err)
+	}
+	if _, err := e.db.Roles.GetByOrchestratorAndName(ctx, orchA.ID, "impl"); err == nil {
+		t.Fatalf("did not expect impl role under A")
+	}
+}
+
+func TestAdopt_TaskArchived_EndsEveryLiveBinding(t *testing.T) {
+	// Multi-binding: a task incarnates two roles. task.archived ends
+	// both bindings.
+	ctx := context.Background()
+	e := setupAdopt(t)
+
+	orchA, _ := e.db.Orchestrators.Create(ctx, "A")
+	roleA, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orchA.ID, Name: "worker", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	orchB, _ := e.db.Orchestrators.Create(ctx, "B")
+	roleB, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orchB.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: roleA.ID, ArgusTaskID: "task-multi", WorktreePath: "/tmp/m",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: roleB.ID, ArgusTaskID: "task-multi", WorktreePath: "/tmp/m",
+	})
+
+	e.handler.HandleEvent(ctx, argus.Event{ID: 400, Type: TypeTaskArchived, TaskID: "task-multi"})
+
+	got, _ := e.db.Bindings.ListLiveByTaskID(ctx, "task-multi")
+	if len(got) != 0 {
+		t.Fatalf("expected all bindings ended after task.archived; %d still live", len(got))
+	}
+}
+
 // silence unused vars in case io is removed from imports during edits.
 var _ = io.Discard

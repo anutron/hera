@@ -13,18 +13,21 @@ import (
 
 // JoinHandler implements the hera_join MCP tool.
 //
-// Bare hera_join(cwd) is the re-incarnation claim: resolve cwd → task →
-// binding → role, return the role's identity (used when an existing role
-// is being re-incarnated into a fresh argus task).
+// Three calling shapes:
 //
-// hera_join with extended args (orchestrator, role_name, kind=worker|freelance, ...)
-// is the freelance-attach path: validate orchestrator exists, validate
-// (orchestrator, role_name) does not already exist with a different
-// kind, create role + binding + initial status atomically, then mirror
-// meta:hera.role to argus task_meta.
-//
-// Coordinator bootstrap (creating a brand-new orchestrator) is NOT done
-// via hera_join — it has its own tool, hera_new_orchestrator.
+//   - hera_join(cwd) — claim mode, no orchestrator. Resolves the
+//     calling task's single live binding. If 0 bindings, errors with a
+//     hint to attach or new_orchestrator. If 2+, errors listing each
+//     binding's orchestrator/role/kind and directs the caller to
+//     re-invoke with orchestrator=<name>.
+//   - hera_join(cwd, orchestrator=X) — claim mode, explicit. Returns
+//     the binding's identity for orchestrator X, or errors with the
+//     attach signature if no such binding exists.
+//   - hera_join(cwd, orchestrator=X, role_name=R, kind=K, ...) —
+//     attach mode. Worker or freelance only; coordinator bootstrap
+//     uses hera_new_orchestrator. Rejects only when the calling task
+//     already has a live binding TO ORCHESTRATOR X; bindings to other
+//     orchestrators are accepted (multi-binding).
 type JoinHandler struct {
 	resolver *Resolver
 	db       *db.DB
@@ -78,26 +81,65 @@ func (h *JoinHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 		return ErrorResponse("hera_join: " + err.Error())
 	}
 
-	// Branch on attach vs re-incarnation.
-	if in.Orchestrator != "" || in.RoleName != "" || in.Kind != "" {
+	// Attach mode requires role_name AND kind. Anything else (no
+	// role_name, no kind) is claim mode; orchestrator may or may not
+	// be specified.
+	if in.RoleName != "" || in.Kind != "" {
 		return h.attach(ctx, task.ID, task.Project, task.WorktreePath, in)
 	}
-	return h.reincarnation(ctx, task.ID)
+	return h.claim(ctx, task.ID, in.Orchestrator)
 }
 
-// reincarnation handles the bare hera_join(cwd) call.
-func (h *JoinHandler) reincarnation(ctx context.Context, taskID string) Response {
-	bnd, err := h.db.Bindings.GetLiveByTaskID(ctx, taskID)
-	if errors.Is(err, db.ErrNotFound) {
+// claim handles the bare or orchestrator-only hera_join — re-incarnation:
+// look up the calling task's live binding for the given orchestrator (or
+// the single binding when no orchestrator is supplied), and return the
+// role's identity.
+func (h *JoinHandler) claim(ctx context.Context, taskID, orchestrator string) Response {
+	if orchestrator != "" {
+		orch, err := h.db.Orchestrators.GetByName(ctx, orchestrator)
+		if errors.Is(err, db.ErrNotFound) {
+			return ErrorResponse(fmt.Sprintf(
+				"hera_join: orchestrator %q does not exist; if you intend to attach a new role, supply role_name and kind",
+				orchestrator,
+			))
+		}
+		if err != nil {
+			return ErrorResponse("hera_join: " + err.Error())
+		}
+		bnd, err := h.db.Bindings.GetLiveByTaskAndOrchestrator(ctx, taskID, orch.ID)
+		if errors.Is(err, db.ErrNotFound) {
+			return ErrorResponse(fmt.Sprintf(
+				"hera_join: this argus task is not bound to orchestrator %q. To attach, call hera_join with role_name and kind.",
+				orchestrator,
+			))
+		}
+		if err != nil {
+			return ErrorResponse("hera_join: " + err.Error())
+		}
+		return h.identityResponse(ctx, bnd)
+	}
+
+	bindings, err := h.db.Bindings.ListLiveByTaskID(ctx, taskID)
+	if err != nil {
+		return ErrorResponse("hera_join: " + err.Error())
+	}
+	switch len(bindings) {
+	case 0:
 		return ErrorResponse(
 			"hera_join: this argus task is not bound to any hera role. " +
 				"To attach as a freelance, call hera_join with explicit orchestrator, role_name, kind=\"freelance\", and (optional) mission/constraints/status. " +
 				"To bootstrap a new orchestrator, call hera_new_orchestrator.",
 		)
+	case 1:
+		return h.identityResponse(ctx, bindings[0])
+	default:
+		return ErrorResponse("hera_join: " + h.resolver.buildAmbiguousError(ctx, bindings).Error())
 	}
-	if err != nil {
-		return ErrorResponse("hera_join: " + err.Error())
-	}
+}
+
+// identityResponse loads the role + orchestrator + status + inbox-count
+// for a binding and returns the standard JoinOutput.
+func (h *JoinHandler) identityResponse(ctx context.Context, bnd *db.Binding) Response {
 	role, err := h.db.Roles.GetByID(ctx, bnd.RoleID)
 	if err != nil {
 		return ErrorResponse("hera_join: load role: " + err.Error())
@@ -114,7 +156,6 @@ func (h *JoinHandler) reincarnation(ctx context.Context, taskID string) Response
 	if rs, err := h.db.RoleStatus.Get(ctx, role.ID); err == nil {
 		statusVal = string(rs.Status)
 	}
-
 	return jsonText(JoinOutput{
 		Orchestrator:       orch.Name,
 		RoleName:           role.Name,
@@ -144,24 +185,24 @@ func (h *JoinHandler) attach(ctx context.Context, argusTaskID, project, worktree
 		return ErrorResponse(fmt.Sprintf("hera_join: invalid kind %q (must be worker or freelance)", in.Kind))
 	}
 
-	// Reject if the calling argus task already has a live binding. Without
-	// this guard, an attach call from a task that is already bound (e.g.,
-	// from a previous freelance attach or an auto-adoption) would create a
-	// second live binding for the same argus task — there's no DB-level
-	// uniqueness constraint preventing that. hera_new_orchestrator has the
-	// same guard; this keeps the two attach paths symmetric.
-	if _, err := h.db.Bindings.GetLiveByTaskID(ctx, argusTaskID); err == nil {
-		return ErrorResponse("hera_join: this argus task is already bound to a hera role; call hera_join(cwd) with no other args to claim the existing binding")
-	} else if !errors.Is(err, db.ErrNotFound) {
-		return ErrorResponse("hera_join: lookup existing binding: " + err.Error())
-	}
-
 	orch, err := h.db.Orchestrators.GetByName(ctx, in.Orchestrator)
 	if errors.Is(err, db.ErrNotFound) {
 		return ErrorResponse(fmt.Sprintf("hera_join: orchestrator %q does not exist", in.Orchestrator))
 	}
 	if err != nil {
 		return ErrorResponse("hera_join: " + err.Error())
+	}
+
+	// Reject only if the calling argus task is already bound to THIS
+	// orchestrator. Bindings to other orchestrators are fine — that's
+	// the multi-binding case.
+	if _, err := h.db.Bindings.GetLiveByTaskAndOrchestrator(ctx, argusTaskID, orch.ID); err == nil {
+		return ErrorResponse(fmt.Sprintf(
+			"hera_join: this argus task is already bound to orchestrator %q; call hera_join(cwd, orchestrator=%q) with no role_name to claim the existing binding",
+			in.Orchestrator, in.Orchestrator,
+		))
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return ErrorResponse("hera_join: lookup existing binding: " + err.Error())
 	}
 
 	if existing, err := h.db.Roles.GetByOrchestratorAndName(ctx, orch.ID, in.RoleName); err == nil && existing.Kind != kind {
@@ -184,9 +225,10 @@ func (h *JoinHandler) attach(ctx context.Context, argusTaskID, project, worktree
 	}
 
 	bnd, err := h.db.Bindings.Create(ctx, db.CreateBindingInput{
-		RoleID:       role.ID,
-		ArgusTaskID:  argusTaskID,
-		WorktreePath: worktreePath,
+		RoleID:         role.ID,
+		OrchestratorID: orch.ID,
+		ArgusTaskID:    argusTaskID,
+		WorktreePath:   worktreePath,
 	})
 	if err != nil {
 		return ErrorResponse("hera_join: create binding: " + err.Error())

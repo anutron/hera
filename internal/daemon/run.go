@@ -336,17 +336,17 @@ func toolDefinitions() []mcp.ToolDefinition {
 		},
 		{
 			Name:        "hera_join",
-			Description: "Claim an existing hera role for the calling argus task. Bare call (cwd only) claims an existing binding (re-incarnation). Extended call (orchestrator + role_name + kind=worker|freelance + optional mission/constraints/status) attaches as a worker or freelance. To bootstrap a new orchestrator, use hera_new_orchestrator instead.",
+			Description: "Claim an existing hera role or attach a new one for the calling argus task. Claim mode: hera_join(cwd) returns the task's single live binding; hera_join(cwd, orchestrator=X) returns the binding for orchestrator X (required when the task holds 2+ live bindings). Attach mode: hera_join(cwd, orchestrator + role_name + kind=worker|freelance + optional mission/constraints/status) creates a new role under the orchestrator and binds it. To bootstrap a new orchestrator, use hera_new_orchestrator instead.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"cwd":          map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
-					"orchestrator": map[string]any{"type": "string", "description": "(optional) Existing orchestrator to attach to"},
-					"role_name":    map[string]any{"type": "string", "description": "(optional) Self-chosen role name"},
-					"kind":         map[string]any{"type": "string", "enum": []string{"worker", "freelance"}, "description": "(optional) Role kind. coordinator is not accepted here — use hera_new_orchestrator."},
-					"mission":      map[string]any{"type": "string", "description": "(optional) Role mission, free-form prose"},
-					"constraints":  map[string]any{"type": "string", "description": "(optional) Role constraints, free-form prose"},
-					"status":       map[string]any{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "(optional) Initial role status"},
+					"orchestrator": map[string]any{"type": "string", "description": "(optional in claim mode for tasks with exactly one binding; required for tasks with 2+ bindings or for attach mode) The orchestrator to claim from or attach to."},
+					"role_name":    map[string]any{"type": "string", "description": "(attach mode only) Self-chosen role name"},
+					"kind":         map[string]any{"type": "string", "enum": []string{"worker", "freelance"}, "description": "(attach mode only) Role kind. coordinator is not accepted here — use hera_new_orchestrator."},
+					"mission":      map[string]any{"type": "string", "description": "(optional, attach mode) Role mission, free-form prose"},
+					"constraints":  map[string]any{"type": "string", "description": "(optional, attach mode) Role constraints, free-form prose"},
+					"status":       map[string]any{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "(optional, attach mode) Initial role status"},
 				},
 				"required": []string{"cwd"},
 			},
@@ -357,10 +357,11 @@ func toolDefinitions() []mcp.ToolDefinition {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"cwd":         map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
-					"body":        map[string]any{"type": "string", "description": "Message body"},
-					"to":          map[string]any{"type": "string", "description": "(optional for worker/freelance, required for coordinator) Recipient role name within the same orchestrator"},
-					"in_reply_to": map[string]any{"type": "integer", "description": "(optional) Message id this is a reply to"},
+					"cwd":          map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+					"body":         map[string]any{"type": "string", "description": "Message body"},
+					"to":           map[string]any{"type": "string", "description": "(optional for worker/freelance, required for coordinator) Recipient role name within the same orchestrator"},
+					"in_reply_to":  map[string]any{"type": "integer", "description": "(optional) Message id this is a reply to"},
+					"orchestrator": map[string]any{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the sender role for this call. The recipient is resolved within the same orchestrator."},
 				},
 				"required": []string{"cwd", "body"},
 			},
@@ -371,7 +372,8 @@ func toolDefinitions() []mcp.ToolDefinition {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"cwd": map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+					"cwd":          map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+					"orchestrator": map[string]any{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
 				},
 				"required": []string{"cwd"},
 			},
@@ -382,8 +384,9 @@ func toolDefinitions() []mcp.ToolDefinition {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"cwd":         map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
-					"message_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Inbox message ids returned by hera_inbox"},
+					"cwd":          map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+					"message_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Inbox message ids returned by hera_inbox"},
+					"orchestrator": map[string]any{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
 				},
 				"required": []string{"cwd", "message_ids"},
 			},
@@ -394,8 +397,9 @@ func toolDefinitions() []mcp.ToolDefinition {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"cwd":    map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
-					"status": map[string]any{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "New role status"},
+					"cwd":          map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+					"status":       map[string]any{"type": "string", "enum": []string{"idle", "working", "blocked", "done"}, "description": "New role status"},
+					"orchestrator": map[string]any{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
 				},
 				"required": []string{"cwd", "status"},
 			},

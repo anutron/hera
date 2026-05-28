@@ -2,7 +2,6 @@ package events
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"github.com/anutron/hera/internal/argus"
@@ -48,24 +47,53 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 		return
 	}
 
-	// (1) Is the parent bound to a hera coordinator role?
-	parentBinding, err := a.db.Bindings.GetLiveByTaskID(ctx, link.Parent)
-	if errors.Is(err, db.ErrNotFound) {
+	// (1) Is the parent bound to a hera coordinator role? With
+	// multi-binding the parent task may hold multiple live bindings;
+	// adoption only attributes a child to a coordinator role. We
+	// require exactly one coordinator binding on the parent so the
+	// child's orchestrator is unambiguous.
+	parentBindings, err := a.db.Bindings.ListLiveByTaskID(ctx, link.Parent)
+	if err != nil {
+		a.log.Warn("link.created: lookup parent bindings", "parent", link.Parent, "err", err)
+		return
+	}
+	if len(parentBindings) == 0 {
 		// Parent isn't bound to anything hera owns – not our task to adopt.
 		return
 	}
-	if err != nil {
-		a.log.Warn("link.created: lookup parent binding", "parent", link.Parent, "err", err)
+	var coordBindings []*db.Binding
+	var coordOrchestrators []string
+	for _, b := range parentBindings {
+		role, err := a.db.Roles.GetByID(ctx, b.RoleID)
+		if err != nil {
+			a.log.Warn("link.created: lookup parent role",
+				"role_id", b.RoleID, "err", err)
+			return
+		}
+		if role.Kind != db.KindCoordinator {
+			continue
+		}
+		coordBindings = append(coordBindings, b)
+		if orch, err := a.db.Orchestrators.GetByID(ctx, role.OrchestratorID); err == nil {
+			coordOrchestrators = append(coordOrchestrators, orch.Name)
+		}
+	}
+	if len(coordBindings) == 0 {
+		// Parent has no coordinator binding under any orchestrator —
+		// adoption only follows coordinator parents per design D4.
 		return
 	}
-
+	if len(coordBindings) > 1 {
+		a.log.Warn("link.created: skipped adoption (parent has multiple coordinator bindings)",
+			"parent", link.Parent, "child", link.Child,
+			"orchestrators", coordOrchestrators,
+			"hint", "operator must attach the child explicitly via hera_join to disambiguate")
+		return
+	}
+	parentBinding := coordBindings[0]
 	parentRole, err := a.db.Roles.GetByID(ctx, parentBinding.RoleID)
 	if err != nil {
-		a.log.Warn("link.created: lookup parent role", "role_id", parentBinding.RoleID, "err", err)
-		return
-	}
-	if parentRole.Kind != db.KindCoordinator {
-		// Adoption only follows coordinator parents per design D4.
+		a.log.Warn("link.created: re-lookup parent role", "role_id", parentBinding.RoleID, "err", err)
 		return
 	}
 
@@ -109,9 +137,10 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 		return
 	}
 	if _, err := a.db.Bindings.Create(ctx, db.CreateBindingInput{
-		RoleID:       role.ID,
-		ArgusTaskID:  child.ID,
-		WorktreePath: child.WorktreePath,
+		RoleID:         role.ID,
+		OrchestratorID: parentRole.OrchestratorID,
+		ArgusTaskID:    child.ID,
+		WorktreePath:   child.WorktreePath,
 	}); err != nil {
 		a.log.Warn("adoption: create binding", "child", link.Child, "err", err)
 		return
@@ -130,24 +159,25 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 	}
 }
 
-// handleTaskArchived ends the binding for the archived task (if any).
+// handleTaskArchived ends every live binding for the archived task. A
+// multi-binding task incarnates N roles simultaneously; archive ends
+// them all.
 func (a *AdoptHandler) handleTaskArchived(ctx context.Context, ev argus.Event) {
 	if ev.TaskID == "" {
 		return
 	}
-	bnd, err := a.db.Bindings.GetLiveByTaskID(ctx, ev.TaskID)
-	if errors.Is(err, db.ErrNotFound) {
-		return
-	}
+	bindings, err := a.db.Bindings.ListLiveByTaskID(ctx, ev.TaskID)
 	if err != nil {
-		a.log.Warn("task.archived: lookup binding", "task", ev.TaskID, "err", err)
+		a.log.Warn("task.archived: list bindings", "task", ev.TaskID, "err", err)
 		return
 	}
-	if err := a.db.Bindings.End(ctx, bnd.ID, "argus_archived"); err != nil {
-		a.log.Warn("task.archived: end binding", "task", ev.TaskID, "err", err)
-		return
+	for _, bnd := range bindings {
+		if err := a.db.Bindings.End(ctx, bnd.ID, "argus_archived"); err != nil {
+			a.log.Warn("task.archived: end binding", "task", ev.TaskID, "binding_id", bnd.ID, "err", err)
+			continue
+		}
+		a.log.Info("binding ended on task.archived", "task", ev.TaskID, "binding_id", bnd.ID)
 	}
-	a.log.Info("binding ended on task.archived", "task", ev.TaskID, "binding_id", bnd.ID)
 }
 
 // pickAdoptMeta extracts the role/mission/constraints values from a
