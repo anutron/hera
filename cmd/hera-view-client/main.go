@@ -49,7 +49,7 @@ func main() {
 	// Print the quit hint BEFORE raw mode + before the daemon's first
 	// frame paints over the screen. Operators forget the key otherwise —
 	// this is the only place it gets surfaced in-band.
-	fmt.Fprintln(os.Stderr, "[hera-view-client] connected. Press Ctrl-] to quit.")
+	fmt.Fprintln(os.Stderr, "[hera-view-client] connected. Quit: Ctrl-] or Ctrl-\\ (or kill -INT from another terminal).")
 
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
@@ -93,13 +93,23 @@ func main() {
 		exit(0)
 	}()
 
-	// stdin → WS binary frames. Ctrl-] (0x1d) quits.
+	// stdin → WS binary frames.
+	//
+	// Quit keys (any of):
+	//   - Ctrl-] (0x1d) — POSIX-ish telnet convention
+	//   - Ctrl-\ (0x1c) — fallback for terminals that intercept Ctrl-]
+	//   - ESC + ] (0x1b 0x5d) — some terminals send Ctrl-] as this sequence
+	//
+	// Multiple options because operators report that one or another gets
+	// swallowed by iTerm / tmux / other intermediaries. The fallbacks are
+	// cheap and all sit outside characters a TUI app inside the bound PTY
+	// would meaningfully consume.
 	go func() {
 		buf := make([]byte, 256)
 		for {
 			n, err := os.Stdin.Read(buf)
 			if n > 0 {
-				if n == 1 && buf[0] == 0x1d {
+				if isQuitSequence(buf[:n]) {
 					exit(0)
 				}
 				wctx, wcancel := context.WithTimeout(ctx, 2*time.Second)
@@ -125,4 +135,16 @@ func main() {
 			_, _ = os.Stdout.Write(data)
 		}
 	}
+}
+
+// isQuitSequence reports whether the bytes read from stdin in one
+// system call match one of the supported quit keys.
+func isQuitSequence(b []byte) bool {
+	if len(b) == 1 && (b[0] == 0x1d || b[0] == 0x1c) {
+		return true
+	}
+	if len(b) == 2 && b[0] == 0x1b && b[1] == 0x5d {
+		return true
+	}
+	return false
 }
