@@ -32,14 +32,16 @@ func (r *ResyncHandler) HandleEvent(ctx context.Context, ev argus.Event) {
 	if ev.Type != TypeResync {
 		return
 	}
-	if err := r.reconcile(ctx); err != nil {
+	if err := r.Reconcile(ctx); err != nil {
 		r.log.Warn("resync: reconcile failed", "err", err)
 	}
 }
 
-// reconcile fetches the current argus task list and ends any hera
-// binding whose argus task is no longer present.
-func (r *ResyncHandler) reconcile(ctx context.Context) error {
+// Reconcile fetches the current argus task list and ends any hera
+// binding whose argus task is no longer present. Exported so the
+// periodic reconciler can call the same logic on its own timer in
+// addition to the event-driven path.
+func (r *ResyncHandler) Reconcile(ctx context.Context) error {
 	tasks, err := r.client.ListTasks(ctx)
 	if err != nil {
 		return err

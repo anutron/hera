@@ -46,6 +46,9 @@ type Daemon struct {
 	viewProxyCancel   context.CancelFunc
 	Watcher           *argus.Watcher
 	Subscriber        *events.Subscriber
+
+	periodicCancel context.CancelFunc
+	periodicDone   chan struct{}
 }
 
 // Start assembles hera and brings every subsystem up. Returns the live
@@ -203,9 +206,10 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	// surface (Stages D + F + G stitched together).
 	viewSrv.SetRunner(view.NewSessionFunc(database, viewProxy, client, log))
 
+	resyncHandler := events.NewResyncHandler(client, database, log)
 	subscriber := events.NewSubscriber(client, database, log)
 	subscriber.Register(events.NewAdoptHandler(client, database, log))
-	subscriber.Register(events.NewResyncHandler(client, database, log))
+	subscriber.Register(resyncHandler)
 	subscriber.Register(tracker) // tracker implements events.Handler
 
 	// Subscriber runs in its own goroutine; Run() blocks on ctx in main.
@@ -213,6 +217,19 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		if err := subscriber.Run(ctx); err != nil && ctx.Err() == nil {
 			log.Warn("event subscriber exited", "err", err)
 		}
+	}()
+
+	// Defensive periodic reconciler — fires Reconcile on its own ticker
+	// in addition to the SSE path so a silently-missed archive event
+	// still gets caught within one tick. Lifecycle is tied to its own
+	// context so Stop can cancel + wait for clean exit independent of
+	// the parent ctx.
+	periodicCtx, periodicCancel := context.WithCancel(context.Background())
+	periodicDone := make(chan struct{})
+	periodic := events.NewPeriodicReconciler(resyncHandler, cfg.ReconcileInterval, log)
+	go func() {
+		defer close(periodicDone)
+		periodic.Run(periodicCtx)
 	}()
 
 	// Wire recovery: the watcher fires on pid-mtime change or socket-ping
@@ -246,6 +263,8 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		ViewServer:      viewSrv,
 		ViewProxy:       viewProxy,
 		viewProxyCancel: proxyCancel,
+		periodicCancel:  periodicCancel,
+		periodicDone:    periodicDone,
 	}, nil
 }
 
@@ -264,6 +283,16 @@ func (d *Daemon) Stop(ctx context.Context) {
 		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		d.Watcher.Stop(stopCtx)
 		cancel()
+	}
+	if d.periodicCancel != nil {
+		d.periodicCancel()
+		if d.periodicDone != nil {
+			select {
+			case <-d.periodicDone:
+			case <-time.After(5 * time.Second):
+				d.Log.Warn("periodic reconciler did not exit within 5s")
+			}
+		}
 	}
 	if d.ViewRegistrar != nil {
 		unregCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

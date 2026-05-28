@@ -52,6 +52,13 @@ type Config struct {
 	// Hera polls its mtime in the Watcher to detect restarts.
 	// Default: ~/.argus/daemon.pid
 	ArgusPIDPath string
+
+	// ReconcileInterval is how often the defensive periodic reconciler
+	// ticks. On every tick it runs the same reconcile logic the resync
+	// event handler runs, catching any silently-missed task.archived
+	// events without depending on substrate event-emit completeness.
+	// Default: 60s.
+	ReconcileInterval time.Duration
 }
 
 // Default returns a Config populated with the v1 defaults.
@@ -68,6 +75,7 @@ func Default() *Config {
 		AutoInjectEnabled: true,
 		ArgusSocketPath:   filepath.Join(argusDir, "daemon.sock"),
 		ArgusPIDPath:      filepath.Join(argusDir, "daemon.pid"),
+		ReconcileInterval: 60 * time.Second,
 	}
 }
 
