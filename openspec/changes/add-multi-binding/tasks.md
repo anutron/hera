@@ -48,7 +48,7 @@
 ## 6. Stage F — Ship
 
 - [x] 6.1 `make build` succeeds.
-- [ ] 6.2 Commits: brainstorm (fb21676 → rebased), schema+DAO, handlers+events+integration tests.
+- [x] 6.2 Commits: brainstorm, schema+DAO (Stage A), handlers+events+integration tests (Stages B–E), ralph-review fixes (archived-orch filter + UX hint).
 - [ ] 6.3 `mcp__argus__iris_publish(task_id=$ARGUS_TASK_ID, reset=true, push=true)`.
 - [ ] 6.4 `mcp__argus__iris_status` verify reload outcome.
 - [ ] 6.5 `hera_status done`; `task_set_result`.
