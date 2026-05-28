@@ -406,6 +406,37 @@ func TestAdopt_ParentHasWorkerAndCoordinator_AdoptUnderCoordinator(t *testing.T)
 	}
 }
 
+func TestAdopt_ParentCoordOrchestratorArchived_NotAdopted(t *testing.T) {
+	// Edge case: parent task is a coordinator under orchestrator foo,
+	// but foo has been archived. Orchestrator archive does not auto-end
+	// bindings, so the binding row is still live. Adoption must treat
+	// this as "no active coordinator parent" and skip.
+	ctx := context.Background()
+	e := setupAdopt(t)
+
+	orchFoo, _ := e.db.Orchestrators.Create(ctx, "foo")
+	coord, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orchFoo.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coord.ID, ArgusTaskID: "task-coord", WorktreePath: "/tmp/coord",
+	})
+	e.fake.addTask(argus.Task{ID: "task-coord", Project: "p", WorktreePath: "/tmp/coord"})
+	if err := e.db.Orchestrators.Archive(ctx, orchFoo.ID); err != nil {
+		t.Fatalf("Orchestrators.Archive: %v", err)
+	}
+
+	childTask := "task-stray"
+	e.fake.addTask(argus.Task{ID: childTask, Name: "impl", Project: "p", WorktreePath: "/tmp/c"})
+	e.fake.setMeta(childTask, MetaKeyRole, string(db.KindWorker))
+
+	e.handler.HandleEvent(ctx, linkCreatedEvent("task-coord", childTask, 401))
+
+	if _, err := e.db.Roles.GetByOrchestratorAndName(ctx, orchFoo.ID, "impl"); err == nil {
+		t.Fatalf("expected no impl role under archived orchestrator")
+	}
+}
+
 func TestAdopt_TaskArchived_EndsEveryLiveBinding(t *testing.T) {
 	// Multi-binding: a task incarnates two roles. task.archived ends
 	// both bindings.

@@ -99,7 +99,7 @@ func (h *JoinHandler) claim(ctx context.Context, taskID, orchestrator string) Re
 		orch, err := h.db.Orchestrators.GetByName(ctx, orchestrator)
 		if errors.Is(err, db.ErrNotFound) {
 			return ErrorResponse(fmt.Sprintf(
-				"hera_join: orchestrator %q does not exist; if you intend to attach a new role, supply role_name and kind",
+				"hera_join: orchestrator %q does not exist. To bootstrap a new orchestrator, call hera_new_orchestrator. To attach as a worker or freelance to an existing one, supply role_name and kind.",
 				orchestrator,
 			))
 		}

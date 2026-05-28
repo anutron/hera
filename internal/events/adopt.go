@@ -73,10 +73,21 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 		if role.Kind != db.KindCoordinator {
 			continue
 		}
-		coordBindings = append(coordBindings, b)
-		if orch, err := a.db.Orchestrators.GetByID(ctx, role.OrchestratorID); err == nil {
-			coordOrchestrators = append(coordOrchestrators, orch.Name)
+		// Orchestrator archive does not auto-end its bindings (the
+		// hera-view archive flow keeps history intact). Filter those
+		// out here so an archived parent orchestrator is treated as
+		// "no longer a hera coordinator" and adoption is skipped.
+		orch, err := a.db.Orchestrators.GetByID(ctx, role.OrchestratorID)
+		if err != nil {
+			a.log.Warn("link.created: lookup parent orchestrator",
+				"orch_id", role.OrchestratorID, "err", err)
+			return
 		}
+		if orch.ArchivedAt != nil {
+			continue
+		}
+		coordBindings = append(coordBindings, b)
+		coordOrchestrators = append(coordOrchestrators, orch.Name)
 	}
 	if len(coordBindings) == 0 {
 		// Parent has no coordinator binding under any orchestrator —
