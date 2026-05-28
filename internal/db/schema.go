@@ -82,6 +82,36 @@ CREATE UNIQUE INDEX roles_active_name ON roles(orchestrator_id, name) WHERE arch
 CREATE INDEX roles_by_archived ON roles(archived_at);
 `,
 	},
+	{
+		name: "0004_bindings_per_orchestrator",
+		sql: `
+-- Relax the bindings uniqueness invariant from "one live binding per
+-- argus task" to "one live binding per (argus task, orchestrator)".
+-- This unlocks nested orchestration: a single argus task can be a
+-- worker in orchestrator A and simultaneously a coordinator in
+-- orchestrator B. Role-side uniqueness (one live binding per role)
+-- stays — a role is still incarnated at most once.
+--
+-- The orchestrator_id column is denormalized from the role's
+-- orchestrator so the partial-unique-by-(task, orch) and
+-- (worktree, orch) indexes can be expressed directly in the index
+-- definition without a JOIN. We back-fill from roles at migration
+-- time; every existing binding row gets a non-NULL value because the
+-- role FK guarantees a parent row exists.
+ALTER TABLE bindings ADD COLUMN orchestrator_id INTEGER REFERENCES orchestrators(id) ON DELETE CASCADE;
+
+UPDATE bindings
+   SET orchestrator_id = (SELECT orchestrator_id FROM roles WHERE roles.id = bindings.role_id);
+
+DROP INDEX bindings_live_unique_task;
+DROP INDEX bindings_live_unique_worktree;
+
+CREATE UNIQUE INDEX bindings_live_unique_task_orch
+    ON bindings(argus_task_id, orchestrator_id) WHERE ended_at IS NULL;
+CREATE UNIQUE INDEX bindings_live_unique_worktree_orch
+    ON bindings(worktree_path, orchestrator_id) WHERE ended_at IS NULL;
+`,
+	},
 }
 
 const initialSchema = `

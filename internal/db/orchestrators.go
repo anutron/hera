@@ -15,6 +15,13 @@ var ErrNotFound = errors.New("db: row not found")
 // active row in the same scope.
 var ErrNameConflict = errors.New("db: name already in use by an active row")
 
+// ErrAmbiguous is returned by lookups that expect at most one row but find
+// multiple. Callers must disambiguate (typically by providing an additional
+// filter). The bindings DAO returns this when a task or worktree holds 2+
+// live bindings across different orchestrators and the caller asked for the
+// orchestrator-agnostic single-row variant.
+var ErrAmbiguous = errors.New("db: lookup ambiguous (multiple rows match)")
+
 // OrchestratorsDAO is the typed accessor for the orchestrators table.
 type OrchestratorsDAO struct {
 	db     *sql.DB

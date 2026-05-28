@@ -56,15 +56,19 @@ type Role struct {
 	ArchivedAt     *time.Time
 }
 
-// Binding is one (role, argus task) incarnation.
+// Binding is one (role, argus task) incarnation. OrchestratorID is
+// denormalized from the role's orchestrator so the bindings table can
+// enforce per-orchestrator uniqueness on (argus_task_id, orchestrator_id)
+// and (worktree_path, orchestrator_id) directly.
 type Binding struct {
-	ID           int64
-	RoleID       int64
-	ArgusTaskID  string
-	WorktreePath string
-	StartedAt    time.Time
-	EndedAt      *time.Time
-	EndReason    string
+	ID             int64
+	RoleID         int64
+	OrchestratorID int64
+	ArgusTaskID    string
+	WorktreePath   string
+	StartedAt      time.Time
+	EndedAt        *time.Time
+	EndReason      string
 }
 
 // Message is one hera-bus message.
