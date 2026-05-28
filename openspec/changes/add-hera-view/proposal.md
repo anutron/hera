@@ -7,12 +7,12 @@ Hera 1.0 has shipped the coordination substrate — orchestrators, role identity
 ## What Changes
 
 - **Add `hera-view` capability** — a registered argus plugin view that hera's daemon serves over a WebSocket on its existing MCP HTTP listener (`:7744`).
-- **Three-column layout** with argus-style top + bottom chrome bars:
-  - Left rail: all orchestrators (projects) with all their non-coord roles (agents) nested underneath; archived section hidden by default.
-  - Middle pane: live PTY of the selected agent's project's coordinator.
-  - Right pane: live PTY of the selected agent itself.
+- **Dual-mode body layout** with argus-style top + bottom chrome bars:
+  - Left rail: all orchestrators (projects) with their **worker** roles nested underneath; a single global, collapsible **Freelance** section below all projects collecting every freelance agent across orchestrators; archived section hidden by default.
+  - **Project mode** (coord/worker selected): three columns — middle pane = the project's coordinator PTY, right pane = the selected agent PTY.
+  - **Freelance mode** (freelance agent selected): two elements — rail + a single full-width agent pane (no coord pane); the focus ladder collapses to RAIL ↔ AGENT.
   - Top bar: literal text `HERA` (placeholder for future status content).
-  - Bottom bar: context-aware key-binding hints per focus mode.
+  - Bottom bar: context-aware key-binding hints per focus mode and column mode.
 - **Pre-load all task PTY state on startup** — snapshot fetch + live SSE per coord/agent across every project. Switching agents in the rail is a buffer swap, not a network round-trip. Matches argus's instant rail-traversal feel.
 - **Three-state focus model** — `RAIL`, `COORD`, `AGENT`. Cmd/Ctrl-←/→ shift focus left/right along the rail→coord→agent ladder. `Enter` from rail jumps directly to the agent pane (skips coord). `Ctrl-Q` returns to rail from anywhere. Argus reserves only Esc.
 - **Focus indicator** — colored border around the focused element (tview-native).

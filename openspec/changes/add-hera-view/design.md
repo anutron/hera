@@ -170,6 +170,25 @@ CREATE INDEX roles_by_archived         ON roles(archived_at);
 
 Two new DAO methods on `Orchestrators` and `Roles`: `Archive(id, at)`, `Unarchive(id)`, plus a `Rename(id, newName)`. Existing `List*` calls add an `IncludeArchived bool` parameter (default false) so the bulk of existing code paths remain "active orchestrators / roles only."
 
+### D11 — Freelance agents: global rail section + dual-mode body layout
+
+Freelance roles are a distinct role kind (`hera_join(..., kind="freelance")`) — attached to an orchestrator but operating independently of its coordinator workflow. v1's first cut rendered them identically to workers (nested agent rows under their orchestrator). This decision separates them:
+
+**Rail.** Every live freelance role across all orchestrators is collected into a single global "Freelance" section rendered below all project rows and above the Archive separator. Freelance roles no longer render nested under their orchestrator; worker roles are unchanged. The section is a collapsible expando mirroring the orchestrator-collapse affordance: it starts **collapsed** (`▸` chevron) on each view-application open and toggles on Space when its header is selected. The header shows the live freelance count. When zero live freelance agents exist the header is omitted entirely (the operator never lands on an empty section). Archived freelance agents leave the Freelance section and surface inside the Archive section (revealed by `l`), grouped under a "Freelance" sub-header alongside the archived orchestrators — consistent with how an archived worker's row behaves.
+
+Implementation: `railList` gains a `freelance []*roleEntry` collection, a `freelanceCollapsed bool` (default true), and a `railRowFreelanceSep` row kind. `populateRail` partitions non-coordinator roles by kind — workers into `orchEntry.Roles`, freelance into the global collection (each tagged with its `OrchestratorID` for elapsed-time rendering). `buildRows` emits the Freelance header + rows after active orchestrators; the Stage-I dynamic refresh rebuilds it like any other rail mutation.
+
+**Body layout — two modes.** The selection's kind picks the column composition:
+
+- **Project mode** (coordinator or worker row selected): the unchanged three-column `rail + coord + agent` body.
+- **Freelance mode** (freelance row selected): a two-element `rail + agent` body where the agent pane takes the entire remaining width. The coord pane is removed from the Flex (not merely hidden), its proxy subscription/bridge is torn down, and `CoordTaskID()` returns `""` so no keystroke can misroute to a coordinator.
+
+`refreshBody` chooses the composition from the current selection; `applyRailSelection` switches modes and binds the full-width agent pane to the freelance role's argus task. This is a deliberate UX statement: a freelance agent has no coordinator pairing worth showing, so it gets the whole canvas.
+
+**Focus.** The three-state machine learns a `coordPresent` flag set by the App on mode switch. In freelance mode the COORD state is skipped: Cmd/Ctrl-→ from RAIL advances straight to AGENT, Cmd/Ctrl-← from AGENT retreats straight to RAIL, and Enter from RAIL lands on AGENT as before. The bottom bar drops the `Ctrl-→ coord` hint in freelance mode.
+
+Alternative considered: keep freelance nested under their orchestrator and only change the layout on selection. Rejected — the operator's stated mental model is "projects, then a separate pool of freelancers"; leaving them nested under a coordinator they don't report to is the confusion this change removes.
+
 ## Risks / Trade-offs
 
 - **`git worktree remove --force` from the daemon is potentially destructive.** → Confirm modal lists everything that will disappear and requires explicit `y` keystroke. The destructive operation is gated behind RAIL focus + the confirm modal — no accidental single-keystroke deletion. We log every `git worktree remove` invocation with the worktree path. If a future bug attempts a wrong-path delete, the log gives audit trail.
@@ -288,6 +307,19 @@ Captured per design section. These map directly to scenarios in the hera-view de
 
 - It should add nullable `archived_at` columns to `orchestrators` and `roles` without breaking existing rows.
 - Existing `List*` calls should default to active-only behavior.
+
+**D11 (Freelance rail + dual-mode layout):**
+
+- It should render a single collapsible Freelance section below all projects, collapsed by default with a `▸` chevron.
+- It should list every live freelance agent across all orchestrators in that section and render no freelance agent under its orchestrator.
+- It should keep worker agents nested under their orchestrators.
+- It should toggle the Freelance section open/closed on Space when its header is selected.
+- It should omit the Freelance section header when no live freelance agent exists.
+- It should render archived freelance agents only inside the Archive section, never in the live Freelance section.
+- When a freelance agent is selected, it should compose the body as rail + a single full-width agent pane with no coord pane.
+- When a coordinator or worker row is selected, it should restore the three-column rail + coord + agent layout.
+- In freelance mode, Cmd/Ctrl-→ from RAIL should move focus directly to AGENT and Cmd/Ctrl-← from AGENT should return to RAIL, never entering COORD.
+- In freelance mode, it should release the coord subscription and forward no keystrokes to any coordinator task.
 
 ## Design self-review (per brainstorm skill)
 
