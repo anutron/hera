@@ -138,6 +138,108 @@ func TestRailList_CursorMovesAcrossSelectableRows(t *testing.T) {
 	}
 }
 
+func TestRailList_OnSelectionChangedFiresOnMove(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "p", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1"},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2"},
+		}},
+	})
+	var observed []any
+	rl.SetOnSelectionChanged(func(ref any) { observed = append(observed, ref) })
+
+	// CursorDown lands on w1.
+	rl.CursorDown()
+	if len(observed) != 1 {
+		t.Fatalf("expected 1 selection-change fire after CursorDown; got %d", len(observed))
+	}
+	if r, ok := observed[0].(*roleEntry); !ok || r.RoleID != 10 {
+		t.Fatalf("first fire should be w1; got %T %+v", observed[0], observed[0])
+	}
+
+	// CursorDown lands on w2.
+	rl.CursorDown()
+	if len(observed) != 2 {
+		t.Fatalf("expected 2 fires after second CursorDown; got %d", len(observed))
+	}
+	if r, ok := observed[1].(*roleEntry); !ok || r.RoleID != 11 {
+		t.Fatalf("second fire should be w2; got %T %+v", observed[1], observed[1])
+	}
+
+	// CursorDown past the end is a no-op — must NOT fire again.
+	rl.CursorDown()
+	if len(observed) != 2 {
+		t.Fatalf("no-op move must not fire; got %d", len(observed))
+	}
+}
+
+func TestRailList_OnSelectionChangedFiresOnSelectBy(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "p", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1"},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2"},
+		}},
+	})
+	var fires int
+	rl.SetOnSelectionChanged(func(any) { fires++ })
+
+	rl.SelectByRoleID(11)
+	if fires != 1 {
+		t.Fatalf("SelectByRoleID should fire selection-change once; got %d", fires)
+	}
+	// Selecting the same row again must NOT fire.
+	rl.SelectByRoleID(11)
+	if fires != 1 {
+		t.Fatalf("re-selecting same row must not fire; got %d", fires)
+	}
+	rl.SelectByOrchID(1)
+	if fires != 2 {
+		t.Fatalf("SelectByOrchID to a different row should fire; got %d", fires)
+	}
+}
+
+func TestRailList_DeadRoleHiddenByDefault(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "p", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w-alive"},
+			{OrchestratorID: 1, RoleID: 11, Name: "w-dead", Dead: true},
+		}},
+	})
+
+	got := renderRail(t, rl, 24, 6)
+	if !strings.Contains(got, "w-alive") {
+		t.Fatalf("alive worker must render; got:\n%s", got)
+	}
+	if strings.Contains(got, "w-dead") {
+		t.Fatalf("dead worker must be hidden by default; got:\n%s", got)
+	}
+
+	// Visible role count on the orchestrator header should also exclude
+	// the dead row.
+	if !strings.Contains(got, "(1)") {
+		t.Fatalf("orchestrator header count should be 1 (dead worker excluded); got:\n%s", got)
+	}
+}
+
+func TestRailList_DeadRoleShownWhenArchivedVisible(t *testing.T) {
+	rl := newRailList()
+	rl.SetShowArchived(true)
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "p", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w-alive"},
+			{OrchestratorID: 1, RoleID: 11, Name: "w-dead", Dead: true},
+		}},
+	})
+
+	got := renderRail(t, rl, 24, 6)
+	if !strings.Contains(got, "w-dead") {
+		t.Fatalf("dead worker should appear when showArchived=true; got:\n%s", got)
+	}
+}
+
 func TestRailList_RestoresCursorAcrossRebuild(t *testing.T) {
 	rl := newRailList()
 	orchs := []*orchEntry{

@@ -16,6 +16,10 @@ import (
 // mirroring argus's task-list layout so the operator feels like they
 // haven't left argus.
 //
+// Coord rows are intentionally NOT rendered: the orchestrator header
+// owns the coord task implicitly. Each orchestrator's CoordTaskID feeds
+// the COORD pane when an agent (or the header itself) is selected.
+//
 // Selection is row-based with j/k or ↑/↓; Enter and the rail-only
 // mutation keys are consumed upstream by the KeyRouter, so railList
 // only handles cursor movement and collapse toggle inside its own
@@ -37,30 +41,48 @@ type railList struct {
 	// in the rendered rows below the Archive separator.
 	showArchived bool
 
+	// onSelectionChanged is invoked whenever the cursor lands on a
+	// different selectable row (orchestrator header or role). The arg
+	// is the new currentRef (*orchEntry, *roleEntry, or nil). Callers
+	// debounce upstream when they want to coalesce j/k bursts.
+	onSelectionChanged func(ref any)
+
+	// lastFiredCursor remembers the cursor index the last selection-
+	// change callback fired against, so a no-op move (or an internal
+	// rebuild that lands on the same row) doesn't re-fire.
+	lastFiredCursor int
+
 	// now is overridable for deterministic elapsed-time rendering in
 	// tests. nil means use time.Now.
 	now func() time.Time
 }
 
-// orchEntry is one orchestrator and its roles, in render order. The
-// rail accepts these in order; archived entries float to the bottom
-// behind a separator when showArchived is true.
+// orchEntry is one orchestrator and its agent roles, in render order.
+// Coord roles do not appear in Roles; the orchestrator-level CoordTaskID
+// is the binding the COORD pane targets when this orchestrator is
+// selected. Archived entries float to the bottom behind a separator
+// when showArchived is true.
 type orchEntry struct {
-	ID       int64
-	Name     string
-	Archived bool
-	Roles    []*roleEntry
+	ID          int64
+	Name        string
+	Archived    bool
+	CoordTaskID string
+	Roles       []*roleEntry
 }
 
 // roleEntry is one role under an orchestrator. Live indicates an open
 // binding; StartedAt is the binding's StartedAt when live, else the
 // role's CreatedAt — used to render the right-aligned elapsed time.
+// Dead means the DB binding is still open but argus reports the
+// underlying task as gone (archived / completed / 404). Dead rows are
+// hidden by default and rendered dimmed when showArchived is true.
 type roleEntry struct {
 	OrchestratorID int64
 	RoleID         int64
 	RoleKind       string
 	Name           string
 	Live           bool
+	Dead           bool
 	ArgusTaskID    string
 	Archived       bool
 	StartedAt      time.Time
@@ -85,17 +107,46 @@ type railRow struct {
 // OnFocusChanged's SetBorderColor still drives the focus-color paint.
 func newRailList() *railList {
 	rl := &railList{
-		Box:       tview.NewBox(),
-		collapsed: map[int64]bool{},
+		Box:             tview.NewBox(),
+		collapsed:       map[int64]bool{},
+		lastFiredCursor: -1,
 	}
 	rl.SetBorder(true)
 	rl.SetTitle("Rail")
 	return rl
 }
 
+// SetOnSelectionChanged registers a callback fired whenever the cursor
+// lands on a new selectable row. The callback runs on the goroutine that
+// triggered the cursor move (the tview input pump for j/k, or whichever
+// goroutine called the Select* / SetOrchestrators / ToggleCollapse
+// helpers). It is invoked with the new currentRef (*orchEntry,
+// *roleEntry, or nil); callers must defer expensive work (subscription
+// rewiring, etc.) to keep the event pump non-blocking.
+func (rl *railList) SetOnSelectionChanged(fn func(ref any)) {
+	rl.onSelectionChanged = fn
+}
+
+// maybeFireSelectionChanged invokes the registered callback when the
+// cursor row has changed since the last fire. No-op when the cursor
+// is on the same row. lastFiredCursor is updated even when no callback
+// is wired so wiring the callback after initial setup does not
+// erroneously fire on the next cursor settle.
+func (rl *railList) maybeFireSelectionChanged() {
+	if rl.cursor == rl.lastFiredCursor {
+		return
+	}
+	rl.lastFiredCursor = rl.cursor
+	if rl.onSelectionChanged != nil {
+		rl.onSelectionChanged(rl.currentRef())
+	}
+}
+
 // SetOrchestrators replaces the rail's input data and rebuilds rows.
 // The cursor is preserved on the same orchestrator/role when possible;
-// otherwise it lands on the first selectable row.
+// otherwise it lands on the first selectable row. Fires the selection-
+// changed callback when the cursor lands on a different row than
+// before.
 func (rl *railList) SetOrchestrators(orchs []*orchEntry) {
 	prev := rl.currentRef()
 	rl.orchestrators = orchs
@@ -103,6 +154,7 @@ func (rl *railList) SetOrchestrators(orchs []*orchEntry) {
 	if !rl.restoreCursor(prev) {
 		rl.cursor = rl.firstSelectableRow()
 	}
+	rl.maybeFireSelectionChanged()
 }
 
 // SetShowArchived toggles archive-section visibility and rebuilds.
@@ -114,6 +166,7 @@ func (rl *railList) SetShowArchived(v bool) {
 	prev := rl.currentRef()
 	rl.buildRows()
 	rl.restoreCursor(prev)
+	rl.maybeFireSelectionChanged()
 }
 
 // ShowArchived reports the current archive visibility.
@@ -141,12 +194,14 @@ func (rl *railList) currentRef() any {
 }
 
 // SelectByRoleID moves the cursor to the row matching roleID. Returns
-// true on success.
+// true on success. Fires the selection-changed callback when the
+// cursor lands on a different row.
 func (rl *railList) SelectByRoleID(id int64) bool {
 	for i, r := range rl.rows {
 		if r.kind == railRowRole && r.role != nil && r.role.RoleID == id {
 			rl.cursor = i
 			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
 			return true
 		}
 	}
@@ -154,19 +209,22 @@ func (rl *railList) SelectByRoleID(id int64) bool {
 }
 
 // SelectByOrchID moves the cursor to the row matching orchID. Returns
-// true on success.
+// true on success. Fires the selection-changed callback when the
+// cursor lands on a different row.
 func (rl *railList) SelectByOrchID(id int64) bool {
 	for i, r := range rl.rows {
 		if r.kind == railRowOrch && r.orch != nil && r.orch.ID == id {
 			rl.cursor = i
 			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
 			return true
 		}
 	}
 	return false
 }
 
-// CursorDown / CursorUp move selection by one selectable row.
+// CursorDown / CursorUp move selection by one selectable row and fire
+// the selection-changed callback when the cursor actually moves.
 func (rl *railList) CursorDown() { rl.move(1) }
 func (rl *railList) CursorUp()   { rl.move(-1) }
 
@@ -179,6 +237,7 @@ func (rl *railList) move(dir int) {
 		if rl.selectable(c) {
 			rl.cursor = c
 			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
 			return
 		}
 		c += dir
@@ -231,6 +290,7 @@ func (rl *railList) ToggleCollapse() {
 	prev := rl.currentRef()
 	rl.buildRows()
 	rl.restoreCursor(prev)
+	rl.maybeFireSelectionChanged()
 }
 
 func (rl *railList) restoreCursor(prev any) bool {
@@ -278,6 +338,12 @@ func (rl *railList) buildRows() {
 		}
 		for _, role := range o.Roles {
 			if role.Archived && !rl.showArchived {
+				continue
+			}
+			// Dead bindings (DB-live but argus task is gone) are
+			// hidden by default and shown dimmed when the operator
+			// flips `l listall`.
+			if role.Dead && !rl.showArchived {
 				continue
 			}
 			rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role})
@@ -411,9 +477,10 @@ func (rl *railList) visibleRoleCount(o *orchEntry) int {
 	}
 	n := 0
 	for _, r := range o.Roles {
-		if !r.Archived {
-			n++
+		if r.Archived || r.Dead {
+			continue
 		}
+		n++
 	}
 	return n
 }
@@ -437,7 +504,7 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	col += 2 // icon + space
 
 	nameStyle := theme.StyleNormal
-	if r.Archived {
+	if r.Archived || r.Dead {
 		nameStyle = theme.StyleDimmed
 	}
 	if cursor {
@@ -493,9 +560,10 @@ func (rl *railList) fillBackground(screen tcell.Screen, x, y, w int) {
 
 // roleIcon picks the moon-style icon for a role based on its live
 // binding state. Live → IconMoonStars (active / needs attention). Idle
-// (no live binding) → IconMoonOutline. Archived → dimmed circle.
+// (no live binding) → IconMoonOutline. Archived or dead (binding open
+// in DB but argus task is gone) → dimmed circle.
 func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
-	if r.Archived {
+	if r.Archived || r.Dead {
 		return '○', theme.StyleDimmed
 	}
 	if r.Live {

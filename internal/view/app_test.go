@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 
@@ -216,11 +217,19 @@ func TestBuildApp_PopulatesRailFromDAOs(t *testing.T) {
 	if !strings.Contains(got, "foo") {
 		t.Fatalf("expected orchestrator name 'foo' in rail; got:\n%s", got)
 	}
-	if !strings.Contains(got, "coord") {
-		t.Fatalf("expected role 'coord' in rail; got:\n%s", got)
-	}
 	if !strings.Contains(got, "worker-1") {
 		t.Fatalf("expected role 'worker-1' in rail; got:\n%s", got)
+	}
+	// Coord rows are no longer rendered in the rail — the orchestrator
+	// header owns the coord task implicitly. Inspect the widget rather
+	// than the rendered text (the COORD pane title also contains
+	// "Coord" so a full-screen substring match would be ambiguous).
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleKind == string(db.KindCoordinator) {
+				t.Errorf("rail Roles must not include coord rows; found %+v", r)
+			}
+		}
 	}
 }
 
@@ -298,19 +307,23 @@ func TestBuildApp_LiveBindingMarksRoleAndSubscribesPanes(t *testing.T) {
 		t.Fatalf("expected worker snapshot rendered in agent pane; got:\n%s", got)
 	}
 
-	// Both role rows should be marked live (moon-stars icon, driven by
-	// roleEntry.Live). Inspect the widget rather than the rendered text
-	// so the assertion is robust against icon-font / theme changes.
+	// Coord rows are now implicit per orchestrator — they don't appear in
+	// the rail's role list. The orchestrator's CoordTaskID should carry
+	// the coord binding's argus task ID, and the worker role should be
+	// the only role in the slice and marked Live.
 	gotLive := map[string]bool{}
 	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID && o.CoordTaskID != "coord-task-id" {
+			t.Errorf("expected orchestrator CoordTaskID=coord-task-id; got %q", o.CoordTaskID)
+		}
 		for _, r := range o.Roles {
+			if r.RoleKind == string(db.KindCoordinator) {
+				t.Errorf("rail Roles slice must not contain coord rows; found %+v", r)
+			}
 			if r.Live {
 				gotLive[r.Name] = true
 			}
 		}
-	}
-	if !gotLive["coord"] {
-		t.Errorf("expected live coord role; rail orchestrators=%+v", a.pieces.rail.orchestrators)
 	}
 	if !gotLive["w1"] {
 		t.Errorf("expected live worker role; rail orchestrators=%+v", a.pieces.rail.orchestrators)
@@ -535,7 +548,12 @@ func TestApp_OnRailSelectEnter_WorkerRebindsAgent(t *testing.T) {
 	}
 }
 
-func TestApp_OnRailSelectEnter_CoordRebindsCoord(t *testing.T) {
+func TestApp_OnRailSelectEnter_OrchHeaderKeepsCoordBound(t *testing.T) {
+	// Coord rows are no longer rendered in the rail (the header owns the
+	// orchestrator's coord task implicitly). Selecting the header row and
+	// pressing Enter must propagate (FocusRAIL) so the tree can fold /
+	// unfold; the coord pane stays bound to the orchestrator's coord
+	// task that findInitialSelection picked at build time.
 	d := openTestDB(t)
 	ctx := context.Background()
 
@@ -552,17 +570,19 @@ func TestApp_OnRailSelectEnter_CoordRebindsCoord(t *testing.T) {
 	}
 	defer a.Close()
 
-	// Initial coord pane is bound to tc (the only coord). Move selection
-	// to the coord row anyway and confirm Enter returns FocusCOORD.
-	if !a.pieces.rail.SelectByRoleID(c.ID) {
-		t.Fatalf("could not locate coord role row in rail")
+	// Coord rows should not be selectable in the rail at all.
+	if a.pieces.rail.SelectByRoleID(c.ID) {
+		t.Fatalf("coord role row must not be selectable in rail")
 	}
 
+	if !a.pieces.rail.SelectByOrchID(orch.ID) {
+		t.Fatalf("could not locate orchestrator header row")
+	}
 	if got := a.OnRailSelectEnter(); got != FocusRAIL {
-		t.Fatalf("Enter on coord row: want FocusRAIL (keep focus to browse), got %s", got)
+		t.Fatalf("Enter on header row: want FocusRAIL (let tree fold/unfold), got %s", got)
 	}
 	if a.CoordTaskID() != "tc" {
-		t.Fatalf("coord task after rebind: want tc, got %q", a.CoordTaskID())
+		t.Fatalf("coord task should still be tc after header Enter; got %q", a.CoordTaskID())
 	}
 }
 
@@ -586,6 +606,303 @@ func TestApp_OnRailSelectEnter_OrchHeaderPropagates(t *testing.T) {
 
 	if got := a.OnRailSelectEnter(); got != FocusRAIL {
 		t.Fatalf("Enter on orchestrator header: want FocusRAIL (let tree fold/unfold), got %s", got)
+	}
+}
+
+// TestPopulateRail_FiltersCoordRows confirms that coord roles never
+// appear as their own rail rows; instead the orchestrator entry's
+// CoordTaskID holds the coord binding so the COORD pane can rebind
+// implicitly when an agent / header is selected.
+func TestPopulateRail_FiltersCoordRows(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj",
+	})
+	workerRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: workerRole.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	var got *orchEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID {
+			got = o
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("orchestrator %d missing from rail data", orch.ID)
+	}
+	if got.CoordTaskID != "tc" {
+		t.Fatalf("CoordTaskID: want tc, got %q", got.CoordTaskID)
+	}
+	if len(got.Roles) != 1 || got.Roles[0].RoleID != workerRole.ID {
+		t.Fatalf("Roles must contain only the worker; got %+v", got.Roles)
+	}
+}
+
+// TestPopulateRail_DeadBindingsHiddenByDefault confirms that when the
+// PaneSource exposes TaskAliveChecker and reports a worker binding's
+// task as gone, the role row is filtered out of the rail. With
+// showArchived=true the row reappears (marked Dead) so the operator
+// can still see the tombstone.
+func TestPopulateRail_DeadBindingsHiddenByDefault(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	liveWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "alive", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	deadWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "tombstone", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: liveWorker.ID, ArgusTaskID: "t-alive", WorktreePath: "/a"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: deadWorker.ID, ArgusTaskID: "t-dead", WorktreePath: "/d"})
+
+	src := &alivePaneSource{alive: map[string]bool{
+		"t-alive": true,
+		"t-dead":  false,
+	}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Dead role should still be in the orchestrator's Roles slice (so
+	// the operator can resurface it via `l`), but with Dead=true.
+	var deadEntry *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == deadWorker.ID {
+				deadEntry = r
+			}
+		}
+	}
+	if deadEntry == nil {
+		t.Fatalf("dead worker role missing from rail data")
+	}
+	if !deadEntry.Dead {
+		t.Fatalf("expected Dead=true on dead worker; got %+v", deadEntry)
+	}
+
+	// Render: dead row should NOT appear with showArchived=false.
+	got := renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "alive") {
+		t.Fatalf("alive worker should appear in rail; got:\n%s", got)
+	}
+	if strings.Contains(got, "tombstone") {
+		t.Fatalf("dead worker must be hidden when showArchived=false; got:\n%s", got)
+	}
+
+	// Flip showArchived; the dead row should now render.
+	a.showArchived = true
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+	got = renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "tombstone") {
+		t.Fatalf("dead worker should appear when showArchived=true; got:\n%s", got)
+	}
+}
+
+// TestPopulateRail_DeadCoordSkippedFromCoordTaskID confirms that a
+// coord binding whose argus task is gone does NOT populate the
+// orchestrator's CoordTaskID — otherwise the COORD pane would bind to
+// a tombstone and render placeholder forever.
+func TestPopulateRail_DeadCoordSkippedFromCoordTaskID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "t-dead-coord", WorktreePath: "/c"})
+
+	src := &alivePaneSource{alive: map[string]bool{"t-dead-coord": false}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID && o.CoordTaskID != "" {
+			t.Fatalf("dead coord must not populate CoordTaskID; got %q", o.CoordTaskID)
+		}
+	}
+}
+
+// TestApp_OnRailSelectionChanged_RebindsBothPanes confirms that moving
+// the rail cursor onto an agent row drives a rebind of both COORD (to
+// the orchestrator's coord task) and AGENT (to the agent's task)
+// without requiring Enter.
+func TestApp_OnRailSelectionChanged_RebindsBothPanes(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj",
+	})
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	w2, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w2", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "t1", WorktreePath: "/1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w2.ID, ArgusTaskID: "t2", WorktreePath: "/2"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	// Drive rebinds synchronously so the test doesn't depend on a wall
+	// clock; the production debounce window is 120ms.
+	a.selectDebounce = 0
+
+	// Sanity: findInitialSelection picked w1.
+	if a.AgentTaskID() != "t1" {
+		t.Fatalf("baseline AgentTaskID: want t1, got %q", a.AgentTaskID())
+	}
+
+	// SelectByRoleID fires the selection-changed callback synchronously
+	// (since selectDebounce is 0), which should rebind both panes.
+	if !a.pieces.rail.SelectByRoleID(w2.ID) {
+		t.Fatalf("could not locate w2 in rail")
+	}
+	if a.AgentTaskID() != "t2" {
+		t.Fatalf("agent rebind on selection change: want t2, got %q", a.AgentTaskID())
+	}
+	if a.CoordTaskID() != "tc" {
+		t.Fatalf("coord rebind on selection change: want tc, got %q", a.CoordTaskID())
+	}
+}
+
+// TestApp_OnRailSelectionChanged_DebounceCoalescesRapidMoves confirms
+// that a burst of selection changes inside the debounce window
+// coalesces into a single rebind on the final cursor position.
+func TestApp_OnRailSelectionChanged_DebounceCoalescesRapidMoves(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	w2, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w2", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	w3, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w3", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "t1", WorktreePath: "/1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w2.ID, ArgusTaskID: "t2", WorktreePath: "/2"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w3.ID, ArgusTaskID: "t3", WorktreePath: "/3"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	// Don't drive tApp.Run — the QueueUpdateDraw bounce won't fire. Skip
+	// it and let the timer callback short-circuit to applyRailSelection
+	// directly by clearing the app handle. (The handler checks a.app
+	// != nil; nil means "fire inline".)
+	a.app = nil
+	a.selectDebounce = 80 * time.Millisecond
+
+	// Burst of three selection changes inside one debounce window.
+	a.pieces.rail.SelectByRoleID(w1.ID)
+	a.pieces.rail.SelectByRoleID(w2.ID)
+	a.pieces.rail.SelectByRoleID(w3.ID)
+
+	// Wait past the debounce window plus slop. We expect exactly one
+	// rebind, landing on w3.
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if a.AgentTaskID() == "t3" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if a.AgentTaskID() != "t3" {
+		t.Fatalf("debounce should land on final position w3 (t3); got %q", a.AgentTaskID())
+	}
+
+	// SubscribeTask call count is the cheapest proxy for "how many
+	// rebinds happened." The initial BuildApp subscribed to t1 (the
+	// pick from findInitialSelection); the debounce fires one more
+	// rebind onto t3. (CoordTaskID stays "" since this orchestrator has
+	// no coord role.)
+	gotT3 := 0
+	for _, c := range src.calls {
+		if c == "t3" {
+			gotT3++
+		}
+	}
+	if gotT3 != 1 {
+		t.Fatalf("expected exactly 1 SubscribeTask call for t3 after debounce; got %d (all calls=%v)", gotT3, src.calls)
+	}
+}
+
+// TestApp_OnRailSelectionChanged_OrchHeaderKeepsAgent confirms that
+// selecting an orchestrator header row rebinds only the COORD pane
+// (per the documented selection semantics — the operator's last agent
+// stays visible while they re-anchor the coord pane).
+func TestApp_OnRailSelectionChanged_OrchHeaderKeepsAgent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	o1, _ := d.Orchestrators.Create(ctx, "first")
+	c1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o1.ID, Name: "c", Kind: db.KindCoordinator, ArgusProject: "first"})
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o1.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "first"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c1.ID, ArgusTaskID: "tc1", WorktreePath: "/c1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "tw1", WorktreePath: "/w1"})
+
+	o2, _ := d.Orchestrators.Create(ctx, "second")
+	c2, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o2.ID, Name: "c", Kind: db.KindCoordinator, ArgusProject: "second"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c2.ID, ArgusTaskID: "tc2", WorktreePath: "/c2"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.selectDebounce = 0
+
+	// Baseline: first orchestrator's coord + worker bindings drove
+	// initial selection.
+	if a.CoordTaskID() != "tc1" || a.AgentTaskID() != "tw1" {
+		t.Fatalf("baseline coord/agent: want (tc1, tw1), got (%q, %q)", a.CoordTaskID(), a.AgentTaskID())
+	}
+
+	// Move cursor to the second orchestrator's header. Only COORD
+	// should rebind; AGENT should remain on tw1.
+	if !a.pieces.rail.SelectByOrchID(o2.ID) {
+		t.Fatalf("could not locate o2 header")
+	}
+	if a.CoordTaskID() != "tc2" {
+		t.Fatalf("header selection should rebind COORD to tc2; got %q", a.CoordTaskID())
+	}
+	if a.AgentTaskID() != "tw1" {
+		t.Fatalf("header selection must NOT rebind AGENT; got %q (want tw1)", a.AgentTaskID())
 	}
 }
 
