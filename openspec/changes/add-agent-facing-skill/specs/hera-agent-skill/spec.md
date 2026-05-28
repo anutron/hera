@@ -42,22 +42,21 @@ The skill SHALL provide decision rules covering: `hera_join` claim mode vs attac
 
 ### Requirement: Skill describes composition with sibling plugins
 
-The skill SHALL describe how hera composes with sibling argus plugins — iris (host-side git/GitHub operations) and plannotator-argus (review UI) — and make clear that hera covers identity, messaging, and coordination while those plugins are reached through their own MCP tools.
+The skill SHALL describe how hera composes with sibling argus plugins — at minimum plannotator-argus (review UI) — and make clear that hera covers identity, messaging, and coordination while those plugins are reached through their own MCP tools.
 
 #### Scenario: Sibling composition is documented
 
 - **WHEN** the skill body is read
-- **THEN** it SHALL describe the seam between hera and iris and between hera and plannotator-argus
+- **THEN** it SHALL describe the seam between hera and plannotator-argus
 
 ### Requirement: Skill lists common Bash and skill mistakes
 
-The skill SHALL list common mistakes a sandboxed agent might make instead of using hera's tools — including that hera messaging has no `Bash`/CLI verb (it is MCP-only), that the legacy `ccc orchestrator` CLI and `/ask-orchestrator`-style skills are a different system, and that every tool requires `cwd=$PWD`.
+The skill SHALL list common mistakes a sandboxed agent might make instead of using hera's tools — including that hera messaging has no `Bash`/CLI verb (it is MCP-only) and that every tool requires `cwd=$PWD`.
 
 #### Scenario: Common mistakes are enumerated
 
 - **WHEN** the skill body is read
 - **THEN** it SHALL state that hera messaging is MCP-only with no `Bash`/CLI equivalent
-- **AND** SHALL distinguish hera from the legacy `ccc orchestrator` system
 - **AND** SHALL note that every hera tool requires `cwd=$PWD`
 
 ### Requirement: Skill includes worked workflows

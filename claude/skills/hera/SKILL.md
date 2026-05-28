@@ -96,10 +96,6 @@ All six tools require `cwd`. The `orchestrator` parameter is optional with one b
 Hera owns **identity, messaging, and coordination** — and nothing else. Its siblings own the rest;
 reach them through *their* MCP tools, not hera's.
 
-- **iris** (`mcp__argus__iris_*`) — host-side git/GitHub. When a worker finishes and needs to push,
-  open a PR, or merge, that's iris (`iris_push`, `iris_gh_pr_create`, `iris_merge_to_master`), not
-  hera and not raw `Bash(git push)` (which fails across the sandbox boundary). Pattern: hera decides
-  *who ships what*; iris does the *git plumbing*.
 - **plannotator-argus** (`mcp__argus__plannotator_*`) — review UI. A coordinator routes a worker's
   output to review with `plannotator_review`/`plannotator_annotate`; hera carries the *decision* and
   the *handoff message*, plannotator carries the *review surface*.
@@ -111,14 +107,8 @@ These are orthogonal plugins. Hera does not wrap them and they do not wrap hera.
 - **`Bash(hera send …)` / `Bash(hera join …)`** — no such CLI verbs exist. The `hera` binary only
   has `start`/`stop`/`status`/`list`/`resume`. All coordination is **MCP-only**: `hera_send`,
   `hera_join`, etc.
-- **Using the legacy `ccc orchestrator` CLI or the `/orchestrate`, `/ask-orchestrator`,
-  `/check-messages` skills** — that's a different, older system (inbox.jsonl files, session-topic
-  identity, clipboard handoffs). Inside argus with hera installed, use the `mcp__argus__hera_*`
-  tools instead.
 - **Forgetting `cwd=$PWD`** — every hera tool needs it to resolve your role.
 - **Omitting `orchestrator=` on a multi-binding task** — returns an ambiguity error. Pass it.
-- **`Bash(git push)` / `Bash(gh pr create)` to ship a worker's branch** — use iris tools; raw git
-  to a remote fails inside the sandbox.
 
 ## Worked workflows
 
@@ -142,7 +132,7 @@ hera_join(cwd=$PWD)                       # claim the binding the coordinator as
 # → read the mission/handoff that comes back, then:
 hera_status(cwd=$PWD, status="working")
 # … do the work …
-hera_send(cwd=$PWD, body="Cart API done, PR up via iris. Tests green.")   # default-routes to coord
+hera_send(cwd=$PWD, body="Cart API done, PR up, tests green.")   # default-routes to coord
 hera_status(cwd=$PWD, status="done")
 ```
 

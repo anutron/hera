@@ -24,7 +24,7 @@ The sibling plugin `plannotator-argus` solved the parallel problem with a PreToo
 
 ### Skill is the primary surface; snippet is a thin pointer
 
-The skill carries all depth (model, tools, decision rules, workflows). The snippet is a ~6-line pointer: gate first, then "inside argus, consult the `hera` skill for multi-agent coordination; don't hand-roll it or use the legacy `ccc orchestrator` CLI."
+The skill carries all depth (model, tools, decision rules, workflows). The snippet is a ~6-line pointer: gate first, then "inside argus, consult the `hera` skill for multi-agent coordination; don't hand-roll it."
 
 - **Why over a full duplicate snippet:** a content-bearing snippet would duplicate the skill and drift. A pointer keeps the skill as the single source of truth while still giving users an always-loaded option.
 - **Why a snippet at all:** the skill only loads when the model decides to reach for it. The snippet guarantees orientation is in context for users who want it always-on.
@@ -34,10 +34,6 @@ The skill carries all depth (model, tools, decision rules, workflows). The snipp
 Gate condition: active iff `ARGUS_TASK_ID` is set **or** `$PWD` is under `~/.argus/worktrees/`. The skill's `description` leads with this so the model self-selects. The snippet's first content line states the inverse ("if neither holds, ignore this section"). When the gate fails, the skill explicitly says: *"Not in an argus sandbox — these MCP tools are not registered here. Use the `hera` CLI directly instead."*
 
 - **Why both env var and cwd:** either alone can be absent (cwd check covers sessions where the env var isn't exported; env var covers non-standard worktree roots). OR-ing them is the most permissive correct gate.
-
-### Distinguish hera from the legacy `ccc orchestrator` system
-
-The skills `orchestrate` / `orchestrator` / `ask-orchestrator` / `check-messages` belong to an older `ccc orchestrator` system (inbox.jsonl files, session-topic identity, clipboard handoffs) — not hera. The skill's "common mistakes" section names this explicitly so the agent uses hera's MCP tools rather than shelling out to `ccc orchestrator`.
 
 ### Dedicated install/uninstall scripts, separate from setup.sh
 
@@ -69,8 +65,8 @@ Additive. New files only (`claude/skills/hera/SKILL.md`, `claude/snippets/hera.m
 - it should lead its `description` frontmatter with the argus-awareness gate
 - it should document each of the six `mcp__argus__hera_*` tools with a when-to-call line
 - it should give decision rules for claim-vs-attach, when `orchestrator=` is required, the coordinator `to:` rule, and the cross-orchestrator prohibition
-- it should describe composition with iris and plannotator-argus
-- it should list the common Bash/skill mistakes including the legacy `ccc orchestrator` confusion
+- it should describe composition with plannotator-argus
+- it should list the common Bash/skill mistakes (MCP-only messaging, missing `cwd=$PWD`)
 - it should include at least three worked workflows (orchestrator, worker intake, freelance attach)
 
 **Snippet (`hera-agent-skill`):**

@@ -14,14 +14,14 @@ The install/uninstall scripts are verified manually against a temp `HOME` (match
 - [x] 2.2 Write the gate section (inert outside argus → "use the `hera` CLI directly"), the "what hera is" paragraph, and the role/binding model (orchestrator, coordinator, worker, freelance, binding).
 - [x] 2.3 Write the tool surface — all six `mcp__argus__hera_*` tools, each with a when-to-call line and key params (`cwd`, when `orchestrator` is needed).
 - [x] 2.4 Write the decision rules (claim vs attach; `orchestrator=` required at 2+ bindings; coordinator `to:` rule; cross-orchestrator prohibition; don't message the human via the bus).
-- [x] 2.5 Write the sibling composition section (iris = host git/GitHub; plannotator-argus = review UI) and the common-mistakes section (MCP-only messaging, legacy `ccc orchestrator` confusion, missing `cwd=$PWD`).
+- [x] 2.5 Write the sibling composition section (plannotator-argus = review UI) and the common-mistakes section (MCP-only messaging, missing `cwd=$PWD`).
 - [x] 2.6 Write the three worked workflows (orchestrator bootstrap; worker intake; freelance attach) as ordered tool calls.
 
 ## 3. Author the pointer snippet
 
 **Depends on:** Stage 1
 
-- [x] 3.1 Write `claude/snippets/hera.md` with `tags: [argus]` / `audience: [shared]` frontmatter, the gate as the first content line, and a pointer to the `hera` skill (no per-tool duplication; warn off the legacy `ccc orchestrator` path).
+- [x] 3.1 Write `claude/snippets/hera.md` with `tags: [argus]` / `audience: [shared]` frontmatter, the gate as the first content line, and a pointer to the `hera` skill (no per-tool duplication).
 
 ## 4. Write install-claude-skills.sh
 
