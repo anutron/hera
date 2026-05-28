@@ -56,6 +56,28 @@ hera status   # daemon + orchestrator counts
 hera list     # orchestrators + roles + live binding state
 ```
 
+## Agent-facing discoverability (the hera skill)
+
+A Claude session running inside an argus sandbox sees only the `mcp__argus__hera_*` tool names — not when to use them, how they compose with sibling plugins, or the workflows hera was built for. This repo ships that orientation as installable Claude assets, gated at runtime so they're inert outside argus sandboxes:
+
+- `claude/skills/hera/SKILL.md` — the agent-facing skill (tool surface, decision rules, sibling composition, worked workflows). Its description leads with the argus-awareness gate so the model only reaches for it in-sandbox.
+- `claude/snippets/hera.md` — an optional always-loaded pointer snippet that directs the agent to the skill.
+
+Install them (separate from `setup.sh`, which is the daemon installer):
+
+```sh
+./install-claude-skills.sh        # prompts (Y/n) for the skill symlink, then again for the snippet
+./install-claude-skills.sh --yes  # accept both without prompting
+```
+
+This symlinks each skill under `claude/skills/*` into `~/.claude/skills/<name>` and (optionally) appends each snippet under `claude/snippets/*.md` into `~/.claude/CLAUDE.md` between managed markers. It's idempotent — re-runs report what's already current and replace snippet blocks in place rather than duplicating them. Remove everything later:
+
+```sh
+./uninstall-claude-skills.sh      # removes repo-owned skill symlinks + strips the snippet blocks
+```
+
+Uninstall only removes a `~/.claude/skills/<name>` symlink when it points back at this repo, and strips snippet blocks by their markers — your own CLAUDE.md content is left intact.
+
 ## Building from source (without setup.sh)
 
 ```sh
@@ -81,6 +103,11 @@ internal/
   daemon/           # main loop wiring everything together
   log/              # structured logging helpers
 openspec/           # OpenSpec specs + change folders (source of truth for design)
+claude/
+  skills/hera/       # agent-facing skill installed into ~/.claude/skills
+  snippets/          # optional always-loaded CLAUDE.md pointer snippet(s)
+install-claude-skills.sh    # install the agent-facing assets (skill + snippet)
+uninstall-claude-skills.sh  # reverse the above
 ```
 
 ## License

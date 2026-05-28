@@ -8,22 +8,18 @@ The fix is to ship installable, agent-facing discoverability artifacts in this r
 
 - **New `hera` skill** at `claude/skills/hera/SKILL.md` — agent-facing orientation for the six `mcp__argus__hera_*` tools. Its `description` leads with the argus-awareness gate so the model only reaches for it inside sandboxes. The body covers what hera is, the role/binding model, every tool, when-to-use decision rules, composition with sibling plugins, common Bash/skill mistakes, and three worked workflows.
 - **New pointer snippet** at `claude/snippets/hera.md` — an optional always-loaded orientation whose first content line is the gate. It does not duplicate the skill; it points the agent at the `hera` skill and warns off the legacy `ccc orchestrator` path. Carries `tags`/`audience` frontmatter so it slots into a compile-pipeline snippets dir as well as a plain CLAUDE.md append.
-- **`setup.sh` gains a skill-install step** — idempotently symlinks `claude/skills/hera` into `~/.claude/skills/hera`, detecting and skipping an already-correct symlink and reporting what changed.
-- **`setup.sh` gains an opt-in snippet-wiring step** — offers (Y/n) to append the snippet between managed markers in `~/.claude/CLAUDE.md`, idempotently replacing the managed block on re-run rather than duplicating it. Warns if `~/.claude/CLAUDE.md` is a symlink (compiled output) so a compile pipeline is not silently clobbered. On decline, prints the snippet path for manual wiring.
+- **New `install-claude-skills.sh`** — a standalone installer, separate from `setup.sh` (which stays the daemon installer). Two opt-in steps, each behind a Y/n prompt: (1) symlink every skill under `claude/skills/*` into `~/.claude/skills/<name>`; (2) append every snippet under `claude/snippets/*.md` into `~/.claude/CLAUDE.md` between per-snippet managed markers. Idempotent, `--yes` supported. Detects and skips already-correct symlinks, never clobbers a non-symlink, replaces the managed block on re-run rather than duplicating, and warns when `~/.claude/CLAUDE.md` is a symlink (compiled output).
+- **New `uninstall-claude-skills.sh`** — the inverse, also two Y/n steps: remove each skill symlink **only when it points back at this repo** (never touches a real dir or foreign symlink); strip each per-snippet managed block from `~/.claude/CLAUDE.md`, leaving the rest of the file intact. Idempotent, `--yes` supported.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `hera-agent-skill`: the agent-facing skill and snippet artifacts, their argus-awareness gate, and the content they must cover.
-
-### Modified Capabilities
-
-- `hera-install`: `setup.sh` gains the idempotent skill-symlink step and the opt-in snippet-append step.
+- `hera-agent-skill`: the agent-facing skill and snippet artifacts, their argus-awareness gate, the content they must cover, and the install/uninstall scripts that wire them into `~/.claude/`.
 
 ## Impact
 
-- New files: `claude/skills/hera/SKILL.md`, `claude/snippets/hera.md`.
-- Modified: `setup.sh` (two new steps; step numbering in user-facing output updates).
+- New files: `claude/skills/hera/SKILL.md`, `claude/snippets/hera.md`, `install-claude-skills.sh`, `uninstall-claude-skills.sh`.
+- `setup.sh` is unchanged — agent-facing assets install through the dedicated scripts.
 - No Go code, daemon, or MCP tool changes. No schema migration.
 - No change to argus core — discoverability ships in this repo and is gated at runtime.

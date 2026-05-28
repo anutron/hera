@@ -88,3 +88,62 @@ The repo SHALL ship a snippet at `claude/snippets/hera.md` whose first content l
 
 - **WHEN** the snippet frontmatter is read
 - **THEN** it SHALL contain `tags` and `audience` fields
+
+### Requirement: install-claude-skills.sh installs the agent-facing assets
+
+The repo SHALL ship an `install-claude-skills.sh` script, separate from `setup.sh`, that installs the agent-facing assets via two opt-in steps, each gated behind its own Y/n prompt in interactive mode and accepted without prompting under `--yes`/`-y`:
+
+1. Symlink each skill directory under `claude/skills/*` into `~/.claude/skills/<name>`, creating `~/.claude/skills/` if needed.
+2. Append each snippet file under `claude/snippets/*.md` into `~/.claude/CLAUDE.md` between per-snippet managed markers.
+
+The script MUST be idempotent. A skill symlink already pointing at the repo source MUST be reported as already current and left unchanged. A non-symlink (or a symlink to a different target) occupying a skill path MUST be warned about and skipped, never overwritten. A re-run of the snippet step MUST replace each managed block in place rather than append a duplicate. When `~/.claude/CLAUDE.md` is a symlink, the snippet step MUST warn before writing. Declining either step MUST make no change for that step.
+
+#### Scenario: Fresh install symlinks skills and appends snippets
+
+- **WHEN** `./install-claude-skills.sh --yes` runs against a HOME with no prior install
+- **THEN** `~/.claude/skills/<name>` SHALL be a symlink to the repo's `claude/skills/<name>` for each skill
+- **AND** each `claude/snippets/*.md` SHALL be written into `~/.claude/CLAUDE.md` between its managed markers
+
+#### Scenario: Re-run is idempotent
+
+- **WHEN** `./install-claude-skills.sh --yes` runs a second time
+- **THEN** each already-current skill symlink SHALL be reported as already current and left unchanged
+- **AND** each snippet SHALL appear in exactly one managed block in `~/.claude/CLAUDE.md`
+
+#### Scenario: Existing user content and non-symlinks are protected
+
+- **WHEN** `~/.claude/CLAUDE.md` already contains unrelated content and a skill path is occupied by a real directory
+- **THEN** the unrelated CLAUDE.md content SHALL be preserved
+- **AND** the occupied skill path SHALL be warned about and left unchanged
+
+#### Scenario: Each step is independently prompted
+
+- **WHEN** `./install-claude-skills.sh` runs in interactive mode
+- **THEN** the skill-symlink step and the snippet-append step SHALL each present their own Y/n prompt
+- **AND** declining a step SHALL make no filesystem change for that step
+
+### Requirement: uninstall-claude-skills.sh removes the agent-facing assets
+
+The repo SHALL ship an `uninstall-claude-skills.sh` script that reverses `install-claude-skills.sh` via two opt-in steps, each gated behind its own Y/n prompt in interactive mode and accepted without prompting under `--yes`/`-y`:
+
+1. Remove `~/.claude/skills/<name>` for each skill under `claude/skills/*`, but ONLY when it is a symlink pointing back at this repo's source. A real directory or a symlink to a different target MUST be left untouched.
+2. Strip each per-snippet managed block from `~/.claude/CLAUDE.md`, leaving all other content intact.
+
+The script MUST be idempotent and exit successfully when there is nothing to remove.
+
+#### Scenario: Uninstall removes only this repo's assets
+
+- **WHEN** `./uninstall-claude-skills.sh --yes` runs after an install
+- **THEN** each repo-owned skill symlink SHALL be removed
+- **AND** each per-snippet managed block SHALL be stripped from `~/.claude/CLAUDE.md`
+- **AND** unrelated content in `~/.claude/CLAUDE.md` SHALL remain intact
+
+#### Scenario: Foreign symlinks are not removed
+
+- **WHEN** `~/.claude/skills/<name>` is a symlink pointing somewhere other than this repo and `./uninstall-claude-skills.sh --yes` runs
+- **THEN** that symlink SHALL be left untouched
+
+#### Scenario: Uninstall is idempotent
+
+- **WHEN** `./uninstall-claude-skills.sh --yes` runs when nothing is installed
+- **THEN** it SHALL exit with status 0 and report nothing to remove
