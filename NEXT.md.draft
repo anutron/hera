@@ -1,0 +1,85 @@
+# Next – hera 1.0 and beyond
+
+Replaces the prior root docs: `NEXT.md`, `FOLLOWUPS.md`, `HANDOFF.md`, `HANDOFF-OVERNIGHT.md`, `MORNING-REPORT.md`, `OVERNIGHT_LOG.md`. Last updated 2026-05-27.
+
+## Current state
+
+Hera 1.0 and the bulk of 1.x have shipped. `hera-coordination`, `hera-substrate-link`, and `hera-install` are archived base specs. `add-hera-view` is merged on `main` (rail + 3-column layout + 6 rail ops + WebSocket plugin view) and is awaiting final live-verification before `openspec archive`. `add-multi-binding` is the active in-flight change – schema, handlers, events, and integration tests are landed and ticked through Stage E; iris publish + verify (§6.3-6.5) are the only open boxes. The next move is finishing multi-binding shipping, then archiving `add-hera-view` once the post-merge open questions are settled.
+
+## Open work (active)
+
+### add-multi-binding
+
+- **Status:** In progress (Stage F shipping).
+- **Why:** Sherlock 4.0 rebuild needs a single argus task to hold N bindings concurrently (worker in A + coord in B). The 1.x one-binding-per-task invariant blocks nested orchestration.
+- **Where:** `openspec/changes/add-multi-binding/`.
+- **Next:** Tick §6.3-6.5 – `iris_publish(reset=true, push=true)`, verify reload via `iris_status`, set `hera_status done`. All code + tests are landed.
+
+### add-hera-view (post-merge open questions)
+
+- **Status:** Merged to `main`; awaiting archive.
+- **Why:** Five UX choices from `design.md` were intentionally left open for live testing rather than decided unilaterally overnight.
+- **Where:** `openspec/changes/add-hera-view/`.
+- **Next:** Decide and (if needed) tweak code before `openspec archive add-hera-view`:
+  - Plugin-view hotkey (tentative `Ctrl-H`; may collide with bash backspace synonym).
+  - Help-modal close key (`q` tentative; `Esc` is argus-reserved).
+  - Top-bar contents: literal `HERA`, or `HERA / <focus-path>` right-aligned.
+  - Confirm-delete UX: simple `y/N` vs type-the-name for cascade-delete of a coord.
+  - Bottom-bar overflow at narrow widths: truncate vs two lines.
+
+### Argus settings-callback drops registered auth_header
+
+- **Status:** Substrate-side bug filed with argus; tracked.
+- **Why:** Argus's TUI submits settings forms to the registered `callback_url` with no `Authorization` header, so hera's `/mcp/settings_save` 401s on every save. Settings UI renders but cannot persist via the TUI.
+- **Where:** Substrate-side; awaiting argus fix that forwards `auth_header` from the registration payload.
+- **Next:** Re-test the round trip once argus ships the fix. Operator workaround: write directly to the `config` SQLite table and restart hera (`LoadPersistedSettings` picks values up on boot).
+
+### SSE event-drop on archive (task.archived)
+
+- **Status:** Open bug, identified.
+- **Why:** `internal/db/tasks.go` only emits `task.archived` from the partial-column `SetArchived` path. The `Update` path used by argus's HTTP and MCP archive entrypoints does not emit, so hera misses archive events for tasks closed through those paths.
+- **Where:** `internal/db/tasks.go`.
+- **Next:** Emit `task.archived` from `Update` too (or consolidate archive writes onto `SetArchived`). Add a regression test.
+
+## Known followups (deferred but tracked)
+
+- **Atomic role+binding insert across DAOs.** `Roles.Create` + `Bindings.Create` are two separate execs in `internal/events/adopt.go`, `hera_new_orchestrator`, and `hera_join` attach paths. Orphan role rows are technically possible if the second exec fails. Escalate when a real orphaned-role bug surfaces or we move to a multi-process topology. Fix needs a `db.WithTx` helper or per-use-case bundled DAO methods.
+- **Cursor advancement on handler failure.** `events.Subscriber.Run` advances `EventCursor` regardless of handler outcome; transient errors silently consume the event. Fix requires changing the `Handler` interface to return an error and picking a cursor-advancement policy. Escalate when we see hera missing adoptions in practice.
+- **~25 low-priority test-alignment polish items.** Tests exercise spec paths but don't quote spec wording exactly (17 in `internal/mcp`, 4 in `internal/db`, 3 in `internal/argus`, 2 in `internal/wiring`). Escalate incrementally as adjacent behavior changes.
+- **`cmd/hera` CLI verb branches.** 6 uncovered branches in `start.go` / `stop.go` / `status.go` / `list.go` (output formatting, exit codes, `--foreground` enforcement, PID-file lifecycle). Intentional non-coverage – the base spec is about coordination behavior, not CLI ergonomics. Escalate only if we add a CLI verb that mutates orchestrator state observably.
+
+## Backlog (post-1.x)
+
+- **`hera_note_to_self` mechanism.** Today the only way for one coord incarnation to leave a message for the next is `hera_send` to your own role and not ack – but that also injects into the current PTY, and the don't-ack contract is fragile. Codify as a new tool `hera_note_to_self(cwd, body)` OR a `note_to_self: true` flag on `hera_send` that persists to messages addressed to caller's role, skips inject, and surfaces on next incarnation's `hera_inbox`. ~50 LOC + spec amendment. Fold into a broader bus v2 if other changes (broadcast, priority, expiry) want shipping together.
+- **Hera-aware skills.** Sub-agents spawned by `/fixit` and other skills must be hand-told to `hera_join`. Three landing options ordered by touch:
+  - Project-level `CLAUDE.md` snippet teaching general skills to detect hera (look for `~/.hera/api-token` + argus parent) and self-join.
+  - Modify individual skills (`/fixit`, etc.) to detect hera and self-join.
+  - Ship thin wrapper skills (`/hera-fixit`, `/hera-debug`, ...) that prepend `hera_join`.
+  - Pick path after a brainstorm; defer until 1.x is stable.
+- **`hera-install` Linux/systemd parity.** Current installer is macOS-only with a non-Darwin skip. A `linux-systemd` requirement on the `hera-install` capability is the right extension.
+- **Programmatic install verbs.** `hera install` / `hera uninstall` subcommands so the LaunchAgent (or systemd unit) can be managed without running `setup.sh` end-to-end.
+- **Host-ops argus plugin.** Substrate-scope, not hera-scope. Future argus plugin that lets sandboxed Claude sessions perform trusted host-side ops (git merge, build, push) without manual paste. Parked.
+
+## Substrate followups (filed against argus)
+
+- **`auth_header` not forwarded on settings-callback proxy** – see "Open work" above.
+- **Worker base_branch / fan-out merge missing.** Workers spawned with `base_branch=<coord branch>` carry the coord branch but not the implementation code from other stages. Multi-dep integration workers (J on hera-view) have to manually `git show origin/<dep-branch>:<path>` and merge selectively. Durable fix: a `merge_branches` list on `task_create` that the depswatcher pre-merges into the worker's branch before starting the session. Immediate fix: a "before implementing, merge deps" prompt step.
+- **Worker status-flip kills session.** Argus flipped a long-running worker's task to `<checked>` mid-work and tore down the session. The kill turned out non-destructive (worker had already pushed), but the substrate behavior should be: killing a running session due to a status flip should require an explicit user gesture. Two hypotheses: an MCP call misread as a terminal signal, or an auto-marking heuristic. Worth a quick investigation in argus.
+- **Worker permission-prompt stall (`rm`, etc.).** Claude Code keeps a small always-ask verb list (`rm`, `sudo`, `curl`, `wget`, `chown`, `dd`, `nc`) that `--dangerously-skip-permissions` does not override. Overnight worker fleets deadlock on these prompts. Three fixes by cost: prompt hygiene (no `rm` in tests, use `os.CreateTemp` / `t.TempDir`), per-worker allowlist for safe paths via `.claude/settings.json` at `task_create`, or an explicit "worker mode" opt-in. Ship (1) immediately; (2) is the right durable fix.
+
+## Process learnings (durable)
+
+- **Latent resilience holes flip from "for later" to "blocker now" without warning.** The hardcoded `:7743` argus REST port was fine until the next argus restart moved it. Fix infra resilience proactively when it's cheap.
+- **Degraded dogfood is a real signal.** Workers reaching coord via argus's `task_message_send` instead of `hera_send` means the canonical hera bus is unavailable. Fix the bus before the fallback hides the real bug.
+- **Parallel substrate + hera changes work when the wire contract is locked first.** The argus `Daemon.Ports` RPC and hera's caller shipped without integration testing against each other, against a written interface both committed to upfront. Cleaner than serializing.
+- **Don't trust argus `task_list` `Elapsed: 0s` as "just completed".** Treat any worker without a `hera_send` done report as still in-flight regardless of argus status. (Pattern surfaced when coord prematurely salvaged a still-running worker's worktree.)
+
+## Resolved since 2026-05-25
+
+- `argus.PostTaskInput` response decode error (commit `fb04c27`, `flexInt` type + regression test).
+- Possible auto-execute regression / idle-gate misclassification – was the decode bug masquerading; smoke-confirmed working.
+- `hera-view` design pass + 11-stage implementation (merged to `main`; archive pending).
+- Idle-submit CR vs LF (`b2512db`, archived as `2026-05-26-fix-idle-submit-cr`).
+- `setup.sh` stale-binary skip – setup now always runs `go build` (Go's cache handles "nothing to rebuild" fast).
+- Argus `Daemon.Ports` RPC ship + hera substrate-link reconnect (archived as `2026-05-25-add-argus-reconnect`).
+- argus-sdk migration: hera adopted `argus-sdk/pluginview` and `argus-sdk/terminalpane` post-hera-view-merge.
