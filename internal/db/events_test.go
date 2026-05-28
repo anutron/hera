@@ -347,6 +347,201 @@ func expectNoEvent(t *testing.T, ch <-chan Event, within time.Duration) {
 	}
 }
 
+func TestDB_OrchestratorArchiveEmitsUpdateEvent(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Orchestrators.Archive(ctx, orch.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got := receiveOne(t, ch)
+	if got.Entity != EntityOrchestrator || got.Op != OpUpdate || got.ID != orch.ID {
+		t.Fatalf("event = %+v; want orchestrator/update/%d", got, orch.ID)
+	}
+}
+
+func TestDB_OrchestratorArchiveIdempotentDoesNotEmit(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+	if err := d.Orchestrators.Archive(ctx, orch.ID); err != nil {
+		t.Fatalf("first Archive: %v", err)
+	}
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Orchestrators.Archive(ctx, orch.ID); err != nil {
+		t.Fatalf("second Archive: %v", err)
+	}
+
+	expectNoEvent(t, ch, 100*time.Millisecond)
+}
+
+func TestDB_OrchestratorUnarchiveEmitsUpdateEvent(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+	if err := d.Orchestrators.Archive(ctx, orch.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Orchestrators.Unarchive(ctx, orch.ID); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+
+	got := receiveOne(t, ch)
+	if got.Entity != EntityOrchestrator || got.Op != OpUpdate || got.ID != orch.ID {
+		t.Fatalf("event = %+v; want orchestrator/update/%d", got, orch.ID)
+	}
+}
+
+func TestDB_OrchestratorRenameEmitsUpdateEvent(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Orchestrators.Rename(ctx, orch.ID, "bar"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	got := receiveOne(t, ch)
+	if got.Entity != EntityOrchestrator || got.Op != OpUpdate || got.ID != orch.ID {
+		t.Fatalf("event = %+v; want orchestrator/update/%d", got, orch.ID)
+	}
+}
+
+func TestDB_OrchestratorRenameSelfDoesNotEmit(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Orchestrators.Rename(ctx, orch.ID, "foo"); err != nil {
+		t.Fatalf("self-Rename: %v", err)
+	}
+
+	expectNoEvent(t, ch, 100*time.Millisecond)
+}
+
+func TestDB_RoleArchiveEmitsUpdateEvent(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+	role, _ := d.Roles.Create(ctx, CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: KindCoordinator, ArgusProject: "p",
+	})
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Roles.Archive(ctx, role.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	got := receiveOne(t, ch)
+	if got.Entity != EntityRole || got.Op != OpUpdate || got.ID != role.ID {
+		t.Fatalf("event = %+v; want role/update/%d", got, role.ID)
+	}
+}
+
+func TestDB_RoleArchiveIdempotentDoesNotEmit(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+	role, _ := d.Roles.Create(ctx, CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: KindCoordinator, ArgusProject: "p",
+	})
+	if err := d.Roles.Archive(ctx, role.ID); err != nil {
+		t.Fatalf("first Archive: %v", err)
+	}
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Roles.Archive(ctx, role.ID); err != nil {
+		t.Fatalf("second Archive: %v", err)
+	}
+
+	expectNoEvent(t, ch, 100*time.Millisecond)
+}
+
+func TestDB_RoleUnarchiveEmitsUpdateEvent(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+	role, _ := d.Roles.Create(ctx, CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: KindCoordinator, ArgusProject: "p",
+	})
+	if err := d.Roles.Archive(ctx, role.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Roles.Unarchive(ctx, role.ID); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+
+	got := receiveOne(t, ch)
+	if got.Entity != EntityRole || got.Op != OpUpdate || got.ID != role.ID {
+		t.Fatalf("event = %+v; want role/update/%d", got, role.ID)
+	}
+}
+
+func TestDB_RoleRenameEmitsUpdateEvent(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+	role, _ := d.Roles.Create(ctx, CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: KindCoordinator, ArgusProject: "p",
+	})
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Roles.Rename(ctx, role.ID, "lead"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	got := receiveOne(t, ch)
+	if got.Entity != EntityRole || got.Op != OpUpdate || got.ID != role.ID {
+		t.Fatalf("event = %+v; want role/update/%d", got, role.ID)
+	}
+}
+
+func TestDB_RoleRenameSelfDoesNotEmit(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	orch, _ := d.Orchestrators.Create(ctx, "foo")
+	role, _ := d.Roles.Create(ctx, CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: KindCoordinator, ArgusProject: "p",
+	})
+
+	ch, cancel := d.Events.Subscribe()
+	defer cancel()
+
+	if err := d.Roles.Rename(ctx, role.ID, "coord"); err != nil {
+		t.Fatalf("self-Rename: %v", err)
+	}
+
+	expectNoEvent(t, ch, 100*time.Millisecond)
+}
+
 // Sanity check that pre-existing tests' use of atomic.Int32 will compile
 // in this package — purely a build-time guard.
 var _ atomic.Int32

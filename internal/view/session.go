@@ -60,6 +60,14 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		}
 		defer app.Close()
 
+		// Subscribe the rail to the DAO broadcaster so any orchestrator /
+		// role / binding write triggers a debounced rail refresh on this
+		// session's tview event loop. RepopulateRail wraps the rebuild in
+		// QueueUpdateDraw, so the refresher's goroutine can fire it
+		// without crossing the tview-single-threaded boundary itself.
+		rail := NewRailRefresher(database.Events, app.RepopulateRail)
+		defer rail.Stop()
+
 		tApp := app.Application()
 		// SetScreen calls scr.Init() before Run sees it; subsequent Run()
 		// will use this screen rather than building a default tcell one.

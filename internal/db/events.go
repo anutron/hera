@@ -104,6 +104,15 @@ func (b *Broadcaster) Emit(e Event) {
 	}
 }
 
+// SubscriberCount returns the number of currently-registered
+// subscribers. Intended for tests that need to assert
+// subscribe/unsubscribe lifecycle without observing emitted events.
+func (b *Broadcaster) SubscriberCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subs)
+}
+
 // Close releases every current subscriber's channel and marks the
 // broadcaster as closed. Subsequent Emit calls are no-ops; subsequent
 // Subscribe calls return an already-closed channel. Close is idempotent.

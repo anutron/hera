@@ -155,6 +155,10 @@ func (r *RolesDAO) Archive(ctx context.Context, id int64) error {
 		if _, err := r.GetByID(ctx, id); err != nil {
 			return err
 		}
+		return nil
+	}
+	if r.events != nil {
+		r.events.Emit(Event{Entity: EntityRole, Op: OpUpdate, ID: id})
 	}
 	return nil
 }
@@ -175,6 +179,10 @@ func (r *RolesDAO) Unarchive(ctx context.Context, id int64) error {
 		if _, err := r.GetByID(ctx, id); err != nil {
 			return err
 		}
+		return nil
+	}
+	if r.events != nil {
+		r.events.Emit(Event{Entity: EntityRole, Op: OpUpdate, ID: id})
 	}
 	return nil
 }
@@ -213,6 +221,9 @@ func (r *RolesDAO) Rename(ctx context.Context, id int64, newName string) error {
 		newName, id,
 	); err != nil {
 		return fmt.Errorf("roles.Rename: %w", err)
+	}
+	if r.events != nil {
+		r.events.Emit(Event{Entity: EntityRole, Op: OpUpdate, ID: id})
 	}
 	return nil
 }
