@@ -140,6 +140,10 @@ func (o *OrchestratorsDAO) Archive(ctx context.Context, id int64) error {
 		if _, err := o.GetByID(ctx, id); err != nil {
 			return err
 		}
+		return nil
+	}
+	if o.events != nil {
+		o.events.Emit(Event{Entity: EntityOrchestrator, Op: OpUpdate, ID: id})
 	}
 	return nil
 }
@@ -160,6 +164,10 @@ func (o *OrchestratorsDAO) Unarchive(ctx context.Context, id int64) error {
 		if _, err := o.GetByID(ctx, id); err != nil {
 			return err
 		}
+		return nil
+	}
+	if o.events != nil {
+		o.events.Emit(Event{Entity: EntityOrchestrator, Op: OpUpdate, ID: id})
 	}
 	return nil
 }
@@ -195,6 +203,9 @@ func (o *OrchestratorsDAO) Rename(ctx context.Context, id int64, newName string)
 		newName, id,
 	); err != nil {
 		return fmt.Errorf("orchestrators.Rename: %w", err)
+	}
+	if o.events != nil {
+		o.events.Emit(Event{Entity: EntityOrchestrator, Op: OpUpdate, ID: id})
 	}
 	return nil
 }
