@@ -237,6 +237,14 @@ func (a *App) populateRail(database *db.DB) error {
 		if err != nil {
 			return fmt.Errorf("list roles for orch %d: %w", orch.ID, err)
 		}
+		// Hold the coord role aside so we can fall back to rendering it as
+		// the orchestrator's sole row when no agents exist (operator still
+		// needs a way to reach the coord pane in agent-less projects).
+		var coordRole *db.Role
+		var coordLive bool
+		var coordDead bool
+		var coordTaskID string
+		var coordStartedAt time.Time
 		for _, role := range roles {
 			bnd, _ := database.Bindings.GetLiveByRole(ctx, role.ID)
 			live := bnd != nil
@@ -251,16 +259,23 @@ func (a *App) populateRail(database *db.DB) error {
 				}
 			}
 
-			// Coord roles do not render as their own rail row. The first
-			// live + alive + non-archived coord binding feeds the
-			// orchestrator's CoordTaskID so the COORD pane can rebind
-			// implicitly when an agent / header is selected. Archived
-			// or dead coord bindings are skipped so the COORD pane
-			// doesn't get bound to a tombstone.
+			// Coord roles do not render as their own rail row in the common
+			// case. The first live + alive + non-archived coord binding
+			// feeds the orchestrator's CoordTaskID so the COORD pane can
+			// rebind implicitly when an agent / header is selected.
+			// Archived or dead coord bindings are skipped so the COORD
+			// pane doesn't get bound to a tombstone. We hold a copy of the
+			// first eligible coord role aside in case the orchestrator
+			// ends up with zero agent rows — see below.
 			if role.Kind == db.KindCoordinator {
 				archived := role.ArchivedAt != nil
 				if live && !dead && !archived && entry.CoordTaskID == "" {
 					entry.CoordTaskID = argusTaskID
+					coordRole = role
+					coordLive = live
+					coordDead = dead
+					coordTaskID = argusTaskID
+					coordStartedAt = startedAt
 				}
 				continue
 			}
@@ -277,6 +292,25 @@ func (a *App) populateRail(database *db.DB) error {
 				StartedAt:      startedAt,
 			}
 			entry.Roles = append(entry.Roles, r)
+		}
+
+		// Agent-less fallback: when the orchestrator would otherwise have
+		// zero visible rows, surface its coord as the sole row so the
+		// operator has something selectable. The rail's selection-change
+		// rebind still routes COORD-to-coord-task as usual; this row's
+		// role-row is just the operator-facing affordance.
+		if len(entry.Roles) == 0 && coordRole != nil {
+			entry.Roles = append(entry.Roles, &roleEntry{
+				OrchestratorID: orch.ID,
+				RoleID:         coordRole.ID,
+				RoleKind:       string(coordRole.Kind),
+				Name:           coordRole.Name,
+				Live:           coordLive,
+				Dead:           coordDead,
+				ArgusTaskID:    coordTaskID,
+				Archived:       coordRole.ArchivedAt != nil,
+				StartedAt:      coordStartedAt,
+			})
 		}
 
 		entries = append(entries, entry)

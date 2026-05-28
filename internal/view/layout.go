@@ -7,7 +7,7 @@ import (
 
 // RailWidth is the fixed character width of the navigation rail column.
 // See design.md D7.
-const RailWidth = 22
+const RailWidth = 36
 
 // layoutPieces holds references to the individual chrome and body
 // primitives composed by buildLayout. The app keeps these around to
