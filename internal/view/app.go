@@ -4,12 +4,18 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/anutron/hera/internal/db"
 )
+
+// DefaultRailSelectDebounce is the window over which rail j/k cursor
+// movements coalesce into a single pane rebind. Without this, a rapid
+// hold of j burns one /api/tasks/{id}/resize roundtrip per row.
+const DefaultRailSelectDebounce = 120 * time.Millisecond
 
 // App is the hera-view tview application plus its bound layout primitives,
 // the open per-pane proxy subscriptions, and the terminalpanes consuming
@@ -48,6 +54,18 @@ type App struct {
 	// archived rows are filtered out (the default at session start
 	// per design.md D5).
 	showArchived bool
+
+	// selectDebounce is the rail j/k selection-change debounce
+	// window. Defaults to DefaultRailSelectDebounce; tests can swap
+	// in a smaller window (or zero, which means "fire synchronously
+	// on the same goroutine") via the test-only setter.
+	selectDebounce time.Duration
+
+	// selectMu guards the selection-change timer / pending ref.
+	selectMu      sync.Mutex
+	selectTimer   *time.Timer
+	selectPending any
+	selectHasRef  bool
 }
 
 // BuildApp constructs the hera-view tview Application. It reads the
@@ -79,21 +97,42 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 	tApp.EnableMouse(false)
 
 	a := &App{
-		app:         tApp,
-		pieces:      pieces,
-		src:         src,
-		coordTask:   coordTask,
-		agentTask:   agentTask,
-		coordUnsub:  coordUnsub,
-		agentUnsub:  agentUnsub,
-		coordBridge: coordBridge,
-		agentBridge: agentBridge,
-		database:    database,
+		app:            tApp,
+		pieces:         pieces,
+		src:            src,
+		coordTask:      coordTask,
+		agentTask:      agentTask,
+		coordUnsub:     coordUnsub,
+		agentUnsub:     agentUnsub,
+		coordBridge:    coordBridge,
+		agentBridge:    agentBridge,
+		database:       database,
+		selectDebounce: DefaultRailSelectDebounce,
 	}
 
 	if err := a.populateRail(database); err != nil {
 		return nil, fmt.Errorf("view.BuildApp: populate rail: %w", err)
 	}
+
+	// Align the rail cursor with the pane selection findInitialSelection
+	// just picked, so the operator's mental model (cursor row → pane
+	// content) is consistent from the first frame. Done BEFORE the
+	// selection-changed callback wires up so this positional sync does
+	// not trigger a spurious rebind.
+	if agentTask != "" {
+		for _, o := range a.pieces.rail.orchestrators {
+			for _, r := range o.Roles {
+				if r.ArgusTaskID == agentTask {
+					a.pieces.rail.SelectByRoleID(r.RoleID)
+				}
+			}
+		}
+	}
+
+	// Wire the rail's selection-change callback so subsequent j/k cursor
+	// movement (and DAO-driven repopulates that land on a new row)
+	// triggers a debounced rebind of the COORD / AGENT panes.
+	a.pieces.rail.SetOnSelectionChanged(a.onRailSelectionChanged)
 
 	return a, nil
 }
@@ -124,6 +163,15 @@ func (a *App) Close() {
 	a.agentBridge = nil
 	a.mu.Unlock()
 
+	a.selectMu.Lock()
+	if a.selectTimer != nil {
+		a.selectTimer.Stop()
+		a.selectTimer = nil
+	}
+	a.selectPending = nil
+	a.selectHasRef = false
+	a.selectMu.Unlock()
+
 	if coordUnsub != nil {
 		coordUnsub()
 	}
@@ -141,13 +189,23 @@ func (a *App) Close() {
 }
 
 // populateRail walks the orchestrators / roles / bindings tables and
-// hands the result to the rail widget. Live bindings (ended_at IS
-// NULL) drive the moon-stars icon on the role row; idle roles get the
-// moon-outline icon. When a.showArchived is true, archived
-// orchestrators and roles render below the Archive separator;
-// otherwise archived rows are filtered (default per design.md D5).
+// hands the result to the rail widget. Coord roles are NOT added to the
+// orchestrator's Roles slice; instead each orchestrator's CoordTaskID
+// captures the live coord binding so the COORD pane can rebind
+// implicitly when an agent (or the header) is selected.
+//
+// Live bindings (ended_at IS NULL) drive the moon-stars icon on the
+// role row; idle roles get the moon-outline icon. Bindings whose argus
+// task has gone away (per the optional TaskAliveChecker on a.src) are
+// marked Dead so the rail can hide or dim them.
+//
+// When a.showArchived is true, archived orchestrators and roles render
+// below the Archive separator and dead bindings are kept (dimmed);
+// otherwise both are filtered out (default per design.md D5).
 func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
+
+	checker, _ := a.src.(TaskAliveChecker)
 
 	var (
 		orchs []*db.Orchestrator
@@ -182,18 +240,41 @@ func (a *App) populateRail(database *db.DB) error {
 		for _, role := range roles {
 			bnd, _ := database.Bindings.GetLiveByRole(ctx, role.ID)
 			live := bnd != nil
+			dead := false
+			var argusTaskID string
+			startedAt := role.CreatedAt
+			if live {
+				argusTaskID = bnd.ArgusTaskID
+				startedAt = bnd.StartedAt
+				if checker != nil && !checker.IsTaskAlive(argusTaskID) {
+					dead = true
+				}
+			}
+
+			// Coord roles do not render as their own rail row. The first
+			// live + alive + non-archived coord binding feeds the
+			// orchestrator's CoordTaskID so the COORD pane can rebind
+			// implicitly when an agent / header is selected. Archived
+			// or dead coord bindings are skipped so the COORD pane
+			// doesn't get bound to a tombstone.
+			if role.Kind == db.KindCoordinator {
+				archived := role.ArchivedAt != nil
+				if live && !dead && !archived && entry.CoordTaskID == "" {
+					entry.CoordTaskID = argusTaskID
+				}
+				continue
+			}
+
 			r := &roleEntry{
 				OrchestratorID: orch.ID,
 				RoleID:         role.ID,
 				RoleKind:       string(role.Kind),
 				Name:           role.Name,
 				Live:           live,
+				Dead:           dead,
+				ArgusTaskID:    argusTaskID,
 				Archived:       role.ArchivedAt != nil,
-				StartedAt:      role.CreatedAt,
-			}
-			if live {
-				r.ArgusTaskID = bnd.ArgusTaskID
-				r.StartedAt = bnd.StartedAt
+				StartedAt:      startedAt,
 			}
 			entry.Roles = append(entry.Roles, r)
 		}
@@ -474,6 +555,110 @@ func (a *App) rebindAgent(taskID string) {
 		oldPane.Close()
 	}
 	a.refreshBody()
+}
+
+// onRailSelectionChanged is invoked by the rail widget when the cursor
+// lands on a new selectable row. It schedules a debounced rebind so
+// rapid j/k traversal coalesces into a single pane swap on the row the
+// cursor finally rests on, rather than POSTing /api/tasks/{id}/resize
+// for every intermediate stop.
+//
+// Selection-rebind semantics:
+//   - role row (agent): rebind COORD to the orchestrator's coord task
+//     and AGENT to the role's argus task.
+//   - orchestrator header: rebind COORD to the orchestrator's coord
+//     task; leave AGENT bound to whatever it was previously so the
+//     operator's last agent stays visible while they re-anchor the
+//     coord pane.
+//
+// The handler runs on the goroutine that triggered the cursor move
+// (the tview input pump for j/k); the deferred work runs on a timer
+// goroutine and bounces back onto the event loop via QueueUpdateDraw
+// before mutating any pane primitives.
+func (a *App) onRailSelectionChanged(ref any) {
+	a.selectMu.Lock()
+	if a.closed {
+		a.selectMu.Unlock()
+		return
+	}
+	a.selectPending = ref
+	a.selectHasRef = true
+	delay := a.selectDebounce
+	if delay <= 0 {
+		// Fire-synchronously path: drop the lock before the rebind so the
+		// rebind itself can acquire a.mu without lock-order issues.
+		a.selectPending = nil
+		a.selectHasRef = false
+		a.selectMu.Unlock()
+		a.applyRailSelection(ref)
+		return
+	}
+	if a.selectTimer == nil {
+		a.selectTimer = time.AfterFunc(delay, a.fireRailSelection)
+	} else {
+		a.selectTimer.Reset(delay)
+	}
+	a.selectMu.Unlock()
+}
+
+// fireRailSelection runs from the debounce timer's goroutine. It reads
+// the latest pending ref and bounces the actual pane rebind onto the
+// tview event loop so primitive mutation stays single-threaded.
+func (a *App) fireRailSelection() {
+	a.selectMu.Lock()
+	if !a.selectHasRef || a.closed {
+		a.selectMu.Unlock()
+		return
+	}
+	ref := a.selectPending
+	a.selectPending = nil
+	a.selectHasRef = false
+	a.selectMu.Unlock()
+
+	if a.app != nil {
+		a.app.QueueUpdateDraw(func() { a.applyRailSelection(ref) })
+		return
+	}
+	a.applyRailSelection(ref)
+}
+
+// applyRailSelection rebinds the COORD / AGENT panes per the
+// selection-rebind semantics documented on onRailSelectionChanged. Must
+// run on the tview event loop when a.app != nil (the input pump or a
+// QueueUpdateDraw callback).
+func (a *App) applyRailSelection(ref any) {
+	switch r := ref.(type) {
+	case *orchEntry:
+		if r == nil {
+			return
+		}
+		if r.CoordTaskID != "" {
+			a.rebindCoord(r.CoordTaskID)
+		}
+		// Header selection leaves the agent pane alone so the last-
+		// picked agent stays visible while the operator changes coord
+		// targets. Selecting an agent row (below) rebinds both panes.
+	case *roleEntry:
+		if r == nil {
+			return
+		}
+		// Locate the orchestrator so we can also rebind COORD to its
+		// coord task. orchestrators is the rail's source of truth so a
+		// linear walk is cheap.
+		var coordTask string
+		for _, o := range a.pieces.rail.orchestrators {
+			if o.ID == r.OrchestratorID {
+				coordTask = o.CoordTaskID
+				break
+			}
+		}
+		if coordTask != "" {
+			a.rebindCoord(coordTask)
+		}
+		if r.ArgusTaskID != "" {
+			a.rebindAgent(r.ArgusTaskID)
+		}
+	}
 }
 
 // refreshBody re-composes the body Flex with the current rail + coord +
