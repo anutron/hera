@@ -201,10 +201,17 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 	viewProxy.Seed(proxyCtx, taskIDs)
 
+	// Poll argus's task list into a state cache so the rail can render each
+	// task's real status / idle / needs-input / archived without blocking
+	// the tview loop. Daemon-lifetime (bound to proxyCtx); the per-session
+	// runner reads it through the PaneSource.
+	argusState := view.NewArgusStateCache(client, view.DefaultArgusPollInterval, log)
+	go argusState.Run(proxyCtx)
+
 	// Now that the proxy manager exists, swap the per-connection session
 	// runner so each accepted WebSocket gets a real wsscreen + tview
 	// surface (Stages D + F + G stitched together).
-	viewSrv.SetRunner(view.NewSessionFunc(database, viewProxy, client, log))
+	viewSrv.SetRunner(view.NewSessionFunc(database, viewProxy, client, argusState, log))
 
 	resyncHandler := events.NewResyncHandler(client, database, log)
 	subscriber := events.NewSubscriber(client, database, log)

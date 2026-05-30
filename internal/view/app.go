@@ -188,6 +188,23 @@ func (a *App) Close() {
 	a.pieces.agent.Close()
 }
 
+// applyArgusState fills a rail row's argus-reported state (status, idle,
+// needs-input, archived) from the optional TaskStateProvider, keyed by the
+// row's bound argus task id. No-op when no provider is wired (tests) or argus
+// has no entry for the task — the row then renders from binding state.
+func applyArgusState(r *roleEntry, prov TaskStateProvider) {
+	if prov == nil || r == nil || r.ArgusTaskID == "" {
+		return
+	}
+	if st, ok := prov.TaskState(r.ArgusTaskID); ok {
+		r.HasState = true
+		r.Status = st.Status
+		r.ArgusIdle = st.Idle
+		r.NeedsInput = st.NeedsInput
+		r.ArgusArchived = st.Archived
+	}
+}
+
 // populateRail walks the orchestrators / roles / bindings tables and
 // hands the result to the rail widget. Coord roles are NOT added to the
 // orchestrator's Roles slice; instead each orchestrator's CoordTaskID
@@ -206,6 +223,7 @@ func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
 
 	checker, _ := a.src.(TaskAliveChecker)
+	stateProv, _ := a.src.(TaskStateProvider)
 
 	var (
 		orchs []*db.Orchestrator
@@ -305,6 +323,7 @@ func (a *App) populateRail(database *db.DB) error {
 				Archived:       role.ArchivedAt != nil,
 				StartedAt:      startedAt,
 			}
+			applyArgusState(r, stateProv)
 			entry.Roles = append(entry.Roles, r)
 		}
 
@@ -314,7 +333,7 @@ func (a *App) populateRail(database *db.DB) error {
 		// rebind still routes COORD-to-coord-task as usual; this row's
 		// role-row is just the operator-facing affordance.
 		if len(entry.Roles) == 0 && coordRole != nil {
-			entry.Roles = append(entry.Roles, &roleEntry{
+			cr := &roleEntry{
 				OrchestratorID: orch.ID,
 				RoleID:         coordRole.ID,
 				RoleKind:       string(coordRole.Kind),
@@ -324,7 +343,9 @@ func (a *App) populateRail(database *db.DB) error {
 				ArgusTaskID:    coordTaskID,
 				Archived:       coordRole.ArchivedAt != nil,
 				StartedAt:      coordStartedAt,
-			})
+			}
+			applyArgusState(cr, stateProv)
+			entry.Roles = append(entry.Roles, cr)
 		}
 
 		entries = append(entries, entry)

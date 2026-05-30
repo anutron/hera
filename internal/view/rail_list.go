@@ -86,6 +86,17 @@ type roleEntry struct {
 	ArgusTaskID    string
 	Archived       bool
 	StartedAt      time.Time
+
+	// argus-reported state for this role's bound task, populated from the
+	// ArgusStateCache when available. Drives the rail icon and archived
+	// hiding so the rail reflects argus reality rather than hera's binding
+	// bookkeeping. HasState is false when argus has no entry for the task
+	// (unknown / cache cold) — the icon then falls back to binding state.
+	HasState      bool
+	Status        string // pending | in_progress | in_review | complete
+	ArgusIdle     bool
+	NeedsInput    bool
+	ArgusArchived bool
 }
 
 type railRowKind uint8
@@ -337,12 +348,13 @@ func (rl *railList) buildRows() {
 			return
 		}
 		for _, role := range o.Roles {
-			if role.Archived && !rl.showArchived {
+			// Hidden by default unless `l listall`: hera-archived roles,
+			// argus-archived tasks (so the active rail mirrors argus's
+			// non-archived set), and dead bindings (DB-live but the argus
+			// task is gone).
+			if (role.Archived || role.ArgusArchived) && !rl.showArchived {
 				continue
 			}
-			// Dead bindings (DB-live but argus task is gone) are
-			// hidden by default and shown dimmed when the operator
-			// flips `l listall`.
 			if role.Dead && !rl.showArchived {
 				continue
 			}
@@ -477,7 +489,7 @@ func (rl *railList) visibleRoleCount(o *orchEntry) int {
 	}
 	n := 0
 	for _, r := range o.Roles {
-		if r.Archived || r.Dead {
+		if r.Archived || r.Dead || r.ArgusArchived {
 			continue
 		}
 		n++
@@ -504,7 +516,7 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	col += 2 // icon + space
 
 	nameStyle := theme.StyleNormal
-	if r.Archived || r.Dead {
+	if r.Archived || r.Dead || r.ArgusArchived {
 		nameStyle = theme.StyleDimmed
 	}
 	if cursor {
@@ -563,9 +575,29 @@ func (rl *railList) fillBackground(screen tcell.Screen, x, y, w int) {
 // (no live binding) → IconMoonOutline. Archived or dead (binding open
 // in DB but argus task is gone) → dimmed circle.
 func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
-	if r.Archived || r.Dead {
+	if r.Archived || r.Dead || r.ArgusArchived {
 		return '○', theme.StyleDimmed
 	}
+	// Prefer argus-reported state so the rail mirrors argus reality:
+	// needs-input, then done (complete/in_review), then in-progress
+	// idle/working, then pending.
+	if r.HasState {
+		switch {
+		case r.NeedsInput:
+			return theme.IconNeedsInput, theme.StyleNeedsInput
+		case r.Status == "complete":
+			return '✓', theme.StyleComplete
+		case r.Status == "in_review":
+			return '✓', theme.StyleInReview
+		case r.Status == "in_progress" && r.ArgusIdle:
+			return theme.IconMoonOutline, theme.StyleDimmed
+		case r.Status == "in_progress":
+			return theme.IconMoonStars, theme.StyleInProgress
+		case r.Status == "pending":
+			return theme.IconMoonOutline, theme.StylePending
+		}
+	}
+	// Fallback when argus state is unknown: hera binding presence.
 	if r.Live {
 		return theme.IconMoonStars, theme.StyleInReview
 	}
