@@ -233,6 +233,63 @@ func TestBuildApp_PopulatesRailFromDAOs(t *testing.T) {
 	}
 }
 
+// TestBuildApp_DoneRoleSurfacesLastBindingTaskID proves that a role whose
+// binding has ended (the agent finished / its argus task completed) still
+// carries its most-recent binding's argus task id on the rail row. Without
+// this the row's ArgusTaskID is empty and applyRailSelection never rebinds
+// the AGENT pane off it — the "right pane never changes / panes stuck on the
+// last live agent" bug. With it, selecting a done agent shows its last
+// output read-only (argus serves /api/tasks/{id}/output for completed tasks).
+func TestBuildApp_DoneRoleSurfacesLastBindingTaskID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, err := d.Orchestrators.Create(ctx, "foo")
+	if err != nil {
+		t.Fatalf("Create orchestrator: %v", err)
+	}
+	w, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "worker-done", Kind: db.KindWorker, ArgusProject: "foo",
+	})
+	if err != nil {
+		t.Fatalf("Create worker role: %v", err)
+	}
+	bnd, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: w.ID, ArgusTaskID: "done-task-id", WorktreePath: "/x",
+	})
+	if err != nil {
+		t.Fatalf("Create binding: %v", err)
+	}
+	// The agent finished: end the binding so no live binding remains.
+	if err := d.Bindings.End(ctx, bnd.ID, "completed"); err != nil {
+		t.Fatalf("End binding: %v", err)
+	}
+
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	var found *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == w.ID {
+				found = r
+			}
+		}
+	}
+	if found == nil {
+		t.Fatalf("worker-done role missing from rail; orchestrators=%+v", a.pieces.rail.orchestrators)
+	}
+	if found.Live {
+		t.Errorf("expected role non-live (binding ended), got Live=true")
+	}
+	if found.ArgusTaskID != "done-task-id" {
+		t.Errorf("done role ArgusTaskID = %q, want \"done-task-id\" (most-recent binding) — pane can't follow selection without it", found.ArgusTaskID)
+	}
+}
+
 func TestBuildApp_LiveBindingMarksRoleAndSubscribesPanes(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
