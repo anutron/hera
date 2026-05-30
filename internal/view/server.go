@@ -14,9 +14,16 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 )
+
+// supersedeDrainTimeout bounds how long a new /view upgrade waits for the
+// prior session to tear down. A wedged prior (peer killed without a close
+// handshake, render Write blocked on the dead socket) must never block the
+// new session indefinitely — after this, we proceed regardless.
+const supersedeDrainTimeout = 2 * time.Second
 
 // SessionFunc is the per-connection rendering entry point. It receives a
 // context that is cancelled when the connection is superseded (last-
@@ -131,11 +138,23 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	if prior != nil {
 		// Cancel the prior ctx so its runner exits, then wait for the
 		// session's defer chain (which CloseNow's the conn) to finish.
-		// A graceful close-frame handshake would block up to 5s when the
-		// peer isn't actively reading; CloseNow tears the underlying
-		// conn down immediately, which is what last-writer-wins needs.
+		//
+		// CloseNow the prior conn HERE, before waiting: if the peer was
+		// killed without a close handshake (e.g. argus restarted), the
+		// prior session's render Write is blocked on a dead-but-open
+		// socket and its runner can't observe the ctx cancel — so
+		// prior.done would never close and every new connection would
+		// wedge behind it (blank surface). Closing the underlying conn
+		// makes the blocked Read/Write return immediately so the runner
+		// exits. The wait is bounded as a backstop: a prior that still
+		// won't drain must not block the new session indefinitely.
 		prior.cancel()
-		<-prior.done
+		_ = prior.conn.CloseNow()
+		select {
+		case <-prior.done:
+		case <-time.After(supersedeDrainTimeout):
+			s.log.Warn("view: prior session did not drain in time; starting new session anyway")
+		}
 	}
 
 	go s.runSession(sessCtx, sess)
