@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -225,6 +226,19 @@ func TestLiveViewProbe(t *testing.T) {
 		time.Sleep(1500 * time.Millisecond)
 	} else {
 		time.Sleep(2500 * time.Millisecond)
+	}
+
+	// HERA_PROBE_RAW sends a single Go-quoted byte string as ONE binary frame
+	// so a multi-byte escape sequence (e.g. Ctrl-Right = "\x1b[1;5C") is parsed
+	// by tcell as one key event — useful for testing focus traversal that
+	// HERA_PROBE_KEYS (one byte per frame) can't express.
+	if raw := os.Getenv("HERA_PROBE_RAW"); raw != "" {
+		if decoded, err := strconv.Unquote(`"` + raw + `"`); err == nil {
+			_ = conn.Write(context.Background(), websocket.MessageBinary, []byte(decoded))
+			time.Sleep(1500 * time.Millisecond)
+		} else {
+			t.Logf("HERA_PROBE_RAW unquote failed: %v", err)
+		}
 	}
 
 	mu.Lock()

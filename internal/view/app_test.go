@@ -706,7 +706,7 @@ func TestFindInitialSelection_PrefersSecondOrchestratorWithLiveWorker(t *testing
 	}
 }
 
-func TestApp_OnRailSelectEnter_WorkerRebindsAgent(t *testing.T) {
+func TestApp_OnRailSelectEnter_WorkerRebindsAgentAndJumps(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 
@@ -734,9 +734,12 @@ func TestApp_OnRailSelectEnter_WorkerRebindsAgent(t *testing.T) {
 		t.Fatalf("could not locate w2 role row in rail")
 	}
 
+	// Enter binds the agent to w2's task AND jumps into the AGENT pane so the
+	// operator can type — the only reliable way in when argus eats the
+	// Cmd/Ctrl-arrow focus ladder. (Browsing is j/k, which rebinds live.)
 	got := a.OnRailSelectEnter()
-	if got != FocusRAIL {
-		t.Fatalf("Enter on worker row: want FocusRAIL (keep focus to browse), got %s", got)
+	if got != FocusAGENT {
+		t.Fatalf("Enter on worker row: want FocusAGENT (jump into PTY), got %s", got)
 	}
 	if a.AgentTaskID() != "t2" {
 		t.Fatalf("agent task after rebind: want t2, got %q", a.AgentTaskID())
