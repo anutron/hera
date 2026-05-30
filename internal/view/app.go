@@ -630,13 +630,22 @@ func (a *App) OnFocusChanged(state FocusState) {
 	}
 }
 
-// OnRailSelectEnter handles Enter pressed while RAIL has focus. It reads
-// the rail's currently-highlighted node, and if that node references a
-// live role binding it rebinds the matching pane (COORD for a
-// coordinator row, AGENT for a worker/freelance row) to the row's argus
-// task and returns the focus target the operator should land in.
-// Non-bindable rows (orchestrator headers, role rows without a live
-// binding) return FocusRAIL so the KeyRouter propagates Enter to the
+// OnRailSelectEnter handles Enter pressed while RAIL has focus. It binds the
+// panes to the highlighted row (exactly as a j/k browse would) and then
+// returns FocusAGENT so the operator lands IN the agent PTY ready to type —
+// per the spec ("From RAIL, Enter MUST jump directly to AGENT") and the
+// bottom-bar hint ("Enter agent").
+//
+// This is the ONLY reliable way into a pane when the view is hosted inside
+// argus: argus intercepts the Cmd/Ctrl-arrow focus-traversal keys for its own
+// navigation, so they never reach this plugin view. Enter (and Ctrl-Q to
+// return to RAIL) are forwarded, so Enter must be the way in. Browsing many
+// roles without entering a pane is done with j/k, which rebinds the panes live
+// via the selection-changed callback — so making Enter jump no longer harms
+// the browse flow.
+//
+// Non-bindable rows (orchestrator / freelance-repo headers, rows without a
+// live argus task) return FocusRAIL so the KeyRouter propagates Enter to the
 // tree for its native fold/unfold behavior.
 //
 // Satisfies the KeyRouter.RailSelectHandler contract. Runs on the tview
@@ -650,24 +659,10 @@ func (a *App) OnRailSelectEnter() FocusState {
 	if !ok || ref == nil || ref.ArgusTaskID == "" {
 		return FocusRAIL
 	}
-	// Browsing flow: Enter rebinds the appropriate pane but KEEPS focus
-	// on RAIL so subsequent j/k continues to navigate the tree and
-	// subsequent Enter rebinds again. To start typing into a pane, the
-	// operator uses the Ctrl-arrow ladder to move focus explicitly. (The
-	// original D4 design said Enter jumps to AGENT; live testing showed
-	// that broke the browse-many-roles flow because the second Enter was
-	// consumed by the focused pane instead of triggering another rebind.)
-	switch ref.RoleKind {
-	case string(db.KindCoordinator):
-		a.rebindCoord(ref.ArgusTaskID)
-	case string(db.KindFreelance):
-		// Enter may beat the selection debounce; ensure full-width mode.
-		a.enterFreelanceMode()
-		a.rebindAgent(ref.ArgusTaskID)
-	default:
-		a.rebindAgent(ref.ArgusTaskID)
-	}
-	return FocusRAIL
+	// Bind the panes for this row (handles freelance full-width mode, the
+	// orchestrator's coord, and the agent), then land in the AGENT pane.
+	a.applyRailSelection(ref)
+	return FocusAGENT
 }
 
 // rebindCoord swaps the COORD pane's underlying paneBridge / subscription
