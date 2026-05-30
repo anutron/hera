@@ -257,3 +257,51 @@ func TestRailList_RestoresCursorAcrossRebuild(t *testing.T) {
 		t.Fatalf("cursor not restored to w2 after rebuild; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
 	}
 }
+
+func TestRailList_FreelanceSectionRendersAndCollapses(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", Roles: []*roleEntry{{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true}}},
+	})
+	rl.SetFreelance([]*freelanceProject{
+		{Project: "Beta", Tasks: []*roleEntry{
+			{RoleKind: "freelance", Name: "free-1", ArgusTaskID: "f1", HasState: true, Status: "in_progress", ElapsedOverride: "5m"},
+		}},
+	})
+
+	got := renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "Freelance") {
+		t.Fatalf("expected Freelance separator; got:\n%s", got)
+	}
+	if !strings.Contains(got, "▾ Beta (1)") {
+		t.Fatalf("expected expanded Beta repo header with count; got:\n%s", got)
+	}
+	if !strings.Contains(got, "free-1") {
+		t.Fatalf("expected freelance task row; got:\n%s", got)
+	}
+
+	// Collapse the Beta repo group via its header.
+	if !rl.SelectByProject("Beta") {
+		t.Fatalf("could not select Beta freelance header")
+	}
+	rl.ToggleCollapse()
+	got = renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▸ Beta (1)") {
+		t.Fatalf("expected collapsed Beta header; got:\n%s", got)
+	}
+	if strings.Contains(got, "free-1") {
+		t.Fatalf("expected freelance task hidden when collapsed; got:\n%s", got)
+	}
+}
+
+func TestRailList_NoFreelanceSectionWhenEmpty(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", Roles: []*roleEntry{{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true}}},
+	})
+	rl.SetFreelance(nil)
+	got := renderRail(t, rl, 30, 10)
+	if strings.Contains(got, "Freelance") {
+		t.Fatalf("Freelance separator must be omitted when there are no freelancers; got:\n%s", got)
+	}
+}

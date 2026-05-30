@@ -3,6 +3,7 @@ package view
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -42,6 +43,16 @@ type App struct {
 
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool
+
+	// freelanceMode is true while a freelance row is selected: the body is
+	// rail + a single full-width agent pane with the coord pane removed from
+	// the Flex and its subscription torn down (D11 dual-mode layout).
+	freelanceMode bool
+
+	// focus is the session's focus machine, injected via SetFocusMachine so
+	// the App can flip coordPresent when it enters/leaves freelance mode.
+	// nil in tests that build the App without a router.
+	focus *FocusMachine
 
 	// database is retained for RepopulateRail so the bridge can ask
 	// for a refresh without round-tripping back through the daemon.
@@ -142,6 +153,15 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 // handle.
 func (a *App) Application() *tview.Application {
 	return a.app
+}
+
+// SetFocusMachine injects the session's focus machine so the App can toggle
+// its coordPresent flag when switching to/from freelance (full-width) mode.
+// Called once during session wiring, after the machine is constructed.
+func (a *App) SetFocusMachine(f *FocusMachine) {
+	a.mu.Lock()
+	a.focus = f
+	a.mu.Unlock()
 }
 
 // Close stops the terminalpane consumer goroutines, cancels each pane's
@@ -361,8 +381,70 @@ func (a *App) populateRail(database *db.DB) error {
 	}
 
 	a.pieces.rail.SetShowArchived(a.showArchived)
+	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database))
 	a.pieces.rail.SetOrchestrators(entries)
 	return nil
+}
+
+// buildFreelance partitions the live argus task list into the Freelance
+// section: every non-archived argus task that hera has never bound (a
+// "freelancer") grouped by argus project/repo, "the same way Argus shows
+// them". Returns nil when no FreelanceProvider is wired (tests) or no
+// freelancers exist. Archived freelancers are included only when
+// showArchived is set, so the active rail mirrors argus's non-archived set.
+func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceProject {
+	prov, ok := a.src.(FreelanceProvider)
+	if !ok {
+		return nil
+	}
+	tasks := prov.LiveTasks()
+	if len(tasks) == 0 {
+		return nil
+	}
+	bound, err := database.Bindings.AllArgusTaskIDs(ctx)
+	if err != nil {
+		// On a query failure, fail safe to "everything looks managed" so we
+		// never mislabel a hera-managed task as a freelancer.
+		return nil
+	}
+
+	byProject := map[string]*freelanceProject{}
+	var order []string
+	for _, t := range tasks {
+		if _, managed := bound[t.ID]; managed {
+			continue
+		}
+		if t.State.Archived && !a.showArchived {
+			continue
+		}
+		fp, seen := byProject[t.Project]
+		if !seen {
+			fp = &freelanceProject{Project: t.Project}
+			byProject[t.Project] = fp
+			order = append(order, t.Project)
+		}
+		fp.Tasks = append(fp.Tasks, &roleEntry{
+			RoleKind:        string(db.KindFreelance),
+			Name:            t.Name,
+			ArgusTaskID:     t.ID,
+			Live:            t.State.Status == "in_progress" && !t.State.Idle,
+			ElapsedOverride: t.Elapsed,
+			HasState:        true,
+			Status:          t.State.Status,
+			ArgusIdle:       t.State.Idle,
+			NeedsInput:      t.State.NeedsInput,
+			ArgusArchived:   t.State.Archived,
+		})
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	sort.Strings(order)
+	out := make([]*freelanceProject, 0, len(order))
+	for _, p := range order {
+		out = append(out, byProject[p])
+	}
+	return out
 }
 
 // RepopulateRail re-renders the rail from the current DB state. Safe
@@ -519,7 +601,10 @@ func (a *App) OnFocusChanged(state FocusState) {
 	// for "which element am I driving right now". Without this the bar stays
 	// a static [RAIL] string and pane focus looks like a frozen rail.
 	if a.pieces.bottom != nil {
-		a.pieces.bottom.SetText(bottomBarText(state))
+		a.mu.Lock()
+		coordPresent := !a.freelanceMode
+		a.mu.Unlock()
+		a.pieces.bottom.SetText(bottomBarText(state, coordPresent))
 	}
 
 	a.pieces.rail.SetBorderColor(unfocused)
@@ -572,9 +657,14 @@ func (a *App) OnRailSelectEnter() FocusState {
 	// original D4 design said Enter jumps to AGENT; live testing showed
 	// that broke the browse-many-roles flow because the second Enter was
 	// consumed by the focused pane instead of triggering another rebind.)
-	if ref.RoleKind == string(db.KindCoordinator) {
+	switch ref.RoleKind {
+	case string(db.KindCoordinator):
 		a.rebindCoord(ref.ArgusTaskID)
-	} else {
+	case string(db.KindFreelance):
+		// Enter may beat the selection debounce; ensure full-width mode.
+		a.enterFreelanceMode()
+		a.rebindAgent(ref.ArgusTaskID)
+	default:
 		a.rebindAgent(ref.ArgusTaskID)
 	}
 	return FocusRAIL
@@ -717,16 +807,31 @@ func (a *App) applyRailSelection(ref any) {
 		if r == nil {
 			return
 		}
+		a.exitFreelanceMode()
 		if r.CoordTaskID != "" {
 			a.rebindCoord(r.CoordTaskID)
 		}
 		// Header selection leaves the agent pane alone so the last-
 		// picked agent stays visible while the operator changes coord
 		// targets. Selecting an agent row (below) rebinds both panes.
+	case *freelanceProject:
+		// A Freelance repo-group header is not pane-bindable; leave the
+		// panes and the current mode untouched (selecting a task row under
+		// it switches to freelance mode).
+		return
 	case *roleEntry:
 		if r == nil {
 			return
 		}
+		if r.RoleKind == string(db.KindFreelance) {
+			// Freelancer selected: full-width agent, no coord (D11).
+			a.enterFreelanceMode()
+			if r.ArgusTaskID != "" {
+				a.rebindAgent(r.ArgusTaskID)
+			}
+			return
+		}
+		a.exitFreelanceMode()
 		// Locate the orchestrator so we can also rebind COORD to its
 		// coord task. orchestrators is the rail's source of truth so a
 		// linear walk is cheap.
@@ -754,8 +859,65 @@ func (a *App) refreshBody() {
 	if body == nil {
 		return
 	}
+	a.mu.Lock()
+	freelance := a.freelanceMode
+	a.mu.Unlock()
+
 	body.Clear()
 	body.AddItem(a.pieces.rail, RailWidth, 0, false)
-	body.AddItem(a.pieces.coord, 0, 1, false)
+	if !freelance {
+		// Normal three-column layout. In freelance mode the coord pane is
+		// removed entirely (not hidden) so the agent pane takes the whole
+		// canvas — a freelancer has no coordinator pairing worth showing.
+		body.AddItem(a.pieces.coord, 0, 1, false)
+	}
 	body.AddItem(a.pieces.agent, 0, 1, false)
+}
+
+// enterFreelanceMode switches the body to rail + full-width agent. It tears
+// down the coord pane's subscription (rebindCoord to the empty task) and
+// tells the focus machine the coord position no longer exists so traversal
+// skips it. Idempotent. Runs on the tview event loop.
+func (a *App) enterFreelanceMode() {
+	a.mu.Lock()
+	if a.freelanceMode {
+		a.mu.Unlock()
+		return
+	}
+	a.freelanceMode = true
+	focus := a.focus
+	a.mu.Unlock()
+
+	// Release the coord subscription and blank the coord task so no
+	// keystroke can route to a coordinator while in freelance mode.
+	a.rebindCoord("")
+	// rebindCoord no-ops (and skips refreshBody) when coord was already
+	// unbound; call refreshBody unconditionally so the coord pane leaves the
+	// Flex on the first entry even from an already-blank coord.
+	a.refreshBody()
+
+	if focus != nil {
+		focus.SetCoordPresent(false)
+		a.OnFocusChanged(focus.State())
+	}
+}
+
+// exitFreelanceMode restores the normal three-column body. The caller
+// (applyRailSelection) rebinds the coord pane to the selected row's coord
+// task immediately after. Idempotent. Runs on the tview event loop.
+func (a *App) exitFreelanceMode() {
+	a.mu.Lock()
+	if !a.freelanceMode {
+		a.mu.Unlock()
+		return
+	}
+	a.freelanceMode = false
+	focus := a.focus
+	a.mu.Unlock()
+
+	a.refreshBody()
+	if focus != nil {
+		focus.SetCoordPresent(true)
+		a.OnFocusChanged(focus.State())
+	}
 }

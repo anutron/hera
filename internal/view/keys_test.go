@@ -133,6 +133,45 @@ func TestFocusMachine_JumpToAGENT(t *testing.T) {
 	}
 }
 
+// TestFocusMachine_FreelanceSkipsCoord proves that with no coord pane
+// (freelance mode), traversal jumps RAIL ↔ AGENT directly, never landing on
+// COORD.
+func TestFocusMachine_FreelanceSkipsCoord(t *testing.T) {
+	f := NewFocusMachine()
+	f.SetCoordPresent(false)
+
+	f.Advance()
+	if f.State() != FocusAGENT {
+		t.Fatalf("Advance from RAIL with no coord: want AGENT, got %s", f.State())
+	}
+	f.Advance()
+	if f.State() != FocusAGENT {
+		t.Fatalf("Advance from AGENT must be no-op: got %s", f.State())
+	}
+	f.Retreat()
+	if f.State() != FocusRAIL {
+		t.Fatalf("Retreat from AGENT with no coord: want RAIL, got %s", f.State())
+	}
+}
+
+// TestFocusMachine_SetCoordPresentBumpsOffCoord proves that removing the
+// coord pane while focus rests on COORD bumps focus to AGENT so no keystroke
+// is forwarded to a torn-down pane.
+func TestFocusMachine_SetCoordPresentBumpsOffCoord(t *testing.T) {
+	f := NewFocusMachine()
+	f.Advance() // RAIL → COORD
+	if f.State() != FocusCOORD {
+		t.Fatalf("setup: want COORD, got %s", f.State())
+	}
+	changed := f.SetCoordPresent(false)
+	if !changed {
+		t.Fatalf("SetCoordPresent(false) on COORD should report a state change")
+	}
+	if f.State() != FocusAGENT {
+		t.Fatalf("after coord removed: want AGENT, got %s", f.State())
+	}
+}
+
 // --- KeyRouter focus traversal ---
 
 func TestKeyRouter_CtrlRight_RAILtoCOORD(t *testing.T) {

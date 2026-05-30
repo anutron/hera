@@ -16,6 +16,10 @@ type Task struct {
 	Project      string `json:"project"`
 	Status       string `json:"status"`
 	WorktreePath string `json:"worktree_path"`
+	// Elapsed is argus's pre-formatted age string ("16m", "4d") — the rail
+	// renders it verbatim for freelance rows so their elapsed column matches
+	// argus's own ("the same way Argus shows them"). Absent on old daemons.
+	Elapsed string `json:"elapsed,omitempty"`
 	// Idle / NeedsInput are runtime-derived flags argus serves only while
 	// Status == in_progress (omitempty, so absent == false). NeedsInput
 	// requires argus >= the plugin-substrate build; older daemons omit it.

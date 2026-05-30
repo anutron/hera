@@ -90,19 +90,28 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 // element currently holds focus (alongside the colored border); without it,
 // advancing focus into a pane looks like nothing happened and rail navigation
 // appears frozen because j/k are forwarded to the focused pane's PTY.
-func bottomBarText(state FocusState) string {
+// coordPresent controls whether the bar advertises the COORD pane. In
+// freelance mode (D11) there is no coord, so the hints drop the coord step:
+// RAIL advances straight to AGENT and AGENT retreats straight to RAIL.
+func bottomBarText(state FocusState, coordPresent bool) string {
 	switch state {
 	case FocusCOORD:
 		return "[COORD] keys → coord PTY   Ctrl-→ agent   Ctrl-← rail   ^Q rail"
 	case FocusAGENT:
+		if !coordPresent {
+			return "[AGENT] keys → agent PTY   Ctrl-← rail   ^Q rail"
+		}
 		return "[AGENT] keys → agent PTY   Ctrl-← coord   ^Q rail"
 	default:
+		if !coordPresent {
+			return "[RAIL] j/k move  Enter agent  Ctrl-→ agent  n new  r rename  ^d del  a archive  l listall  ? help"
+		}
 		return "[RAIL] j/k move  Enter agent  Ctrl-→ coord  n new  r rename  ^d del  a archive  l listall  ? help"
 	}
 }
 
 // defaultBottomBarText is the initial (RAIL-focus) bar shown by buildLayout
-// before the first focus change.
+// before the first focus change. The initial layout always has a coord pane.
 func defaultBottomBarText() string {
-	return bottomBarText(FocusRAIL)
+	return bottomBarText(FocusRAIL, true)
 }

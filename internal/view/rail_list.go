@@ -28,6 +28,7 @@ type railList struct {
 	*tview.Box
 
 	orchestrators []*orchEntry
+	freelance     []*freelanceProject
 	rows          []railRow
 	cursor        int
 	offset        int
@@ -36,6 +37,12 @@ type railList struct {
 	// expanded; an entry is created the first time the operator hides
 	// a section so the (zero-value) default behavior is "expanded".
 	collapsed map[int64]bool
+
+	// freelanceCollapsed tracks which Freelance repo groups are collapsed,
+	// keyed by project name. Default expanded — surfacing freelancers is the
+	// whole point (the operator should never leave hera to notice an
+	// unmanaged agent needs attention).
+	freelanceCollapsed map[string]bool
 
 	// showArchived, when true, includes archived orchestrators and roles
 	// in the rendered rows below the Archive separator.
@@ -97,6 +104,20 @@ type roleEntry struct {
 	ArgusIdle     bool
 	NeedsInput    bool
 	ArgusArchived bool
+
+	// ElapsedOverride, when non-empty, is rendered verbatim in the elapsed
+	// column instead of computing from StartedAt. Freelance rows use argus's
+	// pre-formatted age string so their column matches argus's own rail.
+	ElapsedOverride string
+}
+
+// freelanceProject is one repo's worth of freelance agents — unmanaged
+// argus tasks (no hera binding) grouped under the Freelance section by
+// argus project, "the same way Argus shows them". Tasks are roleEntry
+// values with RoleKind == "freelance" and OrchestratorID == 0.
+type freelanceProject struct {
+	Project string
+	Tasks   []*roleEntry
 }
 
 type railRowKind uint8
@@ -105,22 +126,26 @@ const (
 	railRowOrch railRowKind = iota
 	railRowRole
 	railRowArchiveSep
+	railRowFreelanceSep
+	railRowFreelanceProj
 	railRowEmpty
 )
 
 type railRow struct {
-	kind railRowKind
-	orch *orchEntry
-	role *roleEntry
+	kind  railRowKind
+	orch  *orchEntry
+	role  *roleEntry
+	fproj *freelanceProject
 }
 
 // newRailList constructs an empty rail widget. SetBorder is enabled so
 // OnFocusChanged's SetBorderColor still drives the focus-color paint.
 func newRailList() *railList {
 	rl := &railList{
-		Box:             tview.NewBox(),
-		collapsed:       map[int64]bool{},
-		lastFiredCursor: -1,
+		Box:                tview.NewBox(),
+		collapsed:          map[int64]bool{},
+		freelanceCollapsed: map[string]bool{},
+		lastFiredCursor:    -1,
 	}
 	rl.SetBorder(true)
 	rl.SetTitle("Rail")
@@ -168,6 +193,19 @@ func (rl *railList) SetOrchestrators(orchs []*orchEntry) {
 	rl.maybeFireSelectionChanged()
 }
 
+// SetFreelance replaces the rail's Freelance-section data (repo groups of
+// unmanaged argus tasks) and rebuilds rows, preserving the cursor where
+// possible. Called by populateRail alongside SetOrchestrators.
+func (rl *railList) SetFreelance(projects []*freelanceProject) {
+	prev := rl.currentRef()
+	rl.freelance = projects
+	rl.buildRows()
+	if !rl.restoreCursor(prev) {
+		rl.cursor = rl.firstSelectableRow()
+	}
+	rl.maybeFireSelectionChanged()
+}
+
 // SetShowArchived toggles archive-section visibility and rebuilds.
 func (rl *railList) SetShowArchived(v bool) {
 	if rl.showArchived == v {
@@ -200,6 +238,8 @@ func (rl *railList) currentRef() any {
 		return r.orch
 	case railRowRole:
 		return r.role
+	case railRowFreelanceProj:
+		return r.fproj
 	}
 	return nil
 }
@@ -225,6 +265,20 @@ func (rl *railList) SelectByRoleID(id int64) bool {
 func (rl *railList) SelectByOrchID(id int64) bool {
 	for i, r := range rl.rows {
 		if r.kind == railRowOrch && r.orch != nil && r.orch.ID == id {
+			rl.cursor = i
+			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
+			return true
+		}
+	}
+	return false
+}
+
+// SelectByProject moves the cursor to the Freelance repo-group header for
+// the given project. Returns true on success.
+func (rl *railList) SelectByProject(project string) bool {
+	for i, r := range rl.rows {
+		if r.kind == railRowFreelanceProj && r.fproj != nil && r.fproj.Project == project {
 			rl.cursor = i
 			rl.clampOffset()
 			rl.maybeFireSelectionChanged()
@@ -260,7 +314,7 @@ func (rl *railList) selectable(i int) bool {
 		return false
 	}
 	switch rl.rows[i].kind {
-	case railRowOrch, railRowRole:
+	case railRowOrch, railRowRole, railRowFreelanceProj:
 		return true
 	}
 	return false
@@ -283,21 +337,41 @@ func (rl *railList) ToggleCollapse() {
 		return
 	}
 	var orch *orchEntry
+	var fproj *freelanceProject
 	switch r := rl.rows[rl.cursor]; r.kind {
 	case railRowOrch:
 		orch = r.orch
+	case railRowFreelanceProj:
+		fproj = r.fproj
 	case railRowRole:
-		for _, o := range rl.orchestrators {
-			if r.role != nil && o.ID == r.role.OrchestratorID {
-				orch = o
-				break
+		// A freelance task row (OrchestratorID 0) collapses its repo group;
+		// a worker row collapses its orchestrator.
+		if r.role != nil && r.role.OrchestratorID == 0 {
+			for _, fp := range rl.freelance {
+				for _, t := range fp.Tasks {
+					if t == r.role {
+						fproj = fp
+						break
+					}
+				}
+			}
+		} else {
+			for _, o := range rl.orchestrators {
+				if r.role != nil && o.ID == r.role.OrchestratorID {
+					orch = o
+					break
+				}
 			}
 		}
 	}
-	if orch == nil {
+	switch {
+	case orch != nil:
+		rl.collapsed[orch.ID] = !rl.collapsed[orch.ID]
+	case fproj != nil:
+		rl.freelanceCollapsed[fproj.Project] = !rl.freelanceCollapsed[fproj.Project]
+	default:
 		return
 	}
-	rl.collapsed[orch.ID] = !rl.collapsed[orch.ID]
 	prev := rl.currentRef()
 	rl.buildRows()
 	rl.restoreCursor(prev)
@@ -315,6 +389,10 @@ func (rl *railList) restoreCursor(prev any) bool {
 		}
 	case *orchEntry:
 		if ref != nil && rl.SelectByOrchID(ref.ID) {
+			return true
+		}
+	case *freelanceProject:
+		if ref != nil && rl.SelectByProject(ref.Project) {
 			return true
 		}
 	}
@@ -365,6 +443,30 @@ func (rl *railList) buildRows() {
 	for _, o := range active {
 		appendOrch(o)
 	}
+
+	// Freelance section: unmanaged argus tasks grouped by repo, rendered
+	// below all project rows and above the Archive separator. The "Freelance"
+	// separator only appears when at least one freelance repo group has live
+	// rows, so the operator never lands on an empty section.
+	if len(rl.freelance) > 0 {
+		rl.rows = append(rl.rows, railRow{kind: railRowFreelanceSep})
+		for _, fp := range rl.freelance {
+			rl.rows = append(rl.rows, railRow{kind: railRowFreelanceProj, fproj: fp})
+			if rl.freelanceCollapsed[fp.Project] {
+				continue
+			}
+			for _, t := range fp.Tasks {
+				if (t.Archived || t.ArgusArchived) && !rl.showArchived {
+					continue
+				}
+				if t.Dead && !rl.showArchived {
+					continue
+				}
+				rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
+			}
+		}
+	}
+
 	if rl.showArchived && len(archived) > 0 {
 		rl.rows = append(rl.rows, railRow{kind: railRowArchiveSep})
 		for _, o := range archived {
@@ -430,7 +532,11 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		case railRowRole:
 			rl.drawRoleRow(screen, x, y+i, w, row.role, cursor)
 		case railRowArchiveSep:
-			rl.drawArchiveSeparator(screen, x, y+i, w)
+			rl.drawSeparator(screen, x, y+i, w, " Archive ")
+		case railRowFreelanceSep:
+			rl.drawSeparator(screen, x, y+i, w, " Freelance ")
+		case railRowFreelanceProj:
+			rl.drawFreelanceProjRow(screen, x, y+i, w, row.fproj, cursor)
 		case railRowEmpty:
 			widget.DrawText(screen, x, y+i, w, "(no projects)", theme.StyleDimmed)
 		}
@@ -541,9 +647,58 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	}
 }
 
-func (rl *railList) drawArchiveSeparator(screen tcell.Screen, x, y, w int) {
+// drawFreelanceProjRow renders a Freelance repo-group header: a collapse
+// chevron, the project name, and the right-aligned live count. Mirrors the
+// orchestrator header so the operator reads the rail uniformly.
+func (rl *railList) drawFreelanceProjRow(screen tcell.Screen, x, y, w int, fp *freelanceProject, cursor bool) {
+	if fp == nil {
+		return
+	}
+	if cursor {
+		rl.fillBackground(screen, x, y, w)
+	}
+	chevron := '▾'
+	if rl.freelanceCollapsed[fp.Project] {
+		chevron = '▸'
+	}
+	col := x
+	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+	col += 2
+
+	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
+	name := fp.Project
+	count := fmt.Sprintf(" (%d)", rl.visibleFreelanceCount(fp))
+	maxName := w - (col - x) - runeLen(count)
+	if maxName < 0 {
+		maxName = 0
+	}
+	name = truncRunes(name, maxName)
+	widget.DrawText(screen, col, y, maxName, name, nameStyle)
+	col += runeLen(name)
+	if col-x+runeLen(count) <= w {
+		widget.DrawText(screen, col, y, runeLen(count), count, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+	}
+}
+
+func (rl *railList) visibleFreelanceCount(fp *freelanceProject) int {
+	if fp == nil {
+		return 0
+	}
+	if rl.showArchived {
+		return len(fp.Tasks)
+	}
+	n := 0
+	for _, t := range fp.Tasks {
+		if t.Archived || t.Dead || t.ArgusArchived {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func (rl *railList) drawSeparator(screen tcell.Screen, x, y, w int, label string) {
 	style := tcell.StyleDefault.Foreground(theme.ColorDimmed)
-	label := " Archive "
 	dashes := w - runeLen(label)
 	if dashes < 0 {
 		dashes = 0
@@ -607,6 +762,9 @@ func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
 // elapsed formats the time since r.StartedAt using argus's "10s/10m/10h/10d"
 // shape. Returns empty when the role has no meaningful start time.
 func (rl *railList) elapsed(r *roleEntry) string {
+	if r.ElapsedOverride != "" {
+		return r.ElapsedOverride
+	}
 	if r.StartedAt.IsZero() {
 		return ""
 	}

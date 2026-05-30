@@ -35,36 +35,66 @@ func (s FocusState) String() string {
 // FocusMachine is the three-state focus machine. All transitions are
 // in-process and synchronous; not safe for concurrent callers (the tview
 // input pump is single-threaded by contract).
+//
+// coordPresent reflects whether the COORD pane is currently in the layout.
+// In freelance mode (D11) the body is rail + a single full-width agent pane
+// with no coord, so the COORD position is skipped on traversal and focus is
+// never allowed to rest there.
 type FocusMachine struct {
-	state FocusState
+	state        FocusState
+	coordPresent bool
 }
 
 // NewFocusMachine returns a machine starting in RAIL focus, matching the
-// first-open requirement.
+// first-open requirement. coordPresent defaults true (the normal three-
+// column layout).
 func NewFocusMachine() *FocusMachine {
-	return &FocusMachine{state: FocusRAIL}
+	return &FocusMachine{state: FocusRAIL, coordPresent: true}
 }
 
 // State returns the current focus state.
 func (f *FocusMachine) State() FocusState { return f.state }
 
-// Advance moves focus one step right along RAIL → COORD → AGENT. From
-// AGENT the call is a no-op (you can't advance past the rightmost pane).
+// SetCoordPresent records whether the COORD pane is in the layout. When the
+// coord pane is removed while focus rests on it, focus is bumped to AGENT so
+// no keystroke is forwarded to a torn-down pane. Returns true when the focus
+// state changed as a side effect (caller should repaint).
+func (f *FocusMachine) SetCoordPresent(v bool) bool {
+	f.coordPresent = v
+	if !v && f.state == FocusCOORD {
+		f.state = FocusAGENT
+		return true
+	}
+	return false
+}
+
+// Advance moves focus one step right along RAIL → COORD → AGENT. In
+// freelance mode (no coord) RAIL advances straight to AGENT. From AGENT the
+// call is a no-op (you can't advance past the rightmost pane).
 func (f *FocusMachine) Advance() {
 	switch f.state {
 	case FocusRAIL:
-		f.state = FocusCOORD
+		if f.coordPresent {
+			f.state = FocusCOORD
+		} else {
+			f.state = FocusAGENT
+		}
 	case FocusCOORD:
 		f.state = FocusAGENT
 	}
 }
 
-// Retreat moves focus one step left along AGENT → COORD → RAIL. From RAIL
-// the call is a no-op.
+// Retreat moves focus one step left along AGENT → COORD → RAIL. In freelance
+// mode (no coord) AGENT retreats straight to RAIL. From RAIL the call is a
+// no-op.
 func (f *FocusMachine) Retreat() {
 	switch f.state {
 	case FocusAGENT:
-		f.state = FocusCOORD
+		if f.coordPresent {
+			f.state = FocusCOORD
+		} else {
+			f.state = FocusRAIL
+		}
 	case FocusCOORD:
 		f.state = FocusRAIL
 	}
