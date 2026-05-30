@@ -36,7 +36,7 @@ import (
 // or the WebSocket peer closes. On exit it tears down the pluginview, the
 // tview Application, and every pane subscription owned by this session;
 // the daemon-level proxy subscriptions survive.
-func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client, log *slog.Logger) SessionFunc {
+func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client, states *ArgusStateCache, log *slog.Logger) SessionFunc {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -49,7 +49,7 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 
 		src := PaneSource(nilPaneSource{})
 		if manager != nil {
-			src = managerPaneSource{mgr: manager, ctx: ctx}
+			src = managerPaneSource{mgr: manager, ctx: ctx, states: states}
 		}
 
 		app, err := BuildApp(database, src)
@@ -67,6 +67,25 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// without crossing the tview-single-threaded boundary itself.
 		rail := NewRailRefresher(database.Events, app.RepopulateRail)
 		defer rail.Stop()
+
+		// Also repaint the rail when argus task state changes (status /
+		// idle / needs-input / archive) so it tracks argus reality live,
+		// not only hera DB events. The cache coalesces + polls, so an
+		// undebounced repaint per signal is fine.
+		if states != nil {
+			stateCh, cancelStateSub := states.Subscribe()
+			defer cancelStateSub()
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-stateCh:
+						app.RepopulateRail()
+					}
+				}
+			}()
+		}
 
 		tApp := app.Application()
 		// SetScreen calls scr.Init() before Run sees it; subsequent Run()
@@ -130,8 +149,18 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 // per-task Subscription (seeded at daemon startup) and registers a new
 // fan-out Listener for this session.
 type managerPaneSource struct {
-	mgr *ProxyManager
-	ctx context.Context
+	mgr    *ProxyManager
+	ctx    context.Context
+	states *ArgusStateCache
+}
+
+// TaskState satisfies view.TaskStateProvider, exposing the daemon's argus
+// state cache to the rail so icons + archived hiding reflect argus reality.
+func (p managerPaneSource) TaskState(taskID string) (ArgusTaskState, bool) {
+	if p.states == nil || taskID == "" {
+		return ArgusTaskState{}, false
+	}
+	return p.states.Get(taskID)
 }
 
 // SubscribeTask returns the live ring snapshot and the per-listener byte

@@ -16,6 +16,14 @@ type Task struct {
 	Project      string `json:"project"`
 	Status       string `json:"status"`
 	WorktreePath string `json:"worktree_path"`
+	// Idle / NeedsInput are runtime-derived flags argus serves only while
+	// Status == in_progress (omitempty, so absent == false). NeedsInput
+	// requires argus >= the plugin-substrate build; older daemons omit it.
+	Idle       bool `json:"idle,omitempty"`
+	NeedsInput bool `json:"needs_input,omitempty"`
+	// Archived mirrors argus's is_archived. Hera uses it to keep archived
+	// argus tasks out of the active rail (omitempty, so absent == false).
+	Archived bool `json:"archived,omitempty"`
 }
 
 // ListTasksResponse is argus's GET /api/tasks payload envelope.

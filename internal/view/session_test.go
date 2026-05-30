@@ -15,7 +15,7 @@ import (
 // the session closes.
 func TestSession_RailRefresherSubscribedAndStoppedOnClose(t *testing.T) {
 	d := openTestDB(t)
-	runner := NewSessionFunc(d, nil, nil, slog.Default())
+	runner := NewSessionFunc(d, nil, nil, nil, slog.Default())
 	srv := NewServer(nil, runner)
 	t.Cleanup(srv.Stop)
 

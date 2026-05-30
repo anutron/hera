@@ -233,6 +233,105 @@ func TestBuildApp_PopulatesRailFromDAOs(t *testing.T) {
 	}
 }
 
+// statePaneSource is a fakePaneSource extended with TaskStateProvider so
+// rail-rendering tests can drive argus task state (status/idle/needs-input/
+// archived).
+type statePaneSource struct {
+	fakePaneSource
+	states map[string]ArgusTaskState
+}
+
+func (s *statePaneSource) TaskState(taskID string) (ArgusTaskState, bool) {
+	st, ok := s.states[taskID]
+	return st, ok
+}
+
+// TestBuildApp_RailRowReflectsArgusState proves a row picks up the argus-
+// reported state for its bound task (status drives the icon, not hera's
+// binding presence). A live worker bound to a task argus reports as
+// "complete" must render as done, not idle.
+func TestBuildApp_RailRowReflectsArgusState(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "foo")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	w, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "foo",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: w.ID, ArgusTaskID: "wtask", WorktreePath: "/w",
+	}); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+
+	src := &statePaneSource{states: map[string]ArgusTaskState{
+		"wtask": {Status: "complete"},
+	}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	var got *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == w.ID {
+				got = r
+			}
+		}
+	}
+	if got == nil {
+		t.Fatalf("worker role missing from rail")
+	}
+	if !got.HasState || got.Status != "complete" {
+		t.Errorf("row did not reflect argus state: HasState=%v Status=%q, want true/\"complete\"", got.HasState, got.Status)
+	}
+}
+
+// TestBuildApp_ArgusArchivedRoleHiddenFromActiveRail proves a role whose
+// argus task is archived is kept out of the active rail (matching argus's
+// non-archived set), even though hera itself hasn't archived the role.
+func TestBuildApp_ArgusArchivedRoleHiddenFromActiveRail(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "foo")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	w, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "foo",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: w.ID, ArgusTaskID: "wtask", WorktreePath: "/w",
+	}); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+
+	src := &statePaneSource{states: map[string]ArgusTaskState{
+		"wtask": {Status: "complete", Archived: true},
+	}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	for _, row := range a.pieces.rail.rows {
+		if row.kind == railRowRole && row.role != nil && row.role.RoleID == w.ID {
+			t.Errorf("argus-archived role must be hidden from the active rail by default, but it rendered as a visible row")
+		}
+	}
+}
+
 // TestBuildApp_DoneRoleSurfacesLastBindingTaskID proves that a role whose
 // binding has ended (the agent finished / its argus task completed) still
 // carries its most-recent binding's argus task id on the rail row. Without
