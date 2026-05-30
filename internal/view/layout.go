@@ -85,8 +85,24 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 	}
 }
 
-// defaultBottomBarText returns the RAIL-focus bottom-bar hints used as a
-// placeholder until Stage G/H wires a focus-state-aware bar.
+// bottomBarText returns the focus-state-aware bottom-bar hints. The bracketed
+// label ([RAIL]/[COORD]/[AGENT]) is the operator's primary cue for which
+// element currently holds focus (alongside the colored border); without it,
+// advancing focus into a pane looks like nothing happened and rail navigation
+// appears frozen because j/k are forwarded to the focused pane's PTY.
+func bottomBarText(state FocusState) string {
+	switch state {
+	case FocusCOORD:
+		return "[COORD] keys → coord PTY   Ctrl-→ agent   Ctrl-← rail   ^Q rail"
+	case FocusAGENT:
+		return "[AGENT] keys → agent PTY   Ctrl-← coord   ^Q rail"
+	default:
+		return "[RAIL] j/k move  Enter agent  Ctrl-→ coord  n new  r rename  ^d del  a archive  l listall  ? help"
+	}
+}
+
+// defaultBottomBarText is the initial (RAIL-focus) bar shown by buildLayout
+// before the first focus change.
 func defaultBottomBarText() string {
-	return "[RAIL] j/k move  Enter agent  Ctrl-→ coord  n new  r rename  ^d del  a archive  l listall  ? help"
+	return bottomBarText(FocusRAIL)
 }
