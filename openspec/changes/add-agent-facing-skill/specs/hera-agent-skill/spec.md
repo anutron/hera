@@ -42,12 +42,17 @@ The skill SHALL provide decision rules covering: `hera_join` claim mode vs attac
 
 ### Requirement: Skill describes composition with sibling plugins
 
-The skill SHALL describe how hera composes with sibling argus plugins — at minimum plannotator-argus (review UI) — and make clear that hera covers identity, messaging, and coordination while those plugins are reached through their own MCP tools.
+The skill SHALL describe how hera composes with sibling argus plugins — at minimum plannotator-argus (review UI) and iris (host-side git/gh) — and make clear that hera covers identity, messaging, and coordination while those plugins are reached through their own MCP tools.
 
 #### Scenario: Sibling composition is documented
 
 - **WHEN** the skill body is read
 - **THEN** it SHALL describe the seam between hera and plannotator-argus
+
+#### Scenario: The hera/iris seam is explicit, not silent
+
+- **WHEN** the skill body is read
+- **THEN** it SHALL name iris as an independent sibling plugin and state the seam — hera coordinates who does what, iris performs the host-side landing (push / PR / merge) — so a reading agent knows to pick per op rather than conflating the two
 
 ### Requirement: Skill lists common Bash and skill mistakes
 
@@ -120,6 +125,21 @@ The script MUST be idempotent. A skill symlink already pointing at the repo sour
 - **WHEN** `./install-claude-skills.sh` runs in interactive mode
 - **THEN** the skill-symlink step and the snippet-append step SHALL each present their own Y/n prompt
 - **AND** declining a step SHALL make no filesystem change for that step
+
+### Requirement: setup.sh offers opt-in delegation to install-claude-skills.sh
+
+`setup.sh` SHALL remain the daemon installer (build, binary, token, LaunchAgent) and SHALL NOT inline the asset-install logic. After its daemon-install stages, it SHALL offer a single Y/n prompt to install the agent-facing Claude skills by delegating to `install-claude-skills.sh`; under `--yes`/`-y` it SHALL delegate with `--yes` and prompt for nothing. Declining the offer SHALL make no change to `~/.claude`, and the daemon-install outcome SHALL be unaffected either way. The dedicated `install-claude-skills.sh` / `uninstall-claude-skills.sh` scripts SHALL remain independently runnable for managing the assets without re-running the daemon installer.
+
+#### Scenario: setup.sh delegates skill install when accepted
+
+- **WHEN** `setup.sh` reaches the agent-facing-skills step and the user accepts the prompt (or `--yes` is in effect)
+- **THEN** it SHALL run `install-claude-skills.sh`, producing the `~/.claude/skills/<name>` symlink(s) and snippet block(s)
+
+#### Scenario: setup.sh skips skill install when declined
+
+- **WHEN** `setup.sh` reaches the agent-facing-skills step and the user declines the prompt
+- **THEN** no skill symlink or snippet block SHALL be created
+- **AND** it SHALL print how to install the assets later via `install-claude-skills.sh`
 
 ### Requirement: uninstall-claude-skills.sh removes the agent-facing assets
 

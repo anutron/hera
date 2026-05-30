@@ -18,7 +18,7 @@ The sibling plugin `plannotator-argus` solved the parallel problem with a PreToo
 - No modification of argus core to assemble context at worktree-create time.
 - No top-level `CLAUDE.md` for agents in this repo (that file is for plugin developers).
 - No PreToolUse Bash guard for hera (no destructive/EPERM-ing Bash verb to intercept; decided during brainstorm).
-- No new Go/daemon/MCP behavior, and no change to `setup.sh` (assets install through dedicated scripts).
+- No new Go/daemon/MCP behavior. `setup.sh` gains only an opt-in prompt that delegates to `install-claude-skills.sh` — the asset-install logic stays in the dedicated scripts; no inlining.
 
 ## Decisions
 
@@ -35,11 +35,11 @@ Gate condition: active iff `ARGUS_TASK_ID` is set **or** `$PWD` is under `~/.arg
 
 - **Why both env var and cwd:** either alone can be absent (cwd check covers sessions where the env var isn't exported; env var covers non-standard worktree roots). OR-ing them is the most permissive correct gate.
 
-### Dedicated install/uninstall scripts, separate from setup.sh
+### Dedicated install/uninstall scripts, with an opt-in delegation from setup.sh
 
-The agent-facing assets install through `install-claude-skills.sh` and `uninstall-claude-skills.sh`, **not** through `setup.sh`. `setup.sh` stays the daemon installer (build, binary, token, LaunchAgent); the Claude assets are a distinct concern with their own lifecycle.
+The asset-install *logic* lives in `install-claude-skills.sh` / `uninstall-claude-skills.sh`, **not** in `setup.sh`. `setup.sh` stays the daemon installer (build, binary, token, LaunchAgent); the Claude assets are a distinct concern with their own lifecycle. After its daemon stages, `setup.sh` offers a single Y/n prompt that *delegates* to `install-claude-skills.sh` (passing `--yes` when non-interactive) — convenience only, no inlined logic. This mirrors the sibling `iris` installer, which wires the same opt-in delegation.
 
-- **Why separate scripts over folding into setup.sh:** decided mid-implementation. `setup.sh` requires argus + go and mints a token; the Claude assets need none of that and a user may want them without (re)running the daemon installer. Separate scripts also make uninstall clean and let the two install steps be independently prompted.
+- **Why delegate rather than fold the logic in:** decided mid-implementation, then refined. `setup.sh` requires argus + go and mints a token; the Claude assets need none of that and a user may want them without (re)running the daemon installer — so the logic stays in the standalone script, runnable on its own. The opt-in prompt simply spares a user who *is* running setup.sh from a second manual step. Separate scripts also make uninstall clean and let the two install steps be independently prompted.
 - **Generic over the repo, not hera-hardcoded:** the scripts loop over every `claude/skills/*/` directory and every `claude/snippets/*.md` file, so the repo can add more assets later with no script change.
 - **Two Y/n steps each:** skill-symlink and snippet-append are each their own prompt (per user request). `--yes` accepts both.
 - **Skill symlink:** `ln -s <repo>/claude/skills/<name> ~/.claude/skills/<name>`. Idempotent: already-current link → "already current" and skip; a non-symlink or foreign-target symlink → warn and skip, never clobber.
@@ -55,7 +55,7 @@ The agent-facing assets install through `install-claude-skills.sh` and `uninstal
 
 ## Migration Plan
 
-Additive. New files only (`claude/skills/hera/SKILL.md`, `claude/snippets/hera.md`, `install-claude-skills.sh`, `uninstall-claude-skills.sh`); `setup.sh` is untouched. Rollback: `./uninstall-claude-skills.sh` (removes repo-owned skill symlinks and strips the managed snippet blocks). No data or schema involved.
+Additive. New files (`claude/skills/hera/SKILL.md`, `claude/snippets/hera.md`, `install-claude-skills.sh`, `uninstall-claude-skills.sh`) plus a single opt-in delegation block appended to `setup.sh`. Rollback: `./uninstall-claude-skills.sh` (removes repo-owned skill symlinks and strips the managed snippet blocks). No data or schema involved.
 
 ## Acceptance criteria
 

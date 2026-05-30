@@ -37,6 +37,13 @@ The install/uninstall scripts are verified manually against a temp `HOME` (match
 - [x] 5.1 Skill step (Y/n): remove each `~/.claude/skills/<name>` only when it is a symlink pointing back at this repo; leave foreign symlinks and real dirs untouched.
 - [x] 5.2 Snippet step (Y/n): strip each per-snippet managed block from `~/.claude/CLAUDE.md`, preserving the rest; idempotent, exit 0 with nothing to remove.
 
+## 5b. Wire setup.sh opt-in delegation + iris seam (follow-up)
+
+**Depends on:** Stage 2, Stage 4
+
+- [x] 5b.1 Append an opt-in Y/n block to `setup.sh` (after the LaunchAgent stage) that delegates to `install-claude-skills.sh`, passing `--yes` under non-interactive mode; declining prints how to install later. Logic stays in the dedicated script (no inlining). Mirrors the sibling iris installer.
+- [x] 5b.2 Restore the iris entry in the skill's sibling-composition section: name iris as an independent plugin and state the seam (hera = who does what; iris = host-side landing) so the seam isn't silent.
+
 ## 6. Verify end-to-end
 
 **Depends on:** Stage 2, Stage 3, Stage 4, Stage 5
@@ -44,3 +51,4 @@ The install/uninstall scripts are verified manually against a temp `HOME` (match
 - [x] 6.1 Execute the manual verification matrix from Stage 1 against a temp `HOME` (skill symlink: first-install/already-current/non-symlink-skip; snippet: append/marker-replace/symlink-warning/decline).
 - [x] 6.2 Drive the REAL `install-claude-skills.sh` + `uninstall-claude-skills.sh` via `--yes` against a temp `HOME` (full install → idempotent re-run → uninstall → idempotent re-run, plus foreign-symlink and real-dir safety). NB: a real-`HOME` install should be run from a canonical hera checkout, not this ephemeral argus worktree (the symlink target would dangle once the worktree is cleaned).
 - [ ] 6.3 Test-drive: open a fresh Claude session in an argus worktree and confirm the model reaches for the `hera` skill when asked how to coordinate other agents, without extra prompting.
+- [x] 6.4 Verify a fresh `setup.sh` run against a temp `HOME` (token + LaunchAgent declined, skills accepted) produces the `~/.claude/skills/hera` symlink and the snippet block.

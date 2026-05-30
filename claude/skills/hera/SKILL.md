@@ -99,6 +99,10 @@ reach them through *their* MCP tools, not hera's.
 - **plannotator-argus** (`mcp__argus__plannotator_*`) — review UI. A coordinator routes a worker's
   output to review with `plannotator_review`/`plannotator_annotate`; hera carries the *decision* and
   the *handoff message*, plannotator carries the *review surface*.
+- **iris** (`mcp__argus__iris_*`) — host-side git/gh. A worker does the coding and local commits in
+  its worktree, then uses **iris** to push / open a PR / merge its branch back to the canonical repo.
+  hera coordinates *who does what*; iris performs the *host-side landing*. Independent plugins — pick
+  per op: iris when an action touches the host, hera when it's about roles or messaging.
 
 These are orthogonal plugins. Hera does not wrap them and they do not wrap hera.
 
