@@ -149,6 +149,79 @@ func TestServer_RunnerInvokedPerConnection(t *testing.T) {
 	}
 }
 
+// TestServer_WedgedPriorDoesNotBlockNewSession reproduces the blank-surface
+// bug: when the peer is killed without a close handshake, the prior session's
+// runner can wedge (render Write stuck on a dead-but-open socket, ignoring
+// ctx cancel). A new /view upgrade MUST still start its session within the
+// bounded supersede-drain window rather than blocking forever on <-prior.done.
+func TestServer_WedgedPriorDoesNotBlockNewSession(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		invocations int
+	)
+	started := make(chan int, 2)
+	release := make(chan struct{})
+	runner := func(ctx context.Context, conn *websocket.Conn) {
+		mu.Lock()
+		invocations++
+		n := invocations
+		mu.Unlock()
+		started <- n
+		if n == 1 {
+			// Simulate a wedged prior: ignore ctx cancel AND conn close,
+			// blocking until the test releases it.
+			<-release
+			return
+		}
+		<-ctx.Done()
+	}
+	srv := NewServer(nil, runner)
+	t.Cleanup(srv.Stop)
+	t.Cleanup(func() { close(release) })
+
+	_, wsURL := newTestHTTPServer(t, srv)
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dialCancel()
+
+	conn1, _, err := websocket.Dial(dialCtx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial 1: %v", err)
+	}
+	t.Cleanup(func() { _ = conn1.CloseNow() })
+	if n := waitInt(t, started, "runner 1 start"); n != 1 {
+		t.Fatalf("first runner invocation n=%d, want 1", n)
+	}
+
+	// Second connection arrives while the prior runner is wedged. With the
+	// bounded drain it MUST start within the timeout + slack; without it,
+	// handleUpgrade blocks on <-prior.done forever and this times out.
+	conn2, _, err := websocket.Dial(dialCtx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial 2: %v", err)
+	}
+	t.Cleanup(func() { _ = conn2.CloseNow() })
+
+	select {
+	case n := <-started:
+		if n != 2 {
+			t.Fatalf("expected runner 2 to start, got n=%d", n)
+		}
+	case <-time.After(supersedeDrainTimeout + 2*time.Second):
+		t.Fatal("new session did not start despite a wedged prior — handleUpgrade blocked on <-prior.done")
+	}
+}
+
+func waitInt(t *testing.T, ch <-chan int, label string) int {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for %s", label)
+		return 0
+	}
+}
+
 func waitChan(t *testing.T, ch <-chan struct{}, label string) {
 	t.Helper()
 	select {
