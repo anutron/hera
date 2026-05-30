@@ -104,6 +104,9 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, log)
 
 		focus := NewFocusMachine()
+		// Let the App flip the focus machine's coordPresent flag when it
+		// enters/leaves freelance (full-width) mode.
+		app.SetFocusMachine(focus)
 		router := &KeyRouter{
 			Focus:      focus,
 			Targets:    app,
@@ -168,6 +171,16 @@ func (p managerPaneSource) TaskState(taskID string) (ArgusTaskState, bool) {
 // "cache cold". Returns false (not ready) when no cache is wired.
 func (p managerPaneSource) StatesReady() bool {
 	return p.states != nil && p.states.Ready()
+}
+
+// LiveTasks satisfies view.FreelanceProvider, exposing the cache's full
+// argus task snapshot so the rail can compute the Freelance section. Returns
+// nil when no cache is wired (the rail then renders no freelancers).
+func (p managerPaneSource) LiveTasks() []ArgusTaskInfo {
+	if p.states == nil {
+		return nil
+	}
+	return p.states.List()
 }
 
 // SubscribeTask returns the live ring snapshot and the per-listener byte

@@ -95,39 +95,40 @@ The top bar SHALL contain literal text `HERA` left-aligned. The bottom bar SHALL
 - **WHEN** a freelance row is selected
 - **THEN** the COORD pane's proxy subscription MUST be released AND the coord task target MUST be empty so no keystroke is forwarded to a coordinator task
 
-### Requirement: Freelance agents render in a single global collapsible rail section
+### Requirement: Freelance (unmanaged argus) agents render in a Freelance rail section grouped by repo
 
-The system SHALL collect every live freelance-kind role across all orchestrators into a single global "Freelance" section rendered below all project (orchestrator) rows in the rail and above the Archive separator. Freelance roles MUST NOT render nested under their originating orchestrator. Worker-kind roles MUST continue to render nested under their orchestrator. The Freelance section MUST be collapsible, MUST start collapsed (rendering a `▸` chevron) on each view-application open, and MUST toggle expand/collapse when the operator presses Space while the section header is selected. The section header MUST display the count of live freelance agents. When no live freelance agent exists, the Freelance section header MUST NOT be rendered. Archived freelance agents MUST NOT appear in the Freelance section; they MUST appear only within the Archive section (revealed by `l`).
+A **freelancer** is a live argus task that hera has never bound to any role — a vanilla agent created directly in argus that makes no calls to hera. The system SHALL surface freelancers in the rail so the operator never has to leave hera to notice that an unmanaged agent needs attention.
 
-#### Scenario: Live freelance agents collected below projects
+The system SHALL determine the freelancer set from argus's live task list (the argus state cache): every non-archived argus task whose id is NOT referenced by any hera binding (live or ended) is a freelancer. These SHALL be rendered in a "Freelance" section below all project (orchestrator) rows and above the Archive separator, introduced by a "Freelance" separator that is shown ONLY when at least one freelancer exists (so the operator never lands on an empty section).
 
-- **WHEN** the rail renders with one or more live freelance agents across any orchestrators
-- **THEN** a single "Freelance" section MUST appear below all project rows listing those freelance agents AND none of those agents MUST appear nested under their orchestrator
+Within the Freelance section, freelancers SHALL be grouped by argus project (repo) — "the same way Argus shows them" — under per-repo headers sorted by project name. Each repo header MUST render a collapse chevron (`▾` expanded / `▸` collapsed), the project name, and the count of its live freelance tasks, and MUST toggle expand/collapse when the operator presses Space while that header is selected. Repo groups default to expanded so freelancers are visible by default. Each freelance row MUST render its argus-reported state (status / idle / needs-input) via the same icon rules as managed rows, and its elapsed column MUST show argus's own age string.
 
-#### Scenario: Freelance section collapsed by default
+Archived argus tasks MUST NOT appear in the Freelance section by default; they MUST appear only when the Archive view is revealed via `l`.
 
-- **WHEN** the view application opens
-- **THEN** the Freelance section header MUST render a `▸` (collapsed) chevron AND its freelance agent rows MUST NOT be visible
+#### Scenario: Unmanaged argus tasks surface as freelancers grouped by repo
 
-#### Scenario: Space toggles the Freelance section
+- **WHEN** the rail renders and argus reports live tasks that hera has never bound
+- **THEN** a "Freelance" section MUST appear below all project rows, with those tasks grouped under per-repo headers sorted by project name
 
-- **WHEN** focus is `RAIL`, the Freelance section header is selected, and the operator presses Space
-- **THEN** the section MUST expand (or collapse if already expanded), revealing (or hiding) its freelance agent rows
+#### Scenario: Hera-managed tasks are excluded from Freelance
 
-#### Scenario: Workers remain nested under their project
+- **WHEN** an argus task is referenced by any hera binding (live or ended)
+- **THEN** that task MUST NOT appear in the Freelance section (it renders under its orchestrator instead)
 
-- **WHEN** an orchestrator has both worker and freelance roles
-- **THEN** the worker roles MUST render nested under the orchestrator AND the freelance roles MUST render only in the global Freelance section
+#### Scenario: Space toggles a Freelance repo group
 
-#### Scenario: No freelance agents hides the section
+- **WHEN** focus is `RAIL`, a Freelance repo header is selected, and the operator presses Space
+- **THEN** that repo group MUST expand (or collapse if already expanded), revealing (or hiding) its freelance rows, independently of other repo groups
 
-- **WHEN** no live freelance agent exists across any orchestrator
-- **THEN** the Freelance section header MUST NOT be rendered
+#### Scenario: No freelancers hides the section
 
-#### Scenario: Archived freelance appears only in Archive
+- **WHEN** argus reports no unmanaged, non-archived live tasks
+- **THEN** the "Freelance" separator and all repo headers MUST NOT be rendered
 
-- **WHEN** a freelance agent is archived AND the Archive section is revealed via `l`
-- **THEN** that agent MUST appear within the Archive section AND MUST NOT appear in the live Freelance section
+#### Scenario: Archived freelancers appear only in Archive
+
+- **WHEN** an unmanaged argus task is archived
+- **THEN** it MUST NOT appear in the live Freelance section AND MUST appear only when the Archive view is revealed via `l`
 
 ### Requirement: Three-state focus model
 

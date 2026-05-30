@@ -20,6 +20,18 @@ type ArgusTaskState struct {
 	Archived   bool
 }
 
+// ArgusTaskInfo is the full per-task snapshot the cache retains so the rail
+// can render freelance rows (unmanaged argus tasks) directly from argus's
+// task list: identity (ID/Name), grouping key (Project, the repo), the
+// pre-formatted Elapsed age, plus the embedded runtime State for the icon.
+type ArgusTaskInfo struct {
+	ID      string
+	Name    string
+	Project string
+	Elapsed string
+	State   ArgusTaskState
+}
+
 // TaskStateProvider is an optional capability on a PaneSource: it returns the
 // argus-reported state for a task id. populateRail type-asserts the rail's
 // PaneSource for it (mirroring the optional TaskAliveChecker) and, when
@@ -27,6 +39,14 @@ type ArgusTaskState struct {
 // tests, where the rail falls back to binding-based rendering.
 type TaskStateProvider interface {
 	TaskState(taskID string) (ArgusTaskState, bool)
+}
+
+// FreelanceProvider is an optional capability on a PaneSource: it returns
+// the full live argus task list so populateRail can surface unmanaged tasks
+// (freelancers) in the rail. Mirrors the optional TaskStateProvider pattern;
+// absent in tests, where the rail simply renders no Freelance section.
+type FreelanceProvider interface {
+	LiveTasks() []ArgusTaskInfo
 }
 
 // argusLister is the subset of *argus.Client the cache needs. It lists ALL
@@ -52,7 +72,8 @@ type ArgusStateCache struct {
 
 	mu     sync.RWMutex
 	states map[string]ArgusTaskState
-	ready  bool // true after the first successful poll
+	infos  []ArgusTaskInfo // full snapshot, render order = argus list order
+	ready  bool            // true after the first successful poll
 
 	submu sync.Mutex
 	subs  map[chan struct{}]struct{}
@@ -84,6 +105,17 @@ func (c *ArgusStateCache) Get(taskID string) (ArgusTaskState, bool) {
 	defer c.mu.RUnlock()
 	st, ok := c.states[taskID]
 	return st, ok
+}
+
+// List returns a copy of the full task snapshot from the latest poll, in
+// argus's list order. Used by the rail to enumerate freelance candidates
+// (non-archived tasks not bound by hera). Empty before the first poll.
+func (c *ArgusStateCache) List() []ArgusTaskInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]ArgusTaskInfo, len(c.infos))
+	copy(out, c.infos)
+	return out
 }
 
 // Ready reports whether at least one successful poll has completed. Callers
@@ -136,17 +168,27 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 		return
 	}
 	next := make(map[string]ArgusTaskState, len(tasks))
+	infos := make([]ArgusTaskInfo, 0, len(tasks))
 	for _, t := range tasks {
-		next[t.ID] = ArgusTaskState{
+		st := ArgusTaskState{
 			Status:     t.Status,
 			Idle:       t.Idle,
 			NeedsInput: t.NeedsInput,
 			Archived:   t.Archived,
 		}
+		next[t.ID] = st
+		infos = append(infos, ArgusTaskInfo{
+			ID:      t.ID,
+			Name:    t.Name,
+			Project: t.Project,
+			Elapsed: t.Elapsed,
+			State:   st,
+		})
 	}
 	c.mu.Lock()
 	changed := !sameStates(c.states, next) || !c.ready
 	c.states = next
+	c.infos = infos
 	c.ready = true
 	c.mu.Unlock()
 	if changed {

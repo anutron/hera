@@ -1119,3 +1119,142 @@ func TestBuildApp_NilSourceDoesNotPanic(t *testing.T) {
 	defer a.Close()
 	_ = renderApp(t, a, 80, 24) // must not panic
 }
+
+// freelancePaneSource is a fakePaneSource that also implements
+// TaskStateProvider and FreelanceProvider so rail tests can drive the
+// Freelance section from a synthetic argus task list.
+type freelancePaneSource struct {
+	fakePaneSource
+	states map[string]ArgusTaskState
+	tasks  []ArgusTaskInfo
+}
+
+func (s *freelancePaneSource) TaskState(taskID string) (ArgusTaskState, bool) {
+	st, ok := s.states[taskID]
+	return st, ok
+}
+func (s *freelancePaneSource) LiveTasks() []ArgusTaskInfo { return s.tasks }
+
+// TestBuildApp_FreelanceGroupsByProjectExcludesManagedAndArchived proves the
+// Freelance section contains exactly the unmanaged, non-archived argus tasks
+// grouped by project — a hera-bound task and an archived task are excluded.
+func TestBuildApp_FreelanceGroupsByProjectExcludesManagedAndArchived(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "managed")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	w, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: w.ID, ArgusTaskID: "managed-1", WorktreePath: "/w",
+	}); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{},
+		tasks: []ArgusTaskInfo{
+			{ID: "managed-1", Name: "managed", Project: "Hera", State: ArgusTaskState{Status: "in_progress"}},
+			{ID: "free-b1", Name: "beta-1", Project: "Beta", Elapsed: "5m", State: ArgusTaskState{Status: "in_progress"}},
+			{ID: "free-b2", Name: "beta-2", Project: "Beta", State: ArgusTaskState{Status: "complete"}},
+			{ID: "free-a1", Name: "alpha-1", Project: "Alpha", State: ArgusTaskState{Status: "in_progress", Idle: true}},
+			{ID: "free-arch", Name: "archived-one", Project: "Alpha", State: ArgusTaskState{Status: "complete", Archived: true}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	fl := a.pieces.rail.freelance
+	if len(fl) != 2 {
+		t.Fatalf("want 2 freelance projects (Alpha, Beta), got %d: %+v", len(fl), fl)
+	}
+	// Sorted by project name.
+	if fl[0].Project != "Alpha" || fl[1].Project != "Beta" {
+		t.Fatalf("freelance projects not sorted: got %q, %q", fl[0].Project, fl[1].Project)
+	}
+	// Alpha: only free-a1 (free-arch excluded; managed-1 excluded).
+	if len(fl[0].Tasks) != 1 || fl[0].Tasks[0].ArgusTaskID != "free-a1" {
+		t.Fatalf("Alpha tasks wrong: %+v", fl[0].Tasks)
+	}
+	// Beta: free-b1, free-b2.
+	if len(fl[1].Tasks) != 2 {
+		t.Fatalf("Beta should have 2 tasks, got %d", len(fl[1].Tasks))
+	}
+	if fl[1].Tasks[0].ElapsedOverride != "5m" {
+		t.Errorf("freelance elapsed override not carried: got %q", fl[1].Tasks[0].ElapsedOverride)
+	}
+	if fl[1].Tasks[0].RoleKind != string(db.KindFreelance) {
+		t.Errorf("freelance row kind = %q, want freelance", fl[1].Tasks[0].RoleKind)
+	}
+
+	// Rendered rail shows the Freelance separator and repo headers.
+	out := renderApp(t, a, 100, 40)
+	for _, want := range []string{"Freelance", "Alpha", "Beta"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rail render missing %q\n%s", want, out)
+		}
+	}
+}
+
+// TestBuildApp_SelectingFreelancerEntersFullWidthMode proves that selecting a
+// freelance row removes the coord pane (CoordTaskID blank) and binds the
+// agent to the freelancer; selecting a normal orchestrator restores coord.
+func TestBuildApp_SelectingFreelancerEntersFullWidthMode(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "managed")
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: c.ID, ArgusTaskID: "coord-1", WorktreePath: "/c",
+	})
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{},
+		tasks: []ArgusTaskInfo{
+			{ID: "free-1", Name: "freelancer", Project: "Beta", State: ArgusTaskState{Status: "in_progress"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.selectDebounce = 0
+
+	if len(a.pieces.rail.freelance) != 1 || len(a.pieces.rail.freelance[0].Tasks) != 1 {
+		t.Fatalf("expected one freelancer; got %+v", a.pieces.rail.freelance)
+	}
+	freelancer := a.pieces.rail.freelance[0].Tasks[0]
+
+	a.applyRailSelection(freelancer)
+	if !a.freelanceMode {
+		t.Fatalf("selecting freelancer should enter freelance mode")
+	}
+	if a.AgentTaskID() != "free-1" {
+		t.Fatalf("agent should bind to freelancer; got %q", a.AgentTaskID())
+	}
+	if a.CoordTaskID() != "" {
+		t.Fatalf("freelance mode must blank the coord task; got %q", a.CoordTaskID())
+	}
+
+	// Selecting the managed orchestrator header exits freelance mode and
+	// restores the coord binding.
+	a.applyRailSelection(&orchEntry{ID: orch.ID, Name: "managed", CoordTaskID: "coord-1"})
+	if a.freelanceMode {
+		t.Fatalf("selecting a managed orchestrator should exit freelance mode")
+	}
+	if a.CoordTaskID() != "coord-1" {
+		t.Fatalf("coord should rebind to coord-1 after exit; got %q", a.CoordTaskID())
+	}
+}
