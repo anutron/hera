@@ -27,6 +27,9 @@ func TestDefault_ReasonableValues(t *testing.T) {
 	if cfg.AutoInjectEnabled != true {
 		t.Fatalf("AutoInjectEnabled = %v, want true", cfg.AutoInjectEnabled)
 	}
+	if cfg.ReconcileInterval.Seconds() != 60 {
+		t.Fatalf("ReconcileInterval = %v, want 60s", cfg.ReconcileInterval)
+	}
 }
 
 func TestLoadToken_FileMissing(t *testing.T) {
