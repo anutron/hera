@@ -257,6 +257,16 @@ func (a *App) populateRail(database *db.DB) error {
 				if checker != nil && !checker.IsTaskAlive(argusTaskID) {
 					dead = true
 				}
+			} else if hist, _ := database.Bindings.ListByRole(ctx, role.ID); len(hist) > 0 {
+				// No live binding (the agent finished / its task completed).
+				// Fall back to the most-recent binding's argus task so the
+				// row stays selectable and its pane can show the agent's last
+				// output read-only — argus serves /api/tasks/{id}/output for
+				// completed tasks. ListByRole is started_at DESC, so hist[0]
+				// is the latest binding. Without this, done agents have no
+				// task id and the pane never rebinds off them (stuck panes).
+				argusTaskID = hist[0].ArgusTaskID
+				startedAt = hist[0].StartedAt
 			}
 
 			// Coord roles do not render as their own rail row in the common
@@ -269,7 +279,11 @@ func (a *App) populateRail(database *db.DB) error {
 			// ends up with zero agent rows — see below.
 			if role.Kind == db.KindCoordinator {
 				archived := role.ArchivedAt != nil
-				if live && !dead && !archived && entry.CoordTaskID == "" {
+				if !dead && !archived && entry.CoordTaskID == "" && argusTaskID != "" {
+					// Prefer a live coord; fall back to its most-recent binding
+					// (argusTaskID set above) so the coord pane can still show
+					// the coordinator's last output after its task finished —
+					// fixes the "coord pane doesn't follow selection" case.
 					entry.CoordTaskID = argusTaskID
 					coordRole = role
 					coordLive = live
