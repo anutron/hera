@@ -443,6 +443,77 @@ func TestViewSmoke_LastWriterWinsClosesPrior(t *testing.T) {
 	}
 }
 
+// TestViewSmoke_FocusFeedbackReflectsState drives the focus ladder over raw
+// key bytes and asserts the bottom bar reflects the live focus state. Before
+// the fix the bar was a static "[RAIL] ..." string set once at layout time,
+// so advancing into COORD changed nothing visible — the operator saw "Cmd-→
+// does nothing" and then "the rail froze" (because j/k were silently
+// forwarded into the coord PTY). The uppercase "COORD" label distinguishes
+// the focus indicator from the lowercase "coord" hint in the RAIL bar.
+func TestViewSmoke_FocusFeedbackReflectsState(t *testing.T) {
+	d, _, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
+	conn := dialView(t, d)
+	defer conn.CloseNow()
+	reader := newFrameReader(conn)
+	defer reader.stop()
+	ctx := context.Background()
+
+	if err := conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"type":"resize","cols":120,"rows":40}`)); err != nil {
+		t.Fatalf("write resize: %v", err)
+	}
+	initial := reader.drainBinary(750*time.Millisecond, 64*1024)
+	if !bytes.Contains(initial, []byte("[RAIL]")) {
+		t.Fatalf("initial bottom bar missing [RAIL] label: %q", trim(initial, 240))
+	}
+
+	// Ctrl-Right (CSI 1;5 C) advances RAIL → COORD. The bottom bar MUST now
+	// show the COORD focus label.
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("\x1b[1;5C")); err != nil {
+		t.Fatalf("write ctrl-right: %v", err)
+	}
+	afterCoord := reader.drainBinary(750*time.Millisecond, 64*1024)
+	if !bytes.Contains(afterCoord, []byte("COORD")) {
+		t.Fatalf("after Ctrl-Right the bottom bar does not reflect COORD focus "+
+			"(static-bar bug): %q", trim(afterCoord, 300))
+	}
+}
+
+// TestViewSmoke_RailResumesAfterReturn proves the operator is not stuck after
+// stepping into a pane: Ctrl-Q from COORD returns focus to RAIL, and a
+// subsequent 'j' navigates the rail rather than being forwarded to a PTY.
+func TestViewSmoke_RailResumesAfterReturn(t *testing.T) {
+	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
+	conn := dialView(t, d)
+	defer conn.CloseNow()
+	reader := newFrameReader(conn)
+	defer reader.stop()
+	ctx := context.Background()
+
+	_ = reader.drainBinary(300*time.Millisecond, 4096) // initial render
+
+	// Step into COORD, then escape back to RAIL with Ctrl-Q (0x11).
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("\x1b[1;5C")); err != nil {
+		t.Fatalf("write ctrl-right: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x11}); err != nil {
+		t.Fatalf("write ctrl-q: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+
+	// In RAIL focus, 'j' moves the cursor and MUST NOT reach any /input.
+	before := fake.totalInputs()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("j")); err != nil {
+		t.Fatalf("write j: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := fake.totalInputs(); got != before {
+		t.Fatalf("'j' after returning to RAIL was forwarded to a PTY (%d new input(s)) "+
+			"— focus did not return to RAIL", got-before)
+	}
+}
+
 // trim returns the first n bytes of b with non-printable runs replaced by
 // dots; used in error messages.
 func trim(b []byte, n int) []byte {

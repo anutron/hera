@@ -92,9 +92,21 @@
 - [x] 11.2 Confirm the smoke test also exercises the last-writer-wins close on a second connection.
 - [x] 11.3 Run `go test ./internal/daemon/... -race -count=1` until green.
 
-## 12. Validation + archive
+## 12. Stage L — Freelance rail section + dual-mode layout
 
-- [ ] 12.1 Run `openspec validate add-hera-view --strict` against the change folder. Fix any issues.
-- [ ] 12.2 Run `openspec validate --all --strict` as a sanity check.
-- [ ] 12.3 Manual smoke (Aaron, morning): rebuild the daemon and open hera's plugin view in argus; verify the three panes render, rail navigation works, Cmd/Ctrl-←/→ traverses focus, `?` opens help.
-- [ ] 12.4 After Aaron live-verifies, run `openspec archive add-hera-view`.
+**Depends on:** Stage I (rail rendering + dynamic refresh) and Stage G (focus + key routing)
+
+- [ ] 12.1 Write failing tests from the new/changed scenarios (Prove-It). `rail_list_test.go`: global Freelance section collected below projects; collapsed-by-default `▸`; Space toggles when header selected; header shows live count; header hidden when zero live freelance; workers stay nested; archived freelance appear only inside Archive. `app_test.go`/`layout_test.go`: freelance mode = rail + full-width agent with no coord; returning to a coord/worker row restores 3 columns; coord subscription released + empty `CoordTaskID()` in freelance mode. `focus_test.go`/`keys_test.go`: freelance mode skips COORD on Cmd/Ctrl-→ and Cmd/Ctrl-←. Confirm each fails first.
+- [ ] 12.2 `internal/view/rail_list.go`: add a `freelance []*roleEntry` collection, `freelanceCollapsed bool` (default true), and a `railRowFreelanceSep` row kind. Update `buildRows` to emit the Freelance header (only when ≥1 live freelance) below active orchestrators and above the Archive separator, expand its rows when not collapsed, and place archived freelance inside the Archive section. Extend `ToggleCollapse`/Space handling and the count rendering for the new section.
+- [ ] 12.3 `internal/view/app.go` `populateRail`: partition non-coordinator roles by kind — route `freelance` roles into the rail's freelance collection (tagged with `OrchestratorID` for elapsed-time), keep `worker` roles in `entry.Roles`. Ensure the Stage-I dynamic refresh rebuilds the freelance section.
+- [ ] 12.4 `internal/view/focus.go`: teach the focus machine a `coordPresent` (two-pane) flag so `Advance()` from RAIL jumps to AGENT and `Retreat()` from AGENT returns to RAIL when no coord pane is present. `internal/view/keys.go`: honor the flag for the arrow ladder (Enter already lands on AGENT).
+- [ ] 12.5 `internal/view/layout.go` + `app.go` `refreshBody`: compose freelance mode (rail + full-width agent) vs project mode (rail + coord + agent) from the current selection's kind; on entry to freelance mode tear down the coord pane bridge/subscription and set `coordTask` to "". Drop the `Ctrl-→ coord` hint from the bottom bar in freelance mode.
+- [ ] 12.6 Wire `applyRailSelection` (and the initial-selection path) to switch modes and (re)bind the full-width agent pane to the selected freelance role's argus task; set the focus machine's `coordPresent` flag accordingly.
+- [ ] 12.7 Run `go test ./internal/view/... -race -count=1` until green.
+
+## 13. Validation + archive
+
+- [ ] 13.1 Run `openspec validate add-hera-view --strict` against the change folder. Fix any issues.
+- [ ] 13.2 Run `openspec validate --all --strict` as a sanity check.
+- [ ] 13.3 Manual smoke (Aaron, morning): rebuild the daemon and open hera's plugin view in argus; verify the three panes render, rail navigation works, Cmd/Ctrl-←/→ traverses focus, `?` opens help, the Freelance expando lists freelancers, and selecting one shows the full-width single-pane layout.
+- [ ] 13.4 After Aaron live-verifies, run `openspec archive add-hera-view`.

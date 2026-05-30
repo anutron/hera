@@ -471,6 +471,13 @@ func (a *App) OnFocusChanged(state FocusState) {
 	const focused = tcell.ColorYellow
 	const unfocused = tcell.ColorWhite
 
+	// Reflect the focus state in the bottom bar — the operator's primary cue
+	// for "which element am I driving right now". Without this the bar stays
+	// a static [RAIL] string and pane focus looks like a frozen rail.
+	if a.pieces.bottom != nil {
+		a.pieces.bottom.SetText(bottomBarText(state))
+	}
+
 	a.pieces.rail.SetBorderColor(unfocused)
 	a.pieces.coord.SetBorderColor(unfocused)
 	a.pieces.agent.SetBorderColor(unfocused)

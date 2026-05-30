@@ -61,19 +61,73 @@ The system SHALL, at daemon startup (and on subsequent binding-created events), 
 - **WHEN** an SSE stream has emitted more than 256 KiB of output for a single task
 - **THEN** the ring buffer for that task MUST retain only approximately the most recent 256 KiB; older bytes MUST be dropped
 
-### Requirement: Three-column layout with top and bottom chrome bars
+### Requirement: Body layout adapts to the selected row's kind
 
-The system SHALL render a three-column body inside top and bottom chrome bars whenever the view application is active. The left column is the navigation rail; the middle column is the COORD pane (PTY of the selected agent's project's coordinator); the right column is the AGENT pane (PTY of the selected agent itself). The top bar SHALL contain literal text `HERA` left-aligned. The bottom bar SHALL contain context-aware key-binding hints per the current focus state.
+The system SHALL render the body inside top and bottom chrome bars whenever the view application is active, in one of two column modes determined by the rail's current selection:
 
-#### Scenario: Layout has three body columns and two chrome rows
+- **Project mode** (a coordinator or worker row is selected): a three-column body — the left column is the navigation rail; the middle column is the COORD pane (PTY of the selected agent's project's coordinator); the right column is the AGENT pane (PTY of the selected agent itself).
+- **Freelance mode** (a freelance row is selected): a two-element body — the navigation rail plus a single AGENT pane (PTY of the selected freelance agent) occupying the entire remaining width. No COORD pane is composed.
 
-- **WHEN** the view application is running and the layout has rendered
+The top bar SHALL contain literal text `HERA` left-aligned. The bottom bar SHALL contain context-aware key-binding hints per the current focus state and column mode.
+
+#### Scenario: Project mode has three body columns and two chrome rows
+
+- **WHEN** the view application is running and a coordinator or worker row is selected
 - **THEN** the surface MUST be composed of a 1-row top bar, a 3-column body (rail + coord + agent), and a 1-row bottom bar
 
-#### Scenario: Rail traversal updates both panes
+#### Scenario: Freelance mode collapses to rail + full-width agent
 
-- **WHEN** rail selection moves to an agent whose project's coord differs from the previous selection's project
+- **WHEN** the rail selection moves to a freelance row
+- **THEN** the body MUST be composed of the navigation rail plus a single AGENT pane spanning the entire remaining width AND no COORD pane MUST be present in the layout
+
+#### Scenario: Returning to a project row restores three columns
+
+- **WHEN** the rail selection moves from a freelance row to a coordinator or worker row
+- **THEN** the body MUST be re-composed as the three-column rail + coord + agent layout
+
+#### Scenario: Project-mode rail traversal updates both panes
+
+- **WHEN** rail selection moves to a worker agent whose project's coord differs from the previous selection's project
 - **THEN** the COORD pane MUST switch to the new project's coord binding ring buffer AND the AGENT pane MUST switch to the new agent's binding ring buffer
+
+#### Scenario: Freelance mode releases the coord binding
+
+- **WHEN** a freelance row is selected
+- **THEN** the COORD pane's proxy subscription MUST be released AND the coord task target MUST be empty so no keystroke is forwarded to a coordinator task
+
+### Requirement: Freelance agents render in a single global collapsible rail section
+
+The system SHALL collect every live freelance-kind role across all orchestrators into a single global "Freelance" section rendered below all project (orchestrator) rows in the rail and above the Archive separator. Freelance roles MUST NOT render nested under their originating orchestrator. Worker-kind roles MUST continue to render nested under their orchestrator. The Freelance section MUST be collapsible, MUST start collapsed (rendering a `▸` chevron) on each view-application open, and MUST toggle expand/collapse when the operator presses Space while the section header is selected. The section header MUST display the count of live freelance agents. When no live freelance agent exists, the Freelance section header MUST NOT be rendered. Archived freelance agents MUST NOT appear in the Freelance section; they MUST appear only within the Archive section (revealed by `l`).
+
+#### Scenario: Live freelance agents collected below projects
+
+- **WHEN** the rail renders with one or more live freelance agents across any orchestrators
+- **THEN** a single "Freelance" section MUST appear below all project rows listing those freelance agents AND none of those agents MUST appear nested under their orchestrator
+
+#### Scenario: Freelance section collapsed by default
+
+- **WHEN** the view application opens
+- **THEN** the Freelance section header MUST render a `▸` (collapsed) chevron AND its freelance agent rows MUST NOT be visible
+
+#### Scenario: Space toggles the Freelance section
+
+- **WHEN** focus is `RAIL`, the Freelance section header is selected, and the operator presses Space
+- **THEN** the section MUST expand (or collapse if already expanded), revealing (or hiding) its freelance agent rows
+
+#### Scenario: Workers remain nested under their project
+
+- **WHEN** an orchestrator has both worker and freelance roles
+- **THEN** the worker roles MUST render nested under the orchestrator AND the freelance roles MUST render only in the global Freelance section
+
+#### Scenario: No freelance agents hides the section
+
+- **WHEN** no live freelance agent exists across any orchestrator
+- **THEN** the Freelance section header MUST NOT be rendered
+
+#### Scenario: Archived freelance appears only in Archive
+
+- **WHEN** a freelance agent is archived AND the Archive section is revealed via `l`
+- **THEN** that agent MUST appear within the Archive section AND MUST NOT appear in the live Freelance section
 
 ### Requirement: Three-state focus model
 
@@ -91,7 +145,7 @@ The system SHALL maintain focus in exactly one of three states at any given time
 
 ### Requirement: Focus traversal via arrow ladder and Ctrl-Q escape
 
-The system SHALL advance focus along the `RAIL → COORD → AGENT` ladder on Cmd/Ctrl-→ and retreat along the `AGENT → COORD → RAIL` ladder on Cmd/Ctrl-←. From `RAIL` focus, pressing `Enter` MUST jump directly to `AGENT` focus (skipping `COORD`). From any focus state, pressing `Ctrl-Q` MUST return focus to `RAIL`.
+The system SHALL advance focus along the `RAIL → COORD → AGENT` ladder on Cmd/Ctrl-→ and retreat along the `AGENT → COORD → RAIL` ladder on Cmd/Ctrl-←. From `RAIL` focus, pressing `Enter` MUST jump directly to `AGENT` focus (skipping `COORD`). From any focus state, pressing `Ctrl-Q` MUST return focus to `RAIL`. When the body is in freelance mode (a freelance row is selected and no COORD pane is present), the `COORD` state MUST be skipped: Cmd/Ctrl-→ from `RAIL` advances directly to `AGENT`, and Cmd/Ctrl-← from `AGENT` retreats directly to `RAIL`.
 
 #### Scenario: Cmd/Ctrl-right advances RAIL → COORD
 
@@ -122,6 +176,16 @@ The system SHALL advance focus along the `RAIL → COORD → AGENT` ladder on Cm
 
 - **WHEN** focus is `COORD` or `AGENT` and the operator presses `Ctrl-Q`
 - **THEN** focus MUST transition to `RAIL`
+
+#### Scenario: Freelance mode skips COORD on advance
+
+- **WHEN** the body is in freelance mode, focus is `RAIL`, and the operator presses Cmd/Ctrl-→
+- **THEN** focus MUST transition directly to `AGENT` without entering `COORD`
+
+#### Scenario: Freelance mode skips COORD on retreat
+
+- **WHEN** the body is in freelance mode, focus is `AGENT`, and the operator presses Cmd/Ctrl-←
+- **THEN** focus MUST transition directly to `RAIL` without entering `COORD`
 
 ### Requirement: Pane focus forwards keystrokes to the bound task's PTY input
 
