@@ -332,6 +332,45 @@ func TestBuildApp_ArgusArchivedRoleHiddenFromActiveRail(t *testing.T) {
 	}
 }
 
+// TestBuildApp_GoneTaskRoleHiddenFromActiveRail proves a role whose argus
+// task no longer exists (cache miss, once the cache is warm) is dropped from
+// the active rail — argus doesn't show deleted tasks, so neither should hera.
+func TestBuildApp_GoneTaskRoleHiddenFromActiveRail(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "foo")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	w, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "foo",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: w.ID, ArgusTaskID: "gonetask", WorktreePath: "/w",
+	}); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+
+	// Provider with no entry for "gonetask" → argus doesn't know it (gone).
+	// statePaneSource doesn't implement StatesReady, so applyArgusState
+	// treats it as ready → marks the role dead → hidden.
+	src := &statePaneSource{states: map[string]ArgusTaskState{}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	for _, row := range a.pieces.rail.rows {
+		if row.kind == railRowRole && row.role != nil && row.role.RoleID == w.ID {
+			t.Errorf("role bound to a gone argus task must be hidden from the active rail, but it rendered as a visible row")
+		}
+	}
+}
+
 // TestBuildApp_DoneRoleSurfacesLastBindingTaskID proves that a role whose
 // binding has ended (the agent finished / its argus task completed) still
 // carries its most-recent binding's argus task id on the rail row. Without

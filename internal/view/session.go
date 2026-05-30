@@ -163,6 +163,13 @@ func (p managerPaneSource) TaskState(taskID string) (ArgusTaskState, bool) {
 	return p.states.Get(taskID)
 }
 
+// StatesReady reports whether the argus state cache has completed its first
+// poll, so a cache miss can be safely treated as "task gone" rather than
+// "cache cold". Returns false (not ready) when no cache is wired.
+func (p managerPaneSource) StatesReady() bool {
+	return p.states != nil && p.states.Ready()
+}
+
 // SubscribeTask returns the live ring snapshot and the per-listener byte
 // channel for taskID. unsub releases the listener registration; the
 // underlying upstream Subscription outlives the session.
