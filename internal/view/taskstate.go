@@ -29,9 +29,11 @@ type TaskStateProvider interface {
 	TaskState(taskID string) (ArgusTaskState, bool)
 }
 
-// argusLister is the subset of *argus.Client the cache needs.
+// argusLister is the subset of *argus.Client the cache needs. It lists ALL
+// tasks (including archived) so the cache can tell archived tasks apart — the
+// default task list excludes them.
 type argusLister interface {
-	ListTasks(ctx context.Context) ([]argus.Task, error)
+	ListTasksAll(ctx context.Context) ([]argus.Task, error)
 }
 
 // DefaultArgusPollInterval is how often the state cache re-lists argus tasks.
@@ -117,7 +119,7 @@ func (c *ArgusStateCache) Run(ctx context.Context) {
 }
 
 func (c *ArgusStateCache) poll(ctx context.Context) {
-	tasks, err := c.lister.ListTasks(ctx)
+	tasks, err := c.lister.ListTasksAll(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			c.log.Warn("argus state cache: list tasks", "err", err)

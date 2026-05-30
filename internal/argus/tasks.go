@@ -40,6 +40,19 @@ func (c *Client) ListTasks(ctx context.Context) ([]Task, error) {
 	return resp.Tasks, nil
 }
 
+// ListTasksAll fetches every task INCLUDING archived ones (archived=all).
+// The default GET /api/tasks excludes archived tasks, so the rail's state
+// cache uses this to learn each task's archived bit (and full state) — without
+// it, archived tasks are invisible to the cache and can't be hidden from the
+// active rail.
+func (c *Client) ListTasksAll(ctx context.Context) ([]Task, error) {
+	var resp ListTasksResponse
+	if _, err := c.doJSON(ctx, "GET", "/api/tasks?archived=all", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Tasks, nil
+}
+
 // GetTask fetches one task.
 func (c *Client) GetTask(ctx context.Context, taskID string) (*Task, error) {
 	var t Task
