@@ -52,6 +52,7 @@ type ArgusStateCache struct {
 
 	mu     sync.RWMutex
 	states map[string]ArgusTaskState
+	ready  bool // true after the first successful poll
 
 	submu sync.Mutex
 	subs  map[chan struct{}]struct{}
@@ -83,6 +84,14 @@ func (c *ArgusStateCache) Get(taskID string) (ArgusTaskState, bool) {
 	defer c.mu.RUnlock()
 	st, ok := c.states[taskID]
 	return st, ok
+}
+
+// Ready reports whether at least one successful poll has completed. Callers
+// use it to avoid treating a cold-cache miss as "task gone".
+func (c *ArgusStateCache) Ready() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ready
 }
 
 // Subscribe returns a channel that receives a (coalesced) signal whenever the
@@ -136,8 +145,9 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 		}
 	}
 	c.mu.Lock()
-	changed := !sameStates(c.states, next)
+	changed := !sameStates(c.states, next) || !c.ready
 	c.states = next
+	c.ready = true
 	c.mu.Unlock()
 	if changed {
 		c.notify()

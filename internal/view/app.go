@@ -202,6 +202,15 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 		r.ArgusIdle = st.Idle
 		r.NeedsInput = st.NeedsInput
 		r.ArgusArchived = st.Archived
+		return
+	}
+	// Provider present but argus has no such task: it's gone (deleted /
+	// pruned worktree). Argus doesn't show deleted tasks at all, so neither
+	// should hera's active rail — mark it dead (hidden unless `l listall`).
+	// Gated on cache readiness so a cold cache doesn't transiently hide
+	// live rows on first render.
+	if rp, ok := prov.(interface{ StatesReady() bool }); !ok || rp.StatesReady() {
+		r.Dead = true
 	}
 }
 
