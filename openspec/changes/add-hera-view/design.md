@@ -189,6 +189,57 @@ Implementation: `railList` gains a `freelance []*freelanceProject` collection (e
 
 Alternative considered: keep freelance nested under their orchestrator and only change the layout on selection. Rejected — the operator's stated mental model is "projects, then a separate pool of freelancers"; leaving them nested under a coordinator they don't report to is the confusion this change removes.
 
+### D12 — Adopt the argus key-surrender contract (control frames over the view WebSocket)
+
+The argus plugin contract gained **full key surrender** (argus `docs/plugins.md` v1, shipped on `argus/plugin-substrate`). While a hera-view is focused, argus forwards *every* key to it — including Esc, `?`, single Ctrl-Q, and the modified arrows argus used to reserve — and intercepts only two: the double-Ctrl-Q failsafe (force-return to argus) and a single key to dismiss argus's help overlay. The plugin talks back over **text control frames** on the same WebSocket: `{"type":"release"}` (hand the keyboard back), `{"type":"hotkeys","items":[{"key","label","bar"}]}` (populate argus's context-sensitive bottom bar from `bar:true` items + the help overlay from the full set), and `{"type":"help"}` (pop the overlay). This supersedes the earlier Discovery finding that "Esc is intercepted at argus's keystroke pump and never reaches the plugin" — it now does.
+
+This unblocks the focus ladder (Cmd/Ctrl-→/← now reach hera and already drive D4 traversal — no traversal-code change), and it lets hera replace argus-misleading chrome with its own advertised bindings. Three adoption decisions:
+
+**Sending frames — no SDK change.** hera already holds the `*websocket.Conn` it passes to `pluginview.New`. `coder/websocket`'s `Conn.Write` serializes writers internally (one writer at a time; concurrent calls block), so hera writes text control frames directly on that conn, concurrently with the SDK's binary surface writes, with no corruption. No argus-sdk addition and no version bump — a pure hera change. A small `viewControl` helper wraps `conn.Write(ctx, MessageText, json)` for the three envelope types.
+
+**Esc leaves hera — but only from RAIL.** Esc while focus is `RAIL` sends `{"type":"release"}`; argus blurs, closes the connection, and returns to its task list. Esc while focus is `COORD`/`AGENT` is **forwarded to the bound PTY** like any other key — an agent running vim/Claude needs Esc, and yanking the operator out mid-edit would be hostile. Leaving from a pane is a two-step (Ctrl-Q → RAIL, then Esc) or the always-available double-Ctrl-Q failsafe. This resolves the open "Esc should leave hera" intent without breaking pane usability.
+
+**argus owns the bottom bar; `?` uses argus's overlay.** hera stops rendering its own bottom bar (D7's `bottomBarText` row) — argus now renders a plugin-mode status bar with the reserved `^Q^Q argus` exit hint it owns. Instead, hera pushes a focus-aware hotkey dictionary via `{"type":"hotkeys",...}` on connect and on every focus change, so argus's bar reflects the current context (RAIL: `j/k`, `Enter agent`, `Ctrl-→ coord`, `n/r/^d/a/l`, `Esc argus`; COORD/AGENT: `Ctrl-← …`, `Ctrl-Q rail`). `?` while RAIL sends `{"type":"help"}` (argus renders the overlay from the full dictionary); `?` in a pane is forwarded to the PTY. This obsoletes the "help modal close key" and "bottom-bar wrapping" open questions — both are argus's concern now.
+
+Implementation: a `viewControl` sender bound to the session conn; `App` gains a hook so `OnFocusChanged` re-pushes hotkeys and so a RAIL-focus Esc routes to `release`; `KeyRouter` recognizes Esc-from-RAIL → release and `?`-from-RAIL → help (both only in RAIL; both intercepted, not forwarded); `buildLayout`/`refreshBody` drop the bottom-bar row from the Flex; the `OnHelp` mutation handler switches from the in-surface modal to a help frame. Single Ctrl-Q → RAIL stays hera-internal; double-Ctrl-Q is argus's and never reaches hera.
+
+Alternative considered: keep hera's own bottom bar + help modal and ignore the contract's advertising channel. Rejected — it double-renders a status bar (argus's plugin-mode bar plus hera's) and diverges visually from every other plugin; the contract exists precisely so the host chrome stays coherent.
+
+### D13 — Mirror the rail-nav prototype (canonical interaction spec)
+
+**`docs/prototypes/rail-nav.html` is the canonical interaction spec for the hera-view TUI.** It was iterated to approval in the browser (faster, lower-risk than the Go TUI + iris loop). The Go implementation MUST mirror its rail structure, body layout, navigation, key bindings, and chrome as closely as a tcell/tview TUI allows. Where the terminal can't match the browser exactly (animations, pixel borders), get as close as the medium permits; the prototype's *behavior* is the contract. This section supersedes D11's two-mode body with a three-mode model and revises the rail to render coordinators as first-class rows.
+
+**Rail model (revises D5/D11 rendering).** The rail is a tree of coordinators and their agents, mirroring the prototype's `visibleRows`:
+
+- A **coordinator** (an orchestrator root, icon `◆`, or a sub-coordinator) renders as a selectable, foldable row with a chevron (`▾`/`▸`) and a live-child `(N)` count. Root coordinators use the project color/icon.
+- An **agent** (worker leaf) renders as an indented row under its coordinator. A worker that is itself a coordinator (multi-binding) renders as a foldable coordinator row with its own children nested.
+- **Folders-first**: among a coordinator's children, sub-coordinators sort before leaf workers.
+- **Per-coordinator + top-level Archive expandos** (see D14).
+- A single **Freelance** section (unmanaged argus tasks grouped — already specced in D11) sits below all coordinators; the top-level Archive sits at the very bottom.
+- Pills are NOT rendered (the chevron + count distinguish coordinators). Status drives the icon: `?` needs-input, `✓` review/done, `☾` working, `○` idle.
+
+**Body layout — three modes by selection** (the demo's SOLO/PAIR): a **coordinator** selection → rail + **full-width HERA pane** (the coordinator's own PTY; no agent pane); an **agent** selection → rail + **HERA pane + AGENT pane** split (coordinator of the agent's project + the agent); a **freelancer** → rail + **full-width AGENT pane** (no coord). The center column is labeled **HERA** (not "coord"). Focus ladder steps through only the present panes.
+
+**Enter-into-pane.** Enter from RAIL enters the selection's primary pane: a coordinator → its HERA pane; an agent → its AGENT pane; a freelancer → its AGENT pane. `space` folds/unfolds (coords and Archive sections). See D15 for the full keyset.
+
+**Chrome.** Top bar: `HERA` left, the persistent leave note (`esc / ^Q^Q argus`, dropping to `^Q^Q argus` inside a pane) far-right. Bottom bar: focus indicator (`▶ RAIL/HERA/AGENT`) left, focus-aware labeled hotkeys right-aligned. Hera does not render its own bottom bar in argus (D12 — argus draws the plugin-mode bar from hera's pushed `hotkeys`); the prototype's top/bottom split is what hera advertises.
+
+### D14 — Archive: per-coordinator and top-level foldable expandos
+
+Every coordinator (root or sub) that has archived direct children renders an `Archive (N)` expando among its children (below its active agents, collapsed by default), holding *its* archived agents — mirroring how argus folds archived items. Archiving an agent (`a`) moves it into its coordinator's Archive; archiving a root coordinator moves it into a top-level Archive section at the bottom of the rail. Archived rows render dimmed; the prototype renders them non-expandable (flat) — acceptable for v1. `a` on an archived item unarchives it. This replaces the global `l` listall toggle (the expandos are always reachable), though `l` MAY remain as a show/hide-all convenience.
+
+### D15 — Extended keyset (mirrors argus's task-list/agent-view keys)
+
+Because argus now surrenders the full keyboard (D12), hera adopts argus's key vocabulary so the operator's muscle memory carries across:
+
+- **`a`** archive/unarchive selected (D14). **`^d`** delete the selected agent/coordinator — destroys its argus task, worktree, and branch, behind a destructive confirm (warn if it has child agents). **`^r`** prune completed — remove all completed (`✓`) agents fleet-wide + clean worktrees/branches, behind a confirm (argus parity; calls argus `POST /api/maintenance/prune-completed`).
+- **`s` / `S`** advance / revert the selected agent's argus task status (pending → in_progress → in_review → complete).
+- **`^p`** open a PR for the selected agent's task (via the iris/host flow).
+- **`^→` / `^←`** move focus across present panes; **`⌘↑` / `⌘↓`** move selection to the next/prev agent *while staying in a pane* (re-enter the new selection's primary pane); **`⇧↑` / `⇧↓`** scroll the focused pane's scrollback.
+- **`n` new**, **`r` rename**, **`?` help** (argus overlay, D12), **`Enter`/`space`** (D13). Destructive verbs (`^d`, `^r`) and external actions (`^p`) MUST confirm/are operator-initiated.
+
+These run RAIL-focused (acting on the selection) except the pane-traversal/scroll keys; `^d`/`^r`/`^p` are reachable from any focus, acting on the current selection.
+
 ## Risks / Trade-offs
 
 - **`git worktree remove --force` from the daemon is potentially destructive.** → Confirm modal lists everything that will disappear and requires explicit `y` keystroke. The destructive operation is gated behind RAIL focus + the confirm modal — no accidental single-keystroke deletion. We log every `git worktree remove` invocation with the worktree path. If a future bug attempts a wrong-path delete, the log gives audit trail.

@@ -63,27 +63,33 @@ The system SHALL, at daemon startup (and on subsequent binding-created events), 
 
 ### Requirement: Body layout adapts to the selected row's kind
 
-The system SHALL render the body inside top and bottom chrome bars whenever the view application is active, in one of two column modes determined by the rail's current selection:
+The system SHALL render the body inside top and bottom chrome bars whenever the view application is active, in one of THREE modes determined by the rail's current selection (mirroring the canonical prototype's SOLO/PAIR behavior):
 
-- **Project mode** (a coordinator or worker row is selected): a three-column body — the left column is the navigation rail; the middle column is the COORD pane (PTY of the selected agent's project's coordinator); the right column is the AGENT pane (PTY of the selected agent itself).
-- **Freelance mode** (a freelance row is selected): a two-element body — the navigation rail plus a single AGENT pane (PTY of the selected freelance agent) occupying the entire remaining width. No COORD pane is composed.
+- **Coordinator mode** (a coordinator row is selected — root or sub): rail + a single full-width **HERA pane** (the coordinator's own PTY). No AGENT pane is composed.
+- **Agent mode** (a worker/agent row is selected): rail + **HERA pane** (the agent's coordinator's PTY) + **AGENT pane** (the agent's PTY) — a split body.
+- **Freelance mode** (a freelance row is selected): rail + a single full-width **AGENT pane** (the freelancer's PTY). No HERA pane is composed.
 
-The top bar SHALL contain literal text `HERA` left-aligned. The bottom bar SHALL contain context-aware key-binding hints per the current focus state and column mode.
+The center pane is labeled **HERA** (the coordinator), not "coord". The top bar SHALL contain literal text `HERA` left-aligned. Bottom-bar hints are advertised to argus per the key-surrender contract (argus draws the plugin-mode bar); when rendered standalone the bottom bar is focus-aware.
 
-#### Scenario: Project mode has three body columns and two chrome rows
+#### Scenario: Coordinator selection is a full-width HERA pane
 
-- **WHEN** the view application is running and a coordinator or worker row is selected
-- **THEN** the surface MUST be composed of a 1-row top bar, a 3-column body (rail + coord + agent), and a 1-row bottom bar
+- **WHEN** a coordinator row (root or sub) is selected
+- **THEN** the body MUST be the rail plus a single full-width HERA pane bound to that coordinator's PTY AND no AGENT pane MUST be present
+
+#### Scenario: Agent selection splits HERA + AGENT
+
+- **WHEN** a worker/agent row is selected
+- **THEN** the body MUST be the rail + a HERA pane bound to the agent's coordinator + an AGENT pane bound to the agent
 
 #### Scenario: Freelance mode collapses to rail + full-width agent
 
 - **WHEN** the rail selection moves to a freelance row
-- **THEN** the body MUST be composed of the navigation rail plus a single AGENT pane spanning the entire remaining width AND no COORD pane MUST be present in the layout
+- **THEN** the body MUST be the navigation rail plus a single AGENT pane spanning the remaining width AND no HERA pane MUST be present
 
-#### Scenario: Returning to a project row restores three columns
+#### Scenario: Switching selection re-composes the mode
 
-- **WHEN** the rail selection moves from a freelance row to a coordinator or worker row
-- **THEN** the body MUST be re-composed as the three-column rail + coord + agent layout
+- **WHEN** the rail selection moves between a coordinator, an agent, and a freelancer
+- **THEN** the body MUST re-compose to the corresponding mode (full-width HERA / split / full-width AGENT), tearing down the now-absent pane's subscription
 
 #### Scenario: Project-mode rail traversal updates both panes
 
@@ -325,19 +331,47 @@ The system SHALL, when the Archive section is visible and the operator presses `
 - **WHEN** the operator resurrects an archived coord role whose `mission="ship F"` and `constraints="ship by friday"`
 - **THEN** the dormant role row's `mission` and `constraints` columns MUST remain unchanged (the new task inherits them on `hera_join`)
 
-### Requirement: `?` displays a help modal listing all bindings
+### Requirement: `?` opens argus's help overlay via a help control frame
 
-The system SHALL display a modal overlay listing all key bindings grouped by focus state when the operator presses `?` while focus is `RAIL`. The modal MUST be dismissable by pressing `q` (since `Esc` is reserved by argus). The modal MUST NOT trigger any DB read or write.
+Under the argus key-surrender contract (argus forwards every key to a focused plugin view), the system SHALL, when the operator presses `?` while focus is `RAIL`, send a `{"type":"help"}` text control frame to argus over the view WebSocket so argus pops its help overlay rendered from hera's pushed hotkey dictionary. The system MUST NOT render its own in-surface help modal. While focus is `COORD` or `AGENT`, `?` MUST be forwarded to the bound task's PTY (not intercepted). Sending a help frame MUST NOT trigger any DB read or write.
 
-#### Scenario: `?` opens help modal
+#### Scenario: `?` in RAIL sends a help frame
 
 - **WHEN** focus is `RAIL` and the operator presses `?`
-- **THEN** a modal MUST appear listing the focus-traversal keys and the six mutation keys grouped by focus state
+- **THEN** hera MUST send a `{"type":"help"}` text frame to argus AND MUST NOT render an in-surface help modal
 
-#### Scenario: `q` closes help modal
+#### Scenario: `?` in a pane is forwarded to the PTY
 
-- **WHEN** the help modal is open and the operator presses `q`
-- **THEN** the modal MUST close AND focus MUST remain in `RAIL`
+- **WHEN** focus is `AGENT` (or `COORD`) and the operator presses `?`
+- **THEN** the byte MUST be forwarded to the bound task's input endpoint AND no help frame MUST be sent
+
+### Requirement: Esc returns control to argus from RAIL via a release frame
+
+Because argus surrenders Esc to the focused plugin view, the system SHALL, when the operator presses Esc while focus is `RAIL`, send a `{"type":"release"}` text control frame to argus — handing the keyboard back (argus blurs, closes the connection, and returns to its task list). While focus is `COORD` or `AGENT`, Esc MUST be forwarded to the bound task's PTY verbatim and MUST NOT release the view, so an agent (vim, Claude, etc.) can receive Esc. Leaving from a pane is therefore a two-step (Ctrl-Q to `RAIL`, then Esc) or argus's always-available double-Ctrl-Q failsafe.
+
+#### Scenario: Esc in RAIL releases to argus
+
+- **WHEN** focus is `RAIL` and the operator presses Esc
+- **THEN** hera MUST send a `{"type":"release"}` text frame to argus AND MUST NOT forward the Esc byte to any task's input endpoint
+
+#### Scenario: Esc in a pane is forwarded to the PTY
+
+- **WHEN** focus is `AGENT` (or `COORD`) and the operator presses Esc
+- **THEN** the Esc byte MUST be forwarded to the bound task's input endpoint AND the view MUST NOT release to argus
+
+### Requirement: Hera advertises focus-aware hotkeys to argus and renders no internal bottom bar
+
+The system SHALL push a `{"type":"hotkeys","items":[...]}` text control frame to argus on view connect and on every focus-state change, describing the key bindings for the current focus state (`RAIL` / `COORD` / `AGENT`), with the operator-facing keys flagged `bar:true` to populate argus's context-sensitive bottom bar and the full set driving argus's help overlay. The system MUST NOT render its own bottom-bar row within the view surface; argus renders the plugin-mode status bar, including the reserved `^Q^Q argus` exit hint that hera neither advertises nor displaces.
+
+#### Scenario: hotkeys pushed on focus change
+
+- **WHEN** the focus state changes (for example `RAIL` → `COORD`)
+- **THEN** hera MUST send a `{"type":"hotkeys",...}` frame whose items reflect the new focus state's bindings
+
+#### Scenario: no internal bottom bar rendered
+
+- **WHEN** the view surface renders in any focus state
+- **THEN** it MUST NOT include hera's own bottom-bar row (argus owns the plugin-mode status bar)
 
 ### Requirement: Every mutation is gated behind a confirmation or input modal
 
@@ -390,3 +424,84 @@ The system SHALL handle a `{type:"resize", cols, rows}` text-frame envelope from
 
 - **WHEN** the daemon would issue `POST /api/tasks/{id}/size` with cols/rows equal to the last value it sent for that task
 - **THEN** the daemon MUST skip the HTTP call
+
+### Requirement: Rail renders coordinators as foldable rows with Archive expandos
+
+The system SHALL render the rail as a tree mirroring the canonical prototype: each coordinator (orchestrator root or sub-coordinator) is a selectable, foldable row showing a chevron (`▾` expanded / `▸` collapsed) and a live-child `(N)` count; its agents render as indented child rows; a worker that is itself a coordinator renders as a foldable coordinator row with its own nested children. Among a coordinator's children, sub-coordinators MUST sort before leaf workers (folders-first). Rows MUST NOT render kind pills; the icon reflects argus status (`?` needs-input, `✓` review/complete, `☾` working, `○` idle), and the chevron/count distinguish coordinators. Every coordinator with archived direct children MUST render an `Archive (N)` expando below its active agents (collapsed by default); archived root coordinators MUST render under a top-level `Archive` section at the bottom of the rail. `space` MUST toggle the fold of the selected coordinator or Archive section.
+
+#### Scenario: Coordinator row is foldable with a count
+
+- **WHEN** the rail renders a coordinator that has live agents
+- **THEN** the row MUST show a chevron and a `(N)` live-child count AND pressing `space` on it MUST toggle whether its children are shown
+
+#### Scenario: Sub-coordinators sort before leaf workers
+
+- **WHEN** a coordinator has both sub-coordinator children and leaf-worker children
+- **THEN** the sub-coordinator rows MUST render above the leaf-worker rows
+
+#### Scenario: Archived agents live in their coordinator's Archive expando
+
+- **WHEN** an agent under a coordinator is archived
+- **THEN** it MUST NOT appear among the coordinator's active rows AND it MUST appear inside that coordinator's `Archive (N)` expando, which is collapsed by default
+
+#### Scenario: Archived root coordinators live in the top-level Archive
+
+- **WHEN** a root coordinator is archived
+- **THEN** it MUST appear only under the top-level `Archive` section at the bottom of the rail
+
+### Requirement: Enter enters the selection's primary pane
+
+The system SHALL, when the operator presses `Enter` while focus is `RAIL` on a bindable row, move focus into that selection's primary pane: a coordinator row → its `HERA` pane (focus `COORD`); an agent row → its `AGENT` pane; a freelancer → its `AGENT` pane. On a header/expando row (Freelance or Archive), `Enter` MUST toggle the section fold instead. `space` MUST always fold/unfold (never enter a pane). Focus traversal (`^→`/`^←`) MUST step through only the panes present in the current mode.
+
+#### Scenario: Enter on a coordinator enters the HERA pane
+
+- **WHEN** focus is `RAIL` and a coordinator row is selected and the operator presses `Enter`
+- **THEN** focus MUST move to the full-width `HERA` (COORD) pane
+
+#### Scenario: Enter on an agent enters the AGENT pane
+
+- **WHEN** focus is `RAIL` and an agent row is selected and the operator presses `Enter`
+- **THEN** focus MUST move to the `AGENT` pane
+
+#### Scenario: Traversal skips absent panes
+
+- **WHEN** focus is `RAIL` on a coordinator (no AGENT pane present) and the operator presses `^→`
+- **THEN** focus MUST move to `HERA` (COORD) AND a further `^→` MUST NOT reach a non-existent AGENT pane
+
+### Requirement: Archive, delete, and prune are distinct removal verbs
+
+The system SHALL provide three distinct removal actions on the rail: `a` toggles archive on the selected coordinator/agent (reversible; moves it into the appropriate Archive expando per the rail requirement). `^d` deletes the selected coordinator/agent — destroying its argus task, git worktree, and branch — behind a destructive confirmation that names the target (and warns when it has child agents). `^r` prunes all completed agents fleet-wide — removing finished tasks and cleaning their worktrees/branches — behind a confirmation, mirroring argus's prune-completed. Neither `^d` nor `^r` MUST perform any destructive operation without explicit confirmation.
+
+#### Scenario: Archive is reversible and moves to the fold
+
+- **WHEN** the operator presses `a` on an active agent
+- **THEN** the agent MUST move into its coordinator's Archive expando AND pressing `a` on it again MUST restore it to the active list
+
+#### Scenario: Delete confirms before destroying the worktree
+
+- **WHEN** the operator presses `^d` on an agent
+- **THEN** a confirmation naming the agent MUST appear AND no task/worktree/branch deletion MUST occur until the operator confirms
+
+#### Scenario: Prune confirms and targets only completed agents
+
+- **WHEN** the operator presses `^r`
+- **THEN** a confirmation listing the completed agents to remove MUST appear AND only agents in the completed state MUST be pruned on confirm
+
+### Requirement: Status, open-PR, scroll, and in-pane navigation keys
+
+The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected agent's argus task status (pending → in_progress → in_review → complete); `^p` opens a pull request for the selected agent's task via the host git flow; `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
+
+#### Scenario: s/S step the selected agent's status
+
+- **WHEN** focus is `RAIL` on an agent and the operator presses `s`
+- **THEN** the agent's argus task status MUST advance one step (and `S` MUST revert one step)
+
+#### Scenario: In-pane navigation keeps focus in a pane
+
+- **WHEN** focus is inside a pane and the operator presses `⌘↓`
+- **THEN** the rail selection MUST move to the next agent AND focus MUST remain in a pane bound to the new selection (not return to `RAIL`)
+
+#### Scenario: Shift-arrows scroll the focused pane
+
+- **WHEN** focus is inside a pane and the operator presses `⇧↑` / `⇧↓`
+- **THEN** the focused pane's terminal scrollback MUST scroll up / down without moving the rail selection

@@ -104,9 +104,56 @@
 - [ ] 12.6 Wire `applyRailSelection` (and the initial-selection path) to switch modes and (re)bind the full-width agent pane to the selected freelance role's argus task; set the focus machine's `coordPresent` flag accordingly.
 - [ ] 12.7 Run `go test ./internal/view/... -race -count=1` until green.
 
-## 13. Validation + archive
+## 13. Stage M — adopt the argus key-surrender contract
 
-- [ ] 13.1 Run `openspec validate add-hera-view --strict` against the change folder. Fix any issues.
-- [ ] 13.2 Run `openspec validate --all --strict` as a sanity check.
-- [ ] 13.3 Manual smoke (Aaron, morning): rebuild the daemon and open hera's plugin view in argus; verify the three panes render, rail navigation works, Cmd/Ctrl-←/→ traverses focus, `?` opens help, the Freelance expando lists freelancers, and selecting one shows the full-width single-pane layout.
-- [ ] 13.4 After Aaron live-verifies, run `openspec archive add-hera-view`.
+**Depends on:** Stage G (focus + key routing) and Stage L (focus modes)
+
+- [ ] 13.1 Write failing tests from the new scenarios (Prove-It). `keys_test.go`: Esc in RAIL triggers a `release` control frame and is NOT forwarded; Esc in COORD/AGENT is forwarded to the PTY and does NOT release; `?` in RAIL triggers a `help` frame and is NOT forwarded; `?` in a pane is forwarded. `control_test.go`: the sender marshals `release`/`hotkeys`/`help` envelopes to the exact contract JSON. `app_test.go`/`layout_test.go`: a focus-state change pushes a focus-appropriate `hotkeys` frame; the rendered surface no longer includes a bottom-bar row. Confirm each fails first.
+- [ ] 13.2 Add a `viewControl` sender (`internal/view/control.go`) that writes `release` / `hotkeys` / `help` envelopes as TEXT frames on the session `*websocket.Conn` (coder/websocket serializes writers, so this coexists safely with the SDK's binary surface writes). Thread the conn from `NewSessionFunc` into the `App`.
+- [ ] 13.3 `internal/view/keys.go` + `app.go`: in `RAIL` focus, route Esc → `release` and `?` → `help` (intercept, do not forward). Leave Esc/`?` forwarding intact in `COORD`/`AGENT`. Keep single Ctrl-Q → RAIL internal; do NOT bind double-Ctrl-Q (argus's failsafe owns it).
+- [ ] 13.4 `app.go` `OnFocusChanged`: push a focus-aware `hotkeys` dictionary (RAIL / COORD / AGENT bindings, `bar:true` on the operator-facing keys) on connect and on every focus change. Build the dictionaries from the same source of truth the retired `bottomBarText` used.
+- [ ] 13.5 `layout.go` + `app.go` `refreshBody`: remove hera's bottom-bar row from the Flex (argus renders the plugin-mode status bar). Retire `bottomBarText`; switch `OnHelp` from the in-surface modal to a `help` frame.
+- [ ] 13.6 Run `go test ./internal/view/... ./internal/daemon/... -race -count=1` until green.
+
+## 14. Stage N — Rail model: coordinators as foldable rows + Archive expandos (mirror prototype)
+
+**Depends on:** Stage I (rail rendering). Canonical reference: `docs/prototypes/rail-nav.html` (`visibleRows`, `renderRail`).
+
+- [ ] 14.1 Write failing tests from the rail requirements (Prove-It): coordinators render as foldable rows with chevron + live `(N)` count; agents nest under their coordinator; a worker that is also a coordinator renders foldable with its own children; folders-first ordering; no kind pills; status-driven icon; per-coordinator `Archive (N)` expando (collapsed default) holds archived children; top-level `Archive` holds archived root coordinators; `space` toggles coord/Archive folds.
+- [ ] 14.2 `internal/view/rail_list.go` + `app.go` `populateRail`: build the row tree from orchestrators/roles/bindings to match the prototype — render coordinators (root + sub via multi-binding) as foldable rows, nest agents, folders-first, drop pills, status icons. Reuse the freelance-by-repo section (Stage L).
+- [ ] 14.3 Add per-coordinator + top-level Archive expandos: partition archived roles/tasks into the owning coordinator's Archive (and archived root coords into the top-level Archive); render dashed `Archive (N)` rows; wire `space`/fold state per owner. Decide `l` listall's fate (retire or keep as show-all).
+- [ ] 14.4 Probe-validate: spawn/observe the open test coords+agents; `HERA_LIVE_PROBE=1 go test ./internal/daemon/ -run LiveViewProbe` and diff the rendered rail tree against `rail-nav.html` (icons, counts, folders-first, archive folds). Iterate until they match.
+
+## 15. Stage O — Three-mode body + Enter-into-pane + present-pane focus ladder
+
+**Depends on:** Stage N and Stage G (focus + key routing).
+
+- [ ] 15.1 Write failing tests: coordinator selection → full-width HERA pane (no agent); agent selection → HERA+AGENT split; freelancer → full-width AGENT; switching re-composes + tears down the absent pane; Enter enters the primary pane (coord→COORD, agent→AGENT, freelancer→AGENT); Enter on a header/expando folds; `^→`/`^←` traverse only present panes.
+- [ ] 15.2 `internal/view/focus.go`: generalize `coordPresent` into present-pane awareness (`coordPresent` + `agentPresent`); `Advance`/`Retreat` step only through present states.
+- [ ] 15.3 `internal/view/layout.go` + `app.go` `refreshBody`: three compositions (full-width HERA / split / full-width AGENT); center pane titled `HERA`; tear down the absent pane's subscription on mode switch.
+- [ ] 15.4 `app.go` `applyRailSelection` + `OnRailSelectEnter`: select → set mode + bind panes; Enter → enter primary pane (return FocusCOORD for coords, FocusAGENT for agents/freelancers); header/expando rows fold.
+- [ ] 15.5 Probe-validate the three modes + Enter + traversal against the prototype (drive keys with `HERA_PROBE_KEYS`/`HERA_PROBE_RAW`). Iterate until parity.
+
+## 16. Stage P — Extended keyset: delete, prune, status, open-PR
+
+**Depends on:** Stage N. (`a` archive lands with Stage N's archive model.)
+
+- [ ] 16.1 Write failing tests: `^d` opens a destructive confirm and, on confirm, destroys task+worktree+branch (warns on child agents); `^r` opens a confirm listing completed agents and prunes only those; `s`/`S` advance/revert the selected agent's argus status; `^p` triggers a PR for the selected task. Confirm no destructive op without confirmation.
+- [ ] 16.2 `internal/view/keys.go` + `app.go` + `internal/view/mutations.go`: wire `^d` (delete — extend the existing delete flow to destroy the argus task/worktree/branch), `^r` (prune-completed → argus `POST /api/maintenance/prune-completed`), `s`/`S` (status step via argus task-status endpoint), `^p` (open PR via the host/iris flow). Add the argus client methods needed.
+- [ ] 16.3 Probe-validate: confirm dialogs render and the rail updates after archive/delete/prune against the prototype's overlays. Iterate.
+
+## 17. Stage Q — Pane scroll + in-pane agent navigation
+
+**Depends on:** Stage O.
+
+- [ ] 17.1 Write failing tests: `⇧↑`/`⇧↓` scroll the focused pane's scrollback without moving the rail selection; `⌘↑`/`⌘↓` (and `^↑`/`^↓`) move the rail selection to the next/prev agent while focus stays in a pane (re-enter the new selection's primary pane).
+- [ ] 17.2 `internal/view/keys.go` + pane/terminalpane wiring: implement scrollback scroll on the focused pane; implement in-pane selection nav that preserves pane focus.
+- [ ] 17.3 Probe-validate scroll + in-pane nav against the prototype.
+
+## 18. Validation + archive
+
+- [ ] 18.1 Run `openspec validate add-hera-view --strict`. Fix any issues.
+- [ ] 18.2 `go test ./... -race -count=1` green (excluding the known pre-existing `internal/mcp` test build break, tracked separately).
+- [ ] 18.3 Probe parity pass: with the open test coords/agents/freelancers, capture the live rail + each body mode via the probe and compare side-by-side against `docs/prototypes/rail-nav.html` — rail tree (icons/counts/folders-first/archive), three body modes, Enter-into-pane, focus ladder, full keyset, top/bottom chrome. Iterate until "as close as a TUI can get". Deploy via iris (`iris_push` → PR → squash-merge → `iris_reload`) between iterations.
+- [ ] 18.4 Manual smoke (Aaron): open hera's plugin view in argus and confirm the feel matches the browser — coord full-width / agent split / freelancer full-width, Enter-into-pane, `^→/^←`, `⌘↑/↓`, `⇧↑/↓`, `a`/`^d`/`^r`/`s`/`S`/`^p`, Esc→argus / `^Q^Q` failsafe, argus bottom bar shows hera's hotkeys.
+- [ ] 18.5 After Aaron live-verifies, run `openspec archive add-hera-view`.
