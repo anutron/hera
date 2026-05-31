@@ -35,6 +35,16 @@ type MutationHandler interface {
 	OnHelp()
 }
 
+// ControlSender sends the argus key-surrender control frames the router needs
+// directly (release). The `?` help frame is sent through the MutationHandler's
+// OnHelp so the existing RAIL-only mutation routing is unchanged; Esc-release
+// is a router concern because it is not a mutation key. *viewControl is the
+// production implementation; tests inject a capturing fake. Nil is a safe
+// no-op (the router simply doesn't release).
+type ControlSender interface {
+	SendRelease() error
+}
+
 // ModalGate is consulted on every key event so the router can yield to
 // any active modal overlay (input field, confirm modal, help modal).
 // When IsModalActive returns true HandleKey passes the event through
@@ -77,6 +87,11 @@ type KeyRouter struct {
 	Border     BorderUpdater
 	RailSelect RailSelectHandler
 	Modal      ModalGate
+
+	// Control sends key-surrender control frames to argus. Esc-from-RAIL
+	// routes here as a release frame; nil makes Esc-from-RAIL a no-op
+	// (still consumed, never forwarded).
+	Control ControlSender
 
 	// Ctx is the context used when calling Poster.PostTaskInput. Defaults
 	// to context.Background() when nil.
@@ -136,6 +151,17 @@ func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 // else (↑/↓, PgUp/PgDn) propagates so the tree-view native handling
 // applies.
 func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
+	// Esc from RAIL hands the keyboard back to argus (key-surrender
+	// contract, D12). The Esc byte is NOT forwarded to any task; in a pane
+	// (handlePane) Esc is instead forwarded verbatim so vim/Claude can see
+	// it. Consume the event either way.
+	if event.Key() == tcell.KeyEsc {
+		if r.Control != nil {
+			_ = r.Control.SendRelease()
+		}
+		return nil
+	}
+
 	if event.Key() == tcell.KeyEnter {
 		target := FocusRAIL
 		if r.RailSelect != nil {

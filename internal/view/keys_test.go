@@ -60,6 +60,16 @@ type fakeBorder struct {
 
 func (f *fakeBorder) OnFocusChanged(s FocusState) { f.states = append(f.states, s) }
 
+// fakeControl records the control frames the router asks for (release / help)
+// so tests can assert the key-surrender contract without a real WebSocket.
+type fakeControl struct {
+	releases int
+	helps    int
+}
+
+func (f *fakeControl) SendRelease() error { f.releases++; return nil }
+func (f *fakeControl) SendHelp() error    { f.helps++; return nil }
+
 func newRouter() (*KeyRouter, *fakePoster, *fakeMutations, *fakeBorder) {
 	p := &fakePoster{}
 	m := &fakeMutations{}
@@ -72,6 +82,15 @@ func newRouter() (*KeyRouter, *fakePoster, *fakeMutations, *fakeBorder) {
 		Border:    b,
 	}
 	return r, p, m, b
+}
+
+// newRouterWithControl is newRouter plus a fake control sender wired in, for
+// the Esc-release / help-frame contract tests.
+func newRouterWithControl() (*KeyRouter, *fakePoster, *fakeControl) {
+	r, p, _, _ := newRouter()
+	c := &fakeControl{}
+	r.Control = c
+	return r, p, c
 }
 
 // --- Focus state machine ---
@@ -630,6 +649,67 @@ func TestKeyRouter_CtrlRight_InCOORD_NotForwarded(t *testing.T) {
 	}
 	if r.Focus.State() != FocusAGENT {
 		t.Fatalf("Ctrl-Right from COORD must move focus to AGENT; got %s", r.Focus.State())
+	}
+}
+
+// --- Key-surrender contract: Esc release + ? help frame (D12) ---
+
+// Esc while focus is RAIL hands the keyboard back to argus via a release
+// frame; the Esc byte MUST NOT be forwarded to any task.
+func TestKeyRouter_Esc_InRAIL_SendsRelease_NotForwarded(t *testing.T) {
+	r, p, c := newRouterWithControl()
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if out != nil {
+		t.Fatalf("Esc in RAIL must be consumed; got non-nil event")
+	}
+	if c.releases != 1 {
+		t.Fatalf("Esc in RAIL must send exactly one release frame; got %d", c.releases)
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("Esc in RAIL must NOT be forwarded to a task; got %d calls", len(p.Calls()))
+	}
+}
+
+// Esc while focus is AGENT (or COORD) is forwarded to the bound PTY verbatim
+// (0x1b) and MUST NOT release the view.
+func TestKeyRouter_Esc_InAGENT_ForwardedToPTY_NoRelease(t *testing.T) {
+	r, p, c := newRouterWithControl()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if c.releases != 0 {
+		t.Fatalf("Esc in AGENT must NOT release the view; got %d releases", c.releases)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != 0x1b || calls[0].TaskID != "agent-1" {
+		t.Fatalf("Esc in AGENT must forward 0x1b to the agent task; got %d calls, payload=%v", len(calls), payloadOf(calls))
+	}
+}
+
+func TestKeyRouter_Esc_InCOORD_ForwardedToPTY_NoRelease(t *testing.T) {
+	r, p, c := newRouterWithControl()
+	r.Focus.Advance() // → COORD
+	r.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if c.releases != 0 {
+		t.Fatalf("Esc in COORD must NOT release the view; got %d releases", c.releases)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != 0x1b || calls[0].TaskID != "coord-1" {
+		t.Fatalf("Esc in COORD must forward 0x1b to the coord task; got %d calls, payload=%v", len(calls), payloadOf(calls))
+	}
+}
+
+// ? while focus is RAIL pops argus's help overlay via a help frame and MUST
+// NOT be forwarded to a task. (It routes through the mutation handler's
+// OnHelp; with a control sender wired, the bridge sends the frame — but at the
+// router level we still confirm ? in RAIL is consumed and not forwarded.)
+func TestKeyRouter_Question_InRAIL_NotForwarded(t *testing.T) {
+	r, p, _ := newRouterWithControl()
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone))
+	if out != nil {
+		t.Fatalf("? in RAIL must be consumed; got non-nil event")
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("? in RAIL must NOT be forwarded to a task; got %d calls", len(p.Calls()))
 	}
 }
 

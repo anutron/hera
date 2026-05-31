@@ -64,6 +64,13 @@ type App struct {
 	// nil in tests that build the App without a router.
 	focus *FocusMachine
 
+	// control sends the argus key-surrender control frames (D12). On every
+	// OnFocusChanged the App pushes a focus-aware hotkeys frame so argus's
+	// plugin-mode bottom bar + help overlay reflect the current focus. nil
+	// (no session conn wired — tests, daemon startup) makes the push a
+	// no-op. Injected via SetControl during session wiring.
+	control *viewControl
+
 	// database is retained for RepopulateRail so the bridge can ask
 	// for a refresh without round-tripping back through the daemon.
 	// Set by BuildApp; nil-safe at the use sites.
@@ -173,6 +180,16 @@ func (a *App) Application() *tview.Application {
 func (a *App) SetFocusMachine(f *FocusMachine) {
 	a.mu.Lock()
 	a.focus = f
+	a.mu.Unlock()
+}
+
+// SetControl injects the session's view-control sender so the App can push the
+// focus-aware hotkey dictionary to argus on connect and on every focus change
+// (D12). Called once during session wiring, after the conn is accepted. A nil
+// sender (no session conn) makes every push a safe no-op.
+func (a *App) SetControl(c *viewControl) {
+	a.mu.Lock()
+	a.control = c
 	a.mu.Unlock()
 }
 
@@ -609,14 +626,16 @@ func (a *App) OnFocusChanged(state FocusState) {
 	const focused = tcell.ColorYellow
 	const unfocused = tcell.ColorWhite
 
-	// Reflect the focus state in the bottom bar — the operator's primary cue
-	// for "which element am I driving right now". Without this the bar stays
-	// a static [RAIL] string and pane focus looks like a frozen rail.
-	if a.pieces.bottom != nil {
-		a.mu.Lock()
-		coordPresent := a.coordPresent
-		a.mu.Unlock()
-		a.pieces.bottom.SetText(bottomBarText(state, coordPresent))
+	// Advertise the focus-aware hotkey dictionary to argus so its plugin-mode
+	// bottom bar + help overlay reflect the current focus (D12). Hera renders
+	// no bottom bar of its own; argus owns that chrome. nil control (no
+	// session conn) makes this a no-op.
+	a.mu.Lock()
+	coordPresent := a.coordPresent
+	control := a.control
+	a.mu.Unlock()
+	if control != nil {
+		_ = control.SendHotkeys(hotkeyItems(state, coordPresent))
 	}
 
 	a.pieces.rail.SetBorderColor(unfocused)

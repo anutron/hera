@@ -42,9 +42,6 @@ type modalAPI interface {
 	// ShowConfirm opens a y/N confirmation modal. onYes runs when the
 	// operator picks Yes; onNo runs on No or cancel. Either may be nil.
 	ShowConfirm(title, message string, onYes func(), onNo func())
-	// ShowHelp opens the help modal with the given sections. The
-	// operator dismisses with q.
-	ShowHelp(sections []ops.HelpSection)
 	// ShowError surfaces a string in an error modal. Dismissed by any
 	// key.
 	ShowError(message string)
@@ -87,9 +84,17 @@ type repopulator interface {
 	RepopulateRail()
 }
 
+// helpFrameSender sends argus's help control frame so argus pops its help
+// overlay rendered from hera's pushed hotkey dictionary (D12). The bridge's
+// OnHelp routes here instead of opening an in-surface modal. nil makes OnHelp
+// a no-op (tests / daemon startup without a session conn).
+type helpFrameSender interface {
+	SendHelp() error
+}
+
 // mutationBridge implements MutationHandler by routing each rail
 // mutation key to modals + ops.Service. Construction wires it to the
-// surrounding App via the four small interfaces above; tests inject
+// surrounding App via the small interfaces above; tests inject
 // fakes for each.
 type mutationBridge struct {
 	ctx     context.Context
@@ -98,11 +103,12 @@ type mutationBridge struct {
 	svc     mutationService
 	listAll listAllState
 	repop   repopulator
+	help    helpFrameSender
 	log     *slog.Logger
 }
 
 // newMutationBridge constructs the bridge. log defaults to
-// slog.Default() when nil.
+// slog.Default() when nil. help may be nil (OnHelp then no-ops).
 func newMutationBridge(
 	ctx context.Context,
 	modals modalAPI,
@@ -110,6 +116,7 @@ func newMutationBridge(
 	svc mutationService,
 	listAll listAllState,
 	repop repopulator,
+	help helpFrameSender,
 	log *slog.Logger,
 ) *mutationBridge {
 	if log == nil {
@@ -125,6 +132,7 @@ func newMutationBridge(
 		svc:     svc,
 		listAll: listAll,
 		repop:   repop,
+		help:    help,
 		log:     log,
 	}
 }
@@ -253,10 +261,14 @@ func (b *mutationBridge) OnListAll() {
 	b.refresh()
 }
 
-// OnHelp opens the help modal with the bindings sourced from
-// ops.HelpContent.
+// OnHelp sends argus's help control frame so argus pops its help overlay
+// rendered from hera's pushed hotkey dictionary (D12). Hera renders no
+// in-surface help modal. No DB read or write. No-op when no help sender is
+// wired (tests / daemon startup without a session conn).
 func (b *mutationBridge) OnHelp() {
-	b.modals.ShowHelp(ops.HelpContent())
+	if b.help != nil {
+		_ = b.help.SendHelp()
+	}
 }
 
 func (b *mutationBridge) refresh() {

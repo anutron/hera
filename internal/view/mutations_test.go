@@ -16,8 +16,6 @@ type fakeModals struct {
 
 	inputs   []fakeInputCall
 	confirms []fakeConfirmCall
-	helps    int
-	lastHelp []ops.HelpSection
 	errors   []string
 
 	// stubInput, stubConfirm let tests inject the operator's answer.
@@ -81,13 +79,6 @@ func (f *fakeModals) ShowConfirm(title, message string, onYes func(), onNo func(
 	if onNo != nil {
 		onNo()
 	}
-}
-
-func (f *fakeModals) ShowHelp(sections []ops.HelpSection) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.helps++
-	f.lastHelp = sections
 }
 
 func (f *fakeModals) ShowError(message string) {
@@ -222,13 +213,25 @@ func (s *fakeMutationService) ToggleArchiveRole(_ context.Context, id int64) err
 // caller is expected to seed the selector, modals, and service before
 // invoking the verb.
 func newBridgeUnderTest() (*mutationBridge, *fakeModals, *fakeSelector, *fakeMutationService, *fakeListAll, *fakeRepopulator) {
+	b, m, sel, svc, la, rp, _ := newBridgeUnderTestWithHelp()
+	return b, m, sel, svc, la, rp
+}
+
+// fakeHelpSender records SendHelp calls so the OnHelp contract test can assert
+// a help frame was sent (D12) instead of an in-surface modal.
+type fakeHelpSender struct{ helps int }
+
+func (f *fakeHelpSender) SendHelp() error { f.helps++; return nil }
+
+func newBridgeUnderTestWithHelp() (*mutationBridge, *fakeModals, *fakeSelector, *fakeMutationService, *fakeListAll, *fakeRepopulator, *fakeHelpSender) {
 	m := &fakeModals{}
 	sel := &fakeSelector{}
 	svc := &fakeMutationService{}
 	la := &fakeListAll{}
 	rp := &fakeRepopulator{}
-	b := newMutationBridge(context.Background(), m, sel, svc, la, rp, nil)
-	return b, m, sel, svc, la, rp
+	help := &fakeHelpSender{}
+	b := newMutationBridge(context.Background(), m, sel, svc, la, rp, help, nil)
+	return b, m, sel, svc, la, rp, help
 }
 
 // --- OnNew ---
@@ -542,32 +545,25 @@ func TestBridge_OnListAll_TogglesState_AndRefreshes(t *testing.T) {
 
 // --- OnHelp ---
 
-func TestBridge_OnHelp_OpensHelpModal(t *testing.T) {
-	b, m, _, _, _, rp := newBridgeUnderTest()
+// Under the key-surrender contract (D12) OnHelp sends a help control frame so
+// argus pops its overlay; it MUST NOT render an in-surface modal and MUST NOT
+// refresh the rail (no DB read/write).
+func TestBridge_OnHelp_SendsHelpFrame(t *testing.T) {
+	b, _, _, _, _, rp, help := newBridgeUnderTestWithHelp()
 
 	b.OnHelp()
 
-	if m.helps != 1 {
-		t.Fatalf("want 1 ShowHelp call, got %d", m.helps)
+	if help.helps != 1 {
+		t.Fatalf("want 1 help frame, got %d", help.helps)
 	}
 	if rp.Count() != 0 {
 		t.Fatalf("help must not refresh rail; got %d", rp.Count())
 	}
 }
 
-// OnHelp passes ops.HelpContent through to ShowHelp verbatim.
-func TestBridge_OnHelp_PassesOpsHelpContent(t *testing.T) {
-	b, m, _, _, _, _ := newBridgeUnderTest()
-
-	b.OnHelp()
-
-	want := ops.HelpContent()
-	if len(m.lastHelp) != len(want) {
-		t.Fatalf("ShowHelp sections count: want %d, got %d", len(want), len(m.lastHelp))
-	}
-	for i := range want {
-		if m.lastHelp[i].Title != want[i].Title {
-			t.Fatalf("section %d title: want %q, got %q", i, want[i].Title, m.lastHelp[i].Title)
-		}
-	}
+// A nil help sender makes OnHelp a safe no-op.
+func TestBridge_OnHelp_NilSenderNoPanic(t *testing.T) {
+	m := &fakeModals{}
+	b := newMutationBridge(context.Background(), m, &fakeSelector{}, &fakeMutationService{}, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+	b.OnHelp() // must not panic
 }

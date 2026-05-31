@@ -2,6 +2,7 @@ package view
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,8 +122,10 @@ func TestBuildApp_ThreeColumnsAndChrome(t *testing.T) {
 	}
 	defer a.Close()
 
-	// At 80x24 the rail is width 22 and the two panes split the
-	// remaining 58 columns. Top bar = row 0; bottom bar = row 23.
+	// At 80x24 the rail is width RailWidth and the two panes split the
+	// remaining columns. Top bar = row 0; the body fills rows 1..23 — hera
+	// renders NO bottom-bar row of its own (D12: argus draws the plugin-mode
+	// status bar from hera's pushed hotkeys).
 	got := renderApp(t, a, 80, 24)
 	rows := strings.Split(got, "\n")
 	if len(rows) < 24 {
@@ -142,9 +145,77 @@ func TestBuildApp_ThreeColumnsAndChrome(t *testing.T) {
 		t.Errorf("expected rail border characters on row 1 within rail column; got %q", railSlice)
 	}
 
-	// The bottom bar should show the RAIL hint placeholder.
-	if !strings.Contains(rows[23], "[RAIL]") {
-		t.Errorf("expected RAIL hint on bottom bar; got %q", rows[23])
+	// No internal bottom bar: hera advertises focus-aware hotkeys to argus
+	// instead of rendering its own status row, so no focus-state bracket
+	// label must appear anywhere on the surface.
+	for _, label := range []string{"[RAIL]", "[COORD]", "[AGENT]"} {
+		if strings.Contains(got, label) {
+			t.Errorf("surface must not render hera's own bottom-bar label %q; got:\n%s", label, got)
+		}
+	}
+
+	// The body's bottom pane border should reach the last row (row 23),
+	// proving the body — not a retired bottom bar — owns that row.
+	if !strings.ContainsAny(rows[23], "└┘─") {
+		t.Errorf("expected the body's bottom border on the last row; got %q", rows[23])
+	}
+}
+
+// OnFocusChanged must push a focus-appropriate hotkeys frame to argus (D12):
+// the items reflect the new focus state's bindings, and the frame is a
+// TEXT control envelope of shape {"type":"hotkeys","items":[...]}.
+func TestApp_OnFocusChanged_PushesFocusAwareHotkeys(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	conn := &fakeControlConn{}
+	a.SetControl(newViewControl(context.Background(), conn))
+
+	decodeLast := func() (string, []HotkeyItem) {
+		w := conn.Writes()
+		if len(w) == 0 {
+			t.Fatalf("no hotkeys frame pushed")
+		}
+		var env struct {
+			Type  string       `json:"type"`
+			Items []HotkeyItem `json:"items"`
+		}
+		if err := json.Unmarshal(w[len(w)-1].Data, &env); err != nil {
+			t.Fatalf("hotkeys frame not valid JSON: %v", err)
+		}
+		return env.Type, env.Items
+	}
+
+	labelsFor := func(items []HotkeyItem) string {
+		var sb strings.Builder
+		for _, it := range items {
+			sb.WriteString(it.Key)
+			sb.WriteString(":")
+			sb.WriteString(it.Label)
+			sb.WriteString(" ")
+		}
+		return sb.String()
+	}
+
+	a.OnFocusChanged(FocusRAIL)
+	typ, items := decodeLast()
+	if typ != "hotkeys" {
+		t.Fatalf("frame type: want hotkeys, got %q", typ)
+	}
+	railLabels := labelsFor(items)
+	if !strings.Contains(railLabels, "j/k:move") || !strings.Contains(railLabels, "Esc:argus") {
+		t.Fatalf("RAIL hotkeys missing rail-specific bindings: %s", railLabels)
+	}
+
+	a.OnFocusChanged(FocusCOORD)
+	_, items = decodeLast()
+	coordLabels := labelsFor(items)
+	if !strings.Contains(coordLabels, "coord PTY") || strings.Contains(coordLabels, "j/k:move") {
+		t.Fatalf("COORD hotkeys should reflect coord focus, not RAIL: %s", coordLabels)
 	}
 }
 

@@ -1,13 +1,9 @@
 package view
 
 import (
-	"fmt"
 	"strings"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-
-	"github.com/anutron/hera/internal/view/ops"
 )
 
 // Modal page names used inside *App.pieces.pages. A separate name per
@@ -17,7 +13,6 @@ const (
 	pageBase    = "base"
 	pageInput   = "modal-input"
 	pageConfirm = "modal-confirm"
-	pageHelp    = "modal-help"
 	pageError   = "modal-error"
 )
 
@@ -88,32 +83,6 @@ func (a *App) ShowConfirm(title, message string, onYes func(), onNo func()) {
 	})
 }
 
-// ShowHelp opens the help modal with the supplied sections. Dismissed
-// by `q` (Esc is reserved by argus per design.md D5).
-func (a *App) ShowHelp(sections []ops.HelpSection) {
-	a.queueModal(func() {
-		body := tview.NewTextView()
-		body.SetText(formatHelp(sections))
-		body.SetBorder(true).
-			SetTitle("Help — press q to close").
-			SetTitleAlign(tview.AlignCenter)
-		body.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-			if event.Key() == tcell.KeyRune && event.Rune() == 'q' {
-				a.closeModal(pageHelp)
-				return nil
-			}
-			if event.Key() == tcell.KeyEsc {
-				a.closeModal(pageHelp)
-				return nil
-			}
-			return event
-		})
-
-		a.pieces.pages.AddPage(pageHelp, centeredModal(body, 70, 24), true, true)
-		a.app.SetFocus(body)
-	})
-}
-
 // ShowError surfaces an error string in a modal dismissed by any key.
 func (a *App) ShowError(message string) {
 	a.queueModal(func() {
@@ -172,20 +141,3 @@ func centeredModal(p tview.Primitive, width, height int) tview.Primitive {
 		AddItem(nil, 0, 1, false)
 }
 
-// formatHelp renders the help sections into a plain-text block for
-// the help modal's TextView. One block per section with a blank line
-// between, and one line per binding ("  key — description").
-func formatHelp(sections []ops.HelpSection) string {
-	var sb strings.Builder
-	for i, sec := range sections {
-		if i > 0 {
-			sb.WriteString("\n")
-		}
-		sb.WriteString(sec.Title)
-		sb.WriteString("\n")
-		for _, bnd := range sec.Bindings {
-			fmt.Fprintf(&sb, "  %-12s — %s\n", bnd.Key, bnd.Desc)
-		}
-	}
-	return sb.String()
-}
