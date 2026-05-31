@@ -36,56 +36,96 @@ func (s FocusState) String() string {
 // in-process and synchronous; not safe for concurrent callers (the tview
 // input pump is single-threaded by contract).
 //
-// coordPresent reflects whether the COORD pane is currently in the layout.
-// In freelance mode (D11) the body is rail + a single full-width agent pane
-// with no coord, so the COORD position is skipped on traversal and focus is
-// never allowed to rest there.
+// coordPresent and agentPresent reflect which panes are currently composed in
+// the body — the three-mode layout (D13). The traversal ladder is RAIL plus
+// whichever panes are present, in COORD-then-AGENT order:
+//
+//   - coordinator mode: coordPresent=true,  agentPresent=false → RAIL ↔ COORD
+//   - agent mode:       coordPresent=true,  agentPresent=true  → RAIL ↔ COORD ↔ AGENT
+//   - freelance mode:   coordPresent=false, agentPresent=true  → RAIL ↔ AGENT
+//
+// Focus is never allowed to rest on an absent pane: Advance / Retreat step
+// only through present states, and SetCoordPresent / SetAgentPresent bump
+// focus to the nearest present pane (or RAIL) when the focused pane is torn
+// down.
 type FocusMachine struct {
 	state        FocusState
 	coordPresent bool
+	agentPresent bool
 }
 
 // NewFocusMachine returns a machine starting in RAIL focus, matching the
-// first-open requirement. coordPresent defaults true (the normal three-
-// column layout).
+// first-open requirement. Both panes default present (the normal agent-mode
+// split layout).
 func NewFocusMachine() *FocusMachine {
-	return &FocusMachine{state: FocusRAIL, coordPresent: true}
+	return &FocusMachine{state: FocusRAIL, coordPresent: true, agentPresent: true}
 }
 
 // State returns the current focus state.
 func (f *FocusMachine) State() FocusState { return f.state }
 
-// SetCoordPresent records whether the COORD pane is in the layout. When the
-// coord pane is removed while focus rests on it, focus is bumped to AGENT so
-// no keystroke is forwarded to a torn-down pane. Returns true when the focus
-// state changed as a side effect (caller should repaint).
+// SetCoordPresent records whether the COORD (HERA) pane is in the layout.
+// When the coord pane is removed while focus rests on it, focus is bumped to
+// the nearest remaining pane (AGENT if present, else RAIL). Returns true when
+// the focus state changed as a side effect (caller should repaint).
 func (f *FocusMachine) SetCoordPresent(v bool) bool {
 	f.coordPresent = v
-	if !v && f.state == FocusCOORD {
-		f.state = FocusAGENT
-		return true
-	}
-	return false
+	return f.rebalance()
 }
 
-// Advance moves focus one step right along RAIL → COORD → AGENT. In
-// freelance mode (no coord) RAIL advances straight to AGENT. From AGENT the
-// call is a no-op (you can't advance past the rightmost pane).
-func (f *FocusMachine) Advance() {
-	switch f.state {
-	case FocusRAIL:
+// SetAgentPresent records whether the AGENT pane is in the layout (false in
+// coordinator mode, where the body is rail + a single full-width HERA pane).
+// When the agent pane is removed while focus rests on it, focus is bumped to
+// the nearest remaining pane (COORD if present, else RAIL). Returns true when
+// the focus state changed as a side effect.
+func (f *FocusMachine) SetAgentPresent(v bool) bool {
+	f.agentPresent = v
+	return f.rebalance()
+}
+
+// rebalance bumps focus off any now-absent pane to the nearest present one so
+// no keystroke is ever forwarded to a torn-down pane. Returns true when the
+// state changed.
+func (f *FocusMachine) rebalance() bool {
+	prev := f.state
+	if f.state == FocusCOORD && !f.coordPresent {
+		if f.agentPresent {
+			f.state = FocusAGENT
+		} else {
+			f.state = FocusRAIL
+		}
+	}
+	if f.state == FocusAGENT && !f.agentPresent {
 		if f.coordPresent {
 			f.state = FocusCOORD
 		} else {
+			f.state = FocusRAIL
+		}
+	}
+	return f.state != prev
+}
+
+// Advance moves focus one step right along the present-pane ladder
+// (RAIL → COORD → AGENT, skipping absent panes). From the rightmost present
+// pane the call is a no-op.
+func (f *FocusMachine) Advance() {
+	switch f.state {
+	case FocusRAIL:
+		switch {
+		case f.coordPresent:
+			f.state = FocusCOORD
+		case f.agentPresent:
 			f.state = FocusAGENT
 		}
 	case FocusCOORD:
-		f.state = FocusAGENT
+		if f.agentPresent {
+			f.state = FocusAGENT
+		}
 	}
 }
 
-// Retreat moves focus one step left along AGENT → COORD → RAIL. In freelance
-// mode (no coord) AGENT retreats straight to RAIL. From RAIL the call is a
+// Retreat moves focus one step left along the present-pane ladder
+// (AGENT → COORD → RAIL, skipping absent panes). From RAIL the call is a
 // no-op.
 func (f *FocusMachine) Retreat() {
 	switch f.state {
@@ -105,5 +145,9 @@ func (f *FocusMachine) Retreat() {
 func (f *FocusMachine) ToRAIL() { f.state = FocusRAIL }
 
 // JumpToAGENT forces focus directly to AGENT, skipping COORD. Drives the
-// "Enter from RAIL against a live agent row" binding.
+// "Enter from RAIL against an agent / freelancer row" binding.
 func (f *FocusMachine) JumpToAGENT() { f.state = FocusAGENT }
+
+// JumpToCOORD forces focus directly to the COORD (HERA) pane. Drives the
+// "Enter from RAIL against a coordinator row" binding.
+func (f *FocusMachine) JumpToCOORD() { f.state = FocusCOORD }

@@ -52,7 +52,7 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 
 	rail := newRailList()
 
-	coord.SetTitle("Coord")
+	coord.SetTitle("HERA")
 	agent.SetTitle("Agent")
 
 	body := tview.NewFlex().SetDirection(tview.FlexColumn).

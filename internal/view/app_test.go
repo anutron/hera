@@ -746,12 +746,12 @@ func TestApp_OnRailSelectEnter_WorkerRebindsAgentAndJumps(t *testing.T) {
 	}
 }
 
-func TestApp_OnRailSelectEnter_OrchHeaderKeepsCoordBound(t *testing.T) {
-	// Coord rows are no longer rendered in the rail (the header owns the
-	// orchestrator's coord task implicitly). Selecting the header row and
-	// pressing Enter must propagate (FocusRAIL) so the tree can fold /
-	// unfold; the coord pane stays bound to the orchestrator's coord
-	// task that findInitialSelection picked at build time.
+func TestApp_OnRailSelectEnter_OrchHeaderEntersHERA(t *testing.T) {
+	// An orchestrator header IS a coordinator selection (D13). Per the
+	// "Enter enters the selection's primary pane" requirement, Enter on a
+	// coordinator row enters its HERA (COORD) pane — it does NOT fold (space
+	// folds; only Freelance / Archive expando headers fold on Enter). The
+	// HERA pane binds to the orchestrator's coord task.
 	d := openTestDB(t)
 	ctx := context.Background()
 
@@ -767,6 +767,8 @@ func TestApp_OnRailSelectEnter_OrchHeaderKeepsCoordBound(t *testing.T) {
 		t.Fatalf("BuildApp: %v", err)
 	}
 	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
 
 	// Coord rows should not be selectable in the rail at all.
 	if a.pieces.rail.SelectByRoleID(c.ID) {
@@ -776,34 +778,11 @@ func TestApp_OnRailSelectEnter_OrchHeaderKeepsCoordBound(t *testing.T) {
 	if !a.pieces.rail.SelectByOrchID(orch.ID) {
 		t.Fatalf("could not locate orchestrator header row")
 	}
-	if got := a.OnRailSelectEnter(); got != FocusRAIL {
-		t.Fatalf("Enter on header row: want FocusRAIL (let tree fold/unfold), got %s", got)
+	if got := a.OnRailSelectEnter(); got != FocusCOORD {
+		t.Fatalf("Enter on coordinator header: want FocusCOORD (enter HERA pane), got %s", got)
 	}
 	if a.CoordTaskID() != "tc" {
-		t.Fatalf("coord task should still be tc after header Enter; got %q", a.CoordTaskID())
-	}
-}
-
-func TestApp_OnRailSelectEnter_OrchHeaderPropagates(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	orch, _ := d.Orchestrators.Create(ctx, "proj")
-	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj"})
-	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
-
-	a, err := BuildApp(d, &fakePaneSource{})
-	if err != nil {
-		t.Fatalf("BuildApp: %v", err)
-	}
-	defer a.Close()
-
-	// Position cursor on the orchestrator header row.
-	if !a.pieces.rail.SelectByOrchID(orch.ID) {
-		t.Fatalf("could not locate orchestrator header row")
-	}
-
-	if got := a.OnRailSelectEnter(); got != FocusRAIL {
-		t.Fatalf("Enter on orchestrator header: want FocusRAIL (let tree fold/unfold), got %s", got)
+		t.Fatalf("coord task should be tc after header Enter; got %q", a.CoordTaskID())
 	}
 }
 
@@ -1241,8 +1220,11 @@ func TestBuildApp_SelectingFreelancerEntersFullWidthMode(t *testing.T) {
 	freelancer := a.pieces.rail.freelance[0].Tasks[0]
 
 	a.applyRailSelection(freelancer)
-	if !a.freelanceMode {
-		t.Fatalf("selecting freelancer should enter freelance mode")
+	if a.coordPresent {
+		t.Fatalf("selecting freelancer should enter freelance mode (no coord pane)")
+	}
+	if !a.agentPresent {
+		t.Fatalf("freelance mode must keep the agent pane present")
 	}
 	if a.AgentTaskID() != "free-1" {
 		t.Fatalf("agent should bind to freelancer; got %q", a.AgentTaskID())
@@ -1251,13 +1233,355 @@ func TestBuildApp_SelectingFreelancerEntersFullWidthMode(t *testing.T) {
 		t.Fatalf("freelance mode must blank the coord task; got %q", a.CoordTaskID())
 	}
 
-	// Selecting the managed orchestrator header exits freelance mode and
-	// restores the coord binding.
+	// Selecting the managed orchestrator header switches to coordinator mode
+	// (full-width HERA, no agent) and restores the coord binding.
 	a.applyRailSelection(&orchEntry{ID: orch.ID, Name: "managed", CoordTaskID: "coord-1"})
-	if a.freelanceMode {
-		t.Fatalf("selecting a managed orchestrator should exit freelance mode")
+	if !a.coordPresent {
+		t.Fatalf("selecting a managed orchestrator should restore the coord pane")
 	}
 	if a.CoordTaskID() != "coord-1" {
 		t.Fatalf("coord should rebind to coord-1 after exit; got %q", a.CoordTaskID())
+	}
+}
+
+// bodyPaneCount reports how many panes (coord/agent terminal panes) are in
+// the body Flex after the rail. The rail is always item 0, so the count of
+// non-rail items is the number of present panes.
+func bodyPaneCount(a *App) int {
+	if a.pieces.body == nil {
+		return 0
+	}
+	// body item 0 is the rail; the remaining items are panes.
+	return a.pieces.body.GetItemCount() - 1
+}
+
+func bodyHasItem(a *App, p interface{ GetRect() (int, int, int, int) }) bool {
+	body := a.pieces.body
+	for i := 0; i < body.GetItemCount(); i++ {
+		if body.GetItem(i) == p {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBuildApp_CoordinatorSelectionIsFullWidthHERA proves the three-mode body:
+// selecting a coordinator (orchestrator header) composes rail + a single
+// full-width HERA pane bound to the coord task, with NO agent pane present.
+func TestBuildApp_CoordinatorSelectionIsFullWidthHERA(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj"})
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	a.applyRailSelection(&orchEntry{ID: orch.ID, Name: "proj", CoordTaskID: "tc"})
+
+	if !a.coordPresent || a.agentPresent {
+		t.Fatalf("coordinator mode: want coordPresent=true agentPresent=false, got %v/%v", a.coordPresent, a.agentPresent)
+	}
+	if a.CoordTaskID() != "tc" {
+		t.Fatalf("HERA pane should bind to coord task tc; got %q", a.CoordTaskID())
+	}
+	if got := bodyPaneCount(a); got != 1 {
+		t.Fatalf("coordinator mode body must have exactly one pane (full-width HERA); got %d", got)
+	}
+	if bodyHasItem(a, a.pieces.agent) {
+		t.Fatalf("coordinator mode must NOT compose the AGENT pane into the body")
+	}
+	if !bodyHasItem(a, a.pieces.coord) {
+		t.Fatalf("coordinator mode must compose the HERA (coord) pane into the body")
+	}
+}
+
+// TestBuildApp_AgentSelectionSplitsHERAAndAgent proves selecting a worker
+// composes rail + HERA + AGENT (both panes present).
+func TestBuildApp_AgentSelectionSplitsHERAAndAgent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj"})
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	if !a.pieces.rail.SelectByRoleID(w.ID) {
+		t.Fatalf("could not select worker row")
+	}
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+
+	if !a.coordPresent || !a.agentPresent {
+		t.Fatalf("agent mode: want both panes present, got coord=%v agent=%v", a.coordPresent, a.agentPresent)
+	}
+	if got := bodyPaneCount(a); got != 2 {
+		t.Fatalf("agent mode body must have two panes (HERA + AGENT); got %d", got)
+	}
+	if a.CoordTaskID() != "tc" || a.AgentTaskID() != "tw" {
+		t.Fatalf("agent mode bindings: want coord=tc agent=tw, got %q/%q", a.CoordTaskID(), a.AgentTaskID())
+	}
+}
+
+// TestBuildApp_FreelancerSelectionIsFullWidthAgent proves selecting a
+// freelancer composes rail + a single full-width AGENT pane, no HERA pane.
+func TestBuildApp_FreelancerSelectionIsFullWidthAgent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "managed")
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "coord-1", WorktreePath: "/c"})
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{},
+		tasks: []ArgusTaskInfo{
+			{ID: "free-1", Name: "freelancer", Project: "Beta", State: ArgusTaskState{Status: "in_progress"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	freelancer := a.pieces.rail.freelance[0].Tasks[0]
+	a.applyRailSelection(freelancer)
+
+	if a.coordPresent || !a.agentPresent {
+		t.Fatalf("freelance mode: want coordPresent=false agentPresent=true, got %v/%v", a.coordPresent, a.agentPresent)
+	}
+	if got := bodyPaneCount(a); got != 1 {
+		t.Fatalf("freelance mode body must have one pane (full-width AGENT); got %d", got)
+	}
+	if bodyHasItem(a, a.pieces.coord) {
+		t.Fatalf("freelance mode must NOT compose the HERA (coord) pane")
+	}
+	if a.AgentTaskID() != "free-1" {
+		t.Fatalf("AGENT pane should bind to freelancer; got %q", a.AgentTaskID())
+	}
+}
+
+// TestBuildApp_SwitchingSelectionRecomposesAndTearsDown proves moving across
+// coordinator → agent → freelancer re-composes the body each time and tears
+// down the now-absent pane's binding (coord blanks in freelance mode).
+func TestBuildApp_SwitchingSelectionRecomposesAndTearsDown(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj"})
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{
+			// Keep the managed worker/coord rows live (not dead-hidden) by
+			// giving argus state for their tasks.
+			"tw": {Status: "in_progress"},
+			"tc": {Status: "in_progress"},
+		},
+		tasks: []ArgusTaskInfo{
+			{ID: "free-1", Name: "freelancer", Project: "Beta", State: ArgusTaskState{Status: "in_progress"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	// Coordinator → full-width HERA.
+	a.applyRailSelection(&orchEntry{ID: orch.ID, Name: "proj", CoordTaskID: "tc"})
+	if bodyPaneCount(a) != 1 || !a.coordPresent || a.agentPresent {
+		t.Fatalf("after coordinator select: want 1 pane coord-only; got panes=%d coord=%v agent=%v", bodyPaneCount(a), a.coordPresent, a.agentPresent)
+	}
+
+	// Agent → split.
+	if !a.pieces.rail.SelectByRoleID(w.ID) {
+		t.Fatalf("could not select worker row")
+	}
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+	if bodyPaneCount(a) != 2 || !a.coordPresent || !a.agentPresent {
+		t.Fatalf("after agent select: want 2 panes; got panes=%d coord=%v agent=%v", bodyPaneCount(a), a.coordPresent, a.agentPresent)
+	}
+
+	// Freelancer → full-width AGENT, coord torn down.
+	freelancer := a.pieces.rail.freelance[0].Tasks[0]
+	a.applyRailSelection(freelancer)
+	if bodyPaneCount(a) != 1 || a.coordPresent || !a.agentPresent {
+		t.Fatalf("after freelancer select: want 1 pane agent-only; got panes=%d coord=%v agent=%v", bodyPaneCount(a), a.coordPresent, a.agentPresent)
+	}
+	if a.CoordTaskID() != "" {
+		t.Fatalf("freelance mode must release the coord binding; got %q", a.CoordTaskID())
+	}
+}
+
+// TestApp_OnRailSelectEnter_CoordinatorEntersHERA proves Enter on a
+// coordinator (orchestrator header) row enters the HERA (COORD) pane.
+func TestApp_OnRailSelectEnter_CoordinatorEntersHERA(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "proj"})
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	if !a.pieces.rail.SelectByOrchID(orch.ID) {
+		t.Fatalf("could not select orchestrator header")
+	}
+	got := a.OnRailSelectEnter()
+	if got != FocusCOORD {
+		t.Fatalf("Enter on coordinator header: want FocusCOORD (enter HERA pane), got %s", got)
+	}
+	if a.CoordTaskID() != "tc" {
+		t.Fatalf("HERA pane should bind to coord task tc; got %q", a.CoordTaskID())
+	}
+}
+
+// TestApp_OnRailSelectEnter_FreelancerEntersAgent proves Enter on a freelance
+// row enters the AGENT pane.
+func TestApp_OnRailSelectEnter_FreelancerEntersAgent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "managed")
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "coord-1", WorktreePath: "/c"})
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{},
+		tasks: []ArgusTaskInfo{
+			{ID: "free-1", Name: "freelancer", Project: "Beta", State: ArgusTaskState{Status: "in_progress"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	if !a.pieces.rail.SelectByRoleID(a.pieces.rail.freelance[0].Tasks[0].RoleID) {
+		// freelance rows have RoleID 0; select by project header then move down.
+		if !a.pieces.rail.SelectByProject("Beta") {
+			t.Fatalf("could not select Beta freelance group")
+		}
+		a.pieces.rail.CursorDown()
+	}
+	got := a.OnRailSelectEnter()
+	if got != FocusAGENT {
+		t.Fatalf("Enter on freelancer: want FocusAGENT, got %s", got)
+	}
+	if a.AgentTaskID() != "free-1" {
+		t.Fatalf("AGENT pane should bind to freelancer; got %q", a.AgentTaskID())
+	}
+}
+
+// TestApp_OnRailSelectEnter_FreelanceHeaderFolds proves Enter on a Freelance
+// repo-group header toggles the fold instead of entering a pane.
+func TestApp_OnRailSelectEnter_FreelanceHeaderFolds(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "managed")
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "coord-1", WorktreePath: "/c"})
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{},
+		tasks: []ArgusTaskInfo{
+			{ID: "free-1", Name: "freelancer", Project: "Beta", State: ArgusTaskState{Status: "in_progress"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	if !a.pieces.rail.SelectByProject("Beta") {
+		t.Fatalf("could not select Beta freelance group header")
+	}
+	wasCollapsed := a.pieces.rail.freelanceCollapsed["Beta"]
+	got := a.OnRailSelectEnter()
+	if got != FocusRAIL {
+		t.Fatalf("Enter on Freelance header: want FocusRAIL (fold, stay in rail), got %s", got)
+	}
+	if a.pieces.rail.freelanceCollapsed["Beta"] == wasCollapsed {
+		t.Fatalf("Enter on Freelance header must toggle its fold state")
+	}
+}
+
+// TestApp_OnRailSelectEnter_ArchiveExpandoFolds proves Enter on an Archive
+// expando toggles its fold rather than entering a pane. Uses a per-coordinator
+// Archive expando (an active orchestrator with an archived worker child), which
+// renders without needing `l` listall.
+func TestApp_OnRailSelectEnter_ArchiveExpandoFolds(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "live")
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "live"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "lc", WorktreePath: "/lc"})
+	// An active worker so the orchestrator has a live row, plus an
+	// argus-archived worker so the per-coordinator Archive expando renders
+	// without needing the `l` listall toggle.
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "live"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+	aw, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "old", Kind: db.KindWorker, ArgusProject: "live"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: aw.ID, ArgusTaskID: "told", WorktreePath: "/old"})
+
+	src := &statePaneSource{states: map[string]ArgusTaskState{
+		"lc":   {Status: "in_progress"},
+		"tw":   {Status: "in_progress"},
+		"told": {Status: "complete", Archived: true},
+	}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	if !a.pieces.rail.SelectByArchiveOwner(orch.ID) {
+		t.Fatalf("could not select per-coordinator Archive expando")
+	}
+	wasOpen := a.pieces.rail.archiveExpanded[orch.ID]
+	got := a.OnRailSelectEnter()
+	if got != FocusRAIL {
+		t.Fatalf("Enter on Archive expando: want FocusRAIL (fold), got %s", got)
+	}
+	if a.pieces.rail.archiveExpanded[orch.ID] == wasOpen {
+		t.Fatalf("Enter on Archive expando must toggle its fold")
 	}
 }

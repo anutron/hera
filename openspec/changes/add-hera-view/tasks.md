@@ -119,19 +119,19 @@
 
 **Depends on:** Stage I (rail rendering). Canonical reference: `docs/prototypes/rail-nav.html` (`visibleRows`, `renderRail`).
 
-- [ ] 14.1 Write failing tests from the rail requirements (Prove-It): coordinators render as foldable rows with chevron + live `(N)` count; agents nest under their coordinator; a worker that is also a coordinator renders foldable with its own children; folders-first ordering; no kind pills; status-driven icon; per-coordinator `Archive (N)` expando (collapsed default) holds archived children; top-level `Archive` holds archived root coordinators; `space` toggles coord/Archive folds.
-- [ ] 14.2 `internal/view/rail_list.go` + `app.go` `populateRail`: build the row tree from orchestrators/roles/bindings to match the prototype — render coordinators (root + sub via multi-binding) as foldable rows, nest agents, folders-first, drop pills, status icons. Reuse the freelance-by-repo section (Stage L).
-- [ ] 14.3 Add per-coordinator + top-level Archive expandos: partition archived roles/tasks into the owning coordinator's Archive (and archived root coords into the top-level Archive); render dashed `Archive (N)` rows; wire `space`/fold state per owner. Decide `l` listall's fate (retire or keep as show-all).
+- [x] 14.1 Write failing tests from the rail requirements (Prove-It): coordinators render as foldable rows with chevron + live `(N)` count; agents nest under their coordinator; a worker that is also a coordinator renders foldable with its own children; folders-first ordering; no kind pills; status-driven icon; per-coordinator `Archive (N)` expando (collapsed default) holds archived children; top-level `Archive` holds archived root coordinators; `space` toggles coord/Archive folds.
+- [x] 14.2 `internal/view/rail_list.go` + `app.go` `populateRail`: build the row tree from orchestrators/roles/bindings to match the prototype — render coordinators (root + sub via multi-binding) as foldable rows, nest agents, folders-first, drop pills, status icons. Reuse the freelance-by-repo section (Stage L).
+- [x] 14.3 Add per-coordinator + top-level Archive expandos: partition archived roles/tasks into the owning coordinator's Archive (and archived root coords into the top-level Archive); render dashed `Archive (N)` rows; wire `space`/fold state per owner. Decide `l` listall's fate (retire or keep as show-all).
 - [ ] 14.4 Probe-validate: spawn/observe the open test coords+agents; `HERA_LIVE_PROBE=1 go test ./internal/daemon/ -run LiveViewProbe` and diff the rendered rail tree against `rail-nav.html` (icons, counts, folders-first, archive folds). Iterate until they match.
 
 ## 15. Stage O — Three-mode body + Enter-into-pane + present-pane focus ladder
 
 **Depends on:** Stage N and Stage G (focus + key routing).
 
-- [ ] 15.1 Write failing tests: coordinator selection → full-width HERA pane (no agent); agent selection → HERA+AGENT split; freelancer → full-width AGENT; switching re-composes + tears down the absent pane; Enter enters the primary pane (coord→COORD, agent→AGENT, freelancer→AGENT); Enter on a header/expando folds; `^→`/`^←` traverse only present panes.
-- [ ] 15.2 `internal/view/focus.go`: generalize `coordPresent` into present-pane awareness (`coordPresent` + `agentPresent`); `Advance`/`Retreat` step only through present states.
-- [ ] 15.3 `internal/view/layout.go` + `app.go` `refreshBody`: three compositions (full-width HERA / split / full-width AGENT); center pane titled `HERA`; tear down the absent pane's subscription on mode switch.
-- [ ] 15.4 `app.go` `applyRailSelection` + `OnRailSelectEnter`: select → set mode + bind panes; Enter → enter primary pane (return FocusCOORD for coords, FocusAGENT for agents/freelancers); header/expando rows fold.
+- [x] 15.1 Write failing tests: coordinator selection → full-width HERA pane (no agent); agent selection → HERA+AGENT split; freelancer → full-width AGENT; switching re-composes + tears down the absent pane; Enter enters the primary pane (coord→COORD, agent→AGENT, freelancer→AGENT); Enter on a header/expando folds; `^→`/`^←` traverse only present panes.
+- [x] 15.2 `internal/view/focus.go`: generalize `coordPresent` into present-pane awareness (`coordPresent` + `agentPresent`); `Advance`/`Retreat` step only through present states.
+- [x] 15.3 `internal/view/layout.go` + `app.go` `refreshBody`: three compositions (full-width HERA / split / full-width AGENT); center pane titled `HERA`; tear down the absent pane's subscription on mode switch.
+- [x] 15.4 `app.go` `applyRailSelection` + `OnRailSelectEnter`: select → set mode + bind panes; Enter → enter primary pane (return FocusCOORD for coords, FocusAGENT for agents/freelancers); header/expando rows fold.
 - [ ] 15.5 Probe-validate the three modes + Enter + traversal against the prototype (drive keys with `HERA_PROBE_KEYS`/`HERA_PROBE_RAW`). Iterate until parity.
 
 ## 16. Stage P — Extended keyset: delete, prune, status, open-PR

@@ -172,6 +172,54 @@ func TestFocusMachine_SetCoordPresentBumpsOffCoord(t *testing.T) {
 	}
 }
 
+// TestFocusMachine_CoordinatorModeSkipsAgent proves the new present-pane
+// ladder: in coordinator mode (COORD present, AGENT absent) traversal steps
+// RAIL ↔ COORD only and never reaches a non-existent AGENT pane.
+func TestFocusMachine_CoordinatorModeSkipsAgent(t *testing.T) {
+	f := NewFocusMachine()
+	f.SetAgentPresent(false) // coordinator mode: RAIL + HERA only
+
+	f.Advance()
+	if f.State() != FocusCOORD {
+		t.Fatalf("Advance from RAIL in coordinator mode: want COORD, got %s", f.State())
+	}
+	f.Advance()
+	if f.State() != FocusCOORD {
+		t.Fatalf("Advance from COORD must NOT reach absent AGENT: want COORD, got %s", f.State())
+	}
+	f.Retreat()
+	if f.State() != FocusRAIL {
+		t.Fatalf("Retreat from COORD in coordinator mode: want RAIL, got %s", f.State())
+	}
+}
+
+// TestFocusMachine_SetAgentPresentBumpsOffAgent proves that removing the
+// agent pane while focus rests on AGENT bumps focus back to the nearest
+// present pane (COORD if present, else RAIL) so no keystroke is forwarded to
+// a torn-down pane.
+func TestFocusMachine_SetAgentPresentBumpsOffAgent(t *testing.T) {
+	f := NewFocusMachine()
+	f.JumpToAGENT()
+	if f.State() != FocusAGENT {
+		t.Fatalf("setup: want AGENT, got %s", f.State())
+	}
+	// Coord still present: bump to COORD.
+	if changed := f.SetAgentPresent(false); !changed {
+		t.Fatalf("SetAgentPresent(false) on AGENT should report a state change")
+	}
+	if f.State() != FocusCOORD {
+		t.Fatalf("after agent removed (coord present): want COORD, got %s", f.State())
+	}
+
+	// Now drop the coord too while on COORD: bump to RAIL.
+	if changed := f.SetCoordPresent(false); !changed {
+		t.Fatalf("SetCoordPresent(false) on COORD should report a state change")
+	}
+	if f.State() != FocusRAIL {
+		t.Fatalf("after both panes removed: want RAIL, got %s", f.State())
+	}
+}
+
 // --- KeyRouter focus traversal ---
 
 func TestKeyRouter_CtrlRight_RAILtoCOORD(t *testing.T) {
