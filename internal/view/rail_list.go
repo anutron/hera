@@ -8,6 +8,8 @@ import (
 	"github.com/anutron/argus-sdk/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/anutron/hera/internal/db"
 )
 
 // railList is the rail's display widget. It renders orchestrators as
@@ -44,8 +46,17 @@ type railList struct {
 	// unmanaged agent needs attention).
 	freelanceCollapsed map[string]bool
 
-	// showArchived, when true, includes archived orchestrators and roles
-	// in the rendered rows below the Archive separator.
+	// archiveExpanded tracks which Archive expandos are folded open, keyed
+	// by owner: an orchestrator ID for a per-coordinator Archive expando, or
+	// archiveTopLevelOwner (0) for the bottom-of-rail Archive holding archived
+	// root coordinators. Default (zero value) is collapsed — archived items
+	// stay tucked away until the operator folds them open (D14). showArchived
+	// (`l`) is a show/hide-all convenience that forces every expando open.
+	archiveExpanded map[int64]bool
+
+	// showArchived, when true, force-expands every Archive expando and reveals
+	// dead bindings — the `l` listall convenience. The per-owner expandos are
+	// always reachable regardless of this flag (D14).
 	showArchived bool
 
 	// onSelectionChanged is invoked whenever the cursor lands on a
@@ -125,17 +136,27 @@ type railRowKind uint8
 const (
 	railRowOrch railRowKind = iota
 	railRowRole
-	railRowArchiveSep
 	railRowFreelanceSep
 	railRowFreelanceProj
+	railRowArchiveExpando
 	railRowEmpty
 )
+
+// archiveTopLevelOwner is the owner key for the bottom-of-rail Archive
+// expando that holds archived root coordinators. Per-coordinator Archive
+// expandos are keyed by their orchestrator's ID (always > 0).
+const archiveTopLevelOwner int64 = 0
 
 type railRow struct {
 	kind  railRowKind
 	orch  *orchEntry
 	role  *roleEntry
 	fproj *freelanceProject
+
+	// archiveOwner / archiveCount populate a railRowArchiveExpando: the owner
+	// is an orchestrator ID (per-coordinator) or archiveTopLevelOwner.
+	archiveOwner int64
+	archiveCount int
 }
 
 // newRailList constructs an empty rail widget. SetBorder is enabled so
@@ -145,6 +166,7 @@ func newRailList() *railList {
 		Box:                tview.NewBox(),
 		collapsed:          map[int64]bool{},
 		freelanceCollapsed: map[string]bool{},
+		archiveExpanded:    map[int64]bool{},
 		lastFiredCursor:    -1,
 	}
 	rl.SetBorder(true)
@@ -241,6 +263,8 @@ func (rl *railList) currentRef() any {
 	case railRowFreelanceProj:
 		return r.fproj
 	}
+	// railRowArchiveExpando is selectable (so space/Enter folds it) but is
+	// not pane-bindable, so currentRef reports nil for it like a separator.
 	return nil
 }
 
@@ -288,6 +312,21 @@ func (rl *railList) SelectByProject(project string) bool {
 	return false
 }
 
+// SelectByArchiveOwner moves the cursor to the Archive expando header for
+// the given owner (an orchestrator ID, or archiveTopLevelOwner for the
+// bottom-of-rail Archive). Returns true on success.
+func (rl *railList) SelectByArchiveOwner(owner int64) bool {
+	for i, r := range rl.rows {
+		if r.kind == railRowArchiveExpando && r.archiveOwner == owner {
+			rl.cursor = i
+			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
+			return true
+		}
+	}
+	return false
+}
+
 // CursorDown / CursorUp move selection by one selectable row and fire
 // the selection-changed callback when the cursor actually moves.
 func (rl *railList) CursorDown() { rl.move(1) }
@@ -314,7 +353,7 @@ func (rl *railList) selectable(i int) bool {
 		return false
 	}
 	switch rl.rows[i].kind {
-	case railRowOrch, railRowRole, railRowFreelanceProj:
+	case railRowOrch, railRowRole, railRowFreelanceProj, railRowArchiveExpando:
 		return true
 	}
 	return false
@@ -343,6 +382,14 @@ func (rl *railList) ToggleCollapse() {
 		orch = r.orch
 	case railRowFreelanceProj:
 		fproj = r.fproj
+	case railRowArchiveExpando:
+		// Toggle the Archive expando's fold directly and rebuild.
+		rl.archiveExpanded[r.archiveOwner] = !rl.archiveExpanded[r.archiveOwner]
+		prev := rl.currentRef()
+		rl.buildRows()
+		rl.restoreCursorToArchiveOwner(r.archiveOwner, prev)
+		rl.maybeFireSelectionChanged()
+		return
 	case railRowRole:
 		// A freelance task row (OrchestratorID 0) collapses its repo group;
 		// a worker row collapses its orchestrator.
@@ -378,6 +425,21 @@ func (rl *railList) ToggleCollapse() {
 	rl.maybeFireSelectionChanged()
 }
 
+// restoreCursorToArchiveOwner re-pins the cursor on an Archive expando
+// header after its fold toggles. The expando's currentRef is nil, so the
+// generic restoreCursor can't find it; we look it up by owner and fall back
+// to the generic restore otherwise.
+func (rl *railList) restoreCursorToArchiveOwner(owner int64, prev any) {
+	for i, r := range rl.rows {
+		if r.kind == railRowArchiveExpando && r.archiveOwner == owner {
+			rl.cursor = i
+			rl.clampOffset()
+			return
+		}
+	}
+	rl.restoreCursor(prev)
+}
+
 func (rl *railList) restoreCursor(prev any) bool {
 	switch ref := prev.(type) {
 	case *roleEntry:
@@ -409,6 +471,22 @@ func (rl *railList) restoreCursor(prev any) bool {
 	return false
 }
 
+// roleArchived reports whether a role belongs in an Archive expando rather
+// than the coordinator's active list: hera-archived, argus-archived, or a
+// dead binding (DB-live but the argus task is gone). This is the partition
+// the prototype draws between active children and the per-coordinator
+// Archive fold.
+func roleArchived(r *roleEntry) bool {
+	return r.Archived || r.ArgusArchived || r.Dead
+}
+
+// archiveOpen reports whether the Archive expando for owner is folded open.
+// The `l` listall convenience (showArchived) force-expands every expando;
+// otherwise the per-owner toggle decides (default collapsed, D14).
+func (rl *railList) archiveOpen(owner int64) bool {
+	return rl.showArchived || rl.archiveExpanded[owner]
+}
+
 func (rl *railList) buildRows() {
 	rl.rows = nil
 	var active, archived []*orchEntry
@@ -420,23 +498,40 @@ func (rl *railList) buildRows() {
 		}
 	}
 
+	// appendOrch renders a coordinator (orchestrator root) and, when expanded,
+	// its active children folders-first followed by a per-coordinator Archive
+	// (N) expando holding its archived children (collapsed by default, D14).
 	appendOrch := func(o *orchEntry) {
 		rl.rows = append(rl.rows, railRow{kind: railRowOrch, orch: o})
 		if rl.collapsed[o.ID] {
 			return
 		}
+		// Folders-first: sub-coordinator children sort before leaf workers.
+		// Stable so same-kind rows keep their input order.
+		var activeRoles, archivedRoles []*roleEntry
 		for _, role := range o.Roles {
-			// Hidden by default unless `l listall`: hera-archived roles,
-			// argus-archived tasks (so the active rail mirrors argus's
-			// non-archived set), and dead bindings (DB-live but the argus
-			// task is gone).
-			if (role.Archived || role.ArgusArchived) && !rl.showArchived {
-				continue
+			if roleArchived(role) {
+				archivedRoles = append(archivedRoles, role)
+			} else {
+				activeRoles = append(activeRoles, role)
 			}
-			if role.Dead && !rl.showArchived {
-				continue
-			}
+		}
+		for _, role := range sortFoldersFirst(activeRoles) {
 			rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role})
+		}
+		// Per-coordinator Archive expando: present whenever this coordinator
+		// has archived direct children, always reachable, collapsed by default.
+		if len(archivedRoles) > 0 {
+			rl.rows = append(rl.rows, railRow{
+				kind:         railRowArchiveExpando,
+				archiveOwner: o.ID,
+				archiveCount: len(archivedRoles),
+			})
+			if rl.archiveOpen(o.ID) {
+				for _, role := range sortFoldersFirst(archivedRoles) {
+					rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role})
+				}
+			}
 		}
 	}
 
@@ -445,7 +540,7 @@ func (rl *railList) buildRows() {
 	}
 
 	// Freelance section: unmanaged argus tasks grouped by repo, rendered
-	// below all project rows and above the Archive separator. The "Freelance"
+	// below all project rows and above the top-level Archive. The "Freelance"
 	// separator only appears when at least one freelance repo group has live
 	// rows, so the operator never lands on an empty section.
 	if len(rl.freelance) > 0 {
@@ -456,10 +551,7 @@ func (rl *railList) buildRows() {
 				continue
 			}
 			for _, t := range fp.Tasks {
-				if (t.Archived || t.ArgusArchived) && !rl.showArchived {
-					continue
-				}
-				if t.Dead && !rl.showArchived {
+				if roleArchived(t) && !rl.showArchived {
 					continue
 				}
 				rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
@@ -467,15 +559,45 @@ func (rl *railList) buildRows() {
 		}
 	}
 
-	if rl.showArchived && len(archived) > 0 {
-		rl.rows = append(rl.rows, railRow{kind: railRowArchiveSep})
-		for _, o := range archived {
-			appendOrch(o)
+	// Top-level Archive: archived root coordinators live here, at the very
+	// bottom of the rail (below Freelance), behind an always-reachable
+	// Archive (N) expando that is collapsed by default (D14).
+	if len(archived) > 0 {
+		rl.rows = append(rl.rows, railRow{
+			kind:         railRowArchiveExpando,
+			archiveOwner: archiveTopLevelOwner,
+			archiveCount: len(archived),
+		})
+		if rl.archiveOpen(archiveTopLevelOwner) {
+			for _, o := range archived {
+				appendOrch(o)
+			}
 		}
 	}
 	if len(rl.rows) == 0 {
 		rl.rows = append(rl.rows, railRow{kind: railRowEmpty})
 	}
+}
+
+// sortFoldersFirst returns roles ordered with sub-coordinators (RoleKind ==
+// coordinator) before leaf workers, preserving each group's input order
+// (stable). Mirrors the prototype's `ordered()` folders-first sort.
+func sortFoldersFirst(roles []*roleEntry) []*roleEntry {
+	if len(roles) < 2 {
+		return roles
+	}
+	out := make([]*roleEntry, 0, len(roles))
+	for _, r := range roles {
+		if r.RoleKind == string(db.KindCoordinator) {
+			out = append(out, r)
+		}
+	}
+	for _, r := range roles {
+		if r.RoleKind != string(db.KindCoordinator) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // InputHandler routes KeyUp/KeyDown to the cursor and the spacebar to
@@ -531,12 +653,12 @@ func (rl *railList) Draw(screen tcell.Screen) {
 			rl.drawOrchRow(screen, x, y+i, w, row.orch, cursor)
 		case railRowRole:
 			rl.drawRoleRow(screen, x, y+i, w, row.role, cursor)
-		case railRowArchiveSep:
-			rl.drawSeparator(screen, x, y+i, w, " Archive ")
 		case railRowFreelanceSep:
 			rl.drawSeparator(screen, x, y+i, w, " Freelance ")
 		case railRowFreelanceProj:
 			rl.drawFreelanceProjRow(screen, x, y+i, w, row.fproj, cursor)
+		case railRowArchiveExpando:
+			rl.drawArchiveExpando(screen, x, y+i, w, row.archiveOwner, row.archiveCount, cursor)
 		case railRowEmpty:
 			widget.DrawText(screen, x, y+i, w, "(no projects)", theme.StyleDimmed)
 		}
@@ -586,16 +708,17 @@ func (rl *railList) drawOrchRow(screen tcell.Screen, x, y, w int, o *orchEntry, 
 	}
 }
 
+// visibleRoleCount is the live-child (N) count shown on a coordinator
+// header: only its active (non-archived) children. Archived children live in
+// the per-coordinator Archive expando and never inflate this count, even with
+// `l` listall on (D14) — the count tracks the active list the chevron folds.
 func (rl *railList) visibleRoleCount(o *orchEntry) int {
 	if o == nil {
 		return 0
 	}
-	if rl.showArchived {
-		return len(o.Roles)
-	}
 	n := 0
 	for _, r := range o.Roles {
-		if r.Archived || r.Dead || r.ArgusArchived {
+		if roleArchived(r) {
 			continue
 		}
 		n++
@@ -713,6 +836,38 @@ func (rl *railList) drawSeparator(screen tcell.Screen, x, y, w int, label string
 	widget.DrawText(screen, col, y, runeLen(label), label, style.Bold(true))
 	col += runeLen(label)
 	for i := 0; i < right; i++ {
+		screen.SetContent(col, y, '─', nil, style)
+		col++
+	}
+}
+
+// drawArchiveExpando renders an "Archive (N)" fold header: a chevron
+// (▾ open / ▸ collapsed) + the label + a trailing rule. Per-coordinator
+// expandos (owner > 0) indent one level under their coordinator; the
+// top-level Archive (owner 0) sits flush left. The expando is selectable so
+// space/Enter toggles its fold.
+func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner int64, count int, cursor bool) {
+	if cursor {
+		rl.fillBackground(screen, x, y, w)
+	}
+	style := tcell.StyleDefault.Foreground(theme.ColorDimmed)
+	col := x
+	if owner != archiveTopLevelOwner {
+		// Indent per-coordinator Archive expandos one level so they read as a
+		// child of their coordinator, matching the prototype's nesting.
+		col += 2
+	}
+	chevron := '▸'
+	if rl.archiveOpen(owner) {
+		chevron = '▾'
+	}
+	screen.SetContent(col, y, chevron, nil, style)
+	col += 2
+	label := fmt.Sprintf("Archive (%d)", count)
+	widget.DrawText(screen, col, y, w-(col-x), label, style.Bold(true))
+	col += runeLen(label)
+	// Trailing rule to mirror the separator rows.
+	for col < x+w {
 		screen.SetContent(col, y, '─', nil, style)
 		col++
 	}
