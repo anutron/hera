@@ -283,6 +283,25 @@ func (rl *railList) SelectByRoleID(id int64) bool {
 	return false
 }
 
+// SelectByArgusTaskID moves the cursor to the role row whose bound argus task
+// matches id. Returns true on success. This is the stable restore identity for
+// freelance rows, which carry RoleID==0 (so SelectByRoleID can't disambiguate
+// between freelancers) but always carry a unique ArgusTaskID.
+func (rl *railList) SelectByArgusTaskID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for i, r := range rl.rows {
+		if r.kind == railRowRole && r.role != nil && r.role.ArgusTaskID == id {
+			rl.cursor = i
+			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
+			return true
+		}
+	}
+	return false
+}
+
 // SelectByOrchID moves the cursor to the row matching orchID. Returns
 // true on success. Fires the selection-changed callback when the
 // cursor lands on a different row.
@@ -493,10 +512,19 @@ func (rl *railList) restoreCursorToArchiveOwner(owner int64, prev any) {
 func (rl *railList) restoreCursor(prev any) bool {
 	switch ref := prev.(type) {
 	case *roleEntry:
-		if ref != nil && rl.SelectByRoleID(ref.RoleID) {
+		if ref == nil {
+			break
+		}
+		// Freelance rows carry RoleID==0 (managed roles always have RoleID>0),
+		// so prefer their stable ArgusTaskID to avoid matching the FIRST
+		// freelancer on rebuild. Managed rows still restore by RoleID below.
+		if ref.RoleID == 0 && rl.SelectByArgusTaskID(ref.ArgusTaskID) {
 			return true
 		}
-		if ref != nil && rl.SelectByOrchID(ref.OrchestratorID) {
+		if rl.SelectByRoleID(ref.RoleID) {
+			return true
+		}
+		if rl.SelectByOrchID(ref.OrchestratorID) {
 			return true
 		}
 	case *orchEntry:

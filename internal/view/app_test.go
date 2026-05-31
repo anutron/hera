@@ -1499,6 +1499,37 @@ func TestBuildApp_CoordinatorSelectionIsFullWidthHERA(t *testing.T) {
 	}
 }
 
+// TestBuildApp_InitialFrameMatchesInitialSelection proves the opening frame
+// honors the three-mode contract for the initially-selected row. With only a
+// coord bound (no live worker), findInitialSelection picks the coordinator, so
+// the first frame must be coordinator mode (full-width HERA, NO agent pane) —
+// not the hardcoded agent split — even before any keypress.
+func TestBuildApp_InitialFrameMatchesInitialSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	c, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Initial selection landed on the coordinator (the orchestrator header is
+	// the only selectable row), so the opening frame must be coordinator mode.
+	if !a.coordPresent || a.agentPresent {
+		t.Fatalf("initial frame: want coordPresent=true agentPresent=false (coordinator-initial), got %v/%v", a.coordPresent, a.agentPresent)
+	}
+	if got := bodyPaneCount(a); got != 1 {
+		t.Fatalf("coordinator-initial frame must compose exactly one pane (full-width HERA); got %d", got)
+	}
+	if bodyHasItem(a, a.pieces.agent) {
+		t.Fatalf("coordinator-initial frame must NOT compose the AGENT pane")
+	}
+}
+
 // TestBuildApp_AgentSelectionSplitsHERAAndAgent proves selecting a worker
 // composes rail + HERA + AGENT (both panes present).
 func TestBuildApp_AgentSelectionSplitsHERAAndAgent(t *testing.T) {
@@ -1531,6 +1562,59 @@ func TestBuildApp_AgentSelectionSplitsHERAAndAgent(t *testing.T) {
 	}
 	if a.CoordTaskID() != "tc" || a.AgentTaskID() != "tw" {
 		t.Fatalf("agent mode bindings: want coord=tc agent=tw, got %q/%q", a.CoordTaskID(), a.AgentTaskID())
+	}
+}
+
+// TestBuildApp_WorkerInCoordlessProjectClearsCoord proves that selecting a
+// worker in a project with no coord task clears the HERA pane rather than
+// leaving it bound to the PREVIOUS project's coordinator. Without the fix the
+// `if coordTask != ""` guard skipped rebindCoord, so HERA kept showing a
+// foreign coordinator while the split stayed.
+func TestBuildApp_WorkerInCoordlessProjectClearsCoord(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	// Project 1: coord + worker (coord-ful).
+	o1, _ := d.Orchestrators.Create(ctx, "coordful")
+	c1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o1.ID, Name: "c", Kind: db.KindCoordinator, ArgusProject: "p1"})
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o1.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "p1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: c1.ID, ArgusTaskID: "tc1", WorktreePath: "/c1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "tw1", WorktreePath: "/w1"})
+
+	// Project 2: worker only, no coord (coord-less).
+	o2, _ := d.Orchestrators.Create(ctx, "coordless")
+	w2, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: o2.ID, Name: "w2", Kind: db.KindWorker, ArgusProject: "p2"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w2.ID, ArgusTaskID: "tw2", WorktreePath: "/w2"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	// Select the coord-ful project's worker first: HERA binds to tc1.
+	if !a.pieces.rail.SelectByRoleID(w1.ID) {
+		t.Fatalf("could not select coord-ful worker")
+	}
+	if a.CoordTaskID() != "tc1" {
+		t.Fatalf("after coord-ful worker, HERA should bind to tc1; got %q", a.CoordTaskID())
+	}
+
+	// Now select the coord-less project's worker. HERA must clear to "",
+	// NOT keep showing the prior project's coordinator (tc1).
+	if !a.pieces.rail.SelectByRoleID(w2.ID) {
+		t.Fatalf("could not select coord-less worker")
+	}
+	if a.CoordTaskID() != "" {
+		t.Fatalf("worker in coord-less project must clear HERA; got %q (foreign coord leaked)", a.CoordTaskID())
+	}
+	if !a.agentPresent {
+		t.Fatalf("worker selection must keep the AGENT pane present")
+	}
+	if a.AgentTaskID() != "tw2" {
+		t.Fatalf("AGENT should bind to the coord-less worker tw2; got %q", a.AgentTaskID())
 	}
 }
 

@@ -95,6 +95,10 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			{Key: "^→", Label: "agent", Bar: true},
 			{Key: "^←", Label: "rail", Bar: true},
 			{Key: "^Q", Label: "rail", Bar: true},
+			// Prune / PR fire from any focus; advertise them (help-overlay-only)
+			// so D12's overlay surfaces them while focused in a pane.
+			{Key: "^r", Label: "prune", Bar: false},
+			{Key: "^p", Label: "PR", Bar: false},
 		}
 	case FocusAGENT:
 		if !coordPresent {
@@ -102,12 +106,16 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 				{Key: "keys", Label: "agent PTY", Bar: true},
 				{Key: "^←", Label: "rail", Bar: true},
 				{Key: "^Q", Label: "rail", Bar: true},
+				{Key: "^r", Label: "prune", Bar: false},
+				{Key: "^p", Label: "PR", Bar: false},
 			}
 		}
 		return []HotkeyItem{
 			{Key: "keys", Label: "agent PTY", Bar: true},
 			{Key: "^←", Label: "coord", Bar: true},
 			{Key: "^Q", Label: "rail", Bar: true},
+			{Key: "^r", Label: "prune", Bar: false},
+			{Key: "^p", Label: "PR", Bar: false},
 		}
 	default: // FocusRAIL
 		advance := HotkeyItem{Key: "^→", Label: "coord", Bar: true}
@@ -123,6 +131,12 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			{Key: "^d", Label: "del", Bar: true},
 			{Key: "a", Label: "archive", Bar: true},
 			{Key: "l", Label: "listall", Bar: true},
+			// Help-overlay-only rail keys (Bar:false): kept off the bottom bar
+			// to avoid clutter but advertised so argus's `?` overlay lists them.
+			{Key: "^r", Label: "prune", Bar: false},
+			{Key: "^p", Label: "PR", Bar: false},
+			{Key: "s", Label: "status+", Bar: false},
+			{Key: "S", Label: "status-", Bar: false},
 			{Key: "?", Label: "help", Bar: false},
 			{Key: "Esc", Label: "argus", Bar: true},
 		}

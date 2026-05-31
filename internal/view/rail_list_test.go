@@ -299,6 +299,40 @@ func TestRailList_FreelanceSectionRendersAndCollapses(t *testing.T) {
 	}
 }
 
+// TestRailList_FreelanceCursorRestoresByTaskID proves a freelance selection
+// survives a SetFreelance/rebuild on its own row, not the first freelancer.
+// Freelance roleEntry values carry RoleID==0, so restoring by RoleID would
+// match the first freelancer; the cursor must restore by the stable
+// ArgusTaskID instead.
+func TestRailList_FreelanceCursorRestoresByTaskID(t *testing.T) {
+	rl := newRailList()
+	mk := func() []*freelanceProject {
+		return []*freelanceProject{
+			{Project: "Beta", Tasks: []*roleEntry{
+				{RoleKind: "freelance", Name: "free-1", ArgusTaskID: "f1", HasState: true, Status: "in_progress"},
+				{RoleKind: "freelance", Name: "free-2", ArgusTaskID: "f2", HasState: true, Status: "in_progress"},
+			}},
+		}
+	}
+	rl.SetFreelance(mk())
+
+	// Select the SECOND freelancer (ArgusTaskID f2).
+	if !rl.SelectByArgusTaskID("f2") {
+		t.Fatalf("could not select freelancer f2")
+	}
+	if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.ArgusTaskID != "f2" {
+		t.Fatalf("cursor not on f2 before rebuild; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+	}
+
+	// A dynamic refresh rebuilds the freelance rows (fresh roleEntry pointers).
+	rl.SetFreelance(mk())
+
+	// Cursor must stay on the freelancer with ArgusTaskID f2 — NOT jump to f1.
+	if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.ArgusTaskID != "f2" {
+		t.Fatalf("freelance cursor jumped on rebuild; want f2, got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+	}
+}
+
 func TestRailList_NoFreelanceSectionWhenEmpty(t *testing.T) {
 	rl := newRailList()
 	rl.SetOrchestrators([]*orchEntry{

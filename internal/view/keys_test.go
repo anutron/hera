@@ -1049,3 +1049,47 @@ func taskIDsOf(c []postCall) []string {
 	}
 	return out
 }
+
+// hotkeyHas reports whether items contains an entry with the given key, and if
+// so whether its Bar flag matches wantBar.
+func hotkeyHas(items []HotkeyItem, key string, wantBar bool) bool {
+	for _, it := range items {
+		if it.Key == key {
+			return it.Bar == wantBar
+		}
+	}
+	return false
+}
+
+// TestHotkeyItems_RailAdvertisesPruneAndPR proves the RAIL hotkey dictionary
+// surfaces ^r (prune), ^p (PR), s/S (status) so argus's help overlay (D12) can
+// list them. They are help-overlay-only (Bar:false) to keep the bottom bar
+// uncluttered.
+func TestHotkeyItems_RailAdvertisesPruneAndPR(t *testing.T) {
+	items := hotkeyItems(FocusRAIL, true)
+	for _, key := range []string{"^r", "^p", "s", "S"} {
+		if !hotkeyHas(items, key, false) {
+			t.Errorf("RAIL hotkeys must advertise %q with bar:false; items=%+v", key, items)
+		}
+	}
+}
+
+// TestHotkeyItems_PaneFocusAdvertisesPruneAndPR proves ^r and ^p (which fire
+// from any focus) are also advertised in the COORD and AGENT hotkey
+// dictionaries so the help overlay surfaces them while focused in a pane.
+func TestHotkeyItems_PaneFocusAdvertisesPruneAndPR(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		items []HotkeyItem
+	}{
+		{"COORD", hotkeyItems(FocusCOORD, true)},
+		{"AGENT-coordful", hotkeyItems(FocusAGENT, true)},
+		{"AGENT-coordless", hotkeyItems(FocusAGENT, false)},
+	} {
+		for _, key := range []string{"^r", "^p"} {
+			if !hotkeyHas(tc.items, key, false) {
+				t.Errorf("%s hotkeys must advertise %q with bar:false; items=%+v", tc.name, key, tc.items)
+			}
+		}
+	}
+}

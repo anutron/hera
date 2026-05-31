@@ -628,6 +628,40 @@ func TestViewSmoke_RailResumesAfterReturn(t *testing.T) {
 	}
 }
 
+// TestViewSmoke_ShiftArrowScrollIntercepted proves the ⇧↑ scroll key (D15) is
+// decoded and intercepted end-to-end through the real wsscreen: stepping into a
+// pane then sending the Shift-Up CSI sequence (\x1b[1;2A) forwards NO byte to
+// any task's /input endpoint (scroll is consumed, never forwarded to the PTY).
+func TestViewSmoke_ShiftArrowScrollIntercepted(t *testing.T) {
+	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
+	conn := dialView(t, d)
+	defer conn.CloseNow()
+	reader := newFrameReader(conn)
+	defer reader.stop()
+	ctx := context.Background()
+
+	_ = reader.drainBinary(300*time.Millisecond, 4096) // initial render
+
+	// Step into COORD so a pane is focused (Shift-Up only scrolls a focused
+	// pane; in RAIL it's a no-op).
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("\x1b[1;5C")); err != nil {
+		t.Fatalf("write ctrl-right: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+
+	// Send Shift-Up (CSI 1;2 A). tcell parses this as KeyUp + ModShift, which
+	// the KeyRouter intercepts as a scroll — it MUST NOT reach the PTY.
+	before := fake.totalInputs()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("\x1b[1;2A")); err != nil {
+		t.Fatalf("write shift-up: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	if got := fake.totalInputs(); got != before {
+		t.Fatalf("Shift-Up in a pane must be intercepted (scroll), not forwarded to a PTY; got %d new input(s)", got-before)
+	}
+}
+
 // trim returns the first n bytes of b with non-printable runs replaced by
 // dots; used in error messages.
 func trim(b []byte, n int) []byte {

@@ -164,6 +164,13 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 	// triggers a debounced rebind of the COORD / AGENT panes.
 	a.pieces.rail.SetOnSelectionChanged(a.onRailSelectionChanged)
 
+	// Compose the opening frame to match the initial selection's mode. The
+	// coordPresent/agentPresent defaults above assume the agent split; without
+	// this an initial coordinator (or freelancer) selection would render as a
+	// split until the first keypress. applyRailSelection is idempotent on the
+	// panes (rebind is a no-op when already bound) so this only fixes the mode.
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+
 	return a, nil
 }
 
@@ -1003,9 +1010,11 @@ func (a *App) applyRailSelection(ref any) {
 				break
 			}
 		}
-		if coordTask != "" {
-			a.rebindCoord(coordTask)
-		}
+		// Always rebind COORD to the selected project's coord task — including
+		// "" when the project has no coord. Otherwise the HERA pane would keep
+		// showing the PREVIOUS project's coordinator (the split stays, but bound
+		// to a foreign coord). rebindCoord("") clears it to its placeholder.
+		a.rebindCoord(coordTask)
 		if r.RoleKind == string(db.KindCoordinator) {
 			// A sub-coordinator selection is coordinator mode: full-width HERA.
 			a.setBodyMode(true, false)
