@@ -210,7 +210,7 @@ The system SHALL forward keystrokes received while focus is `COORD` or `AGENT` t
 
 ### Requirement: Mutation keys are RAIL-focus-only
 
-The system SHALL recognize the six mutation keys (`n`, `r`, `^d`, `a`, `l`, `?`) ONLY when focus is `RAIL`. When focus is `COORD` or `AGENT`, these characters MUST be treated as ordinary input and forwarded to the bound task's PTY (per the keystroke-forwarding requirement).
+The system SHALL recognize the five RAIL-only mutation keys (`n`, `r`, `a`, `l`, `?`) ONLY when focus is `RAIL`. When focus is `COORD` or `AGENT`, these characters MUST be treated as ordinary input and forwarded to the bound task's PTY (per the keystroke-forwarding requirement). The destructive/external verbs `^d`, `^r`, and `^p` are NOT RAIL-only — under the argus key-surrender contract they are intercepted from ANY focus and act on the current rail selection (see the "Archive, delete, and prune are distinct removal verbs" and "Status, open-PR, scroll, and in-pane navigation keys" requirements); they are never forwarded to a PTY.
 
 #### Scenario: `n` in RAIL focus opens new-project modal
 
@@ -375,7 +375,7 @@ The system SHALL push a `{"type":"hotkeys","items":[...]}` text control frame to
 
 ### Requirement: Every mutation is gated behind a confirmation or input modal
 
-The system SHALL display a confirmation or input modal for every rail-level mutation (`n`, `r`, `^d`, `a` and resurrect-on-Enter against an archived coord). The DB writes and external HTTP calls MUST NOT occur unless the operator explicitly confirms the modal. A purely-view-state toggle (`l` listall) MUST NOT require a modal.
+The system SHALL display a confirmation or input modal for every destructive, creative, or external rail-level mutation (`n`, `r`, `^d`, `^r` prune, `^p` open-PR, and resurrect-on-Enter against an archived coord). The DB writes, worktree/branch destruction, and external HTTP calls MUST NOT occur unless the operator explicitly confirms the modal. Reversible single-key toggles — `a` archive/unarchive and `l` listall — MUST NOT require a modal (`a` is reversible by pressing `a` again; `l` is a pure view-state toggle).
 
 #### Scenario: `^d` shows confirmation before deleting
 
