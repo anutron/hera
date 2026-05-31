@@ -441,6 +441,103 @@ func TestRailList_TopLevelArchiveForArchivedRootCoordinators(t *testing.T) {
 	}
 }
 
+// TestRailList_StepToBindable exercises the in-pane-nav stepping primitive
+// directly: it must skip non-bindable rows (Freelance separator, freelance
+// repo header, Archive expando), clamp at both ends without wrapping, and
+// return false on an empty rail without looping.
+func TestRailList_StepToBindable(t *testing.T) {
+	// Hand-build the row layout so the non-bindable rows sit between two
+	// pane-bindable role rows: orch → w1 → Freelance sep → freelance proj
+	// header → archive expando → w2.
+	orch := &orchEntry{ID: 1, Name: "p", CoordTaskID: "coord-1"}
+	w1 := &roleEntry{OrchestratorID: 1, RoleID: 10, Name: "w1", ArgusTaskID: "t-w1"}
+	w2 := &roleEntry{OrchestratorID: 1, RoleID: 11, Name: "w2", ArgusTaskID: "t-w2"}
+	fproj := &freelanceProject{Project: "Beta"}
+
+	newRail := func() *railList {
+		rl := newRailList()
+		rl.rows = []railRow{
+			{kind: railRowOrch, orch: orch},        // 0 bindable
+			{kind: railRowRole, role: w1},          // 1 bindable
+			{kind: railRowFreelanceSep},            // 2 non-bindable
+			{kind: railRowFreelanceProj, fproj: fproj}, // 3 non-bindable (selectable, not bindable)
+			{kind: railRowArchiveExpando, archiveOwner: 1, archiveCount: 1}, // 4 non-bindable
+			{kind: railRowRole, role: w2},          // 5 bindable
+		}
+		return rl
+	}
+
+	t.Run("forward from w1 skips three non-bindable rows to w2", func(t *testing.T) {
+		rl := newRail()
+		rl.cursor = 1 // on w1
+		if !rl.StepToBindable(+1) {
+			t.Fatalf("StepToBindable(+1) should move from w1 to w2")
+		}
+		if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.RoleID != 11 {
+			t.Fatalf("expected cursor on w2; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("backward from w2 skips three non-bindable rows to w1", func(t *testing.T) {
+		rl := newRail()
+		rl.cursor = 5 // on w2
+		if !rl.StepToBindable(-1) {
+			t.Fatalf("StepToBindable(-1) should move from w2 to w1")
+		}
+		if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.RoleID != 10 {
+			t.Fatalf("expected cursor on w1; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("clamps at bottom without wrapping", func(t *testing.T) {
+		rl := newRail()
+		rl.cursor = 5 // on w2 (last bindable row)
+		if rl.StepToBindable(+1) {
+			t.Fatalf("StepToBindable(+1) past the last bindable row must return false")
+		}
+		if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.RoleID != 11 {
+			t.Fatalf("cursor must stay on w2 (no wrap); got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("clamps at top without wrapping", func(t *testing.T) {
+		rl := newRail()
+		rl.cursor = 0 // on orch header (first bindable row)
+		if rl.StepToBindable(-1) {
+			t.Fatalf("StepToBindable(-1) past the first bindable row must return false")
+		}
+		if ref, ok := rl.CurrentRef().(*orchEntry); !ok || ref.ID != 1 {
+			t.Fatalf("cursor must stay on the orch header (no wrap); got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("empty rail returns false without looping", func(t *testing.T) {
+		rl := newRailList() // buildRows not called → rows is empty
+		if rl.StepToBindable(+1) {
+			t.Fatalf("StepToBindable on an empty rail must return false")
+		}
+		if rl.StepToBindable(-1) {
+			t.Fatalf("StepToBindable(-1) on an empty rail must return false")
+		}
+	})
+
+	t.Run("rail with no bindable rows returns false", func(t *testing.T) {
+		rl := newRailList()
+		rl.rows = []railRow{
+			{kind: railRowFreelanceSep},
+			{kind: railRowFreelanceProj, fproj: fproj},
+			{kind: railRowArchiveExpando, archiveOwner: 0, archiveCount: 1},
+		}
+		rl.cursor = 1
+		if rl.StepToBindable(+1) {
+			t.Fatalf("StepToBindable(+1) with no bindable rows must return false")
+		}
+		if rl.StepToBindable(-1) {
+			t.Fatalf("StepToBindable(-1) with no bindable rows must return false")
+		}
+	})
+}
+
 // The top-level Archive sorts to the very bottom of the rail, below the
 // Freelance section.
 func TestRailList_TopLevelArchiveBelowFreelance(t *testing.T) {

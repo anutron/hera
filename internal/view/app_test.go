@@ -874,6 +874,73 @@ func TestApp_InPaneNavigate_MovesSelectionAndKeepsPaneFocus(t *testing.T) {
 	}
 }
 
+// TestApp_InPaneNavigate_SkipsCoordlessOrchHeader proves that in-pane nav
+// (⌘↑/↓) never strands the operator on a coord-less orchestrator header
+// (CoordTaskID == "") — a row that is pane-bindable for j/k navigation but has
+// no pane to enter (OnRailSelectEnter → FocusRAIL). When such a header sits
+// between two real pane-bindable agent rows, in-pane nav must skip it and land
+// focus on the next row that actually enters a pane, with the bound task
+// changed. This satisfies "focus remains in a pane bound to the NEW selection."
+func TestApp_InPaneNavigate_SkipsCoordlessOrchHeader(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "t1", WorktreePath: "/1"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+	a.selectDebounce = 0
+
+	// Hand-build a rail layout that puts a coord-less orchestrator header
+	// between two pane-bindable agent rows:
+	//   w1 (AGENT) → coordless-orch header (bindable but FocusRAIL) → w2 (AGENT)
+	w1Role := &roleEntry{OrchestratorID: orch.ID, RoleID: w1.ID, Name: "w1", RoleKind: string(db.KindWorker), ArgusTaskID: "t1", Live: true}
+	w2Role := &roleEntry{OrchestratorID: 99, RoleID: 200, Name: "w2", RoleKind: string(db.KindWorker), ArgusTaskID: "t2", Live: true}
+	coordlessHeader := &orchEntry{ID: 99, Name: "coordless", CoordTaskID: ""}
+	a.pieces.rail.orchestrators = []*orchEntry{
+		{ID: orch.ID, Name: "proj", CoordTaskID: "", Roles: []*roleEntry{w1Role}},
+		coordlessHeader,
+	}
+	a.pieces.rail.rows = []railRow{
+		{kind: railRowRole, role: w1Role},        // 0 bindable → AGENT (t1)
+		{kind: railRowOrch, orch: coordlessHeader}, // 1 bindable but coord-less → FocusRAIL
+		{kind: railRowRole, role: w2Role},        // 2 bindable → AGENT (t2)
+	}
+
+	// Land on w1 and enter its AGENT pane.
+	a.pieces.rail.cursor = 0
+	a.OnRailSelectEnter()
+	focus.JumpToAGENT()
+	if a.AgentTaskID() != "t1" {
+		t.Fatalf("baseline agent: want t1, got %q", a.AgentTaskID())
+	}
+
+	// In-pane nav forward must SKIP the coord-less header and land on w2's
+	// AGENT pane — never RAIL — with the bound task changed to t2.
+	got := a.InPaneNavigate(+1)
+	if got == FocusRAIL {
+		t.Fatalf("InPaneNavigate must not strand focus in RAIL on a coord-less header")
+	}
+	if got != FocusAGENT {
+		t.Fatalf("InPaneNavigate(+1): want FocusAGENT on w2, got %s", got)
+	}
+	if a.AgentTaskID() != "t2" {
+		t.Fatalf("bound agent task should change to t2 (coord-less header skipped); got %q", a.AgentTaskID())
+	}
+	// Selection must have moved past the coord-less header onto w2.
+	if ref, ok := a.pieces.rail.CurrentRef().(*roleEntry); !ok || ref.RoleID != 200 {
+		t.Fatalf("rail selection should be on w2; got %T %+v", a.pieces.rail.CurrentRef(), a.pieces.rail.CurrentRef())
+	}
+}
+
 func TestApp_OnRailSelectEnter_OrchHeaderEntersHERA(t *testing.T) {
 	// An orchestrator header IS a coordinator selection (D13). Per the
 	// "Enter enters the selection's primary pane" requirement, Enter on a

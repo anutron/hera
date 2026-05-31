@@ -773,18 +773,34 @@ func (a *App) ScrollFocusedPane(state FocusState, delta int) {
 // freelancer). When there is no further bindable row in the requested
 // direction the selection (and focus) stay put.
 //
+// A coord-less orchestrator header (CoordTaskID == "") is pane-bindable for
+// normal rail navigation (j/k still land on it) but has no pane to enter, so
+// OnRailSelectEnter yields FocusRAIL. In-pane flipping must never strand the
+// operator with the selection on such a header while focus silently lingers in
+// the previous pane, so we keep stepping in the same direction until we reach a
+// row that actually enters a pane (COORD/AGENT). If none exists that way, the
+// original selection + focus are restored so the operator stays put.
+//
 // Satisfies the KeyRouter.InPaneNavigator contract. Runs on the tview input
 // pump goroutine — direct mutation of the rail cursor and panes is safe.
 func (a *App) InPaneNavigate(dir int) FocusState {
 	if a.pieces.rail == nil {
 		return FocusRAIL
 	}
-	if !a.pieces.rail.StepToBindable(dir) {
-		// No further bindable row that way: leave selection + focus as-is. The
-		// caller keeps the operator in their current pane.
-		return a.focusForCurrentSelection()
+	startCursor := a.pieces.rail.cursor
+	for a.pieces.rail.StepToBindable(dir) {
+		if target := a.OnRailSelectEnter(); target != FocusRAIL {
+			return target
+		}
+		// Landed on a coord-less header (no pane to enter): keep flipping in the
+		// same direction. StepToBindable clamps at the ends, so this terminates.
 	}
-	return a.OnRailSelectEnter()
+	// No further pane-bindable row that way: restore the original selection so
+	// the operator's selection + focus stay where they were.
+	a.pieces.rail.cursor = startCursor
+	a.pieces.rail.clampOffset()
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+	return a.focusForCurrentSelection()
 }
 
 // focusForCurrentSelection returns the pane-focus state the current rail
