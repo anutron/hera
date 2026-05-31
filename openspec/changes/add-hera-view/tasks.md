@@ -146,8 +146,8 @@
 
 **Depends on:** Stage O.
 
-- [ ] 17.1 Write failing tests: `⇧↑`/`⇧↓` scroll the focused pane's scrollback without moving the rail selection; `⌘↑`/`⌘↓` (and `^↑`/`^↓`) move the rail selection to the next/prev agent while focus stays in a pane (re-enter the new selection's primary pane).
-- [ ] 17.2 `internal/view/keys.go` + pane/terminalpane wiring: implement scrollback scroll on the focused pane; implement in-pane selection nav that preserves pane focus.
+- [x] 17.1 Write failing tests: `⇧↑`/`⇧↓` scroll the focused pane's scrollback without moving the rail selection; `⌘↑`/`⌘↓` (and `^↑`/`^↓`) move the rail selection to the next/prev agent while focus stays in a pane (re-enter the new selection's primary pane).
+- [x] 17.2 `internal/view/keys.go` + pane/terminalpane wiring: implement scrollback scroll on the focused pane; implement in-pane selection nav that preserves pane focus. NOTE: in-pane nav fully works (skips headers/expandos + coord-less coords). `⇧↑/↓` keys are intercepted (never moved-rail / never forwarded to PTY) and a clamped scroll offset is tracked, BUT visible scrollback rendering is blocked upstream: argus-sdk `terminalpane@v0.0.2` keeps its emulator unexported and ships "no scrollback rendering". True visible scroll needs an argus-sdk paint hook surfacing `charmbracelet/x/vt` `ScrollbackCellAt`/`ScrollbackLen` — tracked as a follow-up; the scroll scenario is behaviorally wired but not visibly shipped.
 - [ ] 17.3 Probe-validate scroll + in-pane nav against the prototype.
 
 ## 18. Validation + archive
