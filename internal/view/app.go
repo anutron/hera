@@ -736,6 +736,79 @@ func (a *App) OnRailSelectEnter() FocusState {
 	return FocusRAIL
 }
 
+// ScrollFocusedPane scrolls the pane that currently has focus by delta lines
+// (positive = up into scrollback, negative = down toward the live screen),
+// driving the ⇧↑/⇧↓ keys (D15). It MUST NOT move the rail selection. No-op when
+// focus is RAIL (no pane is focused) or the targeted pane is absent.
+//
+// Satisfies the KeyRouter.PaneScroller contract. Runs on the tview input pump.
+//
+// LIMITATION: the SDK terminalpane paints only the live screen (see
+// pinnedTerminalPane.scrollOffset), so the offset is recorded but the visible
+// surface does not yet scroll. The key is intercepted end-to-end so it never
+// leaks to the PTY or the rail.
+func (a *App) ScrollFocusedPane(state FocusState, delta int) {
+	a.mu.Lock()
+	var pane *pinnedTerminalPane
+	switch state {
+	case FocusCOORD:
+		pane = a.pieces.coord
+	case FocusAGENT:
+		pane = a.pieces.agent
+	}
+	a.mu.Unlock()
+	if pane == nil {
+		return
+	}
+	pane.ScrollBy(delta)
+}
+
+// InPaneNavigate moves the rail selection to the next (dir>0) or previous
+// (dir<0) pane-bindable agent row and re-enters that selection's primary pane,
+// keeping focus INSIDE a pane (D15's ⌘↑/⌘↓ in-pane navigation). It reuses the
+// Stage-O selection+enter-pane logic (applyRailSelection via OnRailSelectEnter)
+// so the body re-composes and the focus machine lands on the new selection's
+// primary pane — never RAIL. Returns the focus state the operator should land
+// in (FocusCOORD for a coordinator selection, FocusAGENT for a worker /
+// freelancer). When there is no further bindable row in the requested
+// direction the selection (and focus) stay put.
+//
+// Satisfies the KeyRouter.InPaneNavigator contract. Runs on the tview input
+// pump goroutine — direct mutation of the rail cursor and panes is safe.
+func (a *App) InPaneNavigate(dir int) FocusState {
+	if a.pieces.rail == nil {
+		return FocusRAIL
+	}
+	if !a.pieces.rail.StepToBindable(dir) {
+		// No further bindable row that way: leave selection + focus as-is. The
+		// caller keeps the operator in their current pane.
+		return a.focusForCurrentSelection()
+	}
+	return a.OnRailSelectEnter()
+}
+
+// focusForCurrentSelection returns the pane-focus state the current rail
+// selection's primary pane corresponds to, WITHOUT moving the cursor or
+// rebinding. Used when in-pane nav has nowhere to step so the operator stays in
+// the pane they're already in.
+func (a *App) focusForCurrentSelection() FocusState {
+	switch ref := a.pieces.rail.CurrentRef().(type) {
+	case *orchEntry:
+		if ref != nil && ref.CoordTaskID != "" {
+			return FocusCOORD
+		}
+	case *roleEntry:
+		if ref == nil || ref.ArgusTaskID == "" {
+			return FocusRAIL
+		}
+		if ref.RoleKind == string(db.KindCoordinator) {
+			return FocusCOORD
+		}
+		return FocusAGENT
+	}
+	return FocusRAIL
+}
+
 // rebindCoord swaps the COORD pane's underlying paneBridge / subscription
 // over to the given argus task ID. No-op when the pane is already bound
 // to that task or the App has been closed.

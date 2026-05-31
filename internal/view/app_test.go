@@ -817,6 +817,63 @@ func TestApp_OnRailSelectEnter_WorkerRebindsAgentAndJumps(t *testing.T) {
 	}
 }
 
+// TestApp_InPaneNavigate_MovesSelectionAndKeepsPaneFocus proves the ⌘↑/↓
+// (in-pane navigation) behavior: from inside a pane, navigating to the
+// next/prev agent moves the rail selection AND re-enters the new selection's
+// primary pane — focus stays in a pane (AGENT here), never returns to RAIL,
+// and the bound agent task changes to the new selection's task.
+func TestApp_InPaneNavigate_MovesSelectionAndKeepsPaneFocus(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	w2, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w2", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "t1", WorktreePath: "/1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w2.ID, ArgusTaskID: "t2", WorktreePath: "/2"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+	a.selectDebounce = 0
+
+	// Land the cursor on w1 and enter its AGENT pane (focus in a pane).
+	if !a.pieces.rail.SelectByRoleID(w1.ID) {
+		t.Fatalf("could not select w1")
+	}
+	a.OnRailSelectEnter()
+	focus.JumpToAGENT()
+	if a.AgentTaskID() != "t1" {
+		t.Fatalf("baseline agent: want t1, got %q", a.AgentTaskID())
+	}
+
+	// In-pane nav forward: selection moves to w2, focus stays in a pane bound
+	// to w2's task.
+	got := a.InPaneNavigate(+1)
+	if got != FocusAGENT {
+		t.Fatalf("InPaneNavigate(+1) on worker: want FocusAGENT (stay in pane), got %s", got)
+	}
+	if got == FocusRAIL {
+		t.Fatalf("InPaneNavigate must NOT return focus to RAIL")
+	}
+	if a.AgentTaskID() != "t2" {
+		t.Fatalf("agent task after in-pane nav: want t2, got %q", a.AgentTaskID())
+	}
+
+	// Back again lands on w1.
+	if got := a.InPaneNavigate(-1); got != FocusAGENT {
+		t.Fatalf("InPaneNavigate(-1): want FocusAGENT, got %s", got)
+	}
+	if a.AgentTaskID() != "t1" {
+		t.Fatalf("agent task after reverse nav: want t1, got %q", a.AgentTaskID())
+	}
+}
+
 func TestApp_OnRailSelectEnter_OrchHeaderEntersHERA(t *testing.T) {
 	// An orchestrator header IS a coordinator selection (D13). Per the
 	// "Enter enters the selection's primary pane" requirement, Enter on a

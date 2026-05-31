@@ -260,6 +260,48 @@ func TestPinnedTerminalPane_DrawSkipsResizeWhenNoTaskID(t *testing.T) {
 	}
 }
 
+// TestPinnedTerminalPane_ScrollByTracksAndClamps pins the scroll-offset
+// bookkeeping that backs the ⇧↑/⇧↓ scrollback keys (D15). ScrollBy moves the
+// scrollback offset, clamping at 0 (the live screen — can't scroll past the
+// newest content). A positive delta scrolls UP into history; the offset never
+// goes negative.
+//
+// NOTE (flagged limitation): the SDK terminalpane renders only the live
+// emulator screen via its unexported emulator and does NOT expose scrollback
+// for rendering, so this offset is recorded but not yet painted. See ScrollBy's
+// doc comment. Wiring true scrollback rendering requires an argus-sdk change to
+// expose the emulator (or a ScrollbackCellAt accessor).
+func TestPinnedTerminalPane_ScrollByTracksAndClamps(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	p := newPinnedTerminalPane(tp, 80, 24)
+
+	if got := p.ScrollOffset(); got != 0 {
+		t.Fatalf("fresh pane scroll offset: want 0, got %d", got)
+	}
+
+	// Scroll up into history.
+	p.ScrollBy(3)
+	if got := p.ScrollOffset(); got != 3 {
+		t.Fatalf("after ScrollBy(3): want offset 3, got %d", got)
+	}
+
+	// Scroll down toward the live screen.
+	p.ScrollBy(-1)
+	if got := p.ScrollOffset(); got != 2 {
+		t.Fatalf("after ScrollBy(-1): want offset 2, got %d", got)
+	}
+
+	// Scrolling down past the live screen clamps at 0 (can't go negative).
+	p.ScrollBy(-100)
+	if got := p.ScrollOffset(); got != 0 {
+		t.Fatalf("after large negative ScrollBy: want clamp to 0, got %d", got)
+	}
+}
+
 // TestPinnedTerminalPane_ClipsBeyondAllocatedRect pins the letterbox
 // behavior: when the emulator surface (pinned to the worker PTY) is wider
 // than the layout-allocated rect, paint output past the rect must be

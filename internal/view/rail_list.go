@@ -348,6 +348,56 @@ func (rl *railList) move(dir int) {
 	}
 }
 
+// StepToBindable moves the cursor to the next (dir>0) or previous (dir<0)
+// PANE-BINDABLE row, skipping non-bindable selectable rows (Freelance repo
+// headers, Archive expandos) as well as separators. A pane-bindable row is a
+// coordinator header (orchEntry) or a role row (worker / sub-coordinator /
+// freelancer) with a usable task target. Returns true when the cursor moved.
+// Fires the selection-changed callback on a successful move.
+//
+// Drives the ⌘↑/⌘↓ in-pane navigation (D15): flip through agents without
+// returning to the rail. The cursor lands only on rows whose primary pane the
+// operator can be dropped into.
+func (rl *railList) StepToBindable(dir int) bool {
+	if len(rl.rows) == 0 || dir == 0 {
+		return false
+	}
+	c := rl.cursor + sign(dir)
+	for c >= 0 && c < len(rl.rows) {
+		if rl.bindable(c) {
+			rl.cursor = c
+			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
+			return true
+		}
+		c += sign(dir)
+	}
+	return false
+}
+
+// bindable reports whether row i is a pane-bindable selection: a coordinator
+// header or a role row whose ref carries a task target. Freelance repo headers
+// and Archive expandos are selectable for folding but are NOT pane-bindable.
+func (rl *railList) bindable(i int) bool {
+	if i < 0 || i >= len(rl.rows) {
+		return false
+	}
+	switch r := rl.rows[i]; r.kind {
+	case railRowOrch:
+		return r.orch != nil
+	case railRowRole:
+		return r.role != nil && r.role.ArgusTaskID != ""
+	}
+	return false
+}
+
+func sign(n int) int {
+	if n < 0 {
+		return -1
+	}
+	return 1
+}
+
 func (rl *railList) selectable(i int) bool {
 	if i < 0 || i >= len(rl.rows) {
 		return false

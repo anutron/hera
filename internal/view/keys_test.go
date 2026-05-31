@@ -884,6 +884,154 @@ func TestKeyRouter_CtrlP_AnyFocus_FiresOpenPR(t *testing.T) {
 	}
 }
 
+// --- Stage Q: pane scroll + in-pane agent navigation (D15) ---
+
+// fakeScroller records ScrollFocusedPane calls so router tests can assert the
+// ⇧↑/⇧↓ scroll keys reach the focused pane without moving the rail selection.
+type fakeScroller struct {
+	calls []scrollCall
+}
+
+type scrollCall struct {
+	State FocusState
+	Delta int
+}
+
+func (f *fakeScroller) ScrollFocusedPane(state FocusState, delta int) {
+	f.calls = append(f.calls, scrollCall{State: state, Delta: delta})
+}
+
+// fakeInPaneNav records InPaneNavigate calls and returns a programmable focus
+// state so router tests can assert ⌘↑/⌘↓ (and ^↑/^↓) move the selection while
+// keeping focus inside a pane.
+type fakeInPaneNav struct {
+	dirs   []int
+	result FocusState
+}
+
+func (f *fakeInPaneNav) InPaneNavigate(dir int) FocusState {
+	f.dirs = append(f.dirs, dir)
+	return f.result
+}
+
+// ⇧↓ / ⇧↑ in a pane scroll the focused pane and do NOT move the rail
+// selection (no InPaneNavigate call) nor forward a byte to the PTY.
+func TestKeyRouter_ShiftArrows_InPane_ScrollNotNavNotForward(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		key   tcell.Key
+		delta int
+	}{
+		{"shift-up", tcell.KeyUp, +1},
+		{"shift-down", tcell.KeyDown, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, p, _, _ := newRouter()
+			sc := &fakeScroller{}
+			nav := &fakeInPaneNav{result: FocusAGENT}
+			r.Scroller = sc
+			r.InPaneNav = nav
+			r.Focus.JumpToAGENT()
+
+			out := r.HandleKey(tcell.NewEventKey(tc.key, 0, tcell.ModShift))
+			if out != nil {
+				t.Fatalf("⇧arrow in pane must be consumed; got %v", out)
+			}
+			if len(sc.calls) != 1 || sc.calls[0].Delta != tc.delta {
+				t.Fatalf("⇧arrow must scroll focused pane delta=%d; got %+v", tc.delta, sc.calls)
+			}
+			if sc.calls[0].State != FocusAGENT {
+				t.Fatalf("scroll must target the focused pane state AGENT; got %v", sc.calls[0].State)
+			}
+			if len(nav.dirs) != 0 {
+				t.Fatalf("⇧arrow must NOT move the rail selection; got nav dirs %v", nav.dirs)
+			}
+			if len(p.Calls()) != 0 {
+				t.Fatalf("⇧arrow must NOT forward a byte to the PTY; got %v", p.Calls())
+			}
+			if r.Focus.State() != FocusAGENT {
+				t.Fatalf("⇧arrow must not change focus; got %s", r.Focus.State())
+			}
+		})
+	}
+}
+
+// ⇧arrows in RAIL focus are NOT scroll keys — there is no focused pane. They
+// fall through to the rail (propagate as the bare arrow for tree movement).
+func TestKeyRouter_ShiftArrows_InRAIL_NoScroll(t *testing.T) {
+	r, _, _, _ := newRouter()
+	sc := &fakeScroller{}
+	r.Scroller = sc
+	// Focus starts RAIL.
+	r.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModShift))
+	if len(sc.calls) != 0 {
+		t.Fatalf("⇧arrow in RAIL must not scroll a pane; got %+v", sc.calls)
+	}
+}
+
+// ⌘↓ / ^↓ (and up) in a pane move the rail selection to the next/prev agent
+// and keep focus inside a pane bound to the new selection — never RAIL, never
+// a forwarded byte.
+func TestKeyRouter_ModArrows_InPane_NavigateSelectionKeepPaneFocus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tcell.Key
+		mod  tcell.ModMask
+		dir  int
+	}{
+		{"cmd-down", tcell.KeyDown, tcell.ModMeta, +1},
+		{"cmd-up", tcell.KeyUp, tcell.ModMeta, -1},
+		{"ctrl-down", tcell.KeyDown, tcell.ModCtrl, +1},
+		{"ctrl-up", tcell.KeyUp, tcell.ModCtrl, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, p, _, b := newRouter()
+			sc := &fakeScroller{}
+			nav := &fakeInPaneNav{result: FocusAGENT}
+			r.Scroller = sc
+			r.InPaneNav = nav
+			r.Focus.Advance() // RAIL → COORD, so we start in a pane other than the target
+
+			out := r.HandleKey(tcell.NewEventKey(tc.key, 0, tc.mod))
+			if out != nil {
+				t.Fatalf("mod-arrow in pane must be consumed; got %v", out)
+			}
+			if len(nav.dirs) != 1 || nav.dirs[0] != tc.dir {
+				t.Fatalf("mod-arrow must navigate selection dir=%d; got %v", tc.dir, nav.dirs)
+			}
+			if len(sc.calls) != 0 {
+				t.Fatalf("mod-arrow must NOT scroll; got %+v", sc.calls)
+			}
+			if len(p.Calls()) != 0 {
+				t.Fatalf("mod-arrow must NOT forward a byte; got %v", p.Calls())
+			}
+			if r.Focus.State() != FocusAGENT {
+				t.Fatalf("mod-arrow must land focus in the new selection's pane (AGENT); got %s", r.Focus.State())
+			}
+			if r.Focus.State() == FocusRAIL {
+				t.Fatalf("mod-arrow must NOT return focus to RAIL")
+			}
+			// The border repaints because the focus state changed to the new
+			// selection's pane.
+			if len(b.states) == 0 || b.states[len(b.states)-1] != FocusAGENT {
+				t.Fatalf("border must be repainted to AGENT after in-pane nav; got %v", b.states)
+			}
+		})
+	}
+}
+
+// In RAIL focus, ⌘/^ arrows are not in-pane nav — they fall through (RAIL
+// already navigates the selection with bare j/k/arrows).
+func TestKeyRouter_ModArrows_InRAIL_NoInPaneNav(t *testing.T) {
+	r, _, _, _ := newRouter()
+	nav := &fakeInPaneNav{result: FocusAGENT}
+	r.InPaneNav = nav
+	r.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModCtrl))
+	if len(nav.dirs) != 0 {
+		t.Fatalf("⌘/^ arrow in RAIL must not invoke in-pane nav; got %v", nav.dirs)
+	}
+}
+
 // --- helpers ---
 
 func payloadOf(c []postCall) [][]byte {

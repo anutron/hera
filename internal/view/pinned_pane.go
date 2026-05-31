@@ -61,6 +61,23 @@ type pinnedTerminalPane struct {
 	// redundant calls when Draw fires repeatedly at the same allocation.
 	lastDesiredCols int
 	lastDesiredRows int
+
+	// scrollOffset is the number of lines the pane is scrolled UP into
+	// scrollback history (0 == pinned to the live screen). Driven by the
+	// ⇧↑/⇧↓ scroll keys (D15). It is clamped at 0 (can't scroll below the
+	// newest line).
+	//
+	// LIMITATION: the embedded SDK *terminalpane.TerminalPane renders only the
+	// live emulator screen and does not expose its emulator (the `emu` field is
+	// unexported) nor a scrollback accessor for paint, so this offset is
+	// recorded but NOT yet reflected in what Draw paints. Wiring true
+	// scrollback rendering requires an argus-sdk change to surface the
+	// emulator's scrollback (charmbracelet/x/vt already exposes
+	// ScrollbackCellAt / ScrollbackLen, so the SDK pane could render it once
+	// it exposes the emulator or a paint hook). Until then ⇧↑/⇧↓ are wired
+	// end-to-end (intercepted, never forwarded, never moving the rail) and the
+	// offset is tracked, but the visible surface stays on the live screen.
+	scrollOffset int
 }
 
 // newPinnedTerminalPane wraps tp and pins its emulator surface to
@@ -110,6 +127,27 @@ func newBoundPinnedTerminalPane(tp *terminalpane.TerminalPane, cols, rows int, t
 // tests.
 func (p *pinnedTerminalPane) PinnedSize() (int, int) {
 	return p.pinnedCols, p.pinnedRows
+}
+
+// ScrollBy moves the pane's scrollback offset by delta lines: a positive delta
+// scrolls UP into history (⇧↑), a negative delta scrolls back DOWN toward the
+// live screen (⇧↓). The offset is clamped at 0 (the live screen — you can't
+// scroll below the newest content).
+//
+// See the scrollOffset field doc for the SDK rendering limitation: the offset
+// is tracked here but the embedded SDK pane still paints only the live screen
+// until argus-sdk exposes scrollback for rendering.
+func (p *pinnedTerminalPane) ScrollBy(delta int) {
+	p.scrollOffset += delta
+	if p.scrollOffset < 0 {
+		p.scrollOffset = 0
+	}
+}
+
+// ScrollOffset returns the current scrollback offset in lines (0 == live
+// screen). Exposed for tests.
+func (p *pinnedTerminalPane) ScrollOffset() int {
+	return p.scrollOffset
 }
 
 // Draw paints the emulator at its pinned surface size and clips the output

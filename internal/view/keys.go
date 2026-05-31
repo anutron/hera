@@ -54,6 +54,26 @@ type ControlSender interface {
 	SendRelease() error
 }
 
+// PaneScroller scrolls the currently-focused pane's scrollback by delta lines
+// (positive = up into history, negative = down toward the live screen),
+// driving the ⇧↑/⇧↓ keys (D15). It MUST NOT move the rail selection. The router
+// only calls it when focus is in a pane (COORD/AGENT); nil makes ⇧↑/⇧↓ a no-op
+// scroll (the event is still consumed in a pane so it never reaches the PTY).
+type PaneScroller interface {
+	ScrollFocusedPane(state FocusState, delta int)
+}
+
+// InPaneNavigator moves the rail selection to the next (dir>0) / previous
+// (dir<0) pane-bindable agent and re-enters that selection's primary pane,
+// keeping focus INSIDE a pane — driving the ⌘↑/⌘↓ (and ^↑/^↓) keys (D15). It
+// returns the focus state the operator should land in (FocusCOORD / FocusAGENT,
+// never FocusRAIL when a bindable row was reached). The router only calls it
+// when focus is already in a pane; nil makes the keys a no-op (still consumed
+// in a pane so they never reach the PTY).
+type InPaneNavigator interface {
+	InPaneNavigate(dir int) FocusState
+}
+
 // ModalGate is consulted on every key event so the router can yield to
 // any active modal overlay (input field, confirm modal, help modal).
 // When IsModalActive returns true HandleKey passes the event through
@@ -96,6 +116,13 @@ type KeyRouter struct {
 	Border     BorderUpdater
 	RailSelect RailSelectHandler
 	Modal      ModalGate
+
+	// Scroller scrolls the focused pane (⇧↑/⇧↓). InPaneNav flips the rail
+	// selection while staying in a pane (⌘↑/⌘↓ / ^↑/^↓). Both are pane-focus-
+	// only; nil makes the corresponding key a consumed no-op in a pane. See
+	// PaneScroller / InPaneNavigator. (D15.)
+	Scroller  PaneScroller
+	InPaneNav InPaneNavigator
 
 	// Control sends key-surrender control frames to argus. Esc-from-RAIL
 	// routes here as a release frame; nil makes Esc-from-RAIL a no-op
@@ -279,6 +306,34 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 // terminal would emit for the same key, so the upstream PTY's bubbletea /
 // readline interprets it natively.
 func (r *KeyRouter) handlePane(event *tcell.EventKey) *tcell.EventKey {
+	// ⇧↑/⇧↓ scroll the focused pane's scrollback WITHOUT moving the rail
+	// selection (D15). Intercepted here so the bytes never reach the PTY.
+	if delta, ok := scrollDelta(event); ok {
+		if r.Scroller != nil {
+			r.Scroller.ScrollFocusedPane(r.Focus.State(), delta)
+		}
+		return nil
+	}
+	// ⌘↑/⌘↓ (and ^↑/^↓) move the rail selection to the next/prev agent while
+	// keeping focus inside a pane bound to the new selection (D15). The
+	// navigator re-enters the new selection's primary pane and returns the
+	// focus state to land in; we apply it and repaint the border. Intercepted
+	// so the bytes never reach the PTY and focus never falls back to RAIL.
+	if dir, ok := inPaneNavDir(event); ok {
+		if r.InPaneNav != nil {
+			target := r.InPaneNav.InPaneNavigate(dir)
+			switch target {
+			case FocusCOORD:
+				r.Focus.JumpToCOORD()
+				r.notifyBorder()
+			case FocusAGENT:
+				r.Focus.JumpToAGENT()
+				r.notifyBorder()
+			}
+		}
+		return nil
+	}
+
 	if r.Targets == nil || r.Poster == nil {
 		return nil
 	}
@@ -330,6 +385,46 @@ func isFocusBackward(e *tcell.EventKey) bool {
 
 func isCtrlQ(e *tcell.EventKey) bool {
 	return e.Key() == tcell.KeyCtrlQ
+}
+
+// scrollDelta decodes ⇧↑ / ⇧↓ into a scroll delta: ⇧↑ scrolls UP into history
+// (+1), ⇧↓ scrolls back DOWN toward the live screen (-1). Shift takes
+// precedence over Ctrl/Meta when a terminal reports both, so the scroll keys
+// stay distinct from the in-pane-nav keys. Returns ok=false for anything else.
+func scrollDelta(e *tcell.EventKey) (int, bool) {
+	if e.Modifiers()&tcell.ModShift == 0 {
+		return 0, false
+	}
+	switch e.Key() {
+	case tcell.KeyUp:
+		return +1, true
+	case tcell.KeyDown:
+		return -1, true
+	}
+	return 0, false
+}
+
+// inPaneNavDir decodes ⌘↑/⌘↓ (ModMeta on macOS) or ^↑/^↓ (ModCtrl on Linux)
+// into an in-pane navigation direction: up = previous agent (-1), down = next
+// agent (+1). Mirrors the Cmd/Ctrl acceptance of the focus-ladder keys
+// (isFocusForward/Backward). Shift must NOT be set (that's a scroll); callers
+// check scrollDelta first, but we also guard here so a ⇧+⌘ combo never
+// double-fires. Returns ok=false for anything else.
+func inPaneNavDir(e *tcell.EventKey) (int, bool) {
+	m := e.Modifiers()
+	if m&tcell.ModShift != 0 {
+		return 0, false
+	}
+	if m&tcell.ModCtrl == 0 && m&tcell.ModMeta == 0 {
+		return 0, false
+	}
+	switch e.Key() {
+	case tcell.KeyUp:
+		return -1, true
+	case tcell.KeyDown:
+		return +1, true
+	}
+	return 0, false
 }
 
 // encodeEventForPTY converts a tcell key event into the byte sequence the
