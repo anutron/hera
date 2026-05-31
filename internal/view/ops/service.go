@@ -61,7 +61,8 @@ type ArgusClient interface {
 
 	// DeleteTask destroys an argus task, INCLUDING its git worktree and
 	// branch (argus cleans both server-side). Backs `^d` delete and `^r`
-	// prune. A 404 (task already gone) is treated as success by callers.
+	// prune. A 404 (task already gone) is treated as success by the client,
+	// so a sibling already deleted out-of-band can't abort a cascade.
 	DeleteTask(ctx context.Context, taskID string) error
 
 	// GetTaskStatus returns the task's current workflow status string

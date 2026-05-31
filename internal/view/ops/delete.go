@@ -60,7 +60,8 @@ func (s *Service) deleteRoleInternal(ctx context.Context, role *Role) error {
 	// Destroy the argus task — argus stops the session and cleans up the
 	// task's git worktree AND branch server-side (handleDeleteTask). This is
 	// the extra destruction `^d` promises over `a` archive. A task that is
-	// already gone (404) is treated as success by the argus client.
+	// already gone (404) is treated as success by the argus client, so a
+	// cascade won't abort on a sibling already deleted out-of-band.
 	if argusTaskID != "" {
 		s.logf("delete: destroying argus task %q (worktree+branch)", argusTaskID)
 		if err := s.Argus.DeleteTask(ctx, argusTaskID); err != nil {

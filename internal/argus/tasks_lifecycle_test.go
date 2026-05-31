@@ -31,16 +31,31 @@ func TestClient_DeleteTask(t *testing.T) {
 	}
 }
 
-// TestClient_DeleteTask_Error surfaces a non-2xx as an error.
+// TestClient_DeleteTask_Error surfaces a non-2xx (other than 404) as an error.
 func TestClient_DeleteTask_Error(t *testing.T) {
+	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"boom"}`)
+	})
+	defer srv.Close()
+
+	if err := c.DeleteTask(context.Background(), "T1"); err == nil {
+		t.Fatalf("DeleteTask: want error on 500, got nil")
+	}
+}
+
+// TestClient_DeleteTask_NotFound treats a 404 as success: deletion is
+// idempotent, so a task argus already removed is "already gone" and must
+// not abort a `^d` cascade or `^r` prune.
+func TestClient_DeleteTask_NotFound(t *testing.T) {
 	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"error":"task not found"}`)
 	})
 	defer srv.Close()
 
-	if err := c.DeleteTask(context.Background(), "missing"); err == nil {
-		t.Fatalf("DeleteTask: want error on 404, got nil")
+	if err := c.DeleteTask(context.Background(), "missing"); err != nil {
+		t.Fatalf("DeleteTask: want nil on 404 (idempotent), got %v", err)
 	}
 }
 

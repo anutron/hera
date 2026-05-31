@@ -293,9 +293,21 @@ func (c *Client) UnarchiveTask(ctx context.Context, taskID string) error {
 // This is the destructive verb backing hera-view's `^d`: it removes the argus
 // task, worktree, and branch in one call. The route accepts hera's scope
 // token (it is NOT master-gated — same tier as stop).
+//
+// A 404 is treated as success: deletion is idempotent, so a task that argus
+// already removed (e.g. deleted out-of-band before a `^d` cascade or `^r`
+// prune reaches it) is "already gone" rather than an error. Swallowing the
+// 404 keeps cascades from aborting partway and leaving sibling roles
+// un-archived. Other non-2xx statuses surface as *HTTPError.
 func (c *Client) DeleteTask(ctx context.Context, taskID string) error {
-	_, err := c.doJSON(ctx, "DELETE", "/api/tasks/"+url.PathEscape(taskID), nil, nil)
-	return err
+	status, err := c.doJSON(ctx, "DELETE", "/api/tasks/"+url.PathEscape(taskID), nil, nil)
+	if err != nil {
+		if status == 404 {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // setTaskStatusInput is the body of POST /api/tasks/{id}/status.
