@@ -203,6 +203,67 @@ func TestDeleteRole_AuditLogIncludesPath(t *testing.T) {
 	}
 }
 
+// Stage P: `^d` must ALSO destroy the argus task (which cleans the worktree +
+// branch server-side), not only end the binding + remove the local worktree.
+func TestDeleteRole_DestroysArgusTask(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedBinding(role.ID, "T1", "")
+
+	a := &fakeArgus{}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+	if err := s.DeleteRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("DeleteRole: %v", err)
+	}
+	if len(a.deleteCalls) != 1 || a.deleteCalls[0] != "T1" {
+		t.Fatalf("want argus DeleteTask(T1); got %v", a.deleteCalls)
+	}
+}
+
+// A role with no live binding has no argus task to destroy.
+func TestDeleteRole_NoBinding_NoArgusDelete(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+
+	a := &fakeArgus{}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+	if err := s.DeleteRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("DeleteRole: %v", err)
+	}
+	if len(a.deleteCalls) != 0 {
+		t.Fatalf("no binding => no argus DeleteTask; got %v", a.deleteCalls)
+	}
+}
+
+// DeleteOrchestrator cascades the argus task destroy to every bound role.
+func TestDeleteOrchestrator_DestroysEveryArgusTask(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	coord := db.seedRole(orch.ID, "coord", KindCoordinator, "foo", false)
+	w1 := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	w2 := db.seedRole(orch.ID, "w2", KindWorker, "foo", false)
+	db.seedBinding(coord.ID, "Tc", "")
+	db.seedBinding(w1.ID, "Tw1", "")
+	db.seedBinding(w2.ID, "Tw2", "")
+
+	a := &fakeArgus{}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+	if err := s.DeleteOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("DeleteOrchestrator: %v", err)
+	}
+	got := map[string]bool{}
+	for _, id := range a.deleteCalls {
+		got[id] = true
+	}
+	for _, want := range []string{"Tc", "Tw1", "Tw2"} {
+		if !got[want] {
+			t.Fatalf("expected argus DeleteTask(%s); got %v", want, a.deleteCalls)
+		}
+	}
+}
+
 func TestDeleteOrchestrator_Cascades(t *testing.T) {
 	db := newFakeDB()
 	orch := db.seedOrchestrator("foo", false)

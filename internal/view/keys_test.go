@@ -44,15 +44,20 @@ func (f *fakeTargets) CoordTaskID() string { return f.coord }
 func (f *fakeTargets) AgentTaskID() string { return f.agent }
 
 type fakeMutations struct {
-	new, rename, del, archive, listAll, help int
+	new, rename, del, archive, listAll, help   int
+	prune, openPR, statusAdvance, statusRevert int
 }
 
-func (f *fakeMutations) OnNew()     { f.new++ }
-func (f *fakeMutations) OnRename()  { f.rename++ }
-func (f *fakeMutations) OnDelete()  { f.del++ }
-func (f *fakeMutations) OnArchive() { f.archive++ }
-func (f *fakeMutations) OnListAll() { f.listAll++ }
-func (f *fakeMutations) OnHelp()    { f.help++ }
+func (f *fakeMutations) OnNew()           { f.new++ }
+func (f *fakeMutations) OnRename()        { f.rename++ }
+func (f *fakeMutations) OnDelete()        { f.del++ }
+func (f *fakeMutations) OnArchive()       { f.archive++ }
+func (f *fakeMutations) OnListAll()       { f.listAll++ }
+func (f *fakeMutations) OnHelp()          { f.help++ }
+func (f *fakeMutations) OnPrune()         { f.prune++ }
+func (f *fakeMutations) OnOpenPR()        { f.openPR++ }
+func (f *fakeMutations) OnStatusAdvance() { f.statusAdvance++ }
+func (f *fakeMutations) OnStatusRevert()  { f.statusRevert++ }
 
 type fakeBorder struct {
 	states []FocusState
@@ -504,16 +509,18 @@ func TestKeyRouter_MutationKey_Question_InAGENT_NoMutationOnlyForward(t *testing
 	}
 }
 
-func TestKeyRouter_MutationKey_CtrlD_InCOORD_NoMutationOnlyForward(t *testing.T) {
+// D15 supersedes the earlier Stage-H/G behavior (where `^d` was RAIL-only and
+// forwarded as 0x04 in a pane): `^d` is now reachable from ANY focus, acting
+// on the current selection, and is intercepted (never forwarded to the PTY).
+func TestKeyRouter_MutationKey_CtrlD_InCOORD_FiresDeleteNotForwarded(t *testing.T) {
 	r, p, m, _ := newRouter()
 	r.Focus.Advance() // → COORD
 	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModCtrl))
-	if m.del != 0 {
-		t.Fatalf("Ctrl-D in COORD must NOT fire OnDelete; got count %d", m.del)
+	if m.del != 1 {
+		t.Fatalf("Ctrl-D in COORD must fire OnDelete (reachable from any focus); got count %d", m.del)
 	}
-	calls := p.Calls()
-	if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != 0x04 {
-		t.Fatalf("Ctrl-D in COORD must forward 0x04 (EOT); got %d calls, payload=%v", len(calls), payloadOf(calls))
+	if len(p.Calls()) != 0 {
+		t.Fatalf("Ctrl-D must NOT forward to the PTY; got %d calls, payload=%v", len(p.Calls()), payloadOf(p.Calls()))
 	}
 }
 
@@ -783,6 +790,97 @@ func TestKeyRouter_ModalInactive_NormalDispatch(t *testing.T) {
 	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone))
 	if m.new != 1 {
 		t.Fatalf("modal-inactive must let n fire OnNew; got count %d", m.new)
+	}
+}
+
+// --- Stage P extended keyset routing ---
+
+// `s`/`S` advance/revert status; RAIL-focus-only, intercepted (not forwarded).
+func TestKeyRouter_StatusKeys_RailFocus_FireMutation(t *testing.T) {
+	r, p, m, _ := newRouter()
+	// Focus starts RAIL.
+	if out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone)); out != nil {
+		t.Fatalf("s in RAIL must be consumed; got %v", out)
+	}
+	if out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone)); out != nil {
+		t.Fatalf("S in RAIL must be consumed; got %v", out)
+	}
+	if m.statusAdvance != 1 || m.statusRevert != 1 {
+		t.Fatalf("status calls: advance=%d revert=%d, want 1/1", m.statusAdvance, m.statusRevert)
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("status keys in RAIL must not forward to PTY; got %v", p.Calls())
+	}
+}
+
+// In a pane, `s`/`S` are ordinary input forwarded to the PTY (not status keys).
+func TestKeyRouter_StatusKeys_PaneFocus_ForwardToPTY(t *testing.T) {
+	r, p, m, _ := newRouter()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+	if m.statusAdvance != 0 {
+		t.Fatalf("s in pane must NOT fire OnStatusAdvance; got %d", m.statusAdvance)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || string(calls[0].Payload) != "s" || calls[0].TaskID != "agent-1" {
+		t.Fatalf("s in AGENT must forward byte to agent task; got %+v", calls)
+	}
+}
+
+// `^d` delete reachable from any focus, intercepted everywhere.
+func TestKeyRouter_CtrlD_AnyFocus_FiresDelete(t *testing.T) {
+	for _, jump := range []bool{false, true} {
+		r, p, m, _ := newRouter()
+		if jump {
+			r.Focus.JumpToAGENT()
+		}
+		if out := r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModCtrl)); out != nil {
+			t.Fatalf("^d must be consumed (jump=%v); got %v", jump, out)
+		}
+		if m.del != 1 {
+			t.Fatalf("^d must fire OnDelete (jump=%v); got %d", jump, m.del)
+		}
+		if len(p.Calls()) != 0 {
+			t.Fatalf("^d must not forward to PTY (jump=%v); got %v", jump, p.Calls())
+		}
+	}
+}
+
+// `^r` prune reachable from any focus, intercepted everywhere.
+func TestKeyRouter_CtrlR_AnyFocus_FiresPrune(t *testing.T) {
+	for _, jump := range []bool{false, true} {
+		r, p, m, _ := newRouter()
+		if jump {
+			r.Focus.JumpToAGENT()
+		}
+		if out := r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModCtrl)); out != nil {
+			t.Fatalf("^r must be consumed (jump=%v); got %v", jump, out)
+		}
+		if m.prune != 1 {
+			t.Fatalf("^r must fire OnPrune (jump=%v); got %d", jump, m.prune)
+		}
+		if len(p.Calls()) != 0 {
+			t.Fatalf("^r must not forward to PTY (jump=%v); got %v", jump, p.Calls())
+		}
+	}
+}
+
+// `^p` open-PR reachable from any focus, intercepted everywhere.
+func TestKeyRouter_CtrlP_AnyFocus_FiresOpenPR(t *testing.T) {
+	for _, jump := range []bool{false, true} {
+		r, p, m, _ := newRouter()
+		if jump {
+			r.Focus.JumpToAGENT()
+		}
+		if out := r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, tcell.ModCtrl)); out != nil {
+			t.Fatalf("^p must be consumed (jump=%v); got %v", jump, out)
+		}
+		if m.openPR != 1 {
+			t.Fatalf("^p must fire OnOpenPR (jump=%v); got %d", jump, m.openPR)
+		}
+		if len(p.Calls()) != 0 {
+			t.Fatalf("^p must not forward to PTY (jump=%v); got %v", jump, p.Calls())
+		}
 	}
 }
 

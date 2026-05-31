@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/anutron/hera/internal/view/ops"
 )
@@ -20,6 +21,13 @@ type mutationService interface {
 	DeleteRole(ctx context.Context, id int64) error
 	ToggleArchiveOrchestrator(ctx context.Context, id int64) error
 	ToggleArchiveRole(ctx context.Context, id int64) error
+
+	// Stage P extended keyset.
+	ListCompletedAgents(ctx context.Context) ([]ops.CompletedAgent, error)
+	PruneCompleted(ctx context.Context, agents []ops.CompletedAgent) (int, error)
+	AdvanceStatus(ctx context.Context, roleID int64) (string, error)
+	RevertStatus(ctx context.Context, roleID int64) (string, error)
+	OpenPR(ctx context.Context, roleID int64) (string, error)
 }
 
 // listAllState is the subset of *ops.ListAllState the bridge uses to
@@ -67,6 +75,16 @@ type railSelection struct {
 	Name           string
 	RoleKind       string
 	Archived       bool
+
+	// ArgusTaskID is the selected role's bound argus task id (empty for
+	// orchestrator rows or roles with no live binding). Carried so the
+	// extended keyset can act on the selection's task.
+	ArgusTaskID string
+
+	// ChildCount is the number of child agents the selection has (live
+	// roles under an orchestrator). Drives the `^d` destructive-delete
+	// warning when the target has children. Zero for leaf rows.
+	ChildCount int
 }
 
 // railSelector reads the rail's current selection. Tests substitute a
@@ -208,15 +226,22 @@ func (b *mutationBridge) OnDelete() {
 	case selOrchestrator:
 		title = fmt.Sprintf("Delete project %q?", sel.Name)
 		message = fmt.Sprintf(
-			"This will end every binding under %q, archive every role, and remove every worktree. Continue? (y/N)",
-			sel.Name,
+			"DESTRUCTIVE: this destroys %q and all %d of its child agents — "+
+				"each agent's argus task, git worktree, and branch are removed. "+
+				"This cannot be undone. Continue? (y/N)",
+			sel.Name, sel.ChildCount,
 		)
 		do = func() error { return b.svc.DeleteOrchestrator(b.ctx, sel.OrchestratorID) }
 	case selRole:
-		title = fmt.Sprintf("Delete role %q?", sel.Name)
+		warn := ""
+		if sel.ChildCount > 0 {
+			warn = fmt.Sprintf(" WARNING: %q has %d child agent(s) that will also be destroyed.", sel.Name, sel.ChildCount)
+		}
+		title = fmt.Sprintf("Delete %q?", sel.Name)
 		message = fmt.Sprintf(
-			"This will end %q's binding, archive the role, and remove its worktree. Continue? (y/N)",
-			sel.Name,
+			"DESTRUCTIVE: this destroys %q — its argus task, git worktree, and branch are removed. "+
+				"This cannot be undone.%s Continue? (y/N)",
+			sel.Name, warn,
 		)
 		do = func() error { return b.svc.DeleteRole(b.ctx, sel.RoleID) }
 	default:
@@ -269,6 +294,88 @@ func (b *mutationBridge) OnHelp() {
 	if b.help != nil {
 		_ = b.help.SendHelp()
 	}
+}
+
+// OnPrune confirms then prunes all completed agents fleet-wide (D15 `^r`).
+// It first lists the completed agents so the confirmation names exactly what
+// disappears; no destruction occurs unless the operator confirms. With no
+// completed agents it surfaces an informational modal and does nothing.
+func (b *mutationBridge) OnPrune() {
+	agents, err := b.svc.ListCompletedAgents(b.ctx)
+	if err != nil {
+		b.modals.ShowError(err.Error())
+		return
+	}
+	if len(agents) == 0 {
+		b.modals.ShowError("No completed agents to prune.")
+		return
+	}
+	var names []string
+	for _, a := range agents {
+		names = append(names, a.Name)
+	}
+	message := fmt.Sprintf(
+		"DESTRUCTIVE: prune %d completed agent(s) — %s — removing each task, worktree, and branch. "+
+			"This cannot be undone. Continue? (y/N)",
+		len(agents), strings.Join(names, ", "),
+	)
+	b.modals.ShowConfirm("Prune completed?", message, func() {
+		if _, err := b.svc.PruneCompleted(b.ctx, agents); err != nil {
+			b.modals.ShowError(err.Error())
+			return
+		}
+		b.refresh()
+	}, nil)
+}
+
+// OnOpenPR opens a pull request for the selected agent's task (D15 `^p`).
+// Confirmed before the external action fires. No-op when nothing addressable
+// is selected.
+func (b *mutationBridge) OnOpenPR() {
+	sel := b.sel.CurrentRailSelection()
+	if sel.Kind != selRole {
+		return
+	}
+	b.modals.ShowConfirm(
+		fmt.Sprintf("Open PR for %q?", sel.Name),
+		fmt.Sprintf("Open a pull request from %q's worktree via the host git flow? (y/N)", sel.Name),
+		func() {
+			if _, err := b.svc.OpenPR(b.ctx, sel.RoleID); err != nil {
+				b.modals.ShowError(err.Error())
+				return
+			}
+		},
+		nil,
+	)
+}
+
+// OnStatusAdvance steps the selected agent's argus status forward (`s`).
+// No modal — status stepping is reversible (`S`). No-op for non-role rows.
+func (b *mutationBridge) OnStatusAdvance() {
+	b.stepStatus(true)
+}
+
+// OnStatusRevert steps the selected agent's argus status backward (`S`).
+func (b *mutationBridge) OnStatusRevert() {
+	b.stepStatus(false)
+}
+
+func (b *mutationBridge) stepStatus(advance bool) {
+	sel := b.sel.CurrentRailSelection()
+	if sel.Kind != selRole {
+		return
+	}
+	var err error
+	if advance {
+		_, err = b.svc.AdvanceStatus(b.ctx, sel.RoleID)
+	} else {
+		_, err = b.svc.RevertStatus(b.ctx, sel.RoleID)
+	}
+	if err != nil {
+		b.modals.ShowError(err.Error())
+		return
+	}
+	b.refresh()
 }
 
 func (b *mutationBridge) refresh() {

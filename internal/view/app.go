@@ -511,6 +511,9 @@ func (a *App) CurrentRailSelection() railSelection {
 			OrchestratorID: ref.ID,
 			Name:           ref.Name,
 			Archived:       ref.Archived,
+			// Child agents that `^d` will also destroy: the orchestrator's
+			// live (non-archived) child roles.
+			ChildCount: countLiveRoles(ref.Roles),
 		}
 	case *roleEntry:
 		return railSelection{
@@ -520,9 +523,22 @@ func (a *App) CurrentRailSelection() railSelection {
 			Name:           ref.Name,
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
+			ArgusTaskID:    ref.ArgusTaskID,
 		}
 	}
 	return railSelection{}
+}
+
+// countLiveRoles returns the number of non-archived roles in the slice —
+// the child-agent count used by the `^d` destructive-delete warning.
+func countLiveRoles(roles []*roleEntry) int {
+	n := 0
+	for _, r := range roles {
+		if r != nil && !r.Archived {
+			n++
+		}
+	}
+	return n
 }
 
 // findInitialSelection picks the argus task IDs to bind to the coord and

@@ -33,6 +33,15 @@ type MutationHandler interface {
 	OnArchive()
 	OnListAll()
 	OnHelp()
+
+	// Stage P extended keyset (D15). OnPrune (`^r`) and OnOpenPR (`^p`) are
+	// reachable from ANY focus, acting on the current selection; OnDelete
+	// (`^d`) likewise. OnStatusAdvance (`s`) / OnStatusRevert (`S`) are
+	// RAIL-focus-only — in a pane the rune forwards to the PTY.
+	OnPrune()
+	OnOpenPR()
+	OnStatusAdvance()
+	OnStatusRevert()
 }
 
 // ControlSender sends the argus key-surrender control frames the router needs
@@ -137,6 +146,29 @@ func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Destructive + external verbs reachable from ANY focus (D15), acting on
+	// the current rail selection: `^d` delete, `^r` prune-completed, `^p`
+	// open-PR. They are intercepted (never forwarded to a PTY) so the
+	// operator can fire them without first returning to the rail.
+	if event.Key() == tcell.KeyCtrlD {
+		if r.Mutations != nil {
+			r.Mutations.OnDelete()
+		}
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlR {
+		if r.Mutations != nil {
+			r.Mutations.OnPrune()
+		}
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlP {
+		if r.Mutations != nil {
+			r.Mutations.OnOpenPR()
+		}
+		return nil
+	}
+
 	if r.Focus.State() == FocusRAIL {
 		return r.handleRail(event)
 	}
@@ -187,13 +219,6 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 		return event
 	}
 
-	if event.Key() == tcell.KeyCtrlD {
-		if r.Mutations != nil {
-			r.Mutations.OnDelete()
-		}
-		return nil
-	}
-
 	if event.Key() == tcell.KeyRune {
 		switch event.Rune() {
 		case 'j':
@@ -222,6 +247,18 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 		case 'l':
 			if r.Mutations != nil {
 				r.Mutations.OnListAll()
+			}
+			return nil
+		case 's':
+			// `s` advances the selected agent's status; RAIL-focus-only
+			// (in a pane it forwards to the PTY via handlePane).
+			if r.Mutations != nil {
+				r.Mutations.OnStatusAdvance()
+			}
+			return nil
+		case 'S':
+			if r.Mutations != nil {
+				r.Mutations.OnStatusRevert()
 			}
 			return nil
 		case '?':

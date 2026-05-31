@@ -103,6 +103,18 @@ func (a *dbAdapter) EndBinding(ctx context.Context, bindingID int64, reason stri
 	return translateDBErr(a.d.Bindings.End(ctx, bindingID, reason))
 }
 
+func (a *dbAdapter) ListLiveBindings(ctx context.Context) ([]*ops.Binding, error) {
+	rows, err := a.d.Bindings.ListLive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*ops.Binding, 0, len(rows))
+	for _, b := range rows {
+		out = append(out, adaptBinding(b))
+	}
+	return out, nil
+}
+
 func adaptOrchestrator(o *db.Orchestrator) *ops.Orchestrator {
 	if o == nil {
 		return nil
@@ -185,4 +197,29 @@ func (a *argusAdapter) UnarchiveTask(ctx context.Context, taskID string) error {
 		return fmt.Errorf("argusAdapter: nil client")
 	}
 	return a.c.UnarchiveTask(ctx, taskID)
+}
+
+func (a *argusAdapter) DeleteTask(ctx context.Context, taskID string) error {
+	if a.c == nil {
+		return fmt.Errorf("argusAdapter: nil client")
+	}
+	return a.c.DeleteTask(ctx, taskID)
+}
+
+func (a *argusAdapter) GetTaskStatus(ctx context.Context, taskID string) (string, error) {
+	if a.c == nil {
+		return "", fmt.Errorf("argusAdapter: nil client")
+	}
+	t, err := a.c.GetTask(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	return t.Status, nil
+}
+
+func (a *argusAdapter) SetTaskStatus(ctx context.Context, taskID, status string) (string, error) {
+	if a.c == nil {
+		return "", fmt.Errorf("argusAdapter: nil client")
+	}
+	return a.c.SetTaskStatus(ctx, taskID, status)
 }

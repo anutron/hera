@@ -108,12 +108,12 @@
 
 **Depends on:** Stage G (focus + key routing) and Stage L (focus modes)
 
-- [ ] 13.1 Write failing tests from the new scenarios (Prove-It). `keys_test.go`: Esc in RAIL triggers a `release` control frame and is NOT forwarded; Esc in COORD/AGENT is forwarded to the PTY and does NOT release; `?` in RAIL triggers a `help` frame and is NOT forwarded; `?` in a pane is forwarded. `control_test.go`: the sender marshals `release`/`hotkeys`/`help` envelopes to the exact contract JSON. `app_test.go`/`layout_test.go`: a focus-state change pushes a focus-appropriate `hotkeys` frame; the rendered surface no longer includes a bottom-bar row. Confirm each fails first.
-- [ ] 13.2 Add a `viewControl` sender (`internal/view/control.go`) that writes `release` / `hotkeys` / `help` envelopes as TEXT frames on the session `*websocket.Conn` (coder/websocket serializes writers, so this coexists safely with the SDK's binary surface writes). Thread the conn from `NewSessionFunc` into the `App`.
-- [ ] 13.3 `internal/view/keys.go` + `app.go`: in `RAIL` focus, route Esc → `release` and `?` → `help` (intercept, do not forward). Leave Esc/`?` forwarding intact in `COORD`/`AGENT`. Keep single Ctrl-Q → RAIL internal; do NOT bind double-Ctrl-Q (argus's failsafe owns it).
-- [ ] 13.4 `app.go` `OnFocusChanged`: push a focus-aware `hotkeys` dictionary (RAIL / COORD / AGENT bindings, `bar:true` on the operator-facing keys) on connect and on every focus change. Build the dictionaries from the same source of truth the retired `bottomBarText` used.
-- [ ] 13.5 `layout.go` + `app.go` `refreshBody`: remove hera's bottom-bar row from the Flex (argus renders the plugin-mode status bar). Retire `bottomBarText`; switch `OnHelp` from the in-surface modal to a `help` frame.
-- [ ] 13.6 Run `go test ./internal/view/... ./internal/daemon/... -race -count=1` until green.
+- [x] 13.1 Write failing tests from the new scenarios (Prove-It). `keys_test.go`: Esc in RAIL triggers a `release` control frame and is NOT forwarded; Esc in COORD/AGENT is forwarded to the PTY and does NOT release; `?` in RAIL triggers a `help` frame and is NOT forwarded; `?` in a pane is forwarded. `control_test.go`: the sender marshals `release`/`hotkeys`/`help` envelopes to the exact contract JSON. `app_test.go`/`layout_test.go`: a focus-state change pushes a focus-appropriate `hotkeys` frame; the rendered surface no longer includes a bottom-bar row. Confirm each fails first.
+- [x] 13.2 Add a `viewControl` sender (`internal/view/control.go`) that writes `release` / `hotkeys` / `help` envelopes as TEXT frames on the session `*websocket.Conn` (coder/websocket serializes writers, so this coexists safely with the SDK's binary surface writes). Thread the conn from `NewSessionFunc` into the `App`.
+- [x] 13.3 `internal/view/keys.go` + `app.go`: in `RAIL` focus, route Esc → `release` and `?` → `help` (intercept, do not forward). Leave Esc/`?` forwarding intact in `COORD`/`AGENT`. Keep single Ctrl-Q → RAIL internal; do NOT bind double-Ctrl-Q (argus's failsafe owns it).
+- [x] 13.4 `app.go` `OnFocusChanged`: push a focus-aware `hotkeys` dictionary (RAIL / COORD / AGENT bindings, `bar:true` on the operator-facing keys) on connect and on every focus change. Build the dictionaries from the same source of truth the retired `bottomBarText` used.
+- [x] 13.5 `layout.go` + `app.go` `refreshBody`: remove hera's bottom-bar row from the Flex (argus renders the plugin-mode status bar). Retire `bottomBarText`; switch `OnHelp` from the in-surface modal to a `help` frame.
+- [x] 13.6 Run `go test ./internal/view/... ./internal/daemon/... -race -count=1` until green.
 
 ## 14. Stage N — Rail model: coordinators as foldable rows + Archive expandos (mirror prototype)
 
@@ -138,8 +138,8 @@
 
 **Depends on:** Stage N. (`a` archive lands with Stage N's archive model.)
 
-- [ ] 16.1 Write failing tests: `^d` opens a destructive confirm and, on confirm, destroys task+worktree+branch (warns on child agents); `^r` opens a confirm listing completed agents and prunes only those; `s`/`S` advance/revert the selected agent's argus status; `^p` triggers a PR for the selected task. Confirm no destructive op without confirmation.
-- [ ] 16.2 `internal/view/keys.go` + `app.go` + `internal/view/mutations.go`: wire `^d` (delete — extend the existing delete flow to destroy the argus task/worktree/branch), `^r` (prune-completed → argus `POST /api/maintenance/prune-completed`), `s`/`S` (status step via argus task-status endpoint), `^p` (open PR via the host/iris flow). Add the argus client methods needed.
+- [x] 16.1 Write failing tests: `^d` opens a destructive confirm and, on confirm, destroys task+worktree+branch (warns on child agents); `^r` opens a confirm listing completed agents and prunes only those; `s`/`S` advance/revert the selected agent's argus status; `^p` triggers a PR for the selected task. Confirm no destructive op without confirmation.
+- [x] 16.2 `internal/view/keys.go` + `app.go` + `internal/view/mutations.go`: wire `^d` (delete — extend the existing delete flow to destroy the argus task/worktree/branch), `^r` (prune-completed), `s`/`S` (status step via argus task-status endpoint), `^p` (open PR via the host/iris flow). Add the argus client methods needed. NOTE: argus `POST /api/maintenance/prune-completed` is master-gated and rejects hera's scope token, so `^r` instead prunes hera's managed completed set itself via per-task `DELETE /api/tasks/{id}` (which cleans each worktree + branch server-side). `^p` shells out to `gh pr create` from the worktree via os/exec (no argus PR endpoint exists).
 - [ ] 16.3 Probe-validate: confirm dialogs render and the rail updates after archive/delete/prune against the prototype's overlays. Iterate.
 
 ## 17. Stage Q — Pane scroll + in-pane agent navigation

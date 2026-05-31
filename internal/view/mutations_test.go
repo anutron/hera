@@ -3,6 +3,7 @@ package view
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -26,7 +27,7 @@ type fakeModals struct {
 	stubInputCancel    bool
 	stubInputNotOpened bool
 
-	stubConfirmYes    bool
+	stubConfirmYes     bool
 	stubConfirmNotOpen bool
 }
 
@@ -145,6 +146,17 @@ type fakeMutationService struct {
 	toggleArchiveOrchErr   error
 	toggleArchiveRoleCalls []int64
 	toggleArchiveRoleErr   error
+
+	completedAgents  []ops.CompletedAgent
+	listCompletedErr error
+	pruneCalls       [][]ops.CompletedAgent
+	pruneErr         error
+	advanceCalls     []int64
+	advanceErr       error
+	revertCalls      []int64
+	revertErr        error
+	openPRCalls      []int64
+	openPRErr        error
 }
 
 type renameOrchCall struct {
@@ -207,6 +219,43 @@ func (s *fakeMutationService) ToggleArchiveRole(_ context.Context, id int64) err
 	defer s.mu.Unlock()
 	s.toggleArchiveRoleCalls = append(s.toggleArchiveRoleCalls, id)
 	return s.toggleArchiveRoleErr
+}
+
+func (s *fakeMutationService) ListCompletedAgents(_ context.Context) ([]ops.CompletedAgent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.completedAgents, s.listCompletedErr
+}
+
+func (s *fakeMutationService) PruneCompleted(_ context.Context, agents []ops.CompletedAgent) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneCalls = append(s.pruneCalls, agents)
+	if s.pruneErr != nil {
+		return 0, s.pruneErr
+	}
+	return len(agents), nil
+}
+
+func (s *fakeMutationService) AdvanceStatus(_ context.Context, id int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.advanceCalls = append(s.advanceCalls, id)
+	return "in_progress", s.advanceErr
+}
+
+func (s *fakeMutationService) RevertStatus(_ context.Context, id int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revertCalls = append(s.revertCalls, id)
+	return "pending", s.revertErr
+}
+
+func (s *fakeMutationService) OpenPR(_ context.Context, id int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.openPRCalls = append(s.openPRCalls, id)
+	return "https://example/pr/1", s.openPRErr
 }
 
 // newBridgeUnderTest wires a mutationBridge with all-fake deps. The
@@ -567,3 +616,172 @@ func TestBridge_OnHelp_NilSenderNoPanic(t *testing.T) {
 	b := newMutationBridge(context.Background(), m, &fakeSelector{}, &fakeMutationService{}, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
 	b.OnHelp() // must not panic
 }
+
+// --- Stage P: OnDelete destructive confirm + child-agent warning ---
+
+func TestBridge_OnDelete_Orchestrator_ConfirmNamesAndWarnsChildren(t *testing.T) {
+	b, m, sel, _, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 7, Name: "foo", ChildCount: 3}
+	m.stubConfirmNotOpen = true // open the modal but do not auto-confirm
+
+	b.OnDelete()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("delete must open a confirm modal; got %d", len(m.confirms))
+	}
+	msg := m.confirms[0].Message
+	if !stringsContains(msg, "foo") || !stringsContains(msg, "3") {
+		t.Fatalf("confirm must name target and child count; got %q", msg)
+	}
+	if !stringsContains(msg, "DESTRUCTIVE") {
+		t.Fatalf("confirm must flag DESTRUCTIVE; got %q", msg)
+	}
+}
+
+func TestBridge_OnDelete_Role_WithChildren_WarnsChildren(t *testing.T) {
+	b, m, sel, _, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 13, Name: "coord", ChildCount: 2}
+	m.stubConfirmNotOpen = true
+
+	b.OnDelete()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("delete must open a confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Message, "child agent") {
+		t.Fatalf("role with children must warn; got %q", m.confirms[0].Message)
+	}
+}
+
+// --- Stage P: OnPrune ---
+
+func TestBridge_OnPrune_ConfirmYes_PrunesListed(t *testing.T) {
+	b, m, _, svc, _, rp := newBridgeUnderTest()
+	svc.completedAgents = []ops.CompletedAgent{
+		{RoleID: 1, Name: "done-a", ArgusTaskID: "Ta"},
+		{RoleID: 2, Name: "done-b", ArgusTaskID: "Tb"},
+	}
+	m.stubConfirmYes = true
+
+	b.OnPrune()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("prune must open a confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Message, "done-a") || !stringsContains(m.confirms[0].Message, "done-b") {
+		t.Fatalf("confirm must list completed agents; got %q", m.confirms[0].Message)
+	}
+	if len(svc.pruneCalls) != 1 || len(svc.pruneCalls[0]) != 2 {
+		t.Fatalf("prune confirm must call PruneCompleted with the 2 agents; got %+v", svc.pruneCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("prune must refresh rail; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnPrune_ConfirmNo_NoPrune(t *testing.T) {
+	b, m, _, svc, _, _ := newBridgeUnderTest()
+	svc.completedAgents = []ops.CompletedAgent{{RoleID: 1, Name: "done-a", ArgusTaskID: "Ta"}}
+	m.stubConfirmYes = false
+
+	b.OnPrune()
+
+	if len(svc.pruneCalls) != 0 {
+		t.Fatalf("confirm=No must NOT prune; got %+v", svc.pruneCalls)
+	}
+}
+
+func TestBridge_OnPrune_NoCompleted_NoConfirmNoPrune(t *testing.T) {
+	b, m, _, svc, _, _ := newBridgeUnderTest()
+	svc.completedAgents = nil
+
+	b.OnPrune()
+
+	if len(m.confirms) != 0 {
+		t.Fatalf("no completed agents must NOT open a destructive confirm; got %d", len(m.confirms))
+	}
+	if len(svc.pruneCalls) != 0 {
+		t.Fatalf("no completed agents must NOT prune; got %+v", svc.pruneCalls)
+	}
+}
+
+// --- Stage P: OnStatusAdvance / OnStatusRevert ---
+
+func TestBridge_OnStatusAdvance_Role_Steps(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
+
+	b.OnStatusAdvance()
+
+	if len(svc.advanceCalls) != 1 || svc.advanceCalls[0] != 9 {
+		t.Fatalf("want AdvanceStatus(9); got %v", svc.advanceCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("status step must refresh rail; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnStatusRevert_Role_Steps(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
+
+	b.OnStatusRevert()
+
+	if len(svc.revertCalls) != 1 || svc.revertCalls[0] != 9 {
+		t.Fatalf("want RevertStatus(9); got %v", svc.revertCalls)
+	}
+}
+
+func TestBridge_OnStatus_NonRole_NoCall(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, Name: "foo"}
+
+	b.OnStatusAdvance()
+	b.OnStatusRevert()
+
+	if len(svc.advanceCalls)+len(svc.revertCalls) != 0 {
+		t.Fatalf("status keys must no-op on non-role selection")
+	}
+}
+
+// --- Stage P: OnOpenPR ---
+
+func TestBridge_OnOpenPR_ConfirmYes_OpensPR(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
+	m.stubConfirmYes = true
+
+	b.OnOpenPR()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("open-PR must confirm first; got %d", len(m.confirms))
+	}
+	if len(svc.openPRCalls) != 1 || svc.openPRCalls[0] != 9 {
+		t.Fatalf("want OpenPR(9); got %v", svc.openPRCalls)
+	}
+}
+
+func TestBridge_OnOpenPR_ConfirmNo_NoPR(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
+	m.stubConfirmYes = false
+
+	b.OnOpenPR()
+
+	if len(svc.openPRCalls) != 0 {
+		t.Fatalf("confirm=No must NOT open a PR; got %v", svc.openPRCalls)
+	}
+}
+
+func TestBridge_OnOpenPR_NonRole_NoConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, Name: "foo"}
+
+	b.OnOpenPR()
+
+	if len(m.confirms) != 0 || len(svc.openPRCalls) != 0 {
+		t.Fatalf("open-PR on non-role must no-op; confirms=%d prCalls=%v", len(m.confirms), svc.openPRCalls)
+	}
+}
+
+func stringsContains(s, sub string) bool { return strings.Contains(s, sub) }

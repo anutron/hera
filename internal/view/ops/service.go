@@ -30,6 +30,11 @@ type DB interface {
 
 	// EndBinding marks a binding as ended with the given reason.
 	EndBinding(ctx context.Context, bindingID int64, reason string) error
+
+	// ListLiveBindings returns every live (non-ended) binding across all
+	// orchestrators and roles. Backs `^r` prune-completed, which inspects
+	// each bound task's argus status to find the completed fleet-wide.
+	ListLiveBindings(ctx context.Context) ([]*Binding, error)
 }
 
 // CreateTaskRequest is the ops layer's neutral description of an argus
@@ -53,6 +58,34 @@ type ArgusClient interface {
 	CreateTask(ctx context.Context, req CreateTaskRequest) (*CreatedTask, error)
 	ArchiveTask(ctx context.Context, taskID string) error
 	UnarchiveTask(ctx context.Context, taskID string) error
+
+	// DeleteTask destroys an argus task, INCLUDING its git worktree and
+	// branch (argus cleans both server-side). Backs `^d` delete and `^r`
+	// prune. A 404 (task already gone) is treated as success by callers.
+	DeleteTask(ctx context.Context, taskID string) error
+
+	// GetTaskStatus returns the task's current workflow status string
+	// ("pending" | "in_progress" | "in_review" | "complete"). Used by
+	// `s`/`S` to compute the next/prev step and by `^r` to identify
+	// completed agents.
+	GetTaskStatus(ctx context.Context, taskID string) (string, error)
+
+	// SetTaskStatus sets the task's workflow status, returning the
+	// resolved status. Backs `s`/`S`.
+	SetTaskStatus(ctx context.Context, taskID, status string) (string, error)
+}
+
+// PRCreator opens a pull request for a role's worktree. The production
+// implementation shells out (`gh pr create`) from the worktree path via
+// os/exec — the hera daemon is unsandboxed under launchd, so it reaches the
+// host git + gh, mirroring the WorktreeRemover precedent. Tests substitute a
+// fake that records calls. Opening a real PR headless is not feasible in a
+// unit test, so `^p` is validated against a fake; the exec implementation is
+// covered by a construction smoke test only (see ops/pr.go).
+type PRCreator interface {
+	// CreatePR opens a PR for the worktree at path. Returns the PR URL (or
+	// empty when the implementation cannot report one) and any error.
+	CreatePR(ctx context.Context, worktreePath string) (string, error)
 }
 
 // WorktreeRemover deletes a git worktree directory. In production this is
@@ -81,6 +114,11 @@ type Service struct {
 	WorktreeRemover WorktreeRemover
 	Logger          Logger
 	ListAll         *ListAllState
+
+	// PR opens pull requests for `^p`. May be nil — OpenPR then returns an
+	// error rather than panicking (tests / daemon startup without a PR
+	// flow wired).
+	PR PRCreator
 }
 
 // NewService constructs a Service. ListAll may be nil — a fresh

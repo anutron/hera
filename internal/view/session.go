@@ -111,6 +111,9 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 			ops.ExecWorktreeRemover{},
 			slogLogger{log: log},
 		)
+		// `^p` opens PRs via the host git/gh flow (os/exec from the worktree);
+		// the daemon is unsandboxed under launchd so it can reach gh.
+		opsService.PR = ops.ExecPRCreator{}
 		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, control, log)
 
 		focus := NewFocusMachine()
