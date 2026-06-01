@@ -840,9 +840,6 @@ func (rl *railList) drawOrchRow(screen tcell.Screen, x, y, w int, o *orchEntry, 
 	if o == nil {
 		return
 	}
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
-	}
 
 	col := x + depth*indentStep
 	// Status icon first (argus task-panel order: <icon> <chevron> <name>), so a
@@ -870,6 +867,9 @@ func (rl *railList) drawOrchRow(screen tcell.Screen, x, y, w int, o *orchEntry, 
 	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
 	if o.Archived {
 		nameStyle = tcell.StyleDefault.Foreground(theme.ColorDimmed).Bold(true)
+	}
+	if cursor {
+		nameStyle = theme.StyleSelected
 	}
 	name := o.Name
 	count := fmt.Sprintf(" (%d)", rl.visibleRoleCount(o))
@@ -913,9 +913,6 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	if r.childOrch != nil {
 		rl.drawSubCoordRow(screen, x, y, w, r, depth, cursor)
 		return
-	}
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
 	}
 
 	// Layout: " <icon> name           10m"
@@ -961,9 +958,6 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 // comes from the role's own argus state (roleIcon), so the row reads with the
 // same ☾/○/✓/? vocabulary as any coordinator.
 func (rl *railList) drawSubCoordRow(screen tcell.Screen, x, y, w int, r *roleEntry, depth int, cursor bool) {
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
-	}
 	col := x + depth*indentStep
 
 	icon, iconStyle := rl.roleIcon(r)
@@ -988,6 +982,9 @@ func (rl *railList) drawSubCoordRow(screen tcell.Screen, x, y, w int, r *roleEnt
 	if r.Archived || r.Dead || r.ArgusArchived {
 		nameStyle = tcell.StyleDefault.Foreground(theme.ColorDimmed).Bold(true)
 	}
+	if cursor {
+		nameStyle = theme.StyleSelected
+	}
 	name := r.Name
 	count := fmt.Sprintf(" (%d)", rl.visibleRoleCount(r.childOrch))
 	maxName := w - (col - x) - runeLen(count)
@@ -1009,9 +1006,6 @@ func (rl *railList) drawFreelanceProjRow(screen tcell.Screen, x, y, w int, fp *f
 	if fp == nil {
 		return
 	}
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
-	}
 	chevron := '▾'
 	if rl.freelanceCollapsed[fp.Project] {
 		chevron = '▸'
@@ -1021,6 +1015,9 @@ func (rl *railList) drawFreelanceProjRow(screen tcell.Screen, x, y, w int, fp *f
 	col += 2
 
 	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
+	if cursor {
+		nameStyle = theme.StyleSelected
+	}
 	name := fp.Project
 	count := fmt.Sprintf(" (%d)", rl.visibleFreelanceCount(fp))
 	maxName := w - (col - x) - runeLen(count)
@@ -1079,10 +1076,11 @@ func (rl *railList) drawSeparator(screen tcell.Screen, x, y, w int, label string
 // nested sub-coord's deeper still); the top-level Archive sits flush left. The
 // expando is selectable so space/Enter toggles its fold.
 func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner int64, count, depth int, cursor bool) {
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
-	}
 	style := tcell.StyleDefault.Foreground(theme.ColorDimmed)
+	labelStyle := style.Bold(true)
+	if cursor {
+		labelStyle = theme.StyleSelected
+	}
 	// Indent by tree depth so a per-coordinator Archive expando sits one level
 	// under its coordinator (and a nested sub-coord's deeper still), matching
 	// the prototype's nesting. The top-level Archive (depth 0) sits flush left.
@@ -1094,19 +1092,12 @@ func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner i
 	screen.SetContent(col, y, chevron, nil, style)
 	col += 2
 	label := fmt.Sprintf("Archive (%d)", count)
-	widget.DrawText(screen, col, y, w-(col-x), label, style.Bold(true))
+	widget.DrawText(screen, col, y, w-(col-x), label, labelStyle)
 	col += runeLen(label)
 	// Trailing rule to mirror the separator rows.
 	for col < x+w {
 		screen.SetContent(col, y, '─', nil, style)
 		col++
-	}
-}
-
-func (rl *railList) fillBackground(screen tcell.Screen, x, y, w int) {
-	bg := tcell.StyleDefault.Background(theme.ColorHighlight)
-	for i := 0; i < w; i++ {
-		screen.SetContent(x+i, y, ' ', nil, bg)
 	}
 }
 

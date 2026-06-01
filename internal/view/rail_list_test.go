@@ -39,6 +39,67 @@ func renderRail(t *testing.T, rl *railList, w, h int) string {
 	return readScreen(sim)
 }
 
+// renderRailSim draws the rail onto a SimulationScreen and returns both the
+// text dump (for substring assertions) and the raw screen so per-cell styles
+// can be decomposed. Mirrors renderRail's setup.
+func renderRailSim(t *testing.T, rl *railList, w, h int) (string, tcell.SimulationScreen) {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(w, h)
+	rl.SetRect(0, 0, w, h)
+	rl.Draw(sim)
+	sim.Show()
+	return readScreen(sim), sim
+}
+
+// rowOf returns the screen row index (y) of the first line containing needle,
+// or -1. Used to locate a rendered row before inspecting its cell styles.
+func rowOf(dump, needle string) int {
+	for i, ln := range strings.Split(dump, "\n") {
+		if strings.Contains(ln, needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+// rowHasBackground reports whether ANY cell on screen-row y carries the given
+// (non-default) background color. Used to assert the rail never paints a row
+// background to indicate selection.
+func rowHasBackground(sim tcell.SimulationScreen, y int, bg tcell.Color) bool {
+	cells, w, h := sim.GetContents()
+	if y < 0 || y >= h {
+		return false
+	}
+	for x := 0; x < w; x++ {
+		_, cellBg, _ := cells[y*w+x].Style.Decompose()
+		if cellBg == bg {
+			return true
+		}
+	}
+	return false
+}
+
+// rowHasForeground reports whether ANY cell on screen-row y carries the given
+// foreground color — used to assert the selected row's name renders in
+// theme.ColorSelected.
+func rowHasForeground(sim tcell.SimulationScreen, y int, fg tcell.Color) bool {
+	cells, w, h := sim.GetContents()
+	if y < 0 || y >= h {
+		return false
+	}
+	for x := 0; x < w; x++ {
+		cellFg, _, _ := cells[y*w+x].Style.Decompose()
+		if cellFg == fg {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRailList_HeaderShowsChevronAndCount(t *testing.T) {
 	rl := newRailList()
 	rl.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
@@ -720,5 +781,70 @@ func TestRailList_TopLevelArchiveBelowFreelance(t *testing.T) {
 	}
 	if archIdx < freeIdx {
 		t.Fatalf("top-level Archive must render below the Freelance section; got:\n%s", got)
+	}
+}
+
+// Scenario: the selected row is indicated by selected-text styling, NOT a grey
+// background fill — for BOTH a coordinator header and a worker row. The rail
+// must paint no theme.ColorHighlight background on any row.
+func TestRailList_SelectionUsesSelectedTextNotBackground(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2", Live: true},
+		}},
+	})
+
+	// Cursor on the coordinator header.
+	rl.SelectByOrchID(1)
+	dump, sim := renderRailSim(t, rl, 28, 8)
+	headerRow := rowOf(dump, "proj1")
+	if headerRow < 0 {
+		t.Fatalf("coordinator header not rendered; got:\n%s", dump)
+	}
+	if rowHasBackground(sim, headerRow, theme.ColorHighlight) {
+		t.Fatalf("selected coordinator header must NOT paint a ColorHighlight background; got:\n%s", dump)
+	}
+	if !rowHasForeground(sim, headerRow, theme.ColorSelected) {
+		t.Fatalf("selected coordinator header name must render in theme.ColorSelected; got:\n%s", dump)
+	}
+
+	// Cursor on a worker row.
+	rl.SelectByRoleID(10)
+	dump, sim = renderRailSim(t, rl, 28, 8)
+	workerRow := rowOf(dump, "w1")
+	if workerRow < 0 {
+		t.Fatalf("worker row not rendered; got:\n%s", dump)
+	}
+	if rowHasBackground(sim, workerRow, theme.ColorHighlight) {
+		t.Fatalf("selected worker row must NOT paint a ColorHighlight background; got:\n%s", dump)
+	}
+	if !rowHasForeground(sim, workerRow, theme.ColorSelected) {
+		t.Fatalf("selected worker name must render in theme.ColorSelected; got:\n%s", dump)
+	}
+}
+
+// Scenario: a NON-selected row carries no lingering highlight background. With
+// the cursor on the header, the (unselected) worker rows must be default-bg.
+func TestRailList_NonSelectedRowHasNoBackground(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2", Live: true},
+		}},
+	})
+	rl.SelectByOrchID(1) // cursor on header; workers are NOT selected
+
+	dump, sim := renderRailSim(t, rl, 28, 8)
+	for _, name := range []string{"w1", "w2"} {
+		y := rowOf(dump, name)
+		if y < 0 {
+			t.Fatalf("row %q not rendered; got:\n%s", name, dump)
+		}
+		if rowHasBackground(sim, y, theme.ColorHighlight) {
+			t.Fatalf("non-selected row %q must have default background (no ColorHighlight); got:\n%s", name, dump)
+		}
 	}
 }

@@ -488,6 +488,8 @@ Because hera's data model is flat (a role has a single orchestrator; orchestrato
 
 The status icon (on both coordinator headers and agent rows) reflects argus status using argus's own vocabulary (`?` needs-input, `✓` review/complete, `☾` working, `○` idle); a coordinator header's status icon is driven by its coord task's argus state, and a sub-coordinator row's by its own bound task's state. The coordinator marker glyph (distinct from the transient status icon) flags the row as a coordinator regardless of state; the prototype's `◆` root-coord icon is superseded by this status-icon + marker pairing. Every coordinator with archived direct children MUST render an `Archive (N)` expando below its active agents (collapsed by default); archived root coordinators MUST render under a top-level `Archive` section at the bottom of the rail. `space` MUST toggle the fold of the selected coordinator (root OR sub-coordinator) or Archive section.
 
+The rail's currently selected row MUST be indicated by selected-text styling — its name rendered in argus's selected style (`theme.StyleSelected`, pink `theme.ColorSelected`) — applied consistently across ALL selectable row types (coordinator headers, agent/worker rows, sub-coordinator rows, Freelance repo headers, and Archive expandos). The rail MUST NOT paint any cell background to indicate selection: no row — selected or not — may render a filled (non-default) cell background. This guarantees no stale highlight cell can linger on a previously-selected row when the cursor moves, because no row ever writes a non-default background that a later draw would have to clear. The per-row selection indicator is distinct from, and MUST NOT be confused with, the rail pane's focus border (argus's focus color on the pane edge), which is governed by the focus-model requirement.
+
 #### Scenario: Coordinator row is foldable with a count
 
 - **WHEN** the rail renders a coordinator that has live agents
@@ -532,6 +534,16 @@ The status icon (on both coordinator headers and agent rows) reflects argus stat
 
 - **WHEN** an orchestrator has a live coord but no worker agents
 - **THEN** the rail MUST render only its foldable coordinator row with no child agent row, and selecting it MUST compose the full-width HERA pane bound to the coord's PTY
+
+#### Scenario: Selected row is indicated by selected-text styling, not a background fill
+
+- **WHEN** the rail renders with the cursor on a selectable row (a coordinator header or an agent/worker row)
+- **THEN** that row's name MUST render in `theme.StyleSelected` (pink `theme.ColorSelected`) AND none of that row's cells may carry a non-default cell background (no `theme.ColorHighlight` fill)
+
+#### Scenario: Non-selected rows carry no lingering background
+
+- **WHEN** the rail renders with the cursor on one row
+- **THEN** every other (non-selected) row MUST render with the default cell background, so no stale highlight from a previous cursor position can persist
 
 ### Requirement: Enter enters the selection's primary pane
 
