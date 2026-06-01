@@ -132,6 +132,7 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 			InPaneNav:  app,
 			Control:    control,
 			Ctx:        ctx,
+			Log:        log,
 		}
 		// Paint the initial RAIL border so the operator sees focus on first
 		// frame.

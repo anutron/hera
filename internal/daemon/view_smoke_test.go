@@ -38,6 +38,10 @@ type fakeArgusForSmoke struct {
 	// PTY proxy seeding state.
 	taskStreamHold chan struct{}
 
+	// liveTaskIDs are reported by GET /api/tasks as active, non-archived so
+	// the rail renders them as selectable agent rows.
+	liveTaskIDs []string
+
 	// What we actually assert on:
 	inputs map[string][][]byte // taskID -> ordered payloads received
 }
@@ -47,6 +51,9 @@ func newFakeArgusForSmoke() *fakeArgusForSmoke {
 		streamClose:    make(chan struct{}),
 		taskStreamHold: make(chan struct{}),
 		inputs:         make(map[string][][]byte),
+		// Default to reporting the seedCoordAndWorker pair as live so the rail
+		// renders the worker as an active, selectable agent row.
+		liveTaskIDs: []string{"task-coord", "task-worker"},
 	}
 }
 
@@ -102,7 +109,27 @@ func (f *fakeArgusForSmoke) handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"tasks":[]}`)
+		// Report the seeded coord+worker tasks as live, non-archived so the
+		// argus state cache marks them active and the rail renders the worker
+		// as a selectable agent row (not Dead/archived). Without this the
+		// cache (Ready, but with no entry) would mark every bound row Dead and
+		// hide it, breaking the Enter-into-pane navigation under test.
+		f.mu.Lock()
+		ids := f.liveTaskIDs
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		var sb strings.Builder
+		sb.WriteString(`{"tasks":[`)
+		for i, id := range ids {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			sb.WriteString(`{"id":` + strconv.Quote(id) +
+				`,"name":` + strconv.Quote(id) +
+				`,"status":"in_progress","idle":false,"archived":false,"project":"smoke"}`)
+		}
+		sb.WriteString(`]}`)
+		_, _ = io.WriteString(w, sb.String())
 	})
 	mux.HandleFunc("/api/plugins/views", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -436,6 +463,68 @@ func TestViewSmoke_RenderAndKeyRouting(t *testing.T) {
 	}
 	if n := len(fake.inputsFor("task-worker")); n != 0 {
 		t.Errorf("worker received %d inputs, want 0 (Ctrl-Right should advance only one step)", n)
+	}
+}
+
+// TestViewSmoke_EnterIntoPaneThenTypeForwards is the end-to-end regression for
+// the reported E1 bug: the operator presses Enter on the rail selection to step
+// INTO a pane (the in-argus way in, since argus eats the Cmd/Ctrl-arrow ladder),
+// then types a printable key. That key MUST be forwarded to the focused pane's
+// bound argus task /input endpoint. The earlier smoke test only exercised the
+// Ctrl-Right focus ladder; this drives the Enter path that real operators use.
+func TestViewSmoke_EnterIntoPaneThenTypeForwards(t *testing.T) {
+	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
+
+	conn := dialView(t, d)
+	defer conn.CloseNow()
+	reader := newFrameReader(conn)
+	defer reader.stop()
+	ctx := context.Background()
+
+	if err := conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"type":"resize","cols":120,"rows":40}`)); err != nil {
+		t.Fatalf("write resize: %v", err)
+	}
+	// Let the initial render + rail selection settle so CurrentRef is set.
+	_ = reader.drainBinary(750*time.Millisecond, 64*1024)
+
+	// Move the rail cursor down to the worker row (the orchestrator header is
+	// the initial cursor; 'j' steps onto its nested worker). This is the
+	// reported scenario: "select an AGENT row and press Enter".
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("j")); err != nil {
+		t.Fatalf("write j: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Enter (CR, 0x0d) from RAIL on the worker selection steps into the AGENT
+	// pane bound to "task-worker".
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{'\r'}); err != nil {
+		t.Fatalf("write enter: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Now type a literal 'Z'. It MUST be forwarded to the focused pane's PTY.
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("Z")); err != nil {
+		t.Fatalf("write Z: %v", err)
+	}
+
+	if !waitFor(2*time.Second, func() bool {
+		return fake.totalInputs() >= 1
+	}) {
+		t.Fatalf("Enter-into-pane then 'Z' forwarded NO byte to any /input endpoint "+
+			"(total inputs: %d) — keystrokes are not reaching the focused pane's PTY (E1)",
+			fake.totalInputs())
+	}
+
+	// The 'Z' must have landed on the worker task (the initial agent selection),
+	// not been dropped or misrouted.
+	got := fake.inputsFor("task-worker")
+	if len(got) == 0 {
+		t.Fatalf("'Z' was not forwarded to task-worker; inputs=coord:%d worker:%d",
+			len(fake.inputsFor("task-coord")), len(fake.inputsFor("task-worker")))
+	}
+	if !bytes.Equal(got[len(got)-1], []byte("Z")) {
+		t.Errorf("last worker input payload = %q, want \"Z\"", got[len(got)-1])
 	}
 }
 

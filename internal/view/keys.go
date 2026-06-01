@@ -2,6 +2,7 @@ package view
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -139,6 +140,15 @@ type KeyRouter struct {
 	// Ctx is the context used when calling Poster.PostTaskInput. Defaults
 	// to context.Background() when nil.
 	Ctx context.Context
+
+	// Log records why a focused-pane keystroke failed to reach its PTY. The
+	// forward POST to argus's /api/tasks/{id}/input endpoint can fail at the
+	// boundary (argus down, task gone, endpoint unsupported, auth) — without a
+	// log that failure is INVISIBLE: focus moved into the pane but nothing
+	// echoes, with no clue why (the reported E1 symptom). Logging the error
+	// turns a silent drop into a diagnosable event. A nil Log is a safe no-op
+	// (falls back to slog.Default()).
+	Log *slog.Logger
 }
 
 // HandleKey is the tview-compatible input capture. Returns nil when the
@@ -352,13 +362,19 @@ func (r *KeyRouter) handlePane(event *tcell.EventKey) *tcell.EventKey {
 	if r.Targets == nil || r.Poster == nil {
 		return nil
 	}
+	state := r.Focus.State()
 	var taskID string
-	if r.Focus.State() == FocusCOORD {
+	if state == FocusCOORD {
 		taskID = r.Targets.CoordTaskID()
 	} else {
 		taskID = r.Targets.AgentTaskID()
 	}
 	if taskID == "" {
+		// Defense-in-depth: focus is in a pane but no task is bound to it, so
+		// the keystroke has nowhere to go. Surface it — a persistently empty
+		// target while a pane holds focus is the binding-not-loaded face of E1.
+		r.logger().Debug("view.keys: focused pane has no bound task; dropping keystroke",
+			"focus", state.String())
 		return nil
 	}
 	payload := encodeEventForPTY(event)
@@ -369,8 +385,28 @@ func (r *KeyRouter) handlePane(event *tcell.EventKey) *tcell.EventKey {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, _ = r.Poster.PostTaskInput(ctx, taskID, payload)
+	// Forward the byte(s) to the bound task's PTY. A failure here is the
+	// reported E1 symptom — focus moved into the pane but typed keys never
+	// echo. Previously the error was discarded, so the drop was invisible and
+	// undebuggable; log it (with enough context to act) instead of swallowing.
+	// Forward the byte(s) to the bound task's PTY. A failure here is the
+	// reported E1 symptom — focus moved into the pane but typed keys never
+	// echo. Previously the error was discarded, so the drop was invisible and
+	// undebuggable; log it (with enough context to act) instead of swallowing.
+	if _, err := r.Poster.PostTaskInput(ctx, taskID, payload); err != nil && ctx.Err() == nil {
+		r.logger().Warn("view.keys: forward keystroke to pane PTY failed",
+			"focus", state.String(), "task_id", taskID, "bytes", len(payload), "err", err)
+	}
 	return nil
+}
+
+// logger returns the router's logger, defaulting to slog.Default() when none
+// was wired. Centralized so callers don't repeat the nil check.
+func (r *KeyRouter) logger() *slog.Logger {
+	if r.Log != nil {
+		return r.Log
+	}
+	return slog.Default()
 }
 
 func (r *KeyRouter) notifyBorder() {

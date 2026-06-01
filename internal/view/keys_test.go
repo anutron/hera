@@ -1,7 +1,11 @@
 package view
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -422,6 +426,69 @@ func TestKeyRouter_NoAgentTaskID_DropsKeystroke(t *testing.T) {
 	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'z', tcell.ModNone))
 	if len(p.Calls()) != 0 {
 		t.Fatalf("missing task ID must drop keystroke, not forward; got %d calls", len(p.Calls()))
+	}
+}
+
+// failingPoster always errors so we can assert the router surfaces (rather than
+// swallows) a failed forward to the pane's PTY — the diagnostic gap behind the
+// reported E1 "focus moves into the pane but keystrokes never echo, with no
+// error anywhere."
+type failingPoster struct {
+	calls int
+	err   error
+}
+
+func (f *failingPoster) PostTaskInput(_ context.Context, _ string, _ []byte) (int, error) {
+	f.calls++
+	return 0, f.err
+}
+
+// TestKeyRouter_ForwardFailure_IsLogged_NotSwallowed proves that when the
+// forward POST to a focused pane's PTY input endpoint fails, the router logs a
+// warning carrying the focus, task id, and error — instead of silently
+// dropping it. Before the fix the error was discarded (`_, _ = …`), so a key
+// that never reached the agent left no trace; this test fails in that world.
+func TestKeyRouter_ForwardFailure_IsLogged_NotSwallowed(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	r, _, _, _ := newRouter()
+	fp := &failingPoster{err: errors.New("argus down")}
+	r.Poster = fp
+	r.Log = logger
+	r.Targets = &fakeTargets{coord: "coord-1", agent: "agent-1"}
+	r.Focus.JumpToAGENT()
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'Z', tcell.ModNone))
+
+	if fp.calls != 1 {
+		t.Fatalf("router must attempt the forward exactly once; got %d", fp.calls)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "forward keystroke to pane PTY failed") {
+		t.Fatalf("forward failure must be logged, not swallowed; log was: %q", out)
+	}
+	if !strings.Contains(out, "agent-1") || !strings.Contains(out, "argus down") {
+		t.Fatalf("forward-failure log must carry task id + error; log was: %q", out)
+	}
+}
+
+// TestKeyRouter_ForwardSuccess_NotLoggedAsFailure guards against noisy logging:
+// a successful forward (the common case) must NOT emit the failure warning.
+func TestKeyRouter_ForwardSuccess_NotLoggedAsFailure(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	r, p, _, _ := newRouter()
+	r.Log = logger
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'Z', tcell.ModNone))
+
+	if len(p.Calls()) != 1 {
+		t.Fatalf("want 1 forwarded byte, got %d", len(p.Calls()))
+	}
+	if strings.Contains(buf.String(), "forward keystroke to pane PTY failed") {
+		t.Fatalf("successful forward must NOT log a failure; log was: %q", buf.String())
 	}
 }
 
