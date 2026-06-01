@@ -192,6 +192,8 @@ type fakeMutationService struct {
 	revertErr        error
 	openPRCalls      []int64
 	openPRErr        error
+	openPRWtCalls    []string
+	openPRWtErr      error
 	resurrectCalls   []int64
 	resurrectErr     error
 }
@@ -293,6 +295,13 @@ func (s *fakeMutationService) OpenPR(_ context.Context, id int64) (string, error
 	defer s.mu.Unlock()
 	s.openPRCalls = append(s.openPRCalls, id)
 	return "https://example/pr/1", s.openPRErr
+}
+
+func (s *fakeMutationService) OpenPRFromWorktree(_ context.Context, worktreePath string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.openPRWtCalls = append(s.openPRWtCalls, worktreePath)
+	return "https://example/pr/wt", s.openPRWtErr
 }
 
 func (s *fakeMutationService) ResurrectOrchestrator(_ context.Context, coordRoleID int64) (*ops.CreatedTask, error) {
@@ -863,6 +872,75 @@ func TestBridge_OnOpenPR_OrchestratorNoCoord_NoConfirm(t *testing.T) {
 
 	if len(m.confirms) != 0 || len(svc.openPRCalls) != 0 {
 		t.Fatalf("open-PR on a coord-less orchestrator must no-op; confirms=%d prCalls=%v", len(m.confirms), svc.openPRCalls)
+	}
+}
+
+// `^p` on a FREELANCER selection (a freelance row: RoleKind "freelance",
+// RoleID 0, carrying an ArgusTaskID and the argus task's worktree path) opens
+// a PR straight from that worktree via OpenPRFromWorktree — no longer a no-op
+// just because the freelancer has no hera RoleID.
+func TestBridge_OnOpenPR_Freelancer_OpensPRFromWorktree(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:         selRole,
+		RoleKind:     "freelance",
+		RoleID:       0,
+		Name:         "feat-x",
+		ArgusTaskID:  "T7",
+		WorktreePath: "/tmp/wt/freelance/feat-x",
+	}
+	m.stubConfirmYes = true
+
+	b.OnOpenPR()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("open-PR on a freelancer must confirm first; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Title, "feat-x") {
+		t.Fatalf("confirm must name the freelancer; got %q", m.confirms[0].Title)
+	}
+	if len(svc.openPRWtCalls) != 1 || svc.openPRWtCalls[0] != "/tmp/wt/freelance/feat-x" {
+		t.Fatalf("want OpenPRFromWorktree(/tmp/wt/freelance/feat-x); got %v", svc.openPRWtCalls)
+	}
+	if len(svc.openPRCalls) != 0 {
+		t.Fatalf("freelancer ^p must NOT use the role-id PR path; got %v", svc.openPRCalls)
+	}
+}
+
+func TestBridge_OnOpenPR_Freelancer_ConfirmNo_NoPR(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:         selRole,
+		RoleKind:     "freelance",
+		Name:         "feat-x",
+		ArgusTaskID:  "T7",
+		WorktreePath: "/tmp/wt/freelance/feat-x",
+	}
+	m.stubConfirmYes = false
+
+	b.OnOpenPR()
+
+	if len(svc.openPRWtCalls) != 0 {
+		t.Fatalf("confirm=No must NOT open a PR; got %v", svc.openPRWtCalls)
+	}
+}
+
+// A freelancer with no resolvable worktree path (argus reported none) no-ops:
+// there is nothing to open a PR from, so no confirm and no service call.
+func TestBridge_OnOpenPR_Freelancer_NoWorktree_NoConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleKind:    "freelance",
+		Name:        "feat-x",
+		ArgusTaskID: "T7",
+		// WorktreePath empty
+	}
+
+	b.OnOpenPR()
+
+	if len(m.confirms) != 0 || len(svc.openPRWtCalls) != 0 {
+		t.Fatalf("freelancer with no worktree must no-op; confirms=%d wtCalls=%v", len(m.confirms), svc.openPRWtCalls)
 	}
 }
 

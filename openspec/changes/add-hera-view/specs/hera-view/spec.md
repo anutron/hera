@@ -499,7 +499,7 @@ The system SHALL provide three distinct removal actions on the rail: `a` toggles
 
 ### Requirement: Status, open-PR, scroll, and in-pane navigation keys
 
-The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected agent's argus task status (pending → in_progress → in_review → complete); `^p` opens a pull request for the selected agent's OR coordinator's task via the host git flow — an agent/worker row resolves to that role's bound task, while a coordinator selection (root orchestrator header or a sub-coordinator role) resolves to the coordinator's bound argus task; `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
+The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected agent's argus task status (pending → in_progress → in_review → complete); `^p` opens a pull request for the selected agent's, coordinator's, OR freelancer's task via the host git flow — an agent/worker row resolves to that role's bound task, a coordinator selection (root orchestrator header or a sub-coordinator role) resolves to the coordinator's bound argus task, and a freelance row (an unmanaged argus task with no hera role/binding) resolves to the argus task's own worktree (the same way argus opens a PR for that task); `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
 
 #### Scenario: s/S step the selected agent's status
 
@@ -510,6 +510,11 @@ The system SHALL support, mirroring argus's keymap now that argus surrenders the
 
 - **WHEN** focus is `RAIL` on a coordinator selection (a root orchestrator header or a sub-coordinator row) bound to a coord argus task and the operator presses `^p` and confirms
 - **THEN** the host git flow MUST open a pull request from the coordinator's bound task's worktree (not a no-op)
+
+#### Scenario: `^p` on a freelancer opens a PR for that freelancer's argus-task branch from its worktree
+
+- **WHEN** focus is `RAIL` on a freelance row (an unmanaged argus task with no hera role/binding) whose argus task has a worktree path and the operator presses `^p` and confirms
+- **THEN** the host git flow MUST open a pull request from the freelancer's argus-task worktree (not a no-op), resolving the worktree from argus's task list rather than a hera binding
 
 #### Scenario: In-pane navigation keeps focus in a pane
 

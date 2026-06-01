@@ -30,6 +30,11 @@ type mutationService interface {
 	RevertStatus(ctx context.Context, roleID int64) (string, error)
 	OpenPR(ctx context.Context, roleID int64) (string, error)
 
+	// OpenPRFromWorktree opens a PR straight from a worktree path, with no
+	// hera role/binding to resolve. Backs `^p` on a freelancer (an unmanaged
+	// argus task, RoleID 0), whose worktree is the argus task's own.
+	OpenPRFromWorktree(ctx context.Context, worktreePath string) (string, error)
+
 	// ResurrectOrchestrator unarchives a dormant orchestrator + coord role and
 	// spawns a fresh argus task that rebinds via hera_join. Backs the
 	// resurrect-on-Enter flow (Enter against an archived coord with the Archive
@@ -99,6 +104,13 @@ type railSelection struct {
 	// orchestrator rows or roles with no live binding). Carried so the
 	// extended keyset can act on the selection's task.
 	ArgusTaskID string
+
+	// WorktreePath is the argus task's worktree path, carried on freelance
+	// rows (RoleKind "freelance", RoleID 0) so `^p` can open a PR straight
+	// from the freelancer's worktree — hera has no binding to resolve it
+	// from. Empty for managed roles (their worktree is resolved via the
+	// live binding by the ops layer) and orchestrator rows.
+	WorktreePath string
 
 	// ChildCount is the number of child agents the selection has (live
 	// roles under an orchestrator). Drives the `^d` destructive-delete
@@ -402,16 +414,42 @@ func (b *mutationBridge) OnPrune() {
 	}, nil)
 }
 
-// OnOpenPR opens a pull request for the selected agent's OR coordinator's task
-// (D15 `^p`). It resolves the role whose live binding's worktree the PR is
-// opened from: an agent/worker row → that role; a coordinator selection (root
-// orchestrator header or a sub-coordinator role) → the coordinator's bound
-// argus task via its coord role. Combined with the header-only rendering of
-// worker-less orchestrators, `^p` on a coord-only project opens a PR on the
-// coord. Confirmed before the external action fires. No-op when nothing
-// addressable resolves to a role.
+// OnOpenPR opens a pull request for the selected agent's, coordinator's, OR
+// freelancer's task (D15 `^p`). It resolves the worktree the PR is opened from:
+//   - an agent/worker row → that role's live binding's worktree (via OpenPR);
+//   - a coordinator selection (root orchestrator header or a sub-coordinator
+//     role) → the coordinator's bound argus task's worktree (via OpenPR);
+//   - a freelancer (a freelance row: no hera role/RoleID, but carrying the
+//     argus task's worktree path) → that worktree directly (via
+//     OpenPRFromWorktree) — the same way argus opens a PR for the task.
+//
+// Combined with the header-only rendering of worker-less orchestrators, `^p`
+// on a coord-only project opens a PR on the coord. Confirmed before the
+// external action fires. No-op when nothing addressable resolves.
 func (b *mutationBridge) OnOpenPR() {
 	sel := b.sel.CurrentRailSelection()
+
+	// Freelancer: no hera binding, but argus knows the task's worktree. Open
+	// the PR straight from that path.
+	if sel.Kind == selRole && sel.RoleKind == string(db.KindFreelance) {
+		if sel.WorktreePath == "" {
+			return
+		}
+		wt := sel.WorktreePath
+		b.modals.ShowConfirm(
+			fmt.Sprintf("Open PR for %q?", sel.Name),
+			fmt.Sprintf("Open a pull request from %q's argus-task worktree via the host git flow? (y/N)", sel.Name),
+			func() {
+				if _, err := b.svc.OpenPRFromWorktree(b.ctx, wt); err != nil {
+					b.modals.ShowError(err.Error())
+					return
+				}
+			},
+			nil,
+		)
+		return
+	}
+
 	roleID := b.openPRRoleID(sel)
 	if roleID == 0 {
 		return

@@ -41,6 +41,30 @@ func (s *Service) OpenPR(ctx context.Context, roleID int64) (string, error) {
 	return url, nil
 }
 
+// OpenPRFromWorktree implements `^p` for a FREELANCER: open a pull request
+// straight from a worktree path, with no hera binding to resolve. A freelancer
+// is a live argus task hera has never bound (RoleID 0, no live binding), so
+// OpenPR's role → binding → worktree lookup can't apply; instead the argus
+// task's own worktree path (read from argus's task list) is passed here
+// directly. It delegates to the same configured PRCreator as OpenPR.
+//
+// Errors when no PRCreator is wired or worktreePath is empty (nothing to open
+// a PR from). Returns the PR URL (when the creator reports one) or an error.
+func (s *Service) OpenPRFromWorktree(ctx context.Context, worktreePath string) (string, error) {
+	if s.PR == nil {
+		return "", fmt.Errorf("ops.OpenPRFromWorktree: no PR flow configured")
+	}
+	if worktreePath == "" {
+		return "", fmt.Errorf("ops.OpenPRFromWorktree: empty worktree path")
+	}
+	s.logf("open-pr (freelance): %q", worktreePath)
+	url, err := s.PR.CreatePR(ctx, worktreePath)
+	if err != nil {
+		return "", fmt.Errorf("ops.OpenPRFromWorktree: create PR from %q: %w", worktreePath, err)
+	}
+	return url, nil
+}
+
 // ExecPRCreator is the production PRCreator. It runs `gh pr create --fill`
 // from the worktree directory; gh pushes the branch and opens the PR against
 // the repo's default base, printing the PR URL on stdout. The daemon is

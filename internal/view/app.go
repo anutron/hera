@@ -440,6 +440,7 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceP
 			RoleKind:        string(db.KindFreelance),
 			Name:            t.Name,
 			ArgusTaskID:     t.ID,
+			WorktreePath:    t.WorktreePath,
 			Live:            t.State.Status == "in_progress" && !t.State.Idle,
 			ElapsedOverride: t.Elapsed,
 			HasState:        true,
@@ -509,6 +510,7 @@ func (a *App) CurrentRailSelection() railSelection {
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
 			ArgusTaskID:    ref.ArgusTaskID,
+			WorktreePath:   ref.WorktreePath,
 		}
 	}
 	return railSelection{}

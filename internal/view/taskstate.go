@@ -30,6 +30,11 @@ type ArgusTaskInfo struct {
 	Project string
 	Elapsed string
 	State   ArgusTaskState
+	// WorktreePath is argus's per-task worktree directory. Carried so a
+	// freelance row can open a PR straight from the argus task's worktree
+	// (`^p`) without a hera binding. Already present in the polled task list,
+	// so reading it costs no extra network. Absent on old daemons.
+	WorktreePath string
 }
 
 // TaskStateProvider is an optional capability on a PaneSource: it returns the
@@ -178,11 +183,12 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 		}
 		next[t.ID] = st
 		infos = append(infos, ArgusTaskInfo{
-			ID:      t.ID,
-			Name:    t.Name,
-			Project: t.Project,
-			Elapsed: t.Elapsed,
-			State:   st,
+			ID:           t.ID,
+			Name:         t.Name,
+			Project:      t.Project,
+			Elapsed:      t.Elapsed,
+			State:        st,
+			WorktreePath: t.WorktreePath,
 		})
 	}
 	c.mu.Lock()

@@ -125,6 +125,11 @@ type roleEntry struct {
 	// column instead of computing from StartedAt. Freelance rows use argus's
 	// pre-formatted age string so their column matches argus's own rail.
 	ElapsedOverride string
+
+	// WorktreePath is the argus task's worktree directory, carried on
+	// freelance rows so `^p` can open a PR straight from it (a freelancer has
+	// no hera binding to resolve the path from). Empty for managed roles.
+	WorktreePath string
 }
 
 // freelanceProject is one repo's worth of freelance agents — unmanaged
