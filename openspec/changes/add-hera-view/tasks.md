@@ -152,8 +152,8 @@
 
 ## 18. Validation + archive
 
-- [ ] 18.1 Run `openspec validate add-hera-view --strict`. Fix any issues.
-- [ ] 18.2 `go test ./... -race -count=1` green (excluding the known pre-existing `internal/mcp` test build break, tracked separately).
+- [x] 18.1 Run `openspec validate add-hera-view --strict`. Fix any issues.
+- [x] 18.2 `go test ./... -race -count=1` green (excluding the known pre-existing `internal/mcp` test build break, tracked separately).
 - [ ] 18.3 Probe parity pass: with the open test coords/agents/freelancers, capture the live rail + each body mode via the probe and compare side-by-side against `docs/prototypes/rail-nav.html` — rail tree (icons/counts/folders-first/archive), three body modes, Enter-into-pane, focus ladder, full keyset, top/bottom chrome. Iterate until "as close as a TUI can get". Deploy via iris (`iris_push` → PR → squash-merge → `iris_reload`) between iterations.
 - [ ] 18.4 Manual smoke (Aaron): open hera's plugin view in argus and confirm the feel matches the browser — coord full-width / agent split / freelancer full-width, Enter-into-pane, `^→/^←`, `⌘↑/↓`, `⇧↑/↓`, `a`/`^d`/`^r`/`s`/`S`/`^p`, Esc→argus / `^Q^Q` failsafe, argus bottom bar shows hera's hotkeys.
 - [ ] 18.5 After Aaron live-verifies, run `openspec archive add-hera-view`.

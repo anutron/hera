@@ -44,7 +44,7 @@ The system SHALL accept WebSocket upgrades at the `GET /view` route. The protoco
 
 ### Requirement: PTY proxy pre-loads snapshot and SSE per live binding at daemon startup
 
-The system SHALL, at daemon startup (and on subsequent binding-created events), open a snapshot fetch (`GET /api/tasks/{id}/output`) followed by a live SSE subscription (`GET /api/tasks/{id}/stream?since=<X-Output-Total>`) for every live binding. Bytes from each task MUST be appended to a per-task in-memory ring buffer with a cap of approximately 256 KiB. The ring buffer MUST drop the oldest bytes when full. Rail navigation between agents MUST swap pane subscriptions to the relevant ring buffer in-process without triggering a new network round-trip.
+The system SHALL, at daemon startup, open a snapshot fetch (`GET /api/tasks/{id}/output`) followed by a live SSE subscription (`GET /api/tasks/{id}/stream?since=<X-Output-Total>`) for every live binding present at startup. For bindings created after startup, the snapshot+SSE MAY be opened lazily on first pane selection rather than proactively. Bytes from each task MUST be appended to a per-task in-memory ring buffer with a cap of approximately 256 KiB. The ring buffer MUST drop the oldest bytes when full. If an SSE stream drops on a transient error, the proxy SHALL reconnect with bounded backoff and resume from its last byte cursor. Rail navigation between agents MUST swap pane subscriptions to the relevant ring buffer in-process without triggering a new output-snapshot or SSE-stream round-trip.
 
 #### Scenario: Snapshot and SSE opened per live binding at startup
 
@@ -54,7 +54,7 @@ The system SHALL, at daemon startup (and on subsequent binding-created events), 
 #### Scenario: Rail navigation swaps without a network call
 
 - **WHEN** the operator moves rail selection from agent A to agent B and both bindings are already pre-loaded
-- **THEN** the panes MUST render agent B's coord and agent B's PTY from in-memory ring buffers without issuing any new HTTP request
+- **THEN** the panes MUST render agent B's coord and agent B's PTY from in-memory ring buffers without issuing a new output-snapshot or SSE-stream request (a one-time `POST /api/tasks/{id}/size` to align the source PTY to the pane allocation is permitted)
 
 #### Scenario: Ring buffer bounded at ~256 KiB
 
