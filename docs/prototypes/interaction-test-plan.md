@@ -104,3 +104,13 @@ Output has two blocks: `=== LIVE HERA SURFACE ===` (grid-reconstructed screen �
 ### Findings log
 
 (record `PASS`/`FAIL` + note + fixit ref per item as you go)
+
+#### 2026-05-31 — operator-directed rail polish pass (commit 34932f4, dogfooded on `dev`)
+
+This pass was operator-steered (not the full top-to-bottom walk): the rail was retargeted to mirror argus's task panel rather than the prototype's `◆`. Fixes were authored + tested + deployed inline (not via `/fixit`) at Aaron's direction.
+
+- **A1 — coordinator row glyphs: FAIL → FIXED.** Live rail showed coordinator headers as `▾ <name> (N)` with **no status icon and no `◆`**. Per Aaron, the rail mirrors argus's task panel: headers now render `<status-icon> <chevron> 󰹻 <name> (N)` (argus order, icon-first). `󰹻` (U+F0E7B) is a fixed coordinator marker; the status icon (moon/✓/?) is driven by the coord task's argus state; the prototype's `◆` is superseded. Probe-confirmed: 󰹻 on all 15 coord headers; idle coords show a blank moon-outline (expected). Status-icon paths (`?`/`✓`) covered by `TestRailList_CoordHeaderStatusIconAndMarker`.
+- **A8 (focus) — rail yellow / panes white: FAIL → FIXED (needs visual confirm).** Focus border was tview yellow on the rail and the SDK terminalpane's hardcoded white on the panes. Now both use argus's `theme.ColorTitle` (cyan) on focus and `theme.ColorBorder` when unfocused; `pinnedTerminalPane.Draw` repaints the pane border cyan on `HasFocus()`. Not probe-verifiable (grid strips color) — **pending Aaron's eyeball in real argus** (folds into M4). Covered by `TestApp_OnFocusChanged_PaintsArgusCyanBorders` + `TestPinnedTerminalPane_RepaintsCyanBorderOnFocus`.
+- **Spec:** add-hera-view delta updated (coordinator-header icon+marker; argus focus color) and `openspec validate --strict` passes.
+
+**Still unwalked:** A2–A7, B–G (the rest of the probe-driven walk) and M1–M4 (manual). Resume top-to-bottom when ready.
