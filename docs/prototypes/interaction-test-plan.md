@@ -113,4 +113,17 @@ This pass was operator-steered (not the full top-to-bottom walk): the rail was r
 - **A8 (focus) — rail yellow / panes white: FAIL → FIXED (needs visual confirm).** Focus border was tview yellow on the rail and the SDK terminalpane's hardcoded white on the panes. Now both use argus's `theme.ColorTitle` (cyan) on focus and `theme.ColorBorder` when unfocused; `pinnedTerminalPane.Draw` repaints the pane border cyan on `HasFocus()`. Not probe-verifiable (grid strips color) — **pending Aaron's eyeball in real argus** (folds into M4). Covered by `TestApp_OnFocusChanged_PaintsArgusCyanBorders` + `TestPinnedTerminalPane_RepaintsCyanBorderOnFocus`.
 - **Spec:** add-hera-view delta updated (coordinator-header icon+marker; argus focus color) and `openspec validate --strict` passes.
 
-**Still unwalked:** A2–A7, B–G (the rest of the probe-driven walk) and M1–M4 (manual). Resume top-to-bottom when ready.
+#### 2026-05-31 — operator-reported bug batch (serial `/fixit`s, each spec + tests, dogfooded on `dev`)
+
+Operator hit these in real argus; fixed via serial fixit subagents (full nesting chosen over interim). Final stack dogfooded at `2768ff1`.
+
+- **E1 — keystrokes reach the PTY: PASS (not a bug).** Operator confirmed typing into a LIVE agent works; the probe's apparent failure was the qa fixtures being *completed* sessions (argus 404 "no active session" — dead PTY). Real fix shipped anyway: `handlePane` no longer swallows `PostTaskInput` errors — it logs them (commit 73446f5). Spec scenario + tests. The 404 chase used the new log line (`forward keystroke … HTTP 404`) to prove the path is correct.
+- **Input lag — FAIL → FIXED.** `handlePane` forwarded synchronously (a blocking HTTP round-trip per keystroke on the tview event loop). Now an ordered async `PaneForwarder` (buffered channel + drain goroutine, coalesces consecutive same-target bytes into one POST, drop-oldest on overflow) (commit 73050c8). Spec + race-clean tests. _Operator to confirm the feel._
+- **A2/A3 — sub-coordinator nesting: FAIL → FIXED.** hera's flat model never linked multi-bindings, so `qa-nested-parent`'s `sub-coord` (= `qa-nested-child`'s coord) rendered as two disconnected top-level rows. Now a recursive depth-aware rail: `resolveSubCoordinators` links worker.ArgusTaskID == orch.CoordTaskID, renders the sub-coord as a foldable coord row with its children nested, de-dups the child orch (commit 4ac0317). Probe-confirmed: `qa-nested-parent → ✓▾󰹻 sub-coord (1) → ✓ leaf-worker`. Spec drift-reconciled + scenarios + tests.
+- **C1 — coordinator selection full-width: FAIL → FIXED.** Rode along on the nesting change: a sub-coord selection composes full-width HERA bound to its **own** task (not the parent's coord).
+- **A5/Archive indent — FAIL → FIXED.** Depth-aware indentation (from the nesting work) now sits archived children one level deeper than their `Archive (N)` expando header.
+- **A8/selection grey — FAIL → FIXED.** The `ColorHighlight` full-row fill (`fillBackground`) left stale grey blocks across rows under argus's cell-diff compositing. Removed entirely; selection now shown via pink `theme.StyleSelected` text consistently across all row types (commit 2768ff1). Spec scenario + tests.
+
+**Open risks (flagged, accepted):** startup auto-selection of a sub-coord still picks its worker side, not coord; multi-binding resolution is first-wins per coord task.
+
+**Still unwalked:** B (nav/folding), C2–C4 (body modes), D (Enter/focus ladder), E2–E4, F (control-frame chrome), G (keyset actions); M1–M4 (manual). Resume top-to-bottom when ready.
