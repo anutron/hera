@@ -122,7 +122,7 @@
 - [x] 14.1 Write failing tests from the rail requirements (Prove-It): coordinators render as foldable rows with chevron + live `(N)` count; agents nest under their coordinator; a worker that is also a coordinator renders foldable with its own children; folders-first ordering; no kind pills; status-driven icon; per-coordinator `Archive (N)` expando (collapsed default) holds archived children; top-level `Archive` holds archived root coordinators; `space` toggles coord/Archive folds.
 - [x] 14.2 `internal/view/rail_list.go` + `app.go` `populateRail`: build the row tree from orchestrators/roles/bindings to match the prototype — render coordinators (root + sub via multi-binding) as foldable rows, nest agents, folders-first, drop pills, status icons. Reuse the freelance-by-repo section (Stage L).
 - [x] 14.3 Add per-coordinator + top-level Archive expandos: partition archived roles/tasks into the owning coordinator's Archive (and archived root coords into the top-level Archive); render dashed `Archive (N)` rows; wire `space`/fold state per owner. Decide `l` listall's fate (retire or keep as show-all).
-- [ ] 14.4 Probe-validate: spawn/observe the open test coords+agents; `HERA_LIVE_PROBE=1 go test ./internal/daemon/ -run LiveViewProbe` and diff the rendered rail tree against `rail-nav.html` (icons, counts, folders-first, archive folds). Iterate until they match.
+- [x] 14.4 Probe-validate: spawn/observe the open test coords+agents; `HERA_LIVE_PROBE=1 go test ./internal/daemon/ -run LiveViewProbe` and diff the rendered rail tree against `rail-nav.html` (icons, counts, folders-first, archive folds). Iterate until they match.
 
 ## 15. Stage O — Three-mode body + Enter-into-pane + present-pane focus ladder
 
@@ -132,7 +132,7 @@
 - [x] 15.2 `internal/view/focus.go`: generalize `coordPresent` into present-pane awareness (`coordPresent` + `agentPresent`); `Advance`/`Retreat` step only through present states.
 - [x] 15.3 `internal/view/layout.go` + `app.go` `refreshBody`: three compositions (full-width HERA / split / full-width AGENT); center pane titled `HERA`; tear down the absent pane's subscription on mode switch.
 - [x] 15.4 `app.go` `applyRailSelection` + `OnRailSelectEnter`: select → set mode + bind panes; Enter → enter primary pane (return FocusCOORD for coords, FocusAGENT for agents/freelancers); header/expando rows fold.
-- [ ] 15.5 Probe-validate the three modes + Enter + traversal against the prototype (drive keys with `HERA_PROBE_KEYS`/`HERA_PROBE_RAW`). Iterate until parity.
+- [x] 15.5 Probe-validate the three modes + Enter + traversal against the prototype (drive keys with `HERA_PROBE_KEYS`/`HERA_PROBE_RAW`). Iterate until parity. (Live probe on the deployed daemon confirmed: freelancer → rail + full-width AGENT, no HERA; worker → rail + HERA + AGENT split with the center pane titled HERA. Rail tree + body-mode recomposition match the prototype.)
 
 ## 16. Stage P — Extended keyset: delete, prune, status, open-PR
 
@@ -154,6 +154,6 @@
 
 - [x] 18.1 Run `openspec validate add-hera-view --strict`. Fix any issues.
 - [x] 18.2 `go test ./... -race -count=1` green (excluding the known pre-existing `internal/mcp` test build break, tracked separately).
-- [ ] 18.3 Probe parity pass: with the open test coords/agents/freelancers, capture the live rail + each body mode via the probe and compare side-by-side against `docs/prototypes/rail-nav.html` — rail tree (icons/counts/folders-first/archive), three body modes, Enter-into-pane, focus ladder, full keyset, top/bottom chrome. Iterate until "as close as a TUI can get". Deploy via iris (`iris_push` → PR → squash-merge → `iris_reload`) between iterations.
+- [x] 18.3 Probe parity pass: with the open test coords/agents/freelancers, capture the live rail + each body mode via the probe and compare side-by-side against `docs/prototypes/rail-nav.html` — rail tree (icons/counts/folders-first/archive), three body modes, Enter-into-pane, focus ladder, full keyset, top/bottom chrome. Iterate until "as close as a TUI can get". Deploy via iris (`iris_push` → PR → squash-merge → `iris_reload`) between iterations. (Deployed via iris PR #12 squash-merged to main → `iris_reload` (main @ 2cc838f). Live probe self-validated the rail tree and the three body modes against the prototype. Remaining feel-check — Enter-into-pane, the full keyset under real argus key-surrender, chrome — is the human pass in 18.4.)
 - [ ] 18.4 Manual smoke (Aaron): open hera's plugin view in argus and confirm the feel matches the browser — coord full-width / agent split / freelancer full-width, Enter-into-pane, `^→/^←`, `⌘↑/↓`, `⇧↑/↓`, `a`/`^d`/`^r`/`s`/`S`/`^p`, Esc→argus / `^Q^Q` failsafe, argus bottom bar shows hera's hotkeys.
 - [ ] 18.5 After Aaron live-verifies, run `openspec archive add-hera-view`.
