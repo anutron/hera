@@ -820,14 +820,49 @@ func TestBridge_OnOpenPR_ConfirmNo_NoPR(t *testing.T) {
 	}
 }
 
-func TestBridge_OnOpenPR_NonRole_NoConfirm(t *testing.T) {
+// `^p` on a coordinator selection (root orchestrator header carrying its
+// CoordRoleID) opens a PR for the coordinator's bound argus task — no longer a
+// no-op on coord rows. Combined with worker-less orchestrators rendering
+// header-only, this opens a PR on the coord of a coord-only project.
+func TestBridge_OnOpenPR_Coordinator_OpensPRForCoordRole(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, CoordRoleID: 42, Name: "foo"}
+	m.stubConfirmYes = true
+
+	b.OnOpenPR()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("open-PR on a coordinator must confirm first; got %d", len(m.confirms))
+	}
+	if len(svc.openPRCalls) != 1 || svc.openPRCalls[0] != 42 {
+		t.Fatalf("want OpenPR(42) for the coord role; got %v", svc.openPRCalls)
+	}
+}
+
+// A sub-coordinator selection (a coordinator role row) opens a PR for that
+// role's own binding.
+func TestBridge_OnOpenPR_SubCoordinatorRole_OpensPR(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 77, RoleKind: "coordinator", Name: "sub"}
+	m.stubConfirmYes = true
+
+	b.OnOpenPR()
+
+	if len(svc.openPRCalls) != 1 || svc.openPRCalls[0] != 77 {
+		t.Fatalf("want OpenPR(77) for the sub-coordinator role; got %v", svc.openPRCalls)
+	}
+}
+
+// An orchestrator selection with no coord role (CoordRoleID 0) still no-ops —
+// there is no coordinator task to open a PR from.
+func TestBridge_OnOpenPR_OrchestratorNoCoord_NoConfirm(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
 	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, Name: "foo"}
 
 	b.OnOpenPR()
 
 	if len(m.confirms) != 0 || len(svc.openPRCalls) != 0 {
-		t.Fatalf("open-PR on non-role must no-op; confirms=%d prCalls=%v", len(m.confirms), svc.openPRCalls)
+		t.Fatalf("open-PR on a coord-less orchestrator must no-op; confirms=%d prCalls=%v", len(m.confirms), svc.openPRCalls)
 	}
 }
 

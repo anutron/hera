@@ -320,14 +320,6 @@ func (a *App) populateRail(database *db.DB) error {
 		if err != nil {
 			return fmt.Errorf("list roles for orch %d: %w", orch.ID, err)
 		}
-		// Hold the coord role aside so we can fall back to rendering it as
-		// the orchestrator's sole row when no agents exist (operator still
-		// needs a way to reach the coord pane in agent-less projects).
-		var coordRole *db.Role
-		var coordLive bool
-		var coordDead bool
-		var coordTaskID string
-		var coordStartedAt time.Time
 		for _, role := range roles {
 			bnd, _ := database.Bindings.GetLiveByRole(ctx, role.ID)
 			live := bnd != nil
@@ -352,19 +344,19 @@ func (a *App) populateRail(database *db.DB) error {
 				startedAt = hist[0].StartedAt
 			}
 
-			// Coord roles do not render as their own rail row in the common
-			// case. The first live + alive + non-archived coord binding
-			// feeds the orchestrator's CoordTaskID so the COORD pane can
-			// rebind implicitly when an agent / header is selected.
-			// Archived or dead coord bindings are skipped so the COORD
-			// pane doesn't get bound to a tombstone. We hold a copy of the
-			// first eligible coord role aside in case the orchestrator
-			// ends up with zero agent rows — see below.
+			// Coord roles do not render as their own rail row. The first live +
+			// alive + non-archived coord binding feeds the orchestrator's
+			// CoordTaskID so the COORD pane (and `^p`/resurrect resolution) can
+			// target the coordinator's task when the header is selected.
+			// Archived or dead coord bindings are skipped so the COORD pane
+			// doesn't get bound to a tombstone. A worker-less orchestrator
+			// therefore renders header-only (the header IS the coordinator).
 			if role.Kind == db.KindCoordinator {
 				archived := role.ArchivedAt != nil
 				// Capture the coord role id (first coord seen) regardless of its
-				// archived/live state so the resurrect-on-Enter flow can target it
-				// when the operator presses Enter on an archived root coordinator.
+				// archived/live state so the resurrect-on-Enter and `^p`-on-coord
+				// flows can target it when the operator selects an (archived or
+				// live) root coordinator header.
 				if entry.CoordRoleID == 0 {
 					entry.CoordRoleID = role.ID
 				}
@@ -374,11 +366,6 @@ func (a *App) populateRail(database *db.DB) error {
 					// the coordinator's last output after its task finished —
 					// fixes the "coord pane doesn't follow selection" case.
 					entry.CoordTaskID = argusTaskID
-					coordRole = role
-					coordLive = live
-					coordDead = dead
-					coordTaskID = argusTaskID
-					coordStartedAt = startedAt
 				}
 				continue
 			}
@@ -398,27 +385,11 @@ func (a *App) populateRail(database *db.DB) error {
 			entry.Roles = append(entry.Roles, r)
 		}
 
-		// Agent-less fallback: when the orchestrator would otherwise have
-		// zero visible rows, surface its coord as the sole row so the
-		// operator has something selectable. The rail's selection-change
-		// rebind still routes COORD-to-coord-task as usual; this row's
-		// role-row is just the operator-facing affordance.
-		if len(entry.Roles) == 0 && coordRole != nil {
-			cr := &roleEntry{
-				OrchestratorID: orch.ID,
-				RoleID:         coordRole.ID,
-				RoleKind:       string(coordRole.Kind),
-				Name:           coordRole.Name,
-				Live:           coordLive,
-				Dead:           coordDead,
-				ArgusTaskID:    coordTaskID,
-				Archived:       coordRole.ArchivedAt != nil,
-				StartedAt:      coordStartedAt,
-			}
-			applyArgusState(cr, stateProv)
-			entry.Roles = append(entry.Roles, cr)
-		}
-
+		// Coord-only (worker-less) orchestrators render HEADER-ONLY: the
+		// orchestrator header IS the coordinator. With no worker agents the
+		// header has zero children, and selecting it composes the full-width
+		// HERA pane (coordinator mode) bound to entry.CoordTaskID. We do NOT
+		// synthesize a child coord role row.
 		entries = append(entries, entry)
 	}
 

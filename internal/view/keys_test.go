@@ -519,18 +519,19 @@ func TestKeyRouter_MutationKey_Question_InAGENT_NoMutationOnlyForward(t *testing
 	}
 }
 
-// D15 supersedes the earlier Stage-H/G behavior (where `^d` was RAIL-only and
-// forwarded as 0x04 in a pane): `^d` is now reachable from ANY focus, acting
-// on the current selection, and is intercepted (never forwarded to the PTY).
-func TestKeyRouter_MutationKey_CtrlD_InCOORD_FiresDeleteNotForwarded(t *testing.T) {
+// `^d`/`^r`/`^p` are RAIL-focus-only (reversed from the earlier any-focus
+// decision): in COORD/AGENT they forward their control byte to the bound PTY
+// (Ctrl-D=0x04) and do NOT fire the mutation, so an agent gets EOF normally.
+func TestKeyRouter_MutationKey_CtrlD_InCOORD_ForwardsByteNotDelete(t *testing.T) {
 	r, p, m, _ := newRouter()
 	r.Focus.Advance() // → COORD
 	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModCtrl))
-	if m.del != 1 {
-		t.Fatalf("Ctrl-D in COORD must fire OnDelete (reachable from any focus); got count %d", m.del)
+	if m.del != 0 {
+		t.Fatalf("Ctrl-D in COORD must NOT fire OnDelete (RAIL-only); got count %d", m.del)
 	}
-	if len(p.Calls()) != 0 {
-		t.Fatalf("Ctrl-D must NOT forward to the PTY; got %d calls, payload=%v", len(p.Calls()), payloadOf(p.Calls()))
+	calls := p.Calls()
+	if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != 0x04 || calls[0].TaskID != "coord-1" {
+		t.Fatalf("Ctrl-D in COORD must forward 0x04 to the coord task; got %d calls, payload=%v", len(calls), payloadOf(calls))
 	}
 }
 
@@ -887,59 +888,62 @@ func TestKeyRouter_StatusKeys_PaneFocus_ForwardToPTY(t *testing.T) {
 	}
 }
 
-// `^d` delete reachable from any focus, intercepted everywhere.
-func TestKeyRouter_CtrlD_AnyFocus_FiresDelete(t *testing.T) {
-	for _, jump := range []bool{false, true} {
-		r, p, m, _ := newRouter()
-		if jump {
-			r.Focus.JumpToAGENT()
-		}
-		if out := r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModCtrl)); out != nil {
-			t.Fatalf("^d must be consumed (jump=%v); got %v", jump, out)
-		}
-		if m.del != 1 {
-			t.Fatalf("^d must fire OnDelete (jump=%v); got %d", jump, m.del)
-		}
-		if len(p.Calls()) != 0 {
-			t.Fatalf("^d must not forward to PTY (jump=%v); got %v", jump, p.Calls())
-		}
+// `^d`/`^r`/`^p` are RAIL-focus-only: in RAIL they fire the mutation and are
+// intercepted; in a pane they forward their control byte to the bound PTY and
+// do NOT fire the mutation. This table drives all three verbs at once.
+func TestKeyRouter_DestructiveVerbs_RailOnly_FireInRailForwardInPane(t *testing.T) {
+	type vc struct {
+		name    string
+		key     tcell.Key
+		ctlByte byte
+		count   func(*fakeMutations) int
 	}
-}
-
-// `^r` prune reachable from any focus, intercepted everywhere.
-func TestKeyRouter_CtrlR_AnyFocus_FiresPrune(t *testing.T) {
-	for _, jump := range []bool{false, true} {
-		r, p, m, _ := newRouter()
-		if jump {
-			r.Focus.JumpToAGENT()
-		}
-		if out := r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModCtrl)); out != nil {
-			t.Fatalf("^r must be consumed (jump=%v); got %v", jump, out)
-		}
-		if m.prune != 1 {
-			t.Fatalf("^r must fire OnPrune (jump=%v); got %d", jump, m.prune)
-		}
-		if len(p.Calls()) != 0 {
-			t.Fatalf("^r must not forward to PTY (jump=%v); got %v", jump, p.Calls())
-		}
+	cases := []vc{
+		{"^d delete", tcell.KeyCtrlD, 0x04, func(m *fakeMutations) int { return m.del }},
+		{"^r prune", tcell.KeyCtrlR, 0x12, func(m *fakeMutations) int { return m.prune }},
+		{"^p open-PR", tcell.KeyCtrlP, 0x10, func(m *fakeMutations) int { return m.openPR }},
 	}
-}
 
-// `^p` open-PR reachable from any focus, intercepted everywhere.
-func TestKeyRouter_CtrlP_AnyFocus_FiresOpenPR(t *testing.T) {
-	for _, jump := range []bool{false, true} {
-		r, p, m, _ := newRouter()
-		if jump {
-			r.Focus.JumpToAGENT()
-		}
-		if out := r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, tcell.ModCtrl)); out != nil {
-			t.Fatalf("^p must be consumed (jump=%v); got %v", jump, out)
-		}
-		if m.openPR != 1 {
-			t.Fatalf("^p must fire OnOpenPR (jump=%v); got %d", jump, m.openPR)
-		}
-		if len(p.Calls()) != 0 {
-			t.Fatalf("^p must not forward to PTY (jump=%v); got %v", jump, p.Calls())
+	// In RAIL: fires the mutation, intercepted (not forwarded).
+	for _, c := range cases {
+		t.Run(c.name+"/RAIL", func(t *testing.T) {
+			r, p, m, _ := newRouter()
+			if out := r.HandleKey(tcell.NewEventKey(c.key, 0, tcell.ModCtrl)); out != nil {
+				t.Fatalf("%s in RAIL must be consumed; got %v", c.name, out)
+			}
+			if c.count(m) != 1 {
+				t.Fatalf("%s in RAIL must fire its mutation; got count %d", c.name, c.count(m))
+			}
+			if len(p.Calls()) != 0 {
+				t.Fatalf("%s in RAIL must NOT forward to PTY; got %v", c.name, p.Calls())
+			}
+		})
+	}
+
+	// In COORD/AGENT: forwards the control byte to the bound PTY, no mutation.
+	for _, c := range cases {
+		for _, pane := range []struct {
+			name   string
+			jump   func(*KeyRouter)
+			taskID string
+		}{
+			{"COORD", func(r *KeyRouter) { r.Focus.Advance() }, "coord-1"},
+			{"AGENT", func(r *KeyRouter) { r.Focus.JumpToAGENT() }, "agent-1"},
+		} {
+			t.Run(c.name+"/"+pane.name, func(t *testing.T) {
+				r, p, m, _ := newRouter()
+				pane.jump(r)
+				if out := r.HandleKey(tcell.NewEventKey(c.key, 0, tcell.ModCtrl)); out != nil {
+					t.Fatalf("%s in %s must be consumed; got %v", c.name, pane.name, out)
+				}
+				if c.count(m) != 0 {
+					t.Fatalf("%s in %s must NOT fire its mutation (RAIL-only); got count %d", c.name, pane.name, c.count(m))
+				}
+				calls := p.Calls()
+				if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != c.ctlByte || calls[0].TaskID != pane.taskID {
+					t.Fatalf("%s in %s must forward byte 0x%02x to %s; got %d calls payload=%v", c.name, pane.name, c.ctlByte, pane.taskID, len(calls), payloadOf(calls))
+				}
+			})
 		}
 	}
 }
@@ -1121,6 +1125,17 @@ func hotkeyHas(items []HotkeyItem, key string, wantBar bool) bool {
 	return false
 }
 
+// hotkeyContains reports whether items contains an entry with the given key
+// (regardless of Bar flag).
+func hotkeyContains(items []HotkeyItem, key string) bool {
+	for _, it := range items {
+		if it.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // TestHotkeyItems_RailAdvertisesPruneAndPR proves the RAIL hotkey dictionary
 // surfaces ^r (prune), ^p (PR), s/S (status) so argus's help overlay (D12) can
 // list them. They are help-overlay-only (Bar:false) to keep the bottom bar
@@ -1134,10 +1149,10 @@ func TestHotkeyItems_RailAdvertisesPruneAndPR(t *testing.T) {
 	}
 }
 
-// TestHotkeyItems_PaneFocusAdvertisesPruneAndPR proves ^r and ^p (which fire
-// from any focus) are also advertised in the COORD and AGENT hotkey
-// dictionaries so the help overlay surfaces them while focused in a pane.
-func TestHotkeyItems_PaneFocusAdvertisesPruneAndPR(t *testing.T) {
+// TestHotkeyItems_PaneFocusDropsPruneAndPR proves ^d/^r/^p are NOT advertised
+// in the COORD/AGENT hotkey dictionaries: they are RAIL-focus-only, and in a
+// pane those control bytes forward to the PTY rather than firing a mutation.
+func TestHotkeyItems_PaneFocusDropsPruneAndPR(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		items []HotkeyItem
@@ -1146,9 +1161,9 @@ func TestHotkeyItems_PaneFocusAdvertisesPruneAndPR(t *testing.T) {
 		{"AGENT-coordful", hotkeyItems(FocusAGENT, true)},
 		{"AGENT-coordless", hotkeyItems(FocusAGENT, false)},
 	} {
-		for _, key := range []string{"^r", "^p"} {
-			if !hotkeyHas(tc.items, key, false) {
-				t.Errorf("%s hotkeys must advertise %q with bar:false; items=%+v", tc.name, key, tc.items)
+		for _, key := range []string{"^d", "^r", "^p"} {
+			if hotkeyContains(tc.items, key) {
+				t.Errorf("%s hotkeys must NOT advertise %q (RAIL-only); items=%+v", tc.name, key, tc.items)
 			}
 		}
 	}

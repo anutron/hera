@@ -210,7 +210,7 @@ The system SHALL forward keystrokes received while focus is `COORD` or `AGENT` t
 
 ### Requirement: Mutation keys are RAIL-focus-only
 
-The system SHALL recognize the five RAIL-only mutation keys (`n`, `r`, `a`, `l`, `?`) ONLY when focus is `RAIL`. When focus is `COORD` or `AGENT`, these characters MUST be treated as ordinary input and forwarded to the bound task's PTY (per the keystroke-forwarding requirement). The destructive/external verbs `^d`, `^r`, and `^p` are NOT RAIL-only — under the argus key-surrender contract they are intercepted from ANY focus and act on the current rail selection (see the "Archive, delete, and prune are distinct removal verbs" and "Status, open-PR, scroll, and in-pane navigation keys" requirements); they are never forwarded to a PTY.
+The system SHALL recognize the RAIL-only key set (`n`, `r`, `a`, `l`, `?`, `s`, `S`, `^d`, `^r`, `^p`) ONLY when focus is `RAIL`. When focus is `COORD` or `AGENT`, every one of these keys — including the destructive/external verbs `^d`, `^r`, and `^p` — MUST be treated as ordinary input and forwarded to the bound task's PTY (per the keystroke-forwarding requirement): a printable key forwards its byte, and `^d`/`^r`/`^p` forward their control bytes (Ctrl-D=0x04, Ctrl-R=0x12, Ctrl-P=0x10) so an agent gets EOF / reverse-search / history-prev normally. None of these keys fires a mutation or is intercepted while focus is in a pane.
 
 #### Scenario: `n` in RAIL focus opens new-project modal
 
@@ -231,6 +231,11 @@ The system SHALL recognize the five RAIL-only mutation keys (`n`, `r`, `a`, `l`,
 
 - **WHEN** focus is `AGENT` and the operator presses `?`
 - **THEN** the daemon MUST POST the byte `?` to the AGENT task's input endpoint AND MUST NOT open the help modal
+
+#### Scenario: `^d` in AGENT focus forwards Ctrl-D to the PTY
+
+- **WHEN** focus is `AGENT` and the operator presses `^d`
+- **THEN** the daemon MUST forward the control byte Ctrl-D (`0x04`) to the AGENT task's input endpoint AND MUST NOT open the delete confirm modal
 
 ### Requirement: `n` creates a new orchestrator via spawned argus task
 
@@ -449,6 +454,11 @@ The system SHALL render the rail as a tree mirroring the canonical prototype: ea
 - **WHEN** a root coordinator is archived
 - **THEN** it MUST appear only under the top-level `Archive` section at the bottom of the rail
 
+#### Scenario: Coordinator with no workers renders header-only
+
+- **WHEN** an orchestrator has a live coord but no worker agents
+- **THEN** the rail MUST render only its foldable coordinator row with no child agent row, and selecting it MUST compose the full-width HERA pane bound to the coord's PTY
+
 ### Requirement: Enter enters the selection's primary pane
 
 The system SHALL, when the operator presses `Enter` while focus is `RAIL` on a bindable row, move focus into that selection's primary pane: a coordinator row → its `HERA` pane (focus `COORD`); an agent row → its `AGENT` pane; a freelancer → its `AGENT` pane. On a header/expando row (Freelance or Archive), `Enter` MUST toggle the section fold instead. `space` MUST always fold/unfold (never enter a pane). Focus traversal (`^→`/`^←`) MUST step through only the panes present in the current mode.
@@ -489,12 +499,17 @@ The system SHALL provide three distinct removal actions on the rail: `a` toggles
 
 ### Requirement: Status, open-PR, scroll, and in-pane navigation keys
 
-The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected agent's argus task status (pending → in_progress → in_review → complete); `^p` opens a pull request for the selected agent's task via the host git flow; `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
+The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected agent's argus task status (pending → in_progress → in_review → complete); `^p` opens a pull request for the selected agent's OR coordinator's task via the host git flow — an agent/worker row resolves to that role's bound task, while a coordinator selection (root orchestrator header or a sub-coordinator role) resolves to the coordinator's bound argus task; `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
 
 #### Scenario: s/S step the selected agent's status
 
 - **WHEN** focus is `RAIL` on an agent and the operator presses `s`
 - **THEN** the agent's argus task status MUST advance one step (and `S` MUST revert one step)
+
+#### Scenario: `^p` on a coordinator opens a PR for the coord's task
+
+- **WHEN** focus is `RAIL` on a coordinator selection (a root orchestrator header or a sub-coordinator row) bound to a coord argus task and the operator presses `^p` and confirms
+- **THEN** the host git flow MUST open a pull request from the coordinator's bound task's worktree (not a no-op)
 
 #### Scenario: In-pane navigation keeps focus in a pane
 

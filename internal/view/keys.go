@@ -34,9 +34,10 @@ type MutationHandler interface {
 	OnListAll()
 	OnHelp()
 
-	// Stage P extended keyset (D15). OnPrune (`^r`) and OnOpenPR (`^p`) are
-	// reachable from ANY focus, acting on the current selection; OnDelete
-	// (`^d`) likewise. OnStatusAdvance (`s`) / OnStatusRevert (`S`) are
+	// Stage P extended keyset (D15). OnPrune (`^r`), OnOpenPR (`^p`), and
+	// OnDelete (`^d`) are RAIL-focus-only, acting on the current selection; in
+	// a pane the control byte forwards to the PTY (Ctrl-D=0x04, Ctrl-R=0x12,
+	// Ctrl-P=0x10). OnStatusAdvance (`s`) / OnStatusRevert (`S`) are likewise
 	// RAIL-focus-only — in a pane the rune forwards to the PTY.
 	OnPrune()
 	OnOpenPR()
@@ -179,29 +180,6 @@ func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	// Destructive + external verbs reachable from ANY focus (D15), acting on
-	// the current rail selection: `^d` delete, `^r` prune-completed, `^p`
-	// open-PR. They are intercepted (never forwarded to a PTY) so the
-	// operator can fire them without first returning to the rail.
-	if event.Key() == tcell.KeyCtrlD {
-		if r.Mutations != nil {
-			r.Mutations.OnDelete()
-		}
-		return nil
-	}
-	if event.Key() == tcell.KeyCtrlR {
-		if r.Mutations != nil {
-			r.Mutations.OnPrune()
-		}
-		return nil
-	}
-	if event.Key() == tcell.KeyCtrlP {
-		if r.Mutations != nil {
-			r.Mutations.OnOpenPR()
-		}
-		return nil
-	}
-
 	if r.Focus.State() == FocusRAIL {
 		return r.handleRail(event)
 	}
@@ -223,6 +201,30 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyEsc {
 		if r.Control != nil {
 			_ = r.Control.SendRelease()
+		}
+		return nil
+	}
+
+	// Destructive + external verbs are RAIL-focus-only (reversed from the
+	// earlier any-focus decision): `^d` delete, `^r` prune-completed, `^p`
+	// open-PR act on the current rail selection and are intercepted here (never
+	// forwarded to a PTY). In a pane (handlePane) the same control bytes are
+	// forwarded verbatim so an agent gets EOF / reverse-search / history-prev.
+	if event.Key() == tcell.KeyCtrlD {
+		if r.Mutations != nil {
+			r.Mutations.OnDelete()
+		}
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlR {
+		if r.Mutations != nil {
+			r.Mutations.OnPrune()
+		}
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlP {
+		if r.Mutations != nil {
+			r.Mutations.OnOpenPR()
 		}
 		return nil
 	}

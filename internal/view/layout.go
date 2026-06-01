@@ -90,15 +90,13 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 	switch state {
 	case FocusCOORD:
+		// `^d`/`^r`/`^p` are RAIL-focus-only; in a pane they forward to the PTY
+		// (Ctrl-D/R/P), so they are NOT advertised here.
 		return []HotkeyItem{
 			{Key: "keys", Label: "coord PTY", Bar: true},
 			{Key: "^→", Label: "agent", Bar: true},
 			{Key: "^←", Label: "rail", Bar: true},
 			{Key: "^Q", Label: "rail", Bar: true},
-			// Prune / PR fire from any focus; advertise them (help-overlay-only)
-			// so D12's overlay surfaces them while focused in a pane.
-			{Key: "^r", Label: "prune", Bar: false},
-			{Key: "^p", Label: "PR", Bar: false},
 		}
 	case FocusAGENT:
 		if !coordPresent {
@@ -106,16 +104,12 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 				{Key: "keys", Label: "agent PTY", Bar: true},
 				{Key: "^←", Label: "rail", Bar: true},
 				{Key: "^Q", Label: "rail", Bar: true},
-				{Key: "^r", Label: "prune", Bar: false},
-				{Key: "^p", Label: "PR", Bar: false},
 			}
 		}
 		return []HotkeyItem{
 			{Key: "keys", Label: "agent PTY", Bar: true},
 			{Key: "^←", Label: "coord", Bar: true},
 			{Key: "^Q", Label: "rail", Bar: true},
-			{Key: "^r", Label: "prune", Bar: false},
-			{Key: "^p", Label: "PR", Bar: false},
 		}
 	default: // FocusRAIL
 		advance := HotkeyItem{Key: "^→", Label: "coord", Bar: true}

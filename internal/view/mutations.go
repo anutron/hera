@@ -402,25 +402,48 @@ func (b *mutationBridge) OnPrune() {
 	}, nil)
 }
 
-// OnOpenPR opens a pull request for the selected agent's task (D15 `^p`).
-// Confirmed before the external action fires. No-op when nothing addressable
-// is selected.
+// OnOpenPR opens a pull request for the selected agent's OR coordinator's task
+// (D15 `^p`). It resolves the role whose live binding's worktree the PR is
+// opened from: an agent/worker row → that role; a coordinator selection (root
+// orchestrator header or a sub-coordinator role) → the coordinator's bound
+// argus task via its coord role. Combined with the header-only rendering of
+// worker-less orchestrators, `^p` on a coord-only project opens a PR on the
+// coord. Confirmed before the external action fires. No-op when nothing
+// addressable resolves to a role.
 func (b *mutationBridge) OnOpenPR() {
 	sel := b.sel.CurrentRailSelection()
-	if sel.Kind != selRole {
+	roleID := b.openPRRoleID(sel)
+	if roleID == 0 {
 		return
 	}
 	b.modals.ShowConfirm(
 		fmt.Sprintf("Open PR for %q?", sel.Name),
 		fmt.Sprintf("Open a pull request from %q's worktree via the host git flow? (y/N)", sel.Name),
 		func() {
-			if _, err := b.svc.OpenPR(b.ctx, sel.RoleID); err != nil {
+			if _, err := b.svc.OpenPR(b.ctx, roleID); err != nil {
 				b.modals.ShowError(err.Error())
 				return
 			}
 		},
 		nil,
 	)
+}
+
+// openPRRoleID resolves which role's binding the `^p` PR opens from:
+//   - an orchestrator header (root coordinator) → its coord role (CoordRoleID)
+//   - a role row → that role (a worker, or a sub-coordinator — both have a
+//     live binding whose worktree the PR opens from)
+//
+// Returns 0 when nothing addressable is selected (the bridge then no-ops). A
+// freelancer carries RoleID 0 and no hera binding, so it resolves to 0 too.
+func (b *mutationBridge) openPRRoleID(sel railSelection) int64 {
+	switch sel.Kind {
+	case selOrchestrator:
+		return sel.CoordRoleID
+	case selRole:
+		return sel.RoleID
+	}
+	return 0
 }
 
 // OnStatusAdvance steps the selected agent's argus status forward (`s`).

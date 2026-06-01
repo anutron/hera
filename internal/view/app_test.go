@@ -910,9 +910,9 @@ func TestApp_InPaneNavigate_SkipsCoordlessOrchHeader(t *testing.T) {
 		coordlessHeader,
 	}
 	a.pieces.rail.rows = []railRow{
-		{kind: railRowRole, role: w1Role},        // 0 bindable → AGENT (t1)
+		{kind: railRowRole, role: w1Role},          // 0 bindable → AGENT (t1)
 		{kind: railRowOrch, orch: coordlessHeader}, // 1 bindable but coord-less → FocusRAIL
-		{kind: railRowRole, role: w2Role},        // 2 bindable → AGENT (t2)
+		{kind: railRowRole, role: w2Role},          // 2 bindable → AGENT (t2)
 	}
 
 	// Land on w1 and enter its AGENT pane.
@@ -1020,6 +1020,75 @@ func TestPopulateRail_FiltersCoordRows(t *testing.T) {
 	}
 	if len(got.Roles) != 1 || got.Roles[0].RoleID != workerRole.ID {
 		t.Fatalf("Roles must contain only the worker; got %+v", got.Roles)
+	}
+}
+
+// TestPopulateRail_WorkerLessOrchestratorRendersHeaderOnly confirms that a
+// top-level orchestrator with a live coord but NO worker agents renders as
+// JUST its foldable coordinator header row — no synthetic child coord/agent
+// row — and that selecting the header composes the full-width HERA pane
+// (coordinator mode) bound to the coord's task.
+func TestPopulateRail_WorkerLessOrchestratorRendersHeaderOnly(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "solo")
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "solo",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	// The orchEntry carries the coord task but has zero child rows.
+	var got *orchEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID {
+			got = o
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("orchestrator %d missing from rail data", orch.ID)
+	}
+	if got.CoordTaskID != "tc" {
+		t.Fatalf("CoordTaskID: want tc, got %q", got.CoordTaskID)
+	}
+	if len(got.Roles) != 0 {
+		t.Fatalf("worker-less orchestrator must have zero child roles (header IS the coord); got %+v", got.Roles)
+	}
+
+	// The rail renders exactly one row: the foldable coordinator header.
+	if len(a.pieces.rail.rows) != 1 {
+		t.Fatalf("worker-less orchestrator must render exactly one rail row (the header); got %d rows", len(a.pieces.rail.rows))
+	}
+	if a.pieces.rail.rows[0].kind != railRowOrch {
+		t.Fatalf("the sole row must be the coordinator header (railRowOrch); got kind %d", a.pieces.rail.rows[0].kind)
+	}
+
+	// No child coord/agent role row should be selectable.
+	if a.pieces.rail.SelectByRoleID(coordRole.ID) {
+		t.Fatalf("coord role row must not be selectable (no synthetic child row)")
+	}
+
+	// Selecting the header yields coordinator mode bound to the coord's task.
+	if !a.pieces.rail.SelectByOrchID(orch.ID) {
+		t.Fatalf("could not locate orchestrator header row")
+	}
+	if got := a.OnRailSelectEnter(); got != FocusCOORD {
+		t.Fatalf("Enter on worker-less coordinator header: want FocusCOORD, got %s", got)
+	}
+	if a.CoordTaskID() != "tc" {
+		t.Fatalf("coord task should be tc after header Enter; got %q", a.CoordTaskID())
+	}
+	if !a.coordPresent || a.agentPresent {
+		t.Fatalf("worker-less coordinator must compose full-width HERA (coord-only); coordPresent=%v agentPresent=%v", a.coordPresent, a.agentPresent)
 	}
 }
 

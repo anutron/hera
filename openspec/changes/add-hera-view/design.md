@@ -238,7 +238,7 @@ Because argus now surrenders the full keyboard (D12), hera adopts argus's key vo
 - **`^→` / `^←`** move focus across present panes; **`⌘↑` / `⌘↓`** move selection to the next/prev agent *while staying in a pane* (re-enter the new selection's primary pane); **`⇧↑` / `⇧↓`** scroll the focused pane's scrollback.
 - **`n` new**, **`r` rename**, **`?` help** (argus overlay, D12), **`Enter`/`space`** (D13). Destructive verbs (`^d`, `^r`) and external actions (`^p`) MUST confirm/are operator-initiated.
 
-These run RAIL-focused (acting on the selection) except the pane-traversal/scroll keys; `^d`/`^r`/`^p` are reachable from any focus, acting on the current selection.
+`^d`/`^r`/`^p` (and `s`/`S`/`n`/`r`/`a`/`l`/`?`) act only in RAIL focus; in a pane they forward to the PTY. Only pane-traversal (`^←/→`), in-pane nav (`⌘↑/↓`,`^↑/↓`), and scroll (`⇧↑/↓`) operate from inside a pane.
 
 ## Risks / Trade-offs
 
