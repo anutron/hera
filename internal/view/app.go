@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
+	"github.com/anutron/argus-sdk/theme"
 	"github.com/rivo/tview"
 
 	"github.com/anutron/hera/internal/db"
@@ -366,6 +366,17 @@ func (a *App) populateRail(database *db.DB) error {
 					// the coordinator's last output after its task finished —
 					// fixes the "coord pane doesn't follow selection" case.
 					entry.CoordTaskID = argusTaskID
+					// Capture the coord task's argus state so the coordinator
+					// header's status icon mirrors argus (☾/○/✓/?), the same way
+					// applyArgusState drives a worker row's icon.
+					if stateProv != nil {
+						if st, ok := stateProv.TaskState(argusTaskID); ok {
+							entry.CoordHasState = true
+							entry.CoordStatus = st.Status
+							entry.CoordIdle = st.Idle
+							entry.CoordNeedsInput = st.NeedsInput
+						}
+					}
 				}
 				continue
 			}
@@ -621,13 +632,15 @@ func (a *App) AgentTaskID() string {
 // Called from the tview input pump (so direct tview state mutation is
 // safe here — single-threaded by contract).
 //
-// The terminalpane widget paints its own border via the SDK's theme
-// styles based on its HasFocus() state, so SetBorderColor on the coord
-// and agent panes is mostly cosmetic on top of that. The rail (a plain
-// TreeView) still relies on Box.SetBorderColor for focus feedback.
+// Focus feedback mirrors argus: the focused element's border is painted in
+// argus's title/focus cyan (theme.ColorTitle), unfocused borders in argus's
+// dim border gray (theme.ColorBorder), so Ctrl-H into hera feels like the same
+// app. The SDK terminalpane hardcodes a white (StyleDefault) border on focus,
+// so pinnedTerminalPane.Draw repaints the pane border in the same cyan; the
+// rail (a plain Box) honors SetBorderColor directly here.
 func (a *App) OnFocusChanged(state FocusState) {
-	const focused = tcell.ColorYellow
-	const unfocused = tcell.ColorWhite
+	focused := theme.ColorTitle
+	unfocused := theme.ColorBorder
 
 	// Advertise the focus-aware hotkey dictionary to argus so its plugin-mode
 	// bottom bar + help overlay reflect the current focus (D12). Hera renders

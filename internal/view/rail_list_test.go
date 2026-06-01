@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anutron/argus-sdk/theme"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -36,8 +37,8 @@ func TestRailList_HeaderShowsChevronAndCount(t *testing.T) {
 	})
 
 	got := renderRail(t, rl, 22, 6)
-	if !strings.Contains(got, "▾ proj1 (2)") {
-		t.Fatalf("expected expanded chevron + name + count; got:\n%s", got)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" proj1 (2)") {
+		t.Fatalf("expected expanded chevron + coord marker + name + count; got:\n%s", got)
 	}
 	if !strings.Contains(got, "w1") || !strings.Contains(got, "w2") {
 		t.Fatalf("expected both role names rendered; got:\n%s", got)
@@ -60,8 +61,8 @@ func TestRailList_CollapseHidesRoles(t *testing.T) {
 	rl.ToggleCollapse()
 
 	got := renderRail(t, rl, 22, 5)
-	if !strings.Contains(got, "▸ p (1)") {
-		t.Fatalf("expected collapsed chevron; got:\n%s", got)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" p (1)") {
+		t.Fatalf("expected collapsed chevron + coord marker; got:\n%s", got)
 	}
 	if strings.Contains(got, "w1") {
 		t.Fatalf("expected w1 hidden when collapsed; got:\n%s", got)
@@ -388,6 +389,35 @@ func TestRailList_NoKindPills(t *testing.T) {
 
 // Scenario: Coordinator row is foldable with a count, and `space` (ToggleCollapse)
 // toggles whether its children are shown.
+// A coordinator header's status icon mirrors argus's vocabulary from the coord
+// task's argus state (set via CoordHasState + Coord*), the same way a worker
+// row's icon does — needs-input → ?, complete → ✓ — and the 󰹻 coord marker is
+// always drawn before the name.
+func TestRailList_CoordHeaderStatusIconAndMarker(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{
+			ID: 1, Name: "blocked", CoordTaskID: "t-1",
+			CoordHasState: true, CoordStatus: "in_progress", CoordNeedsInput: true,
+			Roles: []*roleEntry{{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true}},
+		},
+		{
+			ID: 2, Name: "shipped", CoordTaskID: "t-2",
+			CoordHasState: true, CoordStatus: "complete",
+		},
+	})
+
+	got := renderRail(t, rl, 30, 6)
+	// needs-input coordinator: ? icon, then chevron, then marker, then name.
+	if !strings.Contains(got, string(theme.IconNeedsInput)+" ▾ "+string(iconCoord)+" blocked") {
+		t.Fatalf("expected needs-input icon + chevron + marker on coord header; got:\n%s", got)
+	}
+	// complete coordinator: ✓ icon before its (coord-less) header.
+	if !strings.Contains(got, "✓ ▾ "+string(iconCoord)+" shipped") {
+		t.Fatalf("expected ✓ status icon on completed coord header; got:\n%s", got)
+	}
+}
+
 func TestRailList_CoordinatorFoldableSpaceToggle(t *testing.T) {
 	rl := newRailList()
 	rl.SetOrchestrators([]*orchEntry{
@@ -397,15 +427,15 @@ func TestRailList_CoordinatorFoldableSpaceToggle(t *testing.T) {
 		}},
 	})
 	got := renderRail(t, rl, 28, 8)
-	if !strings.Contains(got, "▾ proj (2)") {
-		t.Fatalf("expected expanded chevron + (2) count; got:\n%s", got)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" proj (2)") {
+		t.Fatalf("expected expanded chevron + coord marker + (2) count; got:\n%s", got)
 	}
 	// space on the coordinator header collapses.
 	rl.SelectByOrchID(1)
 	rl.ToggleCollapse()
 	got = renderRail(t, rl, 28, 8)
-	if !strings.Contains(got, "▸ proj (2)") {
-		t.Fatalf("expected collapsed chevron after space; got:\n%s", got)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" proj (2)") {
+		t.Fatalf("expected collapsed chevron + coord marker after space; got:\n%s", got)
 	}
 	if strings.Contains(got, "w1") || strings.Contains(got, "w2") {
 		t.Fatalf("children must be hidden when collapsed; got:\n%s", got)
@@ -491,12 +521,12 @@ func TestRailList_StepToBindable(t *testing.T) {
 	newRail := func() *railList {
 		rl := newRailList()
 		rl.rows = []railRow{
-			{kind: railRowOrch, orch: orch},        // 0 bindable
-			{kind: railRowRole, role: w1},          // 1 bindable
-			{kind: railRowFreelanceSep},            // 2 non-bindable
-			{kind: railRowFreelanceProj, fproj: fproj}, // 3 non-bindable (selectable, not bindable)
+			{kind: railRowOrch, orch: orch},                                 // 0 bindable
+			{kind: railRowRole, role: w1},                                   // 1 bindable
+			{kind: railRowFreelanceSep},                                     // 2 non-bindable
+			{kind: railRowFreelanceProj, fproj: fproj},                      // 3 non-bindable (selectable, not bindable)
 			{kind: railRowArchiveExpando, archiveOwner: 1, archiveCount: 1}, // 4 non-bindable
-			{kind: railRowRole, role: w2},          // 5 bindable
+			{kind: railRowRole, role: w2},                                   // 5 bindable
 		}
 		return rl
 	}

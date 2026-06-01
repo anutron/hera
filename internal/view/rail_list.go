@@ -91,6 +91,17 @@ type orchEntry struct {
 	// orchestrator has no coord role.
 	CoordRoleID int64
 	Roles       []*roleEntry
+
+	// Coord-task argus state, populated from the ArgusStateCache for the
+	// orchestrator's CoordTaskID. Drives the status icon on the coordinator
+	// header so it mirrors argus reality (☾ working, ○ idle, ✓ complete/review,
+	// ? needs-input) the same way a worker row does. CoordHasState is false when
+	// argus has no entry for the coord task (cold cache / no coord) — the icon
+	// then falls back to coord-binding presence.
+	CoordHasState   bool
+	CoordStatus     string // pending | in_progress | in_review | complete
+	CoordIdle       bool
+	CoordNeedsInput bool
 }
 
 // roleEntry is one role under an orchestrator. Live indicates an open
@@ -156,6 +167,13 @@ const (
 // expando that holds archived root coordinators. Per-coordinator Archive
 // expandos are keyed by their orchestrator's ID (always > 0).
 const archiveTopLevelOwner int64 = 0
+
+// iconCoord marks a coordinator/orchestrator row, drawn between the chevron and
+// the name in addition to the status icon. A coordinator is a node that
+// dispatches work to a team of agents; the marker makes coord rows scannable
+// at a glance (the prototype's ◆ is superseded by argus's moon/✓/? status set
+// for state, so the coordinator identity needs its own glyph). nf-md U+F0E7B.
+const iconCoord = rune(0x0F0E7B) // 󰹻
 
 type railRow struct {
 	kind  railRowKind
@@ -770,12 +788,27 @@ func (rl *railList) drawOrchRow(screen tcell.Screen, x, y, w int, o *orchEntry, 
 		rl.fillBackground(screen, x, y, w)
 	}
 
+	col := x
+	// Status icon first (argus task-panel order: <icon> <chevron> <name>), so a
+	// coordinator header reads with the same ☾/○/✓/? vocabulary as its workers.
+	icon, iconStyle := rl.orchIcon(o)
+	screen.SetContent(col, y, icon, nil, iconStyle)
+	col += 2
+
 	chevron := '▾'
 	if rl.collapsed[o.ID] {
 		chevron = '▸'
 	}
-	col := x
 	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+	col += 2
+
+	// Coordinator marker (󰹻), drawn between the chevron and the name to flag the
+	// row as a coordinator independent of its transient status icon.
+	markerStyle := tcell.StyleDefault.Foreground(theme.ColorProject)
+	if o.Archived {
+		markerStyle = theme.StyleDimmed
+	}
+	screen.SetContent(col, y, iconCoord, nil, markerStyle)
 	col += 2
 
 	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
@@ -968,38 +1001,51 @@ func (rl *railList) fillBackground(screen tcell.Screen, x, y, w int) {
 	}
 }
 
-// roleIcon picks the moon-style icon for a role based on its live
-// binding state. Live → IconMoonStars (active / needs attention). Idle
-// (no live binding) → IconMoonOutline. Archived or dead (binding open
-// in DB but argus task is gone) → dimmed circle.
-func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
-	if r.Archived || r.Dead || r.ArgusArchived {
+// statusIcon picks the moon-style status icon from argus-reported task state,
+// shared by worker rows (roleIcon) and coordinator headers (orchIcon) so both
+// mirror argus's vocabulary identically. Preference order mirrors argus:
+// archived/gone → dimmed circle; then needs-input, done (complete/in_review),
+// in-progress idle/working, pending; then a binding-presence fallback when
+// argus has no state for the task.
+func statusIcon(archived, hasState, needsInput bool, status string, idle, live bool) (rune, tcell.Style) {
+	if archived {
 		return '○', theme.StyleDimmed
 	}
-	// Prefer argus-reported state so the rail mirrors argus reality:
-	// needs-input, then done (complete/in_review), then in-progress
-	// idle/working, then pending.
-	if r.HasState {
+	if hasState {
 		switch {
-		case r.NeedsInput:
+		case needsInput:
 			return theme.IconNeedsInput, theme.StyleNeedsInput
-		case r.Status == "complete":
+		case status == "complete":
 			return '✓', theme.StyleComplete
-		case r.Status == "in_review":
+		case status == "in_review":
 			return '✓', theme.StyleInReview
-		case r.Status == "in_progress" && r.ArgusIdle:
+		case status == "in_progress" && idle:
 			return theme.IconMoonOutline, theme.StyleDimmed
-		case r.Status == "in_progress":
+		case status == "in_progress":
 			return theme.IconMoonStars, theme.StyleInProgress
-		case r.Status == "pending":
+		case status == "pending":
 			return theme.IconMoonOutline, theme.StylePending
 		}
 	}
-	// Fallback when argus state is unknown: hera binding presence.
-	if r.Live {
+	if live {
 		return theme.IconMoonStars, theme.StyleInReview
 	}
 	return theme.IconMoonOutline, tcell.StyleDefault.Foreground(theme.ColorInReview)
+}
+
+// roleIcon picks the moon-style icon for a role based on its argus-reported
+// (or, as a fallback, binding) state. Archived or dead (binding open in DB but
+// argus task is gone) → dimmed circle.
+func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
+	return statusIcon(r.Archived || r.Dead || r.ArgusArchived, r.HasState, r.NeedsInput, r.Status, r.ArgusIdle, r.Live)
+}
+
+// orchIcon picks the status icon for a coordinator header from the coord task's
+// argus state, so a coordinator row carries the same ☾/○/✓/? vocabulary as a
+// worker row (an archived root coordinator → dimmed circle). live falls back to
+// "has a live coord binding" (CoordTaskID set) when argus state is unknown.
+func (rl *railList) orchIcon(o *orchEntry) (rune, tcell.Style) {
+	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, o.CoordStatus, o.CoordIdle, o.CoordTaskID != "")
 }
 
 // elapsed formats the time since r.StartedAt using argus's "10s/10m/10h/10d"

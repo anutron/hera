@@ -10,6 +10,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"github.com/anutron/argus-sdk/theme"
+
 	"github.com/anutron/hera/internal/db"
 )
 
@@ -216,6 +218,66 @@ func TestApp_OnFocusChanged_PushesFocusAwareHotkeys(t *testing.T) {
 	coordLabels := labelsFor(items)
 	if !strings.Contains(coordLabels, "coord PTY") || strings.Contains(coordLabels, "j/k:move") {
 		t.Fatalf("COORD hotkeys should reflect coord focus, not RAIL: %s", coordLabels)
+	}
+}
+
+// TestApp_OnFocusChanged_PaintsArgusCyanBorders proves the focus-feedback
+// color contract (D12): the focused element's border is painted in argus's
+// title/focus cyan (theme.ColorTitle) and the two unfocused borders in argus's
+// dim border gray (theme.ColorBorder), so Ctrl-H into hera feels like the same
+// app. A regression to tcell.ColorYellow / ColorWhite (the pre-stage colors)
+// must fail here. The rail and both panes embed tview.Box, so GetBorderColor
+// reflects exactly what OnFocusChanged's SetBorderColor calls set.
+func TestApp_OnFocusChanged_PaintsArgusCyanBorders(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Each case: the focused element shows ColorTitle, the other two ColorBorder.
+	cases := []struct {
+		name  string
+		state FocusState
+	}{
+		{name: "RAIL", state: FocusRAIL},
+		{name: "COORD", state: FocusCOORD},
+		{name: "AGENT", state: FocusAGENT},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a.OnFocusChanged(tc.state)
+
+			want := func(state FocusState, this FocusState) tcell.Color {
+				if state == this {
+					return theme.ColorTitle
+				}
+				return theme.ColorBorder
+			}
+
+			if got := a.pieces.rail.GetBorderColor(); got != want(tc.state, FocusRAIL) {
+				t.Errorf("rail border = %v, want %v", got, want(tc.state, FocusRAIL))
+			}
+			if got := a.pieces.coord.GetBorderColor(); got != want(tc.state, FocusCOORD) {
+				t.Errorf("coord border = %v, want %v", got, want(tc.state, FocusCOORD))
+			}
+			if got := a.pieces.agent.GetBorderColor(); got != want(tc.state, FocusAGENT) {
+				t.Errorf("agent border = %v, want %v", got, want(tc.state, FocusAGENT))
+			}
+
+			// Guard against a silent regression to the retired focus colors.
+			focusedColor := a.pieces.rail.GetBorderColor()
+			switch tc.state {
+			case FocusCOORD:
+				focusedColor = a.pieces.coord.GetBorderColor()
+			case FocusAGENT:
+				focusedColor = a.pieces.agent.GetBorderColor()
+			}
+			if focusedColor == tcell.ColorYellow || focusedColor == tcell.ColorWhite {
+				t.Errorf("focused border regressed to the pre-stage yellow/white: %v", focusedColor)
+			}
+		})
 	}
 }
 

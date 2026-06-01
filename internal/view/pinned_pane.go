@@ -2,6 +2,8 @@ package view
 
 import (
 	"github.com/anutron/argus-sdk/terminalpane"
+	"github.com/anutron/argus-sdk/theme"
+	"github.com/anutron/argus-sdk/widget"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -220,6 +222,16 @@ func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 		maxY:   y + h,
 	}
 	p.TerminalPane.Draw(clipped)
+
+	// The SDK terminalpane hardcodes a white (tcell.StyleDefault) border when
+	// focused; hera mirrors argus's cyan focus border across the rail and both
+	// panes, so repaint just the border lines (not the inner content) in
+	// theme.ColorTitle when this pane holds focus. Drawn over the SDK's border
+	// at the same allocated rect — for a bound pane the pinned surface equals
+	// the allocation, so the cyan lines land exactly on the SDK's border cells.
+	if p.HasFocus() {
+		widget.DrawBorder(clipped, x, y, w, h, theme.StyleFocusedBorder)
+	}
 }
 
 // clippingScreen wraps a tcell.Screen and drops SetContent writes that

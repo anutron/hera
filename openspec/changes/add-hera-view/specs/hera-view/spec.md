@@ -138,7 +138,12 @@ Archived argus tasks MUST NOT appear in the Freelance section by default; they M
 
 ### Requirement: Three-state focus model
 
-The system SHALL maintain focus in exactly one of three states at any given time: `RAIL`, `COORD`, or `AGENT`. On first open, focus MUST start in `RAIL`. The focused element MUST be visually indicated by a colored border (e.g., via tview's `SetBorderColor`).
+The system SHALL maintain focus in exactly one of three states at any given time: `RAIL`, `COORD`, or `AGENT`. On first open, focus MUST start in `RAIL`. The focused element MUST be visually indicated by a colored border. The focus border color MUST mirror argus: the focused element's border uses argus's title/focus color (`theme.ColorTitle`) and unfocused borders use argus's dim border color (`theme.ColorBorder`), applied consistently across the rail and both panes. Because the SDK terminalpane paints its own border in a non-argus default (white) on focus, the pane border MUST be repainted in the argus focus color so the rail and panes share one focus color.
+
+#### Scenario: Focus border uses the argus theme color
+
+- **WHEN** an element (rail, HERA pane, or AGENT pane) holds focus
+- **THEN** its border MUST be painted in argus's focus color (`theme.ColorTitle`) — not tview's yellow default or the SDK terminalpane's white-on-focus — so a focused pane and a focused rail show the same color
 
 #### Scenario: First-open focus is RAIL
 
@@ -444,12 +449,17 @@ Source-PTY resize dispatches MUST be coalesced per task behind a short debounce 
 
 ### Requirement: Rail renders coordinators as foldable rows with Archive expandos
 
-The system SHALL render the rail as a tree mirroring the canonical prototype: each coordinator (orchestrator root or sub-coordinator) is a selectable, foldable row showing a chevron (`▾` expanded / `▸` collapsed) and a live-child `(N)` count; its agents render as indented child rows; a worker that is itself a coordinator renders as a foldable coordinator row with its own nested children. Among a coordinator's children, sub-coordinators MUST sort before leaf workers (folders-first). Rows MUST NOT render kind pills; the icon reflects argus status (`?` needs-input, `✓` review/complete, `☾` working, `○` idle), and the chevron/count distinguish coordinators. Every coordinator with archived direct children MUST render an `Archive (N)` expando below its active agents (collapsed by default); archived root coordinators MUST render under a top-level `Archive` section at the bottom of the rail. `space` MUST toggle the fold of the selected coordinator or Archive section.
+The system SHALL render the rail as a tree mirroring argus's task panel: each coordinator (orchestrator root or sub-coordinator) is a selectable, foldable row rendered in argus's task-panel order — a status icon, then a chevron (`▾` expanded / `▸` collapsed), then a coordinator marker glyph (`󰹻`, U+F0E7B) before the name, then a live-child `(N)` count; its agents render as indented child rows; a worker that is itself a coordinator renders as a foldable coordinator row with its own nested children. Among a coordinator's children, sub-coordinators MUST sort before leaf workers (folders-first). Rows MUST NOT render kind pills. The status icon (on both coordinator headers and agent rows) reflects argus status using argus's own vocabulary (`?` needs-input, `✓` review/complete, `☾` working, `○` idle); a coordinator header's status icon is driven by its coord task's argus state. The coordinator marker glyph (distinct from the transient status icon) flags the row as a coordinator regardless of state; the prototype's `◆` root-coord icon is superseded by this status-icon + marker pairing. Every coordinator with archived direct children MUST render an `Archive (N)` expando below its active agents (collapsed by default); archived root coordinators MUST render under a top-level `Archive` section at the bottom of the rail. `space` MUST toggle the fold of the selected coordinator or Archive section.
 
 #### Scenario: Coordinator row is foldable with a count
 
 - **WHEN** the rail renders a coordinator that has live agents
 - **THEN** the row MUST show a chevron and a `(N)` live-child count AND pressing `space` on it MUST toggle whether its children are shown
+
+#### Scenario: Coordinator header carries a status icon and coordinator marker
+
+- **WHEN** the rail renders a coordinator whose coord task argus state is known
+- **THEN** the header row MUST render, before the name, a status icon reflecting that argus state (the same `?`/`✓`/`☾`/`○` vocabulary as agent rows) AND the `󰹻` coordinator marker glyph AND MUST NOT render the prototype's `◆`
 
 #### Scenario: Sub-coordinators sort before leaf workers
 
