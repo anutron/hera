@@ -404,10 +404,80 @@ func (a *App) populateRail(database *db.DB) error {
 		entries = append(entries, entry)
 	}
 
+	// Resolve sub-coordinators (multi-bindings): hera's data model is flat (a
+	// Role has a single OrchestratorID; orchestrators have no parent link), so a
+	// "sub-coordinator" is the SAME argus task bound twice — a worker role under
+	// a parent orchestrator AND the coord of a separate child orchestrator. The
+	// join key is a worker roleEntry's ArgusTaskID == some orchEntry's
+	// CoordTaskID. Link them so the rail nests the child under the worker (which
+	// is promoted to a coordinator row), and drop the child from the top level
+	// so it isn't double-rendered.
+	entries = resolveSubCoordinators(entries)
+
 	a.pieces.rail.SetShowArchived(a.showArchived)
 	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database))
 	a.pieces.rail.SetOrchestrators(entries)
 	return nil
+}
+
+// resolveSubCoordinators rewrites the flat orchestrator list into a tree by
+// detecting multi-bindings: when a worker roleEntry's ArgusTaskID equals
+// another orchEntry's CoordTaskID, that worker IS that orchestrator's
+// coordinator. The worker is promoted to a coordinator row carrying the child
+// orchestrator (childOrch), and the child is removed from the returned
+// top-level list (it renders nested instead). The relinking is recursive — a
+// sub-coordinator's child may itself contain a further sub-coordinator —
+// because every orchEntry is linked in a single pass and the tree is then
+// walked lazily at render time. A self-binding (a coord's own worker pointing
+// back at the same orchestrator) is skipped so a node never becomes its own
+// child. The buildRows cycle guard (seen set) protects against any remaining
+// pathological cross-links at render time.
+func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
+	// Index orchestrators by their coord task so a worker can find the child
+	// orchestrator it coordinates. Skip empty coord tasks (no binding) and only
+	// keep the first orchestrator per coord task (a coord task is unique to one
+	// orchestrator in practice; first-wins is deterministic).
+	byCoordTask := make(map[string]*orchEntry, len(entries))
+	for _, o := range entries {
+		if o.CoordTaskID == "" {
+			continue
+		}
+		if _, dup := byCoordTask[o.CoordTaskID]; !dup {
+			byCoordTask[o.CoordTaskID] = o
+		}
+	}
+
+	consumed := make(map[int64]bool, len(entries))
+	for _, o := range entries {
+		for _, role := range o.Roles {
+			if role.ArgusTaskID == "" {
+				continue
+			}
+			child, ok := byCoordTask[role.ArgusTaskID]
+			if !ok || child.ID == o.ID {
+				// No child orchestrator for this task, or it would link an
+				// orchestrator to itself — leave the role as a plain worker.
+				continue
+			}
+			// This worker is the child orchestrator's coordinator. Promote it to
+			// a foldable coordinator row nesting the child's roles.
+			role.childOrch = child
+			role.RoleKind = string(db.KindCoordinator)
+			consumed[child.ID] = true
+		}
+	}
+
+	if len(consumed) == 0 {
+		return entries
+	}
+	out := make([]*orchEntry, 0, len(entries))
+	for _, o := range entries {
+		if consumed[o.ID] {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out
 }
 
 // buildFreelance partitions the live argus task list into the Freelance
@@ -992,6 +1062,20 @@ func (a *App) applyRailSelection(ref any) {
 				a.rebindAgent(r.ArgusTaskID)
 			}
 			a.setBodyMode(false, true)
+			return
+		}
+		if r.childOrch != nil {
+			// A sub-coordinator IS a coordinator: full-width HERA bound to the
+			// sub-coord's OWN argus task (its own coordinator PTY), NOT the
+			// parent orchestrator's coord. The child orchestrator's CoordTaskID
+			// is, by construction, this role's ArgusTaskID (the multi-binding
+			// join key); prefer it and fall back to the role's task.
+			coordTask := r.childOrch.CoordTaskID
+			if coordTask == "" {
+				coordTask = r.ArgusTaskID
+			}
+			a.rebindCoord(coordTask)
+			a.setBodyMode(true, false)
 			return
 		}
 		// Locate the orchestrator so we can rebind COORD to its coord task.

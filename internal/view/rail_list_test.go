@@ -9,6 +9,23 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+// runeColOf returns a finder that reports the RUNE column (not byte offset) at
+// which needle first appears across the given lines, or -1 if absent. Rune
+// columns are what indentation depth maps to on screen; byte offsets are
+// distorted by the multi-byte box-border and icon glyphs.
+func runeColOf(lines []string) func(needle string) int {
+	return func(needle string) int {
+		for _, ln := range lines {
+			b := strings.Index(ln, needle)
+			if b < 0 {
+				continue
+			}
+			return len([]rune(ln[:b]))
+		}
+		return -1
+	}
+}
+
 func renderRail(t *testing.T, rl *railList, w, h int) string {
 	t.Helper()
 	sim := tcell.NewSimulationScreen("")
@@ -600,6 +617,86 @@ func TestRailList_StepToBindable(t *testing.T) {
 			t.Fatalf("StepToBindable(-1) with no bindable rows must return false")
 		}
 	})
+}
+
+// Scenario: A sub-coordinator (a worker roleEntry that is itself another
+// orchestrator's coord) renders as a NESTED foldable coordinator row — chevron
+// + 󰹻 marker + (N) count — with its own children indented one level deeper, and
+// the child orchestrator does NOT also render at top level.
+func TestRailList_SubCoordinatorNestsAsFoldableCoordRow(t *testing.T) {
+	rl := newRailList()
+	// Build the multi-binding by hand: the parent's "sub" worker carries a
+	// childOrch pointer to a second orchestrator whose own leaf is nested.
+	// childOrch is wired by buildRows from the role's childOrch pointer; the
+	// child orchestrator nests under the sub-coord row and is NOT passed as a
+	// top-level orchestrator (populateRail's resolveSubCoordinators handles the
+	// flat→tree promotion + de-dup; here we hand-wire the resolved tree).
+	child := &orchEntry{ID: 2, Name: "sub", CoordTaskID: "t-sub", Roles: []*roleEntry{
+		{OrchestratorID: 2, RoleID: 20, Name: "leaf-worker", RoleKind: "worker", Live: true},
+	}}
+	sub := &roleEntry{OrchestratorID: 1, RoleID: 11, Name: "sub", RoleKind: "coordinator", ArgusTaskID: "t-sub", childOrch: child}
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "parent", CoordTaskID: "t-parent", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "plain-worker", RoleKind: "worker", Live: true},
+			sub,
+		}},
+	})
+
+	got := renderRail(t, rl, 36, 12)
+	// The sub-coordinator must render as a coord row (chevron + 󰹻 marker).
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" sub") {
+		t.Fatalf("sub-coordinator must render as a foldable coord row (chevron + marker); got:\n%s", got)
+	}
+	// Its child leaf must render, nested.
+	if !strings.Contains(got, "leaf-worker") {
+		t.Fatalf("sub-coordinator's nested child must render; got:\n%s", got)
+	}
+	// "sub" must appear exactly once (not as a leaf AND a top-level orch).
+	if n := strings.Count(got, "▾ "+string(iconCoord)+" sub"); n != 1 {
+		t.Fatalf("sub-coordinator coord row must render exactly once; got %d in:\n%s", n, got)
+	}
+
+	// Depth check: the nested leaf must be indented MORE than its sub-coord row,
+	// which in turn is indented more than the parent coord. Find the column of
+	// the needle within each line (the rail border occupies column 0).
+	lines := strings.Split(got, "\n")
+	indent := runeColOf(lines)
+	parentIndent := indent(string(iconCoord) + " parent")
+	subIndent := indent(string(iconCoord) + " sub")
+	leafIndent := indent("leaf-worker")
+	if !(parentIndent < subIndent && subIndent < leafIndent) {
+		t.Fatalf("expected increasing indentation parent(%d) < sub(%d) < leaf(%d); got:\n%s", parentIndent, subIndent, leafIndent, got)
+	}
+}
+
+// Scenario: Archived children indent one level DEEPER than their Archive (N)
+// expando header (depth-aware indentation). The Archive expando sits one level
+// under its coordinator; its archived children sit one level under the expando.
+func TestRailList_ArchivedChildIndentsDeeperThanExpando(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w-active", RoleKind: "worker", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w-archived", RoleKind: "worker", Archived: true},
+		}},
+	})
+	// Open the per-coordinator Archive expando so its child renders.
+	if !rl.SelectByArchiveOwner(1) {
+		t.Fatalf("could not select per-coordinator Archive expando")
+	}
+	rl.ToggleCollapse()
+
+	got := renderRail(t, rl, 36, 10)
+	lines := strings.Split(got, "\n")
+	indent := runeColOf(lines)
+	expandoIndent := indent("Archive (1)")
+	archivedIndent := indent("w-archived")
+	if expandoIndent < 0 || archivedIndent < 0 {
+		t.Fatalf("expected both the Archive expando and the archived child to render; got:\n%s", got)
+	}
+	if archivedIndent <= expandoIndent {
+		t.Fatalf("archived child (%d) must indent deeper than its Archive expando header (%d); got:\n%s", archivedIndent, expandoIndent, got)
+	}
 }
 
 // The top-level Archive sorts to the very bottom of the rail, below the

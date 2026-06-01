@@ -482,7 +482,11 @@ Source-PTY resize dispatches MUST be coalesced per task behind a short debounce 
 
 ### Requirement: Rail renders coordinators as foldable rows with Archive expandos
 
-The system SHALL render the rail as a tree mirroring argus's task panel: each coordinator (orchestrator root or sub-coordinator) is a selectable, foldable row rendered in argus's task-panel order — a status icon, then a chevron (`▾` expanded / `▸` collapsed), then a coordinator marker glyph (`󰹻`, U+F0E7B) before the name, then a live-child `(N)` count; its agents render as indented child rows; a worker that is itself a coordinator renders as a foldable coordinator row with its own nested children. Among a coordinator's children, sub-coordinators MUST sort before leaf workers (folders-first). Rows MUST NOT render kind pills. The status icon (on both coordinator headers and agent rows) reflects argus status using argus's own vocabulary (`?` needs-input, `✓` review/complete, `☾` working, `○` idle); a coordinator header's status icon is driven by its coord task's argus state. The coordinator marker glyph (distinct from the transient status icon) flags the row as a coordinator regardless of state; the prototype's `◆` root-coord icon is superseded by this status-icon + marker pairing. Every coordinator with archived direct children MUST render an `Archive (N)` expando below its active agents (collapsed by default); archived root coordinators MUST render under a top-level `Archive` section at the bottom of the rail. `space` MUST toggle the fold of the selected coordinator or Archive section.
+The system SHALL render the rail as a tree mirroring argus's task panel: each coordinator (orchestrator root or sub-coordinator) is a selectable, foldable row rendered in argus's task-panel order — a status icon, then a chevron (`▾` expanded / `▸` collapsed), then a coordinator marker glyph (`󰹻`, U+F0E7B) before the name, then a live-child `(N)` count; its agents render as indented child rows; a worker that is itself a coordinator renders as a foldable coordinator row with its own nested children, recursively (a sub-coordinator MAY itself contain further sub-coordinators). Among a coordinator's children, sub-coordinators MUST sort before leaf workers (folders-first). Rows MUST NOT render kind pills.
+
+Because hera's data model is flat (a role has a single orchestrator; orchestrators have no parent link), a sub-coordinator is modeled as a multi-binding: the SAME argus task is both a worker role under a parent orchestrator AND the coord of a separate child orchestrator (the join key is a worker role's bound argus task equalling a child orchestrator's coord task). The system SHALL resolve this multi-binding so the child orchestrator's roles nest beneath the worker row (which is rendered as a coordinator row), the child orchestrator MUST NOT also render at the top level, and resolution MUST guard against cycles. Every rail row carries a tree depth; rows MUST be indented by their depth (deeper rows further right), and an `Archive (N)` expando's archived children MUST indent one level deeper than the expando header.
+
+The status icon (on both coordinator headers and agent rows) reflects argus status using argus's own vocabulary (`?` needs-input, `✓` review/complete, `☾` working, `○` idle); a coordinator header's status icon is driven by its coord task's argus state, and a sub-coordinator row's by its own bound task's state. The coordinator marker glyph (distinct from the transient status icon) flags the row as a coordinator regardless of state; the prototype's `◆` root-coord icon is superseded by this status-icon + marker pairing. Every coordinator with archived direct children MUST render an `Archive (N)` expando below its active agents (collapsed by default); archived root coordinators MUST render under a top-level `Archive` section at the bottom of the rail. `space` MUST toggle the fold of the selected coordinator (root OR sub-coordinator) or Archive section.
 
 #### Scenario: Coordinator row is foldable with a count
 
@@ -498,6 +502,21 @@ The system SHALL render the rail as a tree mirroring argus's task panel: each co
 
 - **WHEN** a coordinator has both sub-coordinator children and leaf-worker children
 - **THEN** the sub-coordinator rows MUST render above the leaf-worker rows
+
+#### Scenario: Sub-coordinator renders as a nested foldable coord row with its children
+
+- **WHEN** a worker role under a parent orchestrator has a bound argus task that is ALSO another (child) orchestrator's coord task
+- **THEN** that worker MUST render as a foldable coordinator row (chevron + `󰹻` marker + live-child `(N)` count) with the child orchestrator's roles nested one level deeper, AND the child orchestrator MUST NOT also render as a top-level row
+
+#### Scenario: Selecting a sub-coordinator composes full-width HERA bound to its own task
+
+- **WHEN** focus is `RAIL` and a sub-coordinator row is selected
+- **THEN** the body MUST compose the full-width `HERA` pane (no `AGENT` pane) bound to the sub-coordinator's OWN argus task (its own coordinator PTY), not the parent orchestrator's coord task, AND `Enter` MUST move focus into that `HERA` pane
+
+#### Scenario: Archived children indent one level deeper than their Archive expando
+
+- **WHEN** a coordinator's `Archive (N)` expando is folded open
+- **THEN** its archived children MUST render indented one tree-depth level deeper than the `Archive (N)` expando header
 
 #### Scenario: Archived agents live in their coordinator's Archive expando
 

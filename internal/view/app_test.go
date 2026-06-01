@@ -1043,6 +1043,104 @@ func TestApp_OnRailSelectEnter_OrchHeaderEntersHERA(t *testing.T) {
 	}
 }
 
+// TestPopulateRail_SubCoordinatorNestsAndBindsOwnTask is the end-to-end
+// multi-binding fixture: orchestrator "parent" has a worker role "sub" whose
+// live binding's argus task is ALSO orchestrator "child"'s coord task. populate
+// must (a) nest "child"'s leaf under the "sub" sub-coordinator row, (b) NOT
+// double-render "child" at top level, and (c) bind HERA to the SUB-COORD's OWN
+// task (not the parent's coord) when the sub-coordinator is selected →
+// full-width HERA (coordPresent=true, agentPresent=false).
+func TestPopulateRail_SubCoordinatorNestsAndBindsOwnTask(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	parent, _ := d.Orchestrators.Create(ctx, "parent")
+	parentCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: parent.ID, Name: "parent-coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	subWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: parent.ID, Name: "sub", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: parentCoord.ID, ArgusTaskID: "t-parent-coord", WorktreePath: "/pc"})
+	// The sub worker's task IS the child orchestrator's coord task (multi-binding).
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subWorker.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	child, _ := d.Orchestrators.Create(ctx, "child")
+	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: child.ID, Name: "child-coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	childLeaf, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: child.ID, Name: "child-leaf", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoord.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childLeaf.ID, ArgusTaskID: "t-child-leaf", WorktreePath: "/cl"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	// The child orchestrator must NOT render as a top-level row (it's consumed
+	// as a nested sub-coordinator). Top-level rows are only "parent".
+	topLevelOrchs := 0
+	var subCoordRow *roleEntry
+	for _, row := range a.pieces.rail.rows {
+		if row.kind == railRowOrch && row.orch != nil && !row.orch.Archived {
+			topLevelOrchs++
+			if row.orch.ID == child.ID {
+				t.Fatalf("child orchestrator must NOT render at top level; it nests under the sub-coordinator")
+			}
+		}
+		if row.kind == railRowRole && row.role != nil && row.role.RoleID == subWorker.ID {
+			subCoordRow = row.role
+		}
+	}
+	if topLevelOrchs != 1 {
+		t.Fatalf("expected exactly one top-level orchestrator (parent); got %d", topLevelOrchs)
+	}
+	if subCoordRow == nil {
+		t.Fatalf("sub-coordinator role row missing from the rail rows")
+	}
+	if subCoordRow.RoleKind != string(db.KindCoordinator) {
+		t.Fatalf("the sub worker must be promoted to coordinator kind; got %q", subCoordRow.RoleKind)
+	}
+	if subCoordRow.childOrch == nil || subCoordRow.childOrch.ID != child.ID {
+		t.Fatalf("sub-coordinator must carry its childOrch pointer; got %+v", subCoordRow.childOrch)
+	}
+
+	// The child's leaf must be present as a nested row.
+	foundChildLeaf := false
+	for _, row := range a.pieces.rail.rows {
+		if row.kind == railRowRole && row.role != nil && row.role.RoleID == childLeaf.ID {
+			foundChildLeaf = true
+		}
+	}
+	if !foundChildLeaf {
+		t.Fatalf("child orchestrator's leaf must render nested under the sub-coordinator")
+	}
+
+	// Selecting the sub-coordinator composes full-width HERA bound to ITS OWN
+	// task (t-sub), not the parent's coord (t-parent-coord).
+	if !a.pieces.rail.SelectByRoleID(subWorker.ID) {
+		t.Fatalf("could not select the sub-coordinator row")
+	}
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+	if a.CoordTaskID() != "t-sub" {
+		t.Fatalf("HERA must bind to the sub-coordinator's OWN task t-sub; got %q", a.CoordTaskID())
+	}
+	if !a.coordPresent || a.agentPresent {
+		t.Fatalf("sub-coordinator selection must be full-width HERA (coordPresent=true, agentPresent=false); got coord=%v agent=%v", a.coordPresent, a.agentPresent)
+	}
+
+	// Enter on the sub-coordinator enters the HERA pane.
+	if got := a.OnRailSelectEnter(); got != FocusCOORD {
+		t.Fatalf("Enter on a sub-coordinator must enter HERA (FocusCOORD); got %s", got)
+	}
+}
+
 // TestPopulateRail_FiltersCoordRows confirms that coord roles never
 // appear as their own rail rows; instead the orchestrator entry's
 // CoordTaskID holds the coord binding so the COORD pane can rebind
