@@ -240,6 +240,18 @@ Because argus now surrenders the full keyboard (D12), hera adopts argus's key vo
 
 `^d`/`^r`/`^p` (and `s`/`S`/`n`/`r`/`a`/`l`/`?`) act only in RAIL focus; in a pane they forward to the PTY. Only pane-traversal (`^←/→`), in-pane nav (`⌘↑/↓`,`^↑/↓`), and scroll (`⇧↑/↓`) operate from inside a pane.
 
+### D16 — Validation method: parity loop (visual AND functional), every stage
+
+Each stage closes with an explicit loop — **fix → deploy (iris dogfood) → re-probe → diff → repeat until parity** — with TWO kinds of check, because the prototype is static HTML and cannot prove live behavior:
+
+1. **Visual parity** — render the live surface with the probe (`renderANSIToGrid`) and diff against `docs/prototypes/rail-nav.html`: rail tree (icons, counts, folders-first, archive folds), the three body modes, chrome (top-left HERA, top-right leave note, bottom hotkeys), focus highlight.
+2. **Functional parity** — drive keys through the probe (`HERA_PROBE_KEYS` / `HERA_PROBE_RAW`) and assert *behavior*, not pixels. The load-bearing checks the prototype CANNOT show:
+   - **Keystrokes reach the live PTY.** With focus in a COORD/AGENT pane, a sent byte MUST land at the bound task's `POST /api/tasks/{id}/input` (verify via argus's input audit or the task echoing it back through its stream). This is the class of bug the visual diff misses.
+   - Focus traversal moves the keyboard, not just the border: a key sent after `^→` reaches the new pane, not the old.
+   - `a`/`^d`/`^r`/`s`/`S` mutate real state and the rail updates; `^p` triggers the PR flow.
+
+**Known symptom to root-cause early (Stage O):** "Cmd-→ moves focus to the agent but typed keys don't reach it." Suspects: the AGENT pane bound to a completed agent's read-only `/output` snapshot (no live session to accept input), an empty `AgentTaskID()` at that selection, or `handlePane` not forwarding for the modified-arrow-derived focus state. Reproduce with the probe (focus a pane, send a byte, check `/input`), fix, and add a regression test before moving on.
+
 ## Risks / Trade-offs
 
 - **`git worktree remove --force` from the daemon is potentially destructive.** → Confirm modal lists everything that will disappear and requires explicit `y` keystroke. The destructive operation is gated behind RAIL focus + the confirm modal — no accidental single-keystroke deletion. We log every `git worktree remove` invocation with the worktree path. If a future bug attempts a wrong-path delete, the log gives audit trail.

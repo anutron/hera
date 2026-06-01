@@ -185,19 +185,21 @@ func TestLiveViewProbe(t *testing.T) {
 	var (
 		mu  sync.Mutex
 		buf bytes.Buffer
+		ctl []string // hera → client TEXT control frames (hotkeys / release / help)
 	)
-	mark := func() int { mu.Lock(); defer mu.Unlock(); return buf.Len() }
 	go func() {
 		for {
 			typ, data, err := conn.Read(readCtx)
 			if err != nil {
 				return
 			}
+			mu.Lock()
 			if typ == websocket.MessageBinary {
-				mu.Lock()
 				buf.Write(data)
-				mu.Unlock()
+			} else if typ == websocket.MessageText {
+				ctl = append(ctl, string(data))
 			}
+			mu.Unlock()
 		}
 	}()
 
@@ -205,53 +207,53 @@ func TestLiveViewProbe(t *testing.T) {
 	_ = conn.Write(context.Background(), websocket.MessageText,
 		[]byte(`{"type":"resize","cols":200,"rows":55}`))
 
-	from := 0
-	// Optionally drive keystrokes (HERA_PROBE_KEYS, e.g. "jjjjjjjjj") so we
-	// can watch the coord/agent panes follow rail selection — keys arrive as
-	// raw bytes on binary frames and feed tcell's input parser. A short gap
-	// after each lets the selection debounce + pane rebind settle.
+	time.Sleep(500 * time.Millisecond) // let the first frame render
+
+	// HERA_PROBE_KEYS: each byte sent as its own binary frame (j/k nav, a, s, n …).
 	if keys := os.Getenv("HERA_PROBE_KEYS"); keys != "" {
-		time.Sleep(500 * time.Millisecond) // let the first frame render
 		for _, k := range []byte(keys) {
 			_ = conn.Write(context.Background(), websocket.MessageBinary, []byte{k})
-			time.Sleep(250 * time.Millisecond)
+			time.Sleep(220 * time.Millisecond)
 		}
-		time.Sleep(600 * time.Millisecond)
-		// Force a full repaint of the settled surface (tcell redraws +
-		// Sync on EventResize), capturing only bytes emitted from here on
-		// so earlier navigation diffs are excluded.
-		from = mark()
-		_ = conn.Write(context.Background(), websocket.MessageText,
-			[]byte(`{"type":"resize","cols":196,"rows":52}`))
-		time.Sleep(1500 * time.Millisecond)
-	} else {
-		time.Sleep(2500 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 	}
 
-	// HERA_PROBE_RAW sends a single Go-quoted byte string as ONE binary frame
-	// so a multi-byte escape sequence (e.g. Ctrl-Right = "\x1b[1;5C") is parsed
-	// by tcell as one key event — useful for testing focus traversal that
-	// HERA_PROBE_KEYS (one byte per frame) can't express.
+	// HERA_PROBE_RAW: a `;;`-separated SEQUENCE of Go-quoted byte strings, each
+	// sent as ONE binary frame (so a multi-byte escape sequence like Ctrl-Right
+	// "\x1b[1;5C" is parsed as one key). Lets a test express a full functional
+	// step like "Enter into the pane, then type x": HERA_PROBE_RAW='\r;;x'.
 	if raw := os.Getenv("HERA_PROBE_RAW"); raw != "" {
-		if decoded, err := strconv.Unquote(`"` + raw + `"`); err == nil {
-			_ = conn.Write(context.Background(), websocket.MessageBinary, []byte(decoded))
-			time.Sleep(1500 * time.Millisecond)
-		} else {
-			t.Logf("HERA_PROBE_RAW unquote failed: %v", err)
+		for _, tok := range strings.Split(raw, ";;") {
+			if decoded, err := strconv.Unquote(`"` + tok + `"`); err == nil {
+				_ = conn.Write(context.Background(), websocket.MessageBinary, []byte(decoded))
+				time.Sleep(350 * time.Millisecond)
+			} else {
+				t.Logf("HERA_PROBE_RAW token %q unquote failed: %v", tok, err)
+			}
 		}
 	}
+
+	// Force one clean full repaint of the settled surface (tcell clears + redraws
+	// on EventResize); renderANSIToGrid honors the clear so the snapshot is final.
+	_ = conn.Write(context.Background(), websocket.MessageText,
+		[]byte(`{"type":"resize","cols":198,"rows":53}`))
+	time.Sleep(1300 * time.Millisecond)
 
 	mu.Lock()
 	full := buf.Bytes()
+	frames := append([]string(nil), ctl...)
 	mu.Unlock()
 	if len(full) == 0 {
 		t.Fatal("no surface bytes — daemon not rendering")
 	}
 	// Reconstruct the final screen via a cursor-addressed grid so live pane
-	// streaming doesn't fragment the snapshot. _ = from (kept for the
-	// byte-offset capture path; the grid renders the whole settled stream).
-	_ = from
+	// streaming doesn't fragment the snapshot.
 	t.Logf("=== LIVE HERA SURFACE (%d bytes) ===\n%s", len(full), renderANSIToGrid(full, 56, 205))
+	// hera's outbound control frames — the key-surrender contract chrome
+	// (hotkeys → argus bottom bar, release on Esc-from-RAIL, help on ?).
+	// The direct probe bypasses argus, so the bottom bar itself is NOT in the
+	// surface above; these frames are how we verify that behavior functionally.
+	t.Logf("=== HERA CONTROL FRAMES (%d) ===\n%s", len(frames), strings.Join(frames, "\n"))
 }
 
 // TestLiveArgusAPIProbe GETs the live argus daemon's /api/tasks and reports
