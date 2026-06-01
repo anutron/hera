@@ -109,6 +109,15 @@ type RailSelectHandler interface {
 	OnRailSelectEnter() FocusState
 }
 
+// PaneByteForwarder enqueues pane-focus keystroke bytes for asynchronous,
+// order-preserving, coalesced delivery to a task's PTY input endpoint. Enqueue
+// MUST NOT block the caller (the tview input-handler goroutine). *PaneForwarder
+// is the production implementation; tests inject a recording/blocking fake. A
+// nil Forward makes the router fall back to a synchronous PostTaskInput.
+type PaneByteForwarder interface {
+	Enqueue(taskID string, payload []byte)
+}
+
 // KeyRouter is the top-level input capture handler. It owns the focus
 // state machine and decides for each key event whether to (1) transition
 // focus, (2) fire a mutation handler, (3) forward bytes to a task's PTY,
@@ -124,6 +133,12 @@ type KeyRouter struct {
 	Border     BorderUpdater
 	RailSelect RailSelectHandler
 	Modal      ModalGate
+
+	// Forward, when set, receives pane-focus keystroke bytes for asynchronous
+	// ordered+coalesced delivery — handlePane enqueues and returns immediately
+	// so a slow round-trip never serializes typing on the event loop. When nil
+	// the router falls back to the synchronous Poster path below.
+	Forward PaneByteForwarder
 
 	// Scroller scrolls the focused pane (⇧↑/⇧↓). InPaneNav flips the rail
 	// selection while staying in a pane (⌘↑/⌘↓ / ^↑/^↓). Both are pane-focus-
@@ -381,18 +396,23 @@ func (r *KeyRouter) handlePane(event *tcell.EventKey) *tcell.EventKey {
 	if len(payload) == 0 {
 		return nil
 	}
+	// Fast path: hand the byte(s) to the async forwarder and return IMMEDIATELY.
+	// The forwarder drains in FIFO order (preserving key order) on its own
+	// goroutine and coalesces consecutive same-task bytes into one POST, so fast
+	// typing never serializes behind per-keystroke HTTP round-trips on the tview
+	// input-handler goroutine. The forwarder emits the E1 failure log itself.
+	if r.Forward != nil {
+		r.Forward.Enqueue(taskID, payload)
+		return nil
+	}
+	// Synchronous fallback (no async forwarder wired, e.g. unit tests): POST on
+	// the calling goroutine. A failure here is the reported E1 symptom — focus
+	// moved into the pane but typed keys never echo. Log it (with enough context
+	// to act) instead of swallowing.
 	ctx := r.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Forward the byte(s) to the bound task's PTY. A failure here is the
-	// reported E1 symptom — focus moved into the pane but typed keys never
-	// echo. Previously the error was discarded, so the drop was invisible and
-	// undebuggable; log it (with enough context to act) instead of swallowing.
-	// Forward the byte(s) to the bound task's PTY. A failure here is the
-	// reported E1 symptom — focus moved into the pane but typed keys never
-	// echo. Previously the error was discarded, so the drop was invisible and
-	// undebuggable; log it (with enough context to act) instead of swallowing.
 	if _, err := r.Poster.PostTaskInput(ctx, taskID, payload); err != nil && ctx.Err() == nil {
 		r.logger().Warn("view.keys: forward keystroke to pane PTY failed",
 			"focus", state.String(), "task_id", taskID, "bytes", len(payload), "err", err)

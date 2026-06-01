@@ -205,7 +205,9 @@ The system SHALL forward keystrokes received while focus is `COORD` or `AGENT` t
 
 Forwarding MUST work regardless of HOW the pane gained focus: stepping in via the arrow ladder (`Ctrl-→`) and entering the selection's primary pane via `Enter` from `RAIL` MUST both leave the focused pane bound to a task such that the next typed key is forwarded to that task. After `Enter` enters a worker/freelancer row's AGENT pane, the AGENT pane's bound task target MUST be the selected row's argus task, so the next keystroke reaches it.
 
-When a forward `POST /api/tasks/{id}/input` fails (argus unreachable, task gone, endpoint unsupported, or auth rejected), the system MUST NOT silently discard the failure: it MUST log a warning carrying the focus state, the target task id, and the underlying error, so a keystroke that never reaches a pane's PTY is diagnosable rather than invisible. A successful forward MUST NOT emit that warning. When focus is in a pane but no task is bound to it, the keystroke is dropped (there is nowhere to send it) and the drop SHOULD be logged at debug level.
+When a forward `POST /api/tasks/{id}/input` fails (argus unreachable, task gone, endpoint unsupported, or auth rejected), the system MUST NOT silently discard the failure: it MUST log a warning carrying the target task id and the underlying error, so a keystroke that never reaches a pane's PTY is diagnosable rather than invisible. A successful forward MUST NOT emit that warning. When focus is in a pane but no task is bound to it, the keystroke is dropped (there is nowhere to send it) and the drop SHOULD be logged at debug level.
+
+Keystroke forwarding MUST NOT block the UI event loop. The view application resolves the target task at key-press time and hands the byte(s) to an asynchronous, ordered sender; the key handler MUST return without waiting for the `POST /api/tasks/{id}/input` round-trip. The sender MUST preserve byte/key order: bytes enqueued for the same task MUST be POSTed in the order they were typed. The sender MAY coalesce consecutive bytes destined for the SAME task into a single `POST /api/tasks/{id}/input` (concatenated in order) to cut round-trips for fast typing or paste; it MUST NOT coalesce across different task targets, so a focus change mid-stream still delivers the earlier bytes to the earlier task before the new target's bytes go out. The asynchronous sender MUST be tied to the session lifecycle and MUST stop cleanly on session teardown / context cancellation without leaking a goroutine.
 
 #### Scenario: Typed key forwarded to COORD task
 
@@ -220,12 +222,29 @@ When a forward `POST /api/tasks/{id}/input` fails (argus unreachable, task gone,
 #### Scenario: Failed forward is logged, not swallowed
 
 - **WHEN** focus is `AGENT`, a task is bound, the operator types a character, and the `POST /api/tasks/{id}/input` call returns an error
-- **THEN** the system MUST log a warning identifying the focus, the bound task id, and the error AND MUST NOT crash or block the input pump
+- **THEN** the system MUST log a warning identifying the bound task id and the error AND MUST NOT crash or block the input pump
 
 #### Scenario: Focus-traversal key not forwarded
 
 - **WHEN** focus is `AGENT` and the operator presses `Ctrl-Q`
 - **THEN** focus MUST transition to `RAIL` AND no `POST /api/tasks/.../input` MUST be issued for that key event
+
+#### Scenario: Forwarding does not block the input event loop
+
+- **WHEN** focus is in a pane, a task is bound, the operator types a key, and the `POST /api/tasks/{id}/input` round-trip is slow
+- **THEN** the key handler MUST return immediately (it MUST NOT wait for the round-trip) AND the byte(s) MUST be delivered to the bound task by the asynchronous sender on its own goroutine
+
+#### Scenario: Typed bytes are forwarded in order
+
+- **WHEN** focus is in a pane bound to one task and the operator types `A`, then `B`, then `C` in rapid succession
+- **THEN** the bytes MUST reach that task's `POST /api/tasks/{id}/input` in the order `A`, `B`, `C` (key order is never reordered)
+
+#### Scenario: Consecutive same-target bytes may coalesce into one POST
+
+- **WHEN** several bytes for the SAME bound task pile up faster than the sender can deliver them
+- **THEN** the sender MAY batch the consecutive same-target bytes into a single `POST /api/tasks/{id}/input` with the bytes concatenated in typed order (fewer POSTs than bytes)
+- **AND WHEN** the queued bytes target two DIFFERENT tasks (a focus change occurred mid-stream)
+- **THEN** the sender MUST NOT merge them into one POST: the earlier task's bytes go out in their own `POST` before the new target's bytes
 
 ### Requirement: Mutation keys are RAIL-focus-only
 

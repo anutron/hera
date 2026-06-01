@@ -120,10 +120,20 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// Let the App flip the focus machine's coordPresent flag when it
 		// enters/leaves freelance (full-width) mode.
 		app.SetFocusMachine(focus)
+		// Decouple typing from the /input round-trip: the router enqueues
+		// pane-focus bytes onto this forwarder, which drains them in order on a
+		// single goroutine and coalesces consecutive same-task bytes into one
+		// POST. Without it every keystroke blocked the tview input-handler
+		// goroutine on a full HTTP round-trip, serializing fast typing behind
+		// round-trips (the reported input-lag). Tied to this session's ctx and
+		// stopped on teardown so the goroutine never leaks.
+		forwarder := NewPaneForwarder(ctx, client, log, 256)
+		defer forwarder.Stop()
 		router := &KeyRouter{
 			Focus:      focus,
 			Targets:    app,
 			Poster:     client,
+			Forward:    forwarder,
 			Mutations:  bridge,
 			Border:     app,
 			RailSelect: app,
