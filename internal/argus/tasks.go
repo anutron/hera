@@ -287,6 +287,54 @@ func (c *Client) UnarchiveTask(ctx context.Context, taskID string) error {
 	return err
 }
 
+// DeleteTask destroys an argus task via DELETE /api/tasks/{id}. Argus stops
+// the session, removes the session log + artifacts, deletes the DB row, AND
+// cleans up the task's git worktree + branch (see argus handleDeleteTask).
+// This is the destructive verb backing hera-view's `^d`: it removes the argus
+// task, worktree, and branch in one call. The route accepts hera's scope
+// token (it is NOT master-gated — same tier as stop).
+//
+// A 404 is treated as success: deletion is idempotent, so a task that argus
+// already removed (e.g. deleted out-of-band before a `^d` cascade or `^r`
+// prune reaches it) is "already gone" rather than an error. Swallowing the
+// 404 keeps cascades from aborting partway and leaving sibling roles
+// un-archived. Other non-2xx statuses surface as *HTTPError.
+func (c *Client) DeleteTask(ctx context.Context, taskID string) error {
+	status, err := c.doJSON(ctx, "DELETE", "/api/tasks/"+url.PathEscape(taskID), nil, nil)
+	if err != nil {
+		if status == 404 {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// setTaskStatusInput is the body of POST /api/tasks/{id}/status.
+type setTaskStatusInput struct {
+	Status string `json:"status"`
+}
+
+// setTaskStatusResponse mirrors argus's status response envelope.
+type setTaskStatusResponse struct {
+	Status string `json:"status"`
+}
+
+// SetTaskStatus sets an argus task's workflow status via
+// POST /api/tasks/{id}/status. status must be one of argus's status strings:
+// "pending", "in_progress", "in_review", "complete". Returns argus's resolved
+// status string. Backs hera-view's `s`/`S` advance/revert keys (the caller
+// computes the next/prev status before invoking). Accepts hera's scope token
+// (not master-gated).
+func (c *Client) SetTaskStatus(ctx context.Context, taskID, status string) (string, error) {
+	body := setTaskStatusInput{Status: status}
+	var out setTaskStatusResponse
+	if _, err := c.doJSON(ctx, "POST", "/api/tasks/"+url.PathEscape(taskID)+"/status", body, &out); err != nil {
+		return "", err
+	}
+	return out.Status, nil
+}
+
 func (c *Client) PostTaskInput(ctx context.Context, taskID string, payload []byte) (int, error) {
 	req, err := newRequest(ctx, "POST", c.BaseURL()+"/api/tasks/"+url.PathEscape(taskID)+"/input", payload)
 	if err != nil {

@@ -85,7 +85,11 @@ func TestRailList_ArchiveSeparatorRendersWhenShowArchived(t *testing.T) {
 	}
 }
 
-func TestRailList_HidesArchivedWhenFlagOff(t *testing.T) {
+func TestRailList_HidesArchivedItemsButShowsExpandoWhenCollapsed(t *testing.T) {
+	// Per D14 the Archive expandos are always reachable (collapsed by
+	// default). With showArchived=false the expando headers render but the
+	// archived items themselves stay hidden until the operator folds them
+	// open with `space`.
 	rl := newRailList()
 	rl.SetOrchestrators([]*orchEntry{
 		{ID: 1, Name: "live", Roles: []*roleEntry{
@@ -95,15 +99,16 @@ func TestRailList_HidesArchivedWhenFlagOff(t *testing.T) {
 		{ID: 2, Name: "archived-orch", Archived: true, Roles: nil},
 	})
 
-	got := renderRail(t, rl, 22, 6)
+	got := renderRail(t, rl, 28, 8)
 	if strings.Contains(got, "w-old") {
-		t.Fatalf("archived role should be hidden when showArchived=false; got:\n%s", got)
+		t.Fatalf("archived role should be hidden inside a collapsed expando; got:\n%s", got)
 	}
 	if strings.Contains(got, "archived-orch") {
-		t.Fatalf("archived orch should be hidden when showArchived=false; got:\n%s", got)
+		t.Fatalf("archived orch should be hidden inside a collapsed top-level Archive; got:\n%s", got)
 	}
-	if strings.Contains(got, "Archive") {
-		t.Fatalf("archive separator should not appear when showArchived=false; got:\n%s", got)
+	// But the expando headers themselves are always present.
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("per-coordinator and top-level Archive (N) expandos must render even when collapsed; got:\n%s", got)
 	}
 }
 
@@ -294,6 +299,40 @@ func TestRailList_FreelanceSectionRendersAndCollapses(t *testing.T) {
 	}
 }
 
+// TestRailList_FreelanceCursorRestoresByTaskID proves a freelance selection
+// survives a SetFreelance/rebuild on its own row, not the first freelancer.
+// Freelance roleEntry values carry RoleID==0, so restoring by RoleID would
+// match the first freelancer; the cursor must restore by the stable
+// ArgusTaskID instead.
+func TestRailList_FreelanceCursorRestoresByTaskID(t *testing.T) {
+	rl := newRailList()
+	mk := func() []*freelanceProject {
+		return []*freelanceProject{
+			{Project: "Beta", Tasks: []*roleEntry{
+				{RoleKind: "freelance", Name: "free-1", ArgusTaskID: "f1", HasState: true, Status: "in_progress"},
+				{RoleKind: "freelance", Name: "free-2", ArgusTaskID: "f2", HasState: true, Status: "in_progress"},
+			}},
+		}
+	}
+	rl.SetFreelance(mk())
+
+	// Select the SECOND freelancer (ArgusTaskID f2).
+	if !rl.SelectByArgusTaskID("f2") {
+		t.Fatalf("could not select freelancer f2")
+	}
+	if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.ArgusTaskID != "f2" {
+		t.Fatalf("cursor not on f2 before rebuild; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+	}
+
+	// A dynamic refresh rebuilds the freelance rows (fresh roleEntry pointers).
+	rl.SetFreelance(mk())
+
+	// Cursor must stay on the freelancer with ArgusTaskID f2 — NOT jump to f1.
+	if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.ArgusTaskID != "f2" {
+		t.Fatalf("freelance cursor jumped on rebuild; want f2, got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+	}
+}
+
 func TestRailList_NoFreelanceSectionWhenEmpty(t *testing.T) {
 	rl := newRailList()
 	rl.SetOrchestrators([]*orchEntry{
@@ -303,5 +342,256 @@ func TestRailList_NoFreelanceSectionWhenEmpty(t *testing.T) {
 	got := renderRail(t, rl, 30, 10)
 	if strings.Contains(got, "Freelance") {
 		t.Fatalf("Freelance separator must be omitted when there are no freelancers; got:\n%s", got)
+	}
+}
+
+// Scenario: Sub-coordinators sort before leaf workers (folders-first).
+// A coordinator with both sub-coordinator children (RoleKind=="coordinator")
+// and leaf-worker children must render the sub-coords above the workers.
+func TestRailList_FoldersFirstOrdering(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "p", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "leaf-a", RoleKind: "worker"},
+			{OrchestratorID: 1, RoleID: 11, Name: "sub-coord", RoleKind: "coordinator"},
+			{OrchestratorID: 1, RoleID: 12, Name: "leaf-b", RoleKind: "worker"},
+		}},
+	})
+	got := renderRail(t, rl, 30, 8)
+	subIdx := strings.Index(got, "sub-coord")
+	leafAIdx := strings.Index(got, "leaf-a")
+	leafBIdx := strings.Index(got, "leaf-b")
+	if subIdx < 0 || leafAIdx < 0 || leafBIdx < 0 {
+		t.Fatalf("expected all rows rendered; got:\n%s", got)
+	}
+	if subIdx > leafAIdx || subIdx > leafBIdx {
+		t.Fatalf("sub-coordinator must sort before leaf workers; got:\n%s", got)
+	}
+}
+
+// Scenario: Rows MUST NOT render kind pills.
+func TestRailList_NoKindPills(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "p", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", RoleKind: "worker", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "c1", RoleKind: "coordinator", Live: true},
+		}},
+	})
+	got := renderRail(t, rl, 36, 8)
+	for _, pill := range []string{"worker", "coordinator", "[worker]", "[coord]", "WORKER", "COORD"} {
+		if strings.Contains(got, pill) {
+			t.Fatalf("rail must not render kind pills; found %q in:\n%s", pill, got)
+		}
+	}
+}
+
+// Scenario: Coordinator row is foldable with a count, and `space` (ToggleCollapse)
+// toggles whether its children are shown.
+func TestRailList_CoordinatorFoldableSpaceToggle(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2", Live: true},
+		}},
+	})
+	got := renderRail(t, rl, 28, 8)
+	if !strings.Contains(got, "▾ proj (2)") {
+		t.Fatalf("expected expanded chevron + (2) count; got:\n%s", got)
+	}
+	// space on the coordinator header collapses.
+	rl.SelectByOrchID(1)
+	rl.ToggleCollapse()
+	got = renderRail(t, rl, 28, 8)
+	if !strings.Contains(got, "▸ proj (2)") {
+		t.Fatalf("expected collapsed chevron after space; got:\n%s", got)
+	}
+	if strings.Contains(got, "w1") || strings.Contains(got, "w2") {
+		t.Fatalf("children must be hidden when collapsed; got:\n%s", got)
+	}
+}
+
+// Scenario: Archived agents live in their coordinator's Archive expando,
+// collapsed by default; folding the expando open reveals them.
+func TestRailList_PerCoordinatorArchiveExpando(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w-active", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w-arch", Archived: true},
+		}},
+	})
+	got := renderRail(t, rl, 30, 8)
+	if !strings.Contains(got, "w-active") {
+		t.Fatalf("active worker must render among the coordinator's rows; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("coordinator with an archived child must render an Archive (1) expando; got:\n%s", got)
+	}
+	if strings.Contains(got, "w-arch") {
+		t.Fatalf("archived agent must NOT appear among active rows / collapsed expando; got:\n%s", got)
+	}
+
+	// Fold the per-coordinator Archive expando open via its header row.
+	if !rl.SelectByArchiveOwner(1) {
+		t.Fatalf("could not select the per-coordinator Archive expando header")
+	}
+	rl.ToggleCollapse()
+	got = renderRail(t, rl, 30, 8)
+	if !strings.Contains(got, "w-arch") {
+		t.Fatalf("archived agent must appear once its coordinator's Archive expando is open; got:\n%s", got)
+	}
+}
+
+// Scenario: Archived root coordinators live under the top-level Archive
+// section at the bottom of the rail (collapsed by default).
+func TestRailList_TopLevelArchiveForArchivedRootCoordinators(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "live-proj", Roles: []*roleEntry{{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true}}},
+		{ID: 2, Name: "dead-proj", Archived: true, Roles: nil},
+	})
+	got := renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("expected a top-level Archive (1) expando for the archived root coordinator; got:\n%s", got)
+	}
+	if strings.Contains(got, "dead-proj") {
+		t.Fatalf("archived root coordinator must stay hidden inside the collapsed top-level Archive; got:\n%s", got)
+	}
+	// The live project's row must still render outside the Archive.
+	if !strings.Contains(got, "live-proj") {
+		t.Fatalf("live project must render outside the Archive; got:\n%s", got)
+	}
+
+	// Open the top-level Archive (owner 0) and the archived root appears.
+	if !rl.SelectByArchiveOwner(0) {
+		t.Fatalf("could not select the top-level Archive expando header")
+	}
+	rl.ToggleCollapse()
+	got = renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "dead-proj") {
+		t.Fatalf("archived root coordinator must appear once the top-level Archive is open; got:\n%s", got)
+	}
+}
+
+// TestRailList_StepToBindable exercises the in-pane-nav stepping primitive
+// directly: it must skip non-bindable rows (Freelance separator, freelance
+// repo header, Archive expando), clamp at both ends without wrapping, and
+// return false on an empty rail without looping.
+func TestRailList_StepToBindable(t *testing.T) {
+	// Hand-build the row layout so the non-bindable rows sit between two
+	// pane-bindable role rows: orch → w1 → Freelance sep → freelance proj
+	// header → archive expando → w2.
+	orch := &orchEntry{ID: 1, Name: "p", CoordTaskID: "coord-1"}
+	w1 := &roleEntry{OrchestratorID: 1, RoleID: 10, Name: "w1", ArgusTaskID: "t-w1"}
+	w2 := &roleEntry{OrchestratorID: 1, RoleID: 11, Name: "w2", ArgusTaskID: "t-w2"}
+	fproj := &freelanceProject{Project: "Beta"}
+
+	newRail := func() *railList {
+		rl := newRailList()
+		rl.rows = []railRow{
+			{kind: railRowOrch, orch: orch},        // 0 bindable
+			{kind: railRowRole, role: w1},          // 1 bindable
+			{kind: railRowFreelanceSep},            // 2 non-bindable
+			{kind: railRowFreelanceProj, fproj: fproj}, // 3 non-bindable (selectable, not bindable)
+			{kind: railRowArchiveExpando, archiveOwner: 1, archiveCount: 1}, // 4 non-bindable
+			{kind: railRowRole, role: w2},          // 5 bindable
+		}
+		return rl
+	}
+
+	t.Run("forward from w1 skips three non-bindable rows to w2", func(t *testing.T) {
+		rl := newRail()
+		rl.cursor = 1 // on w1
+		if !rl.StepToBindable(+1) {
+			t.Fatalf("StepToBindable(+1) should move from w1 to w2")
+		}
+		if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.RoleID != 11 {
+			t.Fatalf("expected cursor on w2; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("backward from w2 skips three non-bindable rows to w1", func(t *testing.T) {
+		rl := newRail()
+		rl.cursor = 5 // on w2
+		if !rl.StepToBindable(-1) {
+			t.Fatalf("StepToBindable(-1) should move from w2 to w1")
+		}
+		if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.RoleID != 10 {
+			t.Fatalf("expected cursor on w1; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("clamps at bottom without wrapping", func(t *testing.T) {
+		rl := newRail()
+		rl.cursor = 5 // on w2 (last bindable row)
+		if rl.StepToBindable(+1) {
+			t.Fatalf("StepToBindable(+1) past the last bindable row must return false")
+		}
+		if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.RoleID != 11 {
+			t.Fatalf("cursor must stay on w2 (no wrap); got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("clamps at top without wrapping", func(t *testing.T) {
+		rl := newRail()
+		rl.cursor = 0 // on orch header (first bindable row)
+		if rl.StepToBindable(-1) {
+			t.Fatalf("StepToBindable(-1) past the first bindable row must return false")
+		}
+		if ref, ok := rl.CurrentRef().(*orchEntry); !ok || ref.ID != 1 {
+			t.Fatalf("cursor must stay on the orch header (no wrap); got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("empty rail returns false without looping", func(t *testing.T) {
+		rl := newRailList() // buildRows not called → rows is empty
+		if rl.StepToBindable(+1) {
+			t.Fatalf("StepToBindable on an empty rail must return false")
+		}
+		if rl.StepToBindable(-1) {
+			t.Fatalf("StepToBindable(-1) on an empty rail must return false")
+		}
+	})
+
+	t.Run("rail with no bindable rows returns false", func(t *testing.T) {
+		rl := newRailList()
+		rl.rows = []railRow{
+			{kind: railRowFreelanceSep},
+			{kind: railRowFreelanceProj, fproj: fproj},
+			{kind: railRowArchiveExpando, archiveOwner: 0, archiveCount: 1},
+		}
+		rl.cursor = 1
+		if rl.StepToBindable(+1) {
+			t.Fatalf("StepToBindable(+1) with no bindable rows must return false")
+		}
+		if rl.StepToBindable(-1) {
+			t.Fatalf("StepToBindable(-1) with no bindable rows must return false")
+		}
+	})
+}
+
+// The top-level Archive sorts to the very bottom of the rail, below the
+// Freelance section.
+func TestRailList_TopLevelArchiveBelowFreelance(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "live-proj", Roles: []*roleEntry{{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true}}},
+		{ID: 2, Name: "dead-proj", Archived: true, Roles: nil},
+	})
+	rl.SetFreelance([]*freelanceProject{
+		{Project: "repoX", Tasks: []*roleEntry{
+			{RoleKind: "freelance", Name: "free-1", ArgusTaskID: "f1", HasState: true, Status: "in_progress"},
+		}},
+	})
+	got := renderRail(t, rl, 32, 12)
+	freeIdx := strings.Index(got, "Freelance")
+	archIdx := strings.LastIndex(got, "Archive")
+	if freeIdx < 0 || archIdx < 0 {
+		t.Fatalf("expected both Freelance and top-level Archive; got:\n%s", got)
+	}
+	if archIdx < freeIdx {
+		t.Fatalf("top-level Archive must render below the Freelance section; got:\n%s", got)
 	}
 }

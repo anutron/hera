@@ -19,7 +19,6 @@ type layoutPieces struct {
 	rail   *railList
 	coord  *pinnedTerminalPane
 	agent  *pinnedTerminalPane
-	bottom *tview.TextView
 	body   *tview.Flex
 	// pages wraps the root layout so the mutation bridge can overlay
 	// input / confirm / help / error modals via AddPage. The base
@@ -28,7 +27,7 @@ type layoutPieces struct {
 	pages *tview.Pages
 }
 
-// buildLayout composes the tview Flex tree described in design.md D7:
+// buildLayout composes the tview Flex tree (design.md D7, revised by D12):
 //
 //	Flex (rows):
 //	  TopBar       (height 1, "HERA" left-aligned)
@@ -36,14 +35,14 @@ type layoutPieces struct {
 //	    Rail       (width RailWidth)
 //	    CoordPane  (flex 1)
 //	    AgentPane  (flex 1)
-//	  BottomBar    (height 1, key hints)
 //
-// Coord and agent panes split the remaining horizontal space evenly.
-// The TopBar contains the literal text "HERA"; the BottomBar carries
-// focus-state-aware hints (placeholder text in Stage F; Stage G/H wires
-// real focus state). The two terminalpanes own their own border and
-// title rendering, so this layer only wires titles and arranges them in
-// the Flex.
+// Coord and agent panes split the remaining horizontal space evenly. The
+// TopBar contains the literal text "HERA". Hera renders NO bottom-bar row of
+// its own — under the argus key-surrender contract (D12) argus draws the
+// plugin-mode status bar (including the reserved `^Q^Q argus` exit hint) from
+// the focus-aware hotkey dictionary hera pushes over the WebSocket. The two
+// terminalpanes own their own border and title rendering, so this layer only
+// wires titles and arranges them in the Flex.
 func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 	top := tview.NewTextView()
 	top.SetText("HERA")
@@ -52,7 +51,7 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 
 	rail := newRailList()
 
-	coord.SetTitle("Coord")
+	coord.SetTitle("HERA")
 	agent.SetTitle("Agent")
 
 	body := tview.NewFlex().SetDirection(tview.FlexColumn).
@@ -60,15 +59,9 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 		AddItem(coord, 0, 1, false).
 		AddItem(agent, 0, 1, false)
 
-	bottom := tview.NewTextView()
-	bottom.SetText(defaultBottomBarText())
-	bottom.SetTextAlign(tview.AlignLeft)
-	bottom.SetTextColor(tcell.ColorWhite)
-
 	root := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(top, 1, 0, false).
-		AddItem(body, 0, 1, false).
-		AddItem(bottom, 1, 0, false)
+		AddItem(body, 0, 1, false)
 
 	pages := tview.NewPages().
 		AddPage(pageBase, root, true, true)
@@ -79,39 +72,67 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 		rail:   rail,
 		coord:  coord,
 		agent:  agent,
-		bottom: bottom,
 		body:   body,
 		pages:  pages,
 	}
 }
 
-// bottomBarText returns the focus-state-aware bottom-bar hints. The bracketed
-// label ([RAIL]/[COORD]/[AGENT]) is the operator's primary cue for which
-// element currently holds focus (alongside the colored border); without it,
-// advancing focus into a pane looks like nothing happened and rail navigation
-// appears frozen because j/k are forwarded to the focused pane's PTY.
-// coordPresent controls whether the bar advertises the COORD pane. In
-// freelance mode (D11) there is no coord, so the hints drop the coord step:
-// RAIL advances straight to AGENT and AGENT retreats straight to RAIL.
-func bottomBarText(state FocusState, coordPresent bool) string {
+// hotkeyItems returns the focus-aware hotkey dictionary hera advertises to
+// argus via a {"type":"hotkeys",...} frame on connect and on every focus
+// change (design.md D12). Operator-facing keys are flagged Bar:true to drive
+// argus's context-sensitive bottom bar; the full set drives argus's help
+// overlay. coordPresent controls whether the COORD pane is advertised: in
+// freelance mode (D11) there is no coord, so traversal hints drop the coord
+// step (RAIL advances straight to AGENT; AGENT retreats straight to RAIL).
+//
+// This is the same source of truth the retired bottomBarText row drove; argus
+// now renders it instead of hera.
+func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 	switch state {
 	case FocusCOORD:
-		return "[COORD] keys → coord PTY   Ctrl-→ agent   Ctrl-← rail   ^Q rail"
+		// `^d`/`^r`/`^p` are RAIL-focus-only; in a pane they forward to the PTY
+		// (Ctrl-D/R/P), so they are NOT advertised here.
+		return []HotkeyItem{
+			{Key: "keys", Label: "coord PTY", Bar: true},
+			{Key: "^→", Label: "agent", Bar: true},
+			{Key: "^←", Label: "rail", Bar: true},
+			{Key: "^Q", Label: "rail", Bar: true},
+		}
 	case FocusAGENT:
 		if !coordPresent {
-			return "[AGENT] keys → agent PTY   Ctrl-← rail   ^Q rail"
+			return []HotkeyItem{
+				{Key: "keys", Label: "agent PTY", Bar: true},
+				{Key: "^←", Label: "rail", Bar: true},
+				{Key: "^Q", Label: "rail", Bar: true},
+			}
 		}
-		return "[AGENT] keys → agent PTY   Ctrl-← coord   ^Q rail"
-	default:
+		return []HotkeyItem{
+			{Key: "keys", Label: "agent PTY", Bar: true},
+			{Key: "^←", Label: "coord", Bar: true},
+			{Key: "^Q", Label: "rail", Bar: true},
+		}
+	default: // FocusRAIL
+		advance := HotkeyItem{Key: "^→", Label: "coord", Bar: true}
 		if !coordPresent {
-			return "[RAIL] j/k move  Enter agent  Ctrl-→ agent  n new  r rename  ^d del  a archive  l listall  ? help"
+			advance = HotkeyItem{Key: "^→", Label: "agent", Bar: true}
 		}
-		return "[RAIL] j/k move  Enter agent  Ctrl-→ coord  n new  r rename  ^d del  a archive  l listall  ? help"
+		return []HotkeyItem{
+			{Key: "j/k", Label: "move", Bar: true},
+			{Key: "Enter", Label: "agent", Bar: true},
+			advance,
+			{Key: "n", Label: "new", Bar: true},
+			{Key: "r", Label: "rename", Bar: true},
+			{Key: "^d", Label: "del", Bar: true},
+			{Key: "a", Label: "archive", Bar: true},
+			{Key: "l", Label: "listall", Bar: true},
+			// Help-overlay-only rail keys (Bar:false): kept off the bottom bar
+			// to avoid clutter but advertised so argus's `?` overlay lists them.
+			{Key: "^r", Label: "prune", Bar: false},
+			{Key: "^p", Label: "PR", Bar: false},
+			{Key: "s", Label: "status+", Bar: false},
+			{Key: "S", Label: "status-", Bar: false},
+			{Key: "?", Label: "help", Bar: false},
+			{Key: "Esc", Label: "argus", Bar: true},
+		}
 	}
-}
-
-// defaultBottomBarText is the initial (RAIL-focus) bar shown by buildLayout
-// before the first focus change. The initial layout always has a coord pane.
-func defaultBottomBarText() string {
-	return bottomBarText(FocusRAIL, true)
 }

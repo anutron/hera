@@ -288,6 +288,7 @@ func dialView(t *testing.T, d *Daemon) *websocket.Conn {
 type frameReader struct {
 	conn   *websocket.Conn
 	binary chan []byte
+	text   chan []byte
 	done   chan error
 	cancel context.CancelFunc
 }
@@ -297,11 +298,13 @@ func newFrameReader(conn *websocket.Conn) *frameReader {
 	fr := &frameReader{
 		conn:   conn,
 		binary: make(chan []byte, 64),
+		text:   make(chan []byte, 64),
 		done:   make(chan error, 1),
 		cancel: cancel,
 	}
 	go func() {
 		defer close(fr.binary)
+		defer close(fr.text)
 		defer close(fr.done)
 		for {
 			typ, data, err := conn.Read(ctx)
@@ -309,13 +312,35 @@ func newFrameReader(conn *websocket.Conn) *frameReader {
 				fr.done <- err
 				return
 			}
-			if typ != websocket.MessageBinary {
-				continue
+			switch typ {
+			case websocket.MessageBinary:
+				fr.binary <- data
+			case websocket.MessageText:
+				select {
+				case fr.text <- data:
+				default:
+				}
 			}
-			fr.binary <- data
 		}
 	}()
 	return fr
+}
+
+// drainText collects text (control) frames from conn until `quiet` elapses
+// without a frame. Returns each frame's raw bytes in arrival order.
+func (fr *frameReader) drainText(quiet time.Duration) [][]byte {
+	var out [][]byte
+	for {
+		select {
+		case data, ok := <-fr.text:
+			if !ok {
+				return out
+			}
+			out = append(out, data)
+		case <-time.After(quiet):
+			return out
+		}
+	}
 }
 
 // stop tears down the reader. Safe to call multiple times.
@@ -444,12 +469,12 @@ func TestViewSmoke_LastWriterWinsClosesPrior(t *testing.T) {
 }
 
 // TestViewSmoke_FocusFeedbackReflectsState drives the focus ladder over raw
-// key bytes and asserts the bottom bar reflects the live focus state. Before
-// the fix the bar was a static "[RAIL] ..." string set once at layout time,
-// so advancing into COORD changed nothing visible — the operator saw "Cmd-→
-// does nothing" and then "the rail froze" (because j/k were silently
-// forwarded into the coord PTY). The uppercase "COORD" label distinguishes
-// the focus indicator from the lowercase "coord" hint in the RAIL bar.
+// key bytes and asserts hera advertises a focus-aware hotkeys control frame to
+// argus on connect and on every focus change (D12, key-surrender contract).
+// Hera renders no bottom bar of its own; argus draws the plugin-mode status
+// bar from these frames. The frame is a TEXT envelope of shape
+// {"type":"hotkeys","items":[...]} whose items reflect the current focus
+// state.
 func TestViewSmoke_FocusFeedbackReflectsState(t *testing.T) {
 	d, _, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
 	conn := dialView(t, d)
@@ -462,20 +487,109 @@ func TestViewSmoke_FocusFeedbackReflectsState(t *testing.T) {
 		[]byte(`{"type":"resize","cols":120,"rows":40}`)); err != nil {
 		t.Fatalf("write resize: %v", err)
 	}
-	initial := reader.drainBinary(750*time.Millisecond, 64*1024)
-	if !bytes.Contains(initial, []byte("[RAIL]")) {
-		t.Fatalf("initial bottom bar missing [RAIL] label: %q", trim(initial, 240))
+
+	// hera MUST NOT render its own bottom-bar focus label anywhere on the
+	// surface — that chrome belongs to argus now.
+	rendered := reader.drainBinary(750*time.Millisecond, 64*1024)
+	for _, label := range []string{"[RAIL]", "[COORD]", "[AGENT]"} {
+		if bytes.Contains(rendered, []byte(label)) {
+			t.Fatalf("surface must not render hera's own bottom-bar label %q: %q",
+				label, trim(rendered, 240))
+		}
 	}
 
-	// Ctrl-Right (CSI 1;5 C) advances RAIL → COORD. The bottom bar MUST now
-	// show the COORD focus label.
+	// On connect hera pushes a RAIL hotkeys frame (rail-specific bindings).
+	initialKeys := mustHotkeyLabels(t, reader.drainText(750*time.Millisecond))
+	if !strings.Contains(initialKeys, "move") || !strings.Contains(initialKeys, "argus") {
+		t.Fatalf("initial hotkeys frame does not reflect RAIL focus: %q", initialKeys)
+	}
+
+	// Ctrl-Right (CSI 1;5 C) advances RAIL → COORD. hera MUST push a new
+	// hotkeys frame reflecting COORD focus (a "coord PTY" binding, and no
+	// rail-only "move").
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte("\x1b[1;5C")); err != nil {
 		t.Fatalf("write ctrl-right: %v", err)
 	}
-	afterCoord := reader.drainBinary(750*time.Millisecond, 64*1024)
-	if !bytes.Contains(afterCoord, []byte("COORD")) {
-		t.Fatalf("after Ctrl-Right the bottom bar does not reflect COORD focus "+
-			"(static-bar bug): %q", trim(afterCoord, 300))
+	coordKeys := mustHotkeyLabels(t, reader.drainText(750*time.Millisecond))
+	if !strings.Contains(coordKeys, "coord PTY") {
+		t.Fatalf("after Ctrl-Right the hotkeys frame does not reflect COORD focus: %q", coordKeys)
+	}
+}
+
+// mustHotkeyLabels decodes the LAST hotkeys-type control frame in frames and
+// returns its key:label pairs flattened into a single string for substring
+// assertions. Fails the test when no hotkeys frame is present.
+func mustHotkeyLabels(t *testing.T, frames [][]byte) string {
+	t.Helper()
+	var last string
+	found := false
+	for _, f := range frames {
+		var env struct {
+			Type  string `json:"type"`
+			Items []struct {
+				Key   string `json:"key"`
+				Label string `json:"label"`
+				Bar   bool   `json:"bar"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(f, &env); err != nil {
+			continue
+		}
+		if env.Type != "hotkeys" {
+			continue
+		}
+		found = true
+		var sb strings.Builder
+		for _, it := range env.Items {
+			sb.WriteString(it.Key)
+			sb.WriteString(":")
+			sb.WriteString(it.Label)
+			sb.WriteString(" ")
+		}
+		last = sb.String()
+	}
+	if !found {
+		t.Fatalf("no hotkeys control frame found in %d text frame(s)", len(frames))
+	}
+	return last
+}
+
+// TestViewSmoke_EscFromRailReleasesToArgus proves the key-surrender release
+// contract end-to-end (D12): Esc while focus is RAIL emits a {"type":"release"}
+// TEXT control frame over the view WebSocket and forwards NO byte to any task's
+// /input endpoint.
+func TestViewSmoke_EscFromRailReleasesToArgus(t *testing.T) {
+	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
+	conn := dialView(t, d)
+	defer conn.CloseNow()
+	reader := newFrameReader(conn)
+	defer reader.stop()
+	ctx := context.Background()
+
+	_ = reader.drainBinary(300*time.Millisecond, 4096) // initial render
+	_ = reader.drainText(300 * time.Millisecond)       // initial hotkeys frame
+
+	before := fake.totalInputs()
+	// Esc (0x1b) while focus is RAIL hands the keyboard back to argus.
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x1b}); err != nil {
+		t.Fatalf("write esc: %v", err)
+	}
+
+	frames := reader.drainText(750 * time.Millisecond)
+	gotRelease := false
+	for _, f := range frames {
+		var env struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(f, &env); err == nil && env.Type == "release" {
+			gotRelease = true
+		}
+	}
+	if !gotRelease {
+		t.Fatalf("Esc in RAIL must emit a {\"type\":\"release\"} frame; got %d text frame(s)", len(frames))
+	}
+	if got := fake.totalInputs(); got != before {
+		t.Fatalf("Esc in RAIL must NOT be forwarded to a PTY; got %d new input(s)", got-before)
 	}
 }
 
@@ -511,6 +625,40 @@ func TestViewSmoke_RailResumesAfterReturn(t *testing.T) {
 	if got := fake.totalInputs(); got != before {
 		t.Fatalf("'j' after returning to RAIL was forwarded to a PTY (%d new input(s)) "+
 			"— focus did not return to RAIL", got-before)
+	}
+}
+
+// TestViewSmoke_ShiftArrowScrollIntercepted proves the ⇧↑ scroll key (D15) is
+// decoded and intercepted end-to-end through the real wsscreen: stepping into a
+// pane then sending the Shift-Up CSI sequence (\x1b[1;2A) forwards NO byte to
+// any task's /input endpoint (scroll is consumed, never forwarded to the PTY).
+func TestViewSmoke_ShiftArrowScrollIntercepted(t *testing.T) {
+	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
+	conn := dialView(t, d)
+	defer conn.CloseNow()
+	reader := newFrameReader(conn)
+	defer reader.stop()
+	ctx := context.Background()
+
+	_ = reader.drainBinary(300*time.Millisecond, 4096) // initial render
+
+	// Step into COORD so a pane is focused (Shift-Up only scrolls a focused
+	// pane; in RAIL it's a no-op).
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("\x1b[1;5C")); err != nil {
+		t.Fatalf("write ctrl-right: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+
+	// Send Shift-Up (CSI 1;2 A). tcell parses this as KeyUp + ModShift, which
+	// the KeyRouter intercepts as a scroll — it MUST NOT reach the PTY.
+	before := fake.totalInputs()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("\x1b[1;2A")); err != nil {
+		t.Fatalf("write shift-up: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	if got := fake.totalInputs(); got != before {
+		t.Fatalf("Shift-Up in a pane must be intercepted (scroll), not forwarded to a PTY; got %d new input(s)", got-before)
 	}
 }
 

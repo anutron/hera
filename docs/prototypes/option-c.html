@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hera rail — nested orchestration (Option C)</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#11151f; --panel2:#0e1220; --border:#1e2430;
+    --txt:#cfd6e4; --dim:#5b657a; --proj:#7aa2f7; --proj2:#9d7cd8;
+    --sel:#1b2740; --selbar:#2a3a5e; --live:#7dcfff; --idle:#4a5468;
+    --attn:#faa378; --green:#9ece6a; --pill:#1f2a44; --pilltx:#8fb0ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:13px/1.5 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;padding:28px;}
+  h1{font-size:16px;font-weight:600;margin:0 0 4px;color:#fff;letter-spacing:.3px}
+  .sub{color:var(--dim);margin:0 0 20px;font-size:12px;max-width:880px}
+  .sub b{color:var(--attn);font-weight:600}
+  .stage{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+  .col{display:flex;flex-direction:column;gap:8px}
+  .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+  .label .tag{color:var(--txt)}
+  .rail{width:330px;background:var(--panel);border:1px solid var(--border);
+    border-radius:8px;overflow:hidden}
+  .railhdr{padding:7px 12px;border-bottom:1px solid var(--border);color:var(--dim);
+    font-size:11px;letter-spacing:1px;text-transform:uppercase;background:var(--panel2)}
+  .rows{padding:6px 0}
+  .row{display:flex;align-items:center;gap:0;padding:3px 10px;cursor:pointer;
+    white-space:nowrap;position:relative}
+  .row:hover{background:#141a28}
+  .row.sel{background:var(--sel);box-shadow:inset 3px 0 0 var(--selbar)}
+  .chev{width:14px;color:var(--dim);flex:0 0 14px;text-align:center}
+  .chev.leaf{visibility:hidden}
+  .icon{width:18px;flex:0 0 18px;text-align:center}
+  .icon.live{color:var(--live)}
+  .icon.idle{color:var(--idle)}
+  .icon.attn{color:var(--attn);font-weight:700}
+  .name{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis}
+  .name.proj{color:var(--proj);font-weight:600}
+  .name.coordnode{color:#cde2ff}
+  .count{color:var(--dim);margin-left:6px}
+  .pill{font-size:9.5px;letter-spacing:.4px;text-transform:uppercase;
+    color:var(--pilltx);background:var(--pill);border:1px solid #2a3a5e;
+    border-radius:9px;padding:0 6px;margin-left:8px;flex:0 0 auto}
+  .pill.attn{color:#3a230f;background:var(--attn);border-color:var(--attn)}
+  .elapsed{color:var(--dim);margin-left:8px;flex:0 0 auto;font-size:11.5px}
+  .sep{padding:4px 10px;color:var(--dim);font-size:11px;display:flex;align-items:center;gap:8px}
+  .sep .line{flex:1;border-top:1px solid var(--border)}
+  .dupwarn{color:var(--attn)}
+  .note{width:330px;color:var(--dim);font-size:11.5px;line-height:1.6}
+  .note b{color:var(--txt)}
+
+  /* pane readout */
+  .panes{width:300px;background:var(--panel);border:1px solid var(--border);
+    border-radius:8px;overflow:hidden;align-self:stretch;min-height:220px}
+  .panes .railhdr{display:flex;justify-content:space-between}
+  .pbody{padding:14px}
+  .pbox{border:1px dashed #2b3550;border-radius:6px;padding:10px 12px;margin-bottom:12px;background:var(--panel2)}
+  .pbox .k{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+  .pbox .v{color:#fff;font-size:14px}
+  .pbox .v.empty{color:var(--idle)}
+  .pbox.full{border-color:var(--green)}
+  .ptip{color:var(--dim);font-size:11px;line-height:1.6;margin-top:6px}
+  .ptip code{color:var(--proj)}
+  .legend{margin-top:22px;color:var(--dim);font-size:11.5px;display:flex;gap:22px;flex-wrap:wrap}
+  .legend span b{color:var(--txt);font-weight:600}
+  .legend .g{color:var(--green)} .legend .a{color:var(--attn)} .legend .l{color:var(--live)}
+</style>
+</head>
+<body>
+  <h1>hera rail · nested orchestration</h1>
+  <p class="sub">Scenario: <b>BIG&nbsp;PROJECT</b> coord launches <b>phase-1</b>; phase-1 then spawns its own workers and becomes a coord too — so its one argus task is a <b>worker under BIG&nbsp;PROJECT</b> and the <b>coord of the PHASE-1 orchestrator</b> at the same time. Click coord rows to expand/collapse. Selecting a row shows which panes it binds.</p>
+
+  <div class="stage">
+
+    <!-- TODAY: FLAT -->
+    <div class="col">
+      <div class="label">today · <span class="tag">flat list</span></div>
+      <div class="rail" id="railFlat"><div class="railhdr">Rail</div><div class="rows" id="rowsFlat"></div></div>
+      <div class="note"><b class="dupwarn">phase-1 appears twice</b> — once as a worker under BIG&nbsp;PROJECT, once as the PHASE-1 project header — and the parent→child link is invisible. Deeper nesting just adds more sibling projects.</div>
+    </div>
+
+    <!-- OPTION C: TREE -->
+    <div class="col">
+      <div class="label">option c · <span class="tag">one home · expandable coord nodes</span></div>
+      <div class="rail" id="railTree"><div class="railhdr">Rail</div><div class="rows" id="rowsTree"></div></div>
+      <div class="note"><b>One concept:</b> every coord is an expandable node. A worker that becomes a coord is shown <b>once</b>, in place, and expands to reveal its sub-team. Nesting is legible at any depth.</div>
+    </div>
+
+    <!-- PANE READOUT -->
+    <div class="col">
+      <div class="label">on select</div>
+      <div class="panes">
+        <div class="railhdr"><span>Panes</span><span id="modeTag" style="color:var(--green)"></span></div>
+        <div class="pbody">
+          <div class="pbox" id="coordBox"><div class="k">Coord pane</div><div class="v empty" id="coordVal">— select a row —</div></div>
+          <div class="pbox" id="agentBox"><div class="k">Agent pane</div><div class="v empty" id="agentVal">—</div></div>
+          <div class="ptip" id="ptip">Coord pane binds to the selection's <b>nearest ancestor coord</b>. A leaf worker shows its own coord; a coord node shows <i>its parent's</i> coord (or itself if it's a root).</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="legend">
+    <span class="l"><b>☾</b> live agent</span>
+    <span><b style="color:#4a5468">○</b> idle</span>
+    <span class="a"><b>?</b> needs attention</span>
+    <span class="g"><b>coord</b> pill = spawns / owns a sub-team</span>
+  </div>
+
+<script>
+// ---- model -----------------------------------------------------------------
+// A tree of nodes. kind: orchestrator-root coord, worker-that-is-coord, worker(leaf).
+// "coord" => an expandable node whose children are the team it coordinates.
+const tree = {
+  id:'bp', name:'BIG PROJECT', kind:'coord', task:'bp-coord', live:true, root:true,
+  children:[
+    { id:'p1', name:'phase-1', kind:'coord', task:'phase-1', live:true, elapsed:'2h',
+      note:'worker under BIG PROJECT · coord of PHASE-1',
+      children:[
+        { id:'p1b', name:'p1-build', kind:'worker', task:'p1-build', live:true, elapsed:'3m' },
+        { id:'p1t', name:'p1-test',  kind:'worker', task:'p1-test',  live:true, attn:true, elapsed:'12m' },
+      ]},
+    { id:'p2', name:'phase-2', kind:'worker', task:'phase-2', live:true, elapsed:'1h' },
+  ]
+};
+
+const collapsed = {};                 // id -> true when collapsed
+let selId = null;
+
+// nearest-ancestor-coord lookup, built while rendering
+const parentOf = {};                  // childId -> parentNode
+function indexParents(node,parent){ parentOf[node.id]=parent||null; (node.children||[]).forEach(c=>indexParents(c,node)); }
+indexParents(tree,null);
+
+function nearestCoord(node){
+  // a root coord uses itself; otherwise walk up to the first coord ancestor
+  if(node.kind==='coord' && node.root) return node;
+  let p = node.kind==='coord' ? parentOf[node.id] : parentOf[node.id];
+  // for a coord node, coord pane = its parent's coord context; for a leaf, its owning coord
+  while(p){ if(p.kind==='coord') return p; p=parentOf[p.id]; }
+  return node.kind==='coord' ? node : null;
+}
+
+// ---- render: TREE (option C) ----------------------------------------------
+function row({node, depth, chev, icon, nameCls, pill, attnPill}){
+  const sel = node.id===selId ? ' sel':'';
+  const pad = 10 + depth*16;
+  const chevCls = chev==='' ? 'chev leaf' : 'chev';
+  const ic = node.attn ? 'icon attn' : (icon==='☾'?'icon live':'icon idle');
+  const glyph = node.attn ? '?' : icon;
+  return `<div class="row${sel}" data-id="${node.id}" style="padding-left:${pad}px">
+      <span class="${chevCls}">${chev}</span>
+      <span class="${ic}">${glyph}</span>
+      <span class="name ${nameCls}">${node.name}</span>
+      ${node.children?`<span class="count">(${node.children.length})</span>`:''}
+      ${pill?`<span class="pill">${pill}</span>`:''}
+      ${attnPill?`<span class="pill attn">needs you</span>`:''}
+      ${node.elapsed?`<span class="elapsed">${node.elapsed}</span>`:''}
+    </div>`;
+}
+
+function renderTree(node, depth, out){
+  const isCoord = node.kind==='coord';
+  const open = !collapsed[node.id];
+  const chev = isCoord ? (open?'▾':'▸') : '';
+  const icon = node.root ? '◆' : '☾';
+  const nameCls = node.root ? 'proj' : (isCoord?'coordnode':'');
+  const pill = isCoord && !node.root ? 'coord' : '';
+  out.push(row({node,depth,chev,icon,nameCls,pill,attnPill:false}));
+  if(isCoord && open) (node.children||[]).forEach(c=>renderTree(c,depth+1,out));
+}
+
+// ---- render: FLAT (today) --------------------------------------------------
+// Flatten the tree the way today's rail does: every coord becomes a top-level
+// project header; its direct children are worker rows. A coord-also-worker is
+// therefore emitted both as a worker row under its parent AND as its own header.
+function renderFlat(){
+  const out=[];
+  function emitProject(coord, label){
+    out.push(`<div class="row" data-id="flat-${coord.id}-hdr" style="padding-left:10px">
+        <span class="chev">▾</span><span class="icon idle">◆</span>
+        <span class="name proj">${label}</span>
+        <span class="count">(${(coord.children||[]).length})</span></div>`);
+    (coord.children||[]).forEach(c=>{
+      const ic = c.attn?'icon attn':'icon live';
+      const g = c.attn?'?':'☾';
+      out.push(`<div class="row" data-id="flat-${c.id}" style="padding-left:26px">
+          <span class="chev leaf"></span><span class="${ic}">${g}</span>
+          <span class="name">${c.name}</span>
+          ${c.elapsed?`<span class="elapsed">${c.elapsed}</span>`:''}</div>`);
+    });
+  }
+  // BIG PROJECT header + its workers (phase-1, phase-2)
+  emitProject(tree, 'BIG PROJECT');
+  out.push(`<div class="sep"><span class="line"></span><span class="dupwarn">phase-1 also a project ↓</span><span class="line"></span></div>`);
+  // PHASE-1 emitted again as its own top-level project (its coord IS the phase-1 worker above)
+  emitProject(tree.children[0], 'PHASE-1');
+  document.getElementById('rowsFlat').innerHTML = out.join('');
+}
+
+function renderAll(){
+  const out=[]; renderTree(tree,0,out);
+  document.getElementById('rowsTree').innerHTML = out.join('');
+  renderFlat();
+  bind();
+  paint();
+}
+
+// ---- selection + pane readout ---------------------------------------------
+function findNode(id, node=tree){ if(node.id===id) return node;
+  for(const c of (node.children||[])){ const r=findNode(id,c); if(r) return r;} return null; }
+
+function paint(){
+  const n = selId?findNode(selId):null;
+  const coordBox=document.getElementById('coordBox'), agentBox=document.getElementById('agentBox');
+  const cv=document.getElementById('coordVal'), av=document.getElementById('agentVal');
+  const mode=document.getElementById('modeTag');
+  coordBox.classList.remove('full'); agentBox.classList.remove('full'); mode.textContent='';
+  if(!n){ cv.textContent='— select a row —'; cv.className='v empty'; av.textContent='—'; av.className='v empty'; return; }
+  const coord = nearestCoord(n);
+  cv.textContent = coord?coord.task:'(none)'; cv.className = coord?'v':'v empty';
+  av.textContent = n.task; av.className='v';
+  // a coord-also-worker selected as itself: its agent pane is its own PTY, coord pane = parent coord
+  if(n.kind==='coord' && !n.root){ mode.textContent='nested coord'; }
+}
+
+function bind(){
+  document.querySelectorAll('#rowsTree .row').forEach(el=>{
+    el.onclick=()=>{
+      const id=el.dataset.id; const node=findNode(id);
+      if(node && node.kind==='coord'){ collapsed[id]=!collapsed[id]; }
+      selId=id; renderAll();
+    };
+  });
+  document.querySelectorAll('#rowsFlat .row').forEach(el=>{
+    el.onclick=()=>{ // flat rows are illustrative only; clicking a worker selects same node in tree readout
+      const raw=el.dataset.id.replace('flat-','').replace('-hdr','');
+      if(findNode(raw)){ selId=raw; renderAll(); }
+    };
+  });
+}
+
+renderAll();
+// preselect the attention worker to show the readout immediately
+selId='p1t'; renderAll();
+</script>
+</body>
+</html>

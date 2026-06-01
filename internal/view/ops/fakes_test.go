@@ -242,6 +242,17 @@ func (f *fakeDB) GetLiveBindingByRole(ctx context.Context, roleID int64) (*Bindi
 	return nil, ErrNotFound
 }
 
+func (f *fakeDB) ListLiveBindings(ctx context.Context) ([]*Binding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []*Binding{}
+	for _, b := range f.bindings {
+		cp := *b
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
 func (f *fakeDB) EndBinding(ctx context.Context, bindingID int64, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -268,6 +279,21 @@ type fakeArgus struct {
 	archiveErr     error
 	unarchiveCalls []string
 	unarchiveErr   error
+
+	deleteCalls []string
+	deleteErr   error
+
+	// statuses maps taskID -> current status, consulted by GetTaskStatus
+	// and updated by SetTaskStatus. setStatusCalls records every write.
+	statuses       map[string]string
+	getStatusErr   error
+	setStatusCalls []setStatusCall
+	setStatusErr   error
+}
+
+type setStatusCall struct {
+	TaskID string
+	Status string
 }
 
 func (a *fakeArgus) CreateTask(ctx context.Context, req CreateTaskRequest) (*CreatedTask, error) {
@@ -296,6 +322,55 @@ func (a *fakeArgus) UnarchiveTask(ctx context.Context, taskID string) error {
 	defer a.mu.Unlock()
 	a.unarchiveCalls = append(a.unarchiveCalls, taskID)
 	return a.unarchiveErr
+}
+
+func (a *fakeArgus) DeleteTask(ctx context.Context, taskID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.deleteCalls = append(a.deleteCalls, taskID)
+	return a.deleteErr
+}
+
+func (a *fakeArgus) GetTaskStatus(ctx context.Context, taskID string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.getStatusErr != nil {
+		return "", a.getStatusErr
+	}
+	if a.statuses == nil {
+		return "", nil
+	}
+	return a.statuses[taskID], nil
+}
+
+func (a *fakeArgus) SetTaskStatus(ctx context.Context, taskID, status string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.setStatusCalls = append(a.setStatusCalls, setStatusCall{TaskID: taskID, Status: status})
+	if a.setStatusErr != nil {
+		return "", a.setStatusErr
+	}
+	if a.statuses == nil {
+		a.statuses = map[string]string{}
+	}
+	a.statuses[taskID] = status
+	return status, nil
+}
+
+// fakePRCreator records CreatePR invocations. url / err are returned on
+// every call.
+type fakePRCreator struct {
+	mu    sync.Mutex
+	calls []string
+	url   string
+	err   error
+}
+
+func (p *fakePRCreator) CreatePR(ctx context.Context, worktreePath string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls = append(p.calls, worktreePath)
+	return p.url, p.err
 }
 
 // fakeWorktreeRemover records every Remove invocation. err is returned

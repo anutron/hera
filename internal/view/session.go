@@ -60,6 +60,16 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		}
 		defer app.Close()
 
+		// Bind the key-surrender control sender to this session's conn
+		// (D12). coder/websocket's Conn.Write serializes writers, so these
+		// TEXT control frames coexist with the SDK's binary surface writes
+		// on the same conn without an extra mutex. The App pushes a
+		// focus-aware hotkeys frame on connect + every focus change; the
+		// router sends release on Esc-from-RAIL; the mutation bridge sends
+		// help on ?-from-RAIL.
+		control := newViewControl(ctx, conn)
+		app.SetControl(control)
+
 		// Subscribe the rail to the DAO broadcaster so any orchestrator /
 		// role / binding write triggers a debounced rail refresh on this
 		// session's tview event loop. RepopulateRail wraps the rebuild in
@@ -101,7 +111,10 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 			ops.ExecWorktreeRemover{},
 			slogLogger{log: log},
 		)
-		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, log)
+		// `^p` opens PRs via the host git/gh flow (os/exec from the worktree);
+		// the daemon is unsandboxed under launchd so it can reach gh.
+		opsService.PR = ops.ExecPRCreator{}
+		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, control, log)
 
 		focus := NewFocusMachine()
 		// Let the App flip the focus machine's coordPresent flag when it
@@ -115,6 +128,9 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 			Border:     app,
 			RailSelect: app,
 			Modal:      app,
+			Scroller:   app,
+			InPaneNav:  app,
+			Control:    control,
 			Ctx:        ctx,
 		}
 		// Paint the initial RAIL border so the operator sees focus on first

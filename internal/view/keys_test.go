@@ -44,21 +44,46 @@ func (f *fakeTargets) CoordTaskID() string { return f.coord }
 func (f *fakeTargets) AgentTaskID() string { return f.agent }
 
 type fakeMutations struct {
-	new, rename, del, archive, listAll, help int
+	new, rename, del, archive, listAll, help   int
+	prune, openPR, statusAdvance, statusRevert int
+	resurrect                                  int
+
+	// resurrectHandled is what OnResurrect returns — true means it consumed
+	// the Enter (showed a resurrect confirm) so the router must NOT fall
+	// through to pane-entry.
+	resurrectHandled bool
 }
 
-func (f *fakeMutations) OnNew()     { f.new++ }
-func (f *fakeMutations) OnRename()  { f.rename++ }
-func (f *fakeMutations) OnDelete()  { f.del++ }
-func (f *fakeMutations) OnArchive() { f.archive++ }
-func (f *fakeMutations) OnListAll() { f.listAll++ }
-func (f *fakeMutations) OnHelp()    { f.help++ }
+func (f *fakeMutations) OnNew()           { f.new++ }
+func (f *fakeMutations) OnRename()        { f.rename++ }
+func (f *fakeMutations) OnDelete()        { f.del++ }
+func (f *fakeMutations) OnArchive()       { f.archive++ }
+func (f *fakeMutations) OnListAll()       { f.listAll++ }
+func (f *fakeMutations) OnHelp()          { f.help++ }
+func (f *fakeMutations) OnPrune()         { f.prune++ }
+func (f *fakeMutations) OnOpenPR()        { f.openPR++ }
+func (f *fakeMutations) OnStatusAdvance() { f.statusAdvance++ }
+func (f *fakeMutations) OnStatusRevert()  { f.statusRevert++ }
+func (f *fakeMutations) OnResurrect() bool {
+	f.resurrect++
+	return f.resurrectHandled
+}
 
 type fakeBorder struct {
 	states []FocusState
 }
 
 func (f *fakeBorder) OnFocusChanged(s FocusState) { f.states = append(f.states, s) }
+
+// fakeControl records the control frames the router asks for (release / help)
+// so tests can assert the key-surrender contract without a real WebSocket.
+type fakeControl struct {
+	releases int
+	helps    int
+}
+
+func (f *fakeControl) SendRelease() error { f.releases++; return nil }
+func (f *fakeControl) SendHelp() error    { f.helps++; return nil }
 
 func newRouter() (*KeyRouter, *fakePoster, *fakeMutations, *fakeBorder) {
 	p := &fakePoster{}
@@ -72,6 +97,15 @@ func newRouter() (*KeyRouter, *fakePoster, *fakeMutations, *fakeBorder) {
 		Border:    b,
 	}
 	return r, p, m, b
+}
+
+// newRouterWithControl is newRouter plus a fake control sender wired in, for
+// the Esc-release / help-frame contract tests.
+func newRouterWithControl() (*KeyRouter, *fakePoster, *fakeControl) {
+	r, p, _, _ := newRouter()
+	c := &fakeControl{}
+	r.Control = c
+	return r, p, c
 }
 
 // --- Focus state machine ---
@@ -169,6 +203,54 @@ func TestFocusMachine_SetCoordPresentBumpsOffCoord(t *testing.T) {
 	}
 	if f.State() != FocusAGENT {
 		t.Fatalf("after coord removed: want AGENT, got %s", f.State())
+	}
+}
+
+// TestFocusMachine_CoordinatorModeSkipsAgent proves the new present-pane
+// ladder: in coordinator mode (COORD present, AGENT absent) traversal steps
+// RAIL ↔ COORD only and never reaches a non-existent AGENT pane.
+func TestFocusMachine_CoordinatorModeSkipsAgent(t *testing.T) {
+	f := NewFocusMachine()
+	f.SetAgentPresent(false) // coordinator mode: RAIL + HERA only
+
+	f.Advance()
+	if f.State() != FocusCOORD {
+		t.Fatalf("Advance from RAIL in coordinator mode: want COORD, got %s", f.State())
+	}
+	f.Advance()
+	if f.State() != FocusCOORD {
+		t.Fatalf("Advance from COORD must NOT reach absent AGENT: want COORD, got %s", f.State())
+	}
+	f.Retreat()
+	if f.State() != FocusRAIL {
+		t.Fatalf("Retreat from COORD in coordinator mode: want RAIL, got %s", f.State())
+	}
+}
+
+// TestFocusMachine_SetAgentPresentBumpsOffAgent proves that removing the
+// agent pane while focus rests on AGENT bumps focus back to the nearest
+// present pane (COORD if present, else RAIL) so no keystroke is forwarded to
+// a torn-down pane.
+func TestFocusMachine_SetAgentPresentBumpsOffAgent(t *testing.T) {
+	f := NewFocusMachine()
+	f.JumpToAGENT()
+	if f.State() != FocusAGENT {
+		t.Fatalf("setup: want AGENT, got %s", f.State())
+	}
+	// Coord still present: bump to COORD.
+	if changed := f.SetAgentPresent(false); !changed {
+		t.Fatalf("SetAgentPresent(false) on AGENT should report a state change")
+	}
+	if f.State() != FocusCOORD {
+		t.Fatalf("after agent removed (coord present): want COORD, got %s", f.State())
+	}
+
+	// Now drop the coord too while on COORD: bump to RAIL.
+	if changed := f.SetCoordPresent(false); !changed {
+		t.Fatalf("SetCoordPresent(false) on COORD should report a state change")
+	}
+	if f.State() != FocusRAIL {
+		t.Fatalf("after both panes removed: want RAIL, got %s", f.State())
 	}
 }
 
@@ -437,16 +519,19 @@ func TestKeyRouter_MutationKey_Question_InAGENT_NoMutationOnlyForward(t *testing
 	}
 }
 
-func TestKeyRouter_MutationKey_CtrlD_InCOORD_NoMutationOnlyForward(t *testing.T) {
+// `^d`/`^r`/`^p` are RAIL-focus-only (reversed from the earlier any-focus
+// decision): in COORD/AGENT they forward their control byte to the bound PTY
+// (Ctrl-D=0x04) and do NOT fire the mutation, so an agent gets EOF normally.
+func TestKeyRouter_MutationKey_CtrlD_InCOORD_ForwardsByteNotDelete(t *testing.T) {
 	r, p, m, _ := newRouter()
 	r.Focus.Advance() // → COORD
 	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModCtrl))
 	if m.del != 0 {
-		t.Fatalf("Ctrl-D in COORD must NOT fire OnDelete; got count %d", m.del)
+		t.Fatalf("Ctrl-D in COORD must NOT fire OnDelete (RAIL-only); got count %d", m.del)
 	}
 	calls := p.Calls()
-	if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != 0x04 {
-		t.Fatalf("Ctrl-D in COORD must forward 0x04 (EOT); got %d calls, payload=%v", len(calls), payloadOf(calls))
+	if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != 0x04 || calls[0].TaskID != "coord-1" {
+		t.Fatalf("Ctrl-D in COORD must forward 0x04 to the coord task; got %d calls, payload=%v", len(calls), payloadOf(calls))
 	}
 }
 
@@ -559,6 +644,56 @@ func TestKeyRouter_EnterInRAIL_WithHandler_RAIL_Propagates(t *testing.T) {
 	}
 }
 
+// --- Gap 1: Enter consults OnResurrect before pane-entry ---
+
+// When OnResurrect handles the Enter (archived coord + Archive visible), the
+// router must consume the event and MUST NOT call the pane-entry handler.
+func TestKeyRouter_EnterInRAIL_Resurrect_Handled(t *testing.T) {
+	r, _, m, _ := newRouter()
+	m.resurrectHandled = true
+	sel := &fakeRailSelect{target: FocusCOORD}
+	r.RailSelect = sel
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if out != nil {
+		t.Fatalf("Enter handled by resurrect must be consumed")
+	}
+	if m.resurrect != 1 {
+		t.Fatalf("Enter must consult OnResurrect once; got %d", m.resurrect)
+	}
+	if sel.calls != 0 {
+		t.Fatalf("resurrect-handled Enter must NOT enter a pane; OnRailSelectEnter called %d times", sel.calls)
+	}
+	if r.Focus.State() != FocusRAIL {
+		t.Fatalf("focus must stay RAIL while the resurrect confirm is up; got %s", r.Focus.State())
+	}
+}
+
+// When OnResurrect declines (returns false), Enter falls through to the
+// existing pane-entry handler (no regression on a LIVE coord).
+func TestKeyRouter_EnterInRAIL_Resurrect_NotHandled_EntersPane(t *testing.T) {
+	r, _, m, _ := newRouter()
+	m.resurrectHandled = false
+	sel := &fakeRailSelect{target: FocusCOORD}
+	r.RailSelect = sel
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if out != nil {
+		t.Fatalf("Enter entering a pane must be consumed")
+	}
+	if m.resurrect != 1 {
+		t.Fatalf("Enter must consult OnResurrect once; got %d", m.resurrect)
+	}
+	if sel.calls != 1 {
+		t.Fatalf("declined resurrect must fall through to OnRailSelectEnter; got %d calls", sel.calls)
+	}
+	if r.Focus.State() != FocusCOORD {
+		t.Fatalf("live coord Enter must enter the COORD pane; got %s", r.Focus.State())
+	}
+}
+
 // --- Focus-traversal keys never forwarded as bytes ---
 
 func TestKeyRouter_CtrlLeft_InAGENT_NotForwarded(t *testing.T) {
@@ -582,6 +717,67 @@ func TestKeyRouter_CtrlRight_InCOORD_NotForwarded(t *testing.T) {
 	}
 	if r.Focus.State() != FocusAGENT {
 		t.Fatalf("Ctrl-Right from COORD must move focus to AGENT; got %s", r.Focus.State())
+	}
+}
+
+// --- Key-surrender contract: Esc release + ? help frame (D12) ---
+
+// Esc while focus is RAIL hands the keyboard back to argus via a release
+// frame; the Esc byte MUST NOT be forwarded to any task.
+func TestKeyRouter_Esc_InRAIL_SendsRelease_NotForwarded(t *testing.T) {
+	r, p, c := newRouterWithControl()
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if out != nil {
+		t.Fatalf("Esc in RAIL must be consumed; got non-nil event")
+	}
+	if c.releases != 1 {
+		t.Fatalf("Esc in RAIL must send exactly one release frame; got %d", c.releases)
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("Esc in RAIL must NOT be forwarded to a task; got %d calls", len(p.Calls()))
+	}
+}
+
+// Esc while focus is AGENT (or COORD) is forwarded to the bound PTY verbatim
+// (0x1b) and MUST NOT release the view.
+func TestKeyRouter_Esc_InAGENT_ForwardedToPTY_NoRelease(t *testing.T) {
+	r, p, c := newRouterWithControl()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if c.releases != 0 {
+		t.Fatalf("Esc in AGENT must NOT release the view; got %d releases", c.releases)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != 0x1b || calls[0].TaskID != "agent-1" {
+		t.Fatalf("Esc in AGENT must forward 0x1b to the agent task; got %d calls, payload=%v", len(calls), payloadOf(calls))
+	}
+}
+
+func TestKeyRouter_Esc_InCOORD_ForwardedToPTY_NoRelease(t *testing.T) {
+	r, p, c := newRouterWithControl()
+	r.Focus.Advance() // → COORD
+	r.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if c.releases != 0 {
+		t.Fatalf("Esc in COORD must NOT release the view; got %d releases", c.releases)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != 0x1b || calls[0].TaskID != "coord-1" {
+		t.Fatalf("Esc in COORD must forward 0x1b to the coord task; got %d calls, payload=%v", len(calls), payloadOf(calls))
+	}
+}
+
+// ? while focus is RAIL pops argus's help overlay via a help frame and MUST
+// NOT be forwarded to a task. (It routes through the mutation handler's
+// OnHelp; with a control sender wired, the bridge sends the frame — but at the
+// router level we still confirm ? in RAIL is consumed and not forwarded.)
+func TestKeyRouter_Question_InRAIL_NotForwarded(t *testing.T) {
+	r, p, _ := newRouterWithControl()
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone))
+	if out != nil {
+		t.Fatalf("? in RAIL must be consumed; got non-nil event")
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("? in RAIL must NOT be forwarded to a task; got %d calls", len(p.Calls()))
 	}
 }
 
@@ -658,6 +854,248 @@ func TestKeyRouter_ModalInactive_NormalDispatch(t *testing.T) {
 	}
 }
 
+// --- Stage P extended keyset routing ---
+
+// `s`/`S` advance/revert status; RAIL-focus-only, intercepted (not forwarded).
+func TestKeyRouter_StatusKeys_RailFocus_FireMutation(t *testing.T) {
+	r, p, m, _ := newRouter()
+	// Focus starts RAIL.
+	if out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone)); out != nil {
+		t.Fatalf("s in RAIL must be consumed; got %v", out)
+	}
+	if out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone)); out != nil {
+		t.Fatalf("S in RAIL must be consumed; got %v", out)
+	}
+	if m.statusAdvance != 1 || m.statusRevert != 1 {
+		t.Fatalf("status calls: advance=%d revert=%d, want 1/1", m.statusAdvance, m.statusRevert)
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("status keys in RAIL must not forward to PTY; got %v", p.Calls())
+	}
+}
+
+// In a pane, `s`/`S` are ordinary input forwarded to the PTY (not status keys).
+func TestKeyRouter_StatusKeys_PaneFocus_ForwardToPTY(t *testing.T) {
+	r, p, m, _ := newRouter()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+	if m.statusAdvance != 0 {
+		t.Fatalf("s in pane must NOT fire OnStatusAdvance; got %d", m.statusAdvance)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || string(calls[0].Payload) != "s" || calls[0].TaskID != "agent-1" {
+		t.Fatalf("s in AGENT must forward byte to agent task; got %+v", calls)
+	}
+}
+
+// `^d`/`^r`/`^p` are RAIL-focus-only: in RAIL they fire the mutation and are
+// intercepted; in a pane they forward their control byte to the bound PTY and
+// do NOT fire the mutation. This table drives all three verbs at once.
+func TestKeyRouter_DestructiveVerbs_RailOnly_FireInRailForwardInPane(t *testing.T) {
+	type vc struct {
+		name    string
+		key     tcell.Key
+		ctlByte byte
+		count   func(*fakeMutations) int
+	}
+	cases := []vc{
+		{"^d delete", tcell.KeyCtrlD, 0x04, func(m *fakeMutations) int { return m.del }},
+		{"^r prune", tcell.KeyCtrlR, 0x12, func(m *fakeMutations) int { return m.prune }},
+		{"^p open-PR", tcell.KeyCtrlP, 0x10, func(m *fakeMutations) int { return m.openPR }},
+	}
+
+	// In RAIL: fires the mutation, intercepted (not forwarded).
+	for _, c := range cases {
+		t.Run(c.name+"/RAIL", func(t *testing.T) {
+			r, p, m, _ := newRouter()
+			if out := r.HandleKey(tcell.NewEventKey(c.key, 0, tcell.ModCtrl)); out != nil {
+				t.Fatalf("%s in RAIL must be consumed; got %v", c.name, out)
+			}
+			if c.count(m) != 1 {
+				t.Fatalf("%s in RAIL must fire its mutation; got count %d", c.name, c.count(m))
+			}
+			if len(p.Calls()) != 0 {
+				t.Fatalf("%s in RAIL must NOT forward to PTY; got %v", c.name, p.Calls())
+			}
+		})
+	}
+
+	// In COORD/AGENT: forwards the control byte to the bound PTY, no mutation.
+	for _, c := range cases {
+		for _, pane := range []struct {
+			name   string
+			jump   func(*KeyRouter)
+			taskID string
+		}{
+			{"COORD", func(r *KeyRouter) { r.Focus.Advance() }, "coord-1"},
+			{"AGENT", func(r *KeyRouter) { r.Focus.JumpToAGENT() }, "agent-1"},
+		} {
+			t.Run(c.name+"/"+pane.name, func(t *testing.T) {
+				r, p, m, _ := newRouter()
+				pane.jump(r)
+				if out := r.HandleKey(tcell.NewEventKey(c.key, 0, tcell.ModCtrl)); out != nil {
+					t.Fatalf("%s in %s must be consumed; got %v", c.name, pane.name, out)
+				}
+				if c.count(m) != 0 {
+					t.Fatalf("%s in %s must NOT fire its mutation (RAIL-only); got count %d", c.name, pane.name, c.count(m))
+				}
+				calls := p.Calls()
+				if len(calls) != 1 || len(calls[0].Payload) != 1 || calls[0].Payload[0] != c.ctlByte || calls[0].TaskID != pane.taskID {
+					t.Fatalf("%s in %s must forward byte 0x%02x to %s; got %d calls payload=%v", c.name, pane.name, c.ctlByte, pane.taskID, len(calls), payloadOf(calls))
+				}
+			})
+		}
+	}
+}
+
+// --- Stage Q: pane scroll + in-pane agent navigation (D15) ---
+
+// fakeScroller records ScrollFocusedPane calls so router tests can assert the
+// ⇧↑/⇧↓ scroll keys reach the focused pane without moving the rail selection.
+type fakeScroller struct {
+	calls []scrollCall
+}
+
+type scrollCall struct {
+	State FocusState
+	Delta int
+}
+
+func (f *fakeScroller) ScrollFocusedPane(state FocusState, delta int) {
+	f.calls = append(f.calls, scrollCall{State: state, Delta: delta})
+}
+
+// fakeInPaneNav records InPaneNavigate calls and returns a programmable focus
+// state so router tests can assert ⌘↑/⌘↓ (and ^↑/^↓) move the selection while
+// keeping focus inside a pane.
+type fakeInPaneNav struct {
+	dirs   []int
+	result FocusState
+}
+
+func (f *fakeInPaneNav) InPaneNavigate(dir int) FocusState {
+	f.dirs = append(f.dirs, dir)
+	return f.result
+}
+
+// ⇧↓ / ⇧↑ in a pane scroll the focused pane and do NOT move the rail
+// selection (no InPaneNavigate call) nor forward a byte to the PTY.
+func TestKeyRouter_ShiftArrows_InPane_ScrollNotNavNotForward(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		key   tcell.Key
+		delta int
+	}{
+		{"shift-up", tcell.KeyUp, +1},
+		{"shift-down", tcell.KeyDown, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, p, _, _ := newRouter()
+			sc := &fakeScroller{}
+			nav := &fakeInPaneNav{result: FocusAGENT}
+			r.Scroller = sc
+			r.InPaneNav = nav
+			r.Focus.JumpToAGENT()
+
+			out := r.HandleKey(tcell.NewEventKey(tc.key, 0, tcell.ModShift))
+			if out != nil {
+				t.Fatalf("⇧arrow in pane must be consumed; got %v", out)
+			}
+			if len(sc.calls) != 1 || sc.calls[0].Delta != tc.delta {
+				t.Fatalf("⇧arrow must scroll focused pane delta=%d; got %+v", tc.delta, sc.calls)
+			}
+			if sc.calls[0].State != FocusAGENT {
+				t.Fatalf("scroll must target the focused pane state AGENT; got %v", sc.calls[0].State)
+			}
+			if len(nav.dirs) != 0 {
+				t.Fatalf("⇧arrow must NOT move the rail selection; got nav dirs %v", nav.dirs)
+			}
+			if len(p.Calls()) != 0 {
+				t.Fatalf("⇧arrow must NOT forward a byte to the PTY; got %v", p.Calls())
+			}
+			if r.Focus.State() != FocusAGENT {
+				t.Fatalf("⇧arrow must not change focus; got %s", r.Focus.State())
+			}
+		})
+	}
+}
+
+// ⇧arrows in RAIL focus are NOT scroll keys — there is no focused pane. They
+// fall through to the rail (propagate as the bare arrow for tree movement).
+func TestKeyRouter_ShiftArrows_InRAIL_NoScroll(t *testing.T) {
+	r, _, _, _ := newRouter()
+	sc := &fakeScroller{}
+	r.Scroller = sc
+	// Focus starts RAIL.
+	r.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModShift))
+	if len(sc.calls) != 0 {
+		t.Fatalf("⇧arrow in RAIL must not scroll a pane; got %+v", sc.calls)
+	}
+}
+
+// ⌘↓ / ^↓ (and up) in a pane move the rail selection to the next/prev agent
+// and keep focus inside a pane bound to the new selection — never RAIL, never
+// a forwarded byte.
+func TestKeyRouter_ModArrows_InPane_NavigateSelectionKeepPaneFocus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tcell.Key
+		mod  tcell.ModMask
+		dir  int
+	}{
+		{"cmd-down", tcell.KeyDown, tcell.ModMeta, +1},
+		{"cmd-up", tcell.KeyUp, tcell.ModMeta, -1},
+		{"ctrl-down", tcell.KeyDown, tcell.ModCtrl, +1},
+		{"ctrl-up", tcell.KeyUp, tcell.ModCtrl, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, p, _, b := newRouter()
+			sc := &fakeScroller{}
+			nav := &fakeInPaneNav{result: FocusAGENT}
+			r.Scroller = sc
+			r.InPaneNav = nav
+			r.Focus.Advance() // RAIL → COORD, so we start in a pane other than the target
+
+			out := r.HandleKey(tcell.NewEventKey(tc.key, 0, tc.mod))
+			if out != nil {
+				t.Fatalf("mod-arrow in pane must be consumed; got %v", out)
+			}
+			if len(nav.dirs) != 1 || nav.dirs[0] != tc.dir {
+				t.Fatalf("mod-arrow must navigate selection dir=%d; got %v", tc.dir, nav.dirs)
+			}
+			if len(sc.calls) != 0 {
+				t.Fatalf("mod-arrow must NOT scroll; got %+v", sc.calls)
+			}
+			if len(p.Calls()) != 0 {
+				t.Fatalf("mod-arrow must NOT forward a byte; got %v", p.Calls())
+			}
+			if r.Focus.State() != FocusAGENT {
+				t.Fatalf("mod-arrow must land focus in the new selection's pane (AGENT); got %s", r.Focus.State())
+			}
+			if r.Focus.State() == FocusRAIL {
+				t.Fatalf("mod-arrow must NOT return focus to RAIL")
+			}
+			// The border repaints because the focus state changed to the new
+			// selection's pane.
+			if len(b.states) == 0 || b.states[len(b.states)-1] != FocusAGENT {
+				t.Fatalf("border must be repainted to AGENT after in-pane nav; got %v", b.states)
+			}
+		})
+	}
+}
+
+// In RAIL focus, ⌘/^ arrows are not in-pane nav — they fall through (RAIL
+// already navigates the selection with bare j/k/arrows).
+func TestKeyRouter_ModArrows_InRAIL_NoInPaneNav(t *testing.T) {
+	r, _, _, _ := newRouter()
+	nav := &fakeInPaneNav{result: FocusAGENT}
+	r.InPaneNav = nav
+	r.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModCtrl))
+	if len(nav.dirs) != 0 {
+		t.Fatalf("⌘/^ arrow in RAIL must not invoke in-pane nav; got %v", nav.dirs)
+	}
+}
+
 // --- helpers ---
 
 func payloadOf(c []postCall) [][]byte {
@@ -674,4 +1112,59 @@ func taskIDsOf(c []postCall) []string {
 		out[i] = x.TaskID
 	}
 	return out
+}
+
+// hotkeyHas reports whether items contains an entry with the given key, and if
+// so whether its Bar flag matches wantBar.
+func hotkeyHas(items []HotkeyItem, key string, wantBar bool) bool {
+	for _, it := range items {
+		if it.Key == key {
+			return it.Bar == wantBar
+		}
+	}
+	return false
+}
+
+// hotkeyContains reports whether items contains an entry with the given key
+// (regardless of Bar flag).
+func hotkeyContains(items []HotkeyItem, key string) bool {
+	for _, it := range items {
+		if it.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// TestHotkeyItems_RailAdvertisesPruneAndPR proves the RAIL hotkey dictionary
+// surfaces ^r (prune), ^p (PR), s/S (status) so argus's help overlay (D12) can
+// list them. They are help-overlay-only (Bar:false) to keep the bottom bar
+// uncluttered.
+func TestHotkeyItems_RailAdvertisesPruneAndPR(t *testing.T) {
+	items := hotkeyItems(FocusRAIL, true)
+	for _, key := range []string{"^r", "^p", "s", "S"} {
+		if !hotkeyHas(items, key, false) {
+			t.Errorf("RAIL hotkeys must advertise %q with bar:false; items=%+v", key, items)
+		}
+	}
+}
+
+// TestHotkeyItems_PaneFocusDropsPruneAndPR proves ^d/^r/^p are NOT advertised
+// in the COORD/AGENT hotkey dictionaries: they are RAIL-focus-only, and in a
+// pane those control bytes forward to the PTY rather than firing a mutation.
+func TestHotkeyItems_PaneFocusDropsPruneAndPR(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		items []HotkeyItem
+	}{
+		{"COORD", hotkeyItems(FocusCOORD, true)},
+		{"AGENT-coordful", hotkeyItems(FocusAGENT, true)},
+		{"AGENT-coordless", hotkeyItems(FocusAGENT, false)},
+	} {
+		for _, key := range []string{"^d", "^r", "^p"} {
+			if hotkeyContains(tc.items, key) {
+				t.Errorf("%s hotkeys must NOT advertise %q (RAIL-only); items=%+v", tc.name, key, tc.items)
+			}
+		}
+	}
 }

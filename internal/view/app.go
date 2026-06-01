@@ -44,15 +44,32 @@ type App struct {
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool
 
-	// freelanceMode is true while a freelance row is selected: the body is
-	// rail + a single full-width agent pane with the coord pane removed from
-	// the Flex and its subscription torn down (D11 dual-mode layout).
-	freelanceMode bool
+	// coordPresent / agentPresent track which panes the body currently
+	// composes — the three-mode layout (D13), driven by the rail selection:
+	//
+	//   - coordinator selected: coordPresent=true,  agentPresent=false
+	//     (rail + full-width HERA pane, no agent)
+	//   - agent selected:       coordPresent=true,  agentPresent=true
+	//     (rail + HERA + AGENT split)
+	//   - freelancer selected:  coordPresent=false, agentPresent=true
+	//     (rail + full-width AGENT pane, no HERA)
+	//
+	// The absent pane is removed from the body Flex (not hidden) and its proxy
+	// subscription is torn down. Defaults match the initial agent-mode split.
+	coordPresent bool
+	agentPresent bool
 
 	// focus is the session's focus machine, injected via SetFocusMachine so
-	// the App can flip coordPresent when it enters/leaves freelance mode.
+	// the App can flip the present-pane flags when the body mode changes.
 	// nil in tests that build the App without a router.
 	focus *FocusMachine
+
+	// control sends the argus key-surrender control frames (D12). On every
+	// OnFocusChanged the App pushes a focus-aware hotkeys frame so argus's
+	// plugin-mode bottom bar + help overlay reflect the current focus. nil
+	// (no session conn wired — tests, daemon startup) makes the push a
+	// no-op. Injected via SetControl during session wiring.
+	control *viewControl
 
 	// database is retained for RepopulateRail so the bridge can ask
 	// for a refresh without round-tripping back through the daemon.
@@ -98,7 +115,7 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 
 	coordTask, agentTask := findInitialSelection(database, src)
 
-	coordPane, coordBridge, coordUnsub := newBoundPane("Coord", "(no coord selected)", coordTask, src)
+	coordPane, coordBridge, coordUnsub := newBoundPane("HERA", "(no coord selected)", coordTask, src)
 	agentPane, agentBridge, agentUnsub := newBoundPane("Agent", "(no agent selected)", agentTask, src)
 
 	pieces := buildLayout(coordPane, agentPane)
@@ -119,6 +136,8 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		agentBridge:    agentBridge,
 		database:       database,
 		selectDebounce: DefaultRailSelectDebounce,
+		coordPresent:   true,
+		agentPresent:   true,
 	}
 
 	if err := a.populateRail(database); err != nil {
@@ -145,6 +164,13 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 	// triggers a debounced rebind of the COORD / AGENT panes.
 	a.pieces.rail.SetOnSelectionChanged(a.onRailSelectionChanged)
 
+	// Compose the opening frame to match the initial selection's mode. The
+	// coordPresent/agentPresent defaults above assume the agent split; without
+	// this an initial coordinator (or freelancer) selection would render as a
+	// split until the first keypress. applyRailSelection is idempotent on the
+	// panes (rebind is a no-op when already bound) so this only fixes the mode.
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+
 	return a, nil
 }
 
@@ -161,6 +187,16 @@ func (a *App) Application() *tview.Application {
 func (a *App) SetFocusMachine(f *FocusMachine) {
 	a.mu.Lock()
 	a.focus = f
+	a.mu.Unlock()
+}
+
+// SetControl injects the session's view-control sender so the App can push the
+// focus-aware hotkey dictionary to argus on connect and on every focus change
+// (D12). Called once during session wiring, after the conn is accepted. A nil
+// sender (no session conn) makes every push a safe no-op.
+func (a *App) SetControl(c *viewControl) {
+	a.mu.Lock()
+	a.control = c
 	a.mu.Unlock()
 }
 
@@ -284,14 +320,6 @@ func (a *App) populateRail(database *db.DB) error {
 		if err != nil {
 			return fmt.Errorf("list roles for orch %d: %w", orch.ID, err)
 		}
-		// Hold the coord role aside so we can fall back to rendering it as
-		// the orchestrator's sole row when no agents exist (operator still
-		// needs a way to reach the coord pane in agent-less projects).
-		var coordRole *db.Role
-		var coordLive bool
-		var coordDead bool
-		var coordTaskID string
-		var coordStartedAt time.Time
 		for _, role := range roles {
 			bnd, _ := database.Bindings.GetLiveByRole(ctx, role.ID)
 			live := bnd != nil
@@ -316,27 +344,28 @@ func (a *App) populateRail(database *db.DB) error {
 				startedAt = hist[0].StartedAt
 			}
 
-			// Coord roles do not render as their own rail row in the common
-			// case. The first live + alive + non-archived coord binding
-			// feeds the orchestrator's CoordTaskID so the COORD pane can
-			// rebind implicitly when an agent / header is selected.
-			// Archived or dead coord bindings are skipped so the COORD
-			// pane doesn't get bound to a tombstone. We hold a copy of the
-			// first eligible coord role aside in case the orchestrator
-			// ends up with zero agent rows — see below.
+			// Coord roles do not render as their own rail row. The first live +
+			// alive + non-archived coord binding feeds the orchestrator's
+			// CoordTaskID so the COORD pane (and `^p`/resurrect resolution) can
+			// target the coordinator's task when the header is selected.
+			// Archived or dead coord bindings are skipped so the COORD pane
+			// doesn't get bound to a tombstone. A worker-less orchestrator
+			// therefore renders header-only (the header IS the coordinator).
 			if role.Kind == db.KindCoordinator {
 				archived := role.ArchivedAt != nil
+				// Capture the coord role id (first coord seen) regardless of its
+				// archived/live state so the resurrect-on-Enter and `^p`-on-coord
+				// flows can target it when the operator selects an (archived or
+				// live) root coordinator header.
+				if entry.CoordRoleID == 0 {
+					entry.CoordRoleID = role.ID
+				}
 				if !dead && !archived && entry.CoordTaskID == "" && argusTaskID != "" {
 					// Prefer a live coord; fall back to its most-recent binding
 					// (argusTaskID set above) so the coord pane can still show
 					// the coordinator's last output after its task finished —
 					// fixes the "coord pane doesn't follow selection" case.
 					entry.CoordTaskID = argusTaskID
-					coordRole = role
-					coordLive = live
-					coordDead = dead
-					coordTaskID = argusTaskID
-					coordStartedAt = startedAt
 				}
 				continue
 			}
@@ -356,27 +385,11 @@ func (a *App) populateRail(database *db.DB) error {
 			entry.Roles = append(entry.Roles, r)
 		}
 
-		// Agent-less fallback: when the orchestrator would otherwise have
-		// zero visible rows, surface its coord as the sole row so the
-		// operator has something selectable. The rail's selection-change
-		// rebind still routes COORD-to-coord-task as usual; this row's
-		// role-row is just the operator-facing affordance.
-		if len(entry.Roles) == 0 && coordRole != nil {
-			cr := &roleEntry{
-				OrchestratorID: orch.ID,
-				RoleID:         coordRole.ID,
-				RoleKind:       string(coordRole.Kind),
-				Name:           coordRole.Name,
-				Live:           coordLive,
-				Dead:           coordDead,
-				ArgusTaskID:    coordTaskID,
-				Archived:       coordRole.ArchivedAt != nil,
-				StartedAt:      coordStartedAt,
-			}
-			applyArgusState(cr, stateProv)
-			entry.Roles = append(entry.Roles, cr)
-		}
-
+		// Coord-only (worker-less) orchestrators render HEADER-ONLY: the
+		// orchestrator header IS the coordinator. With no worker agents the
+		// header has zero children, and selecting it composes the full-width
+		// HERA pane (coordinator mode) bound to entry.CoordTaskID. We do NOT
+		// synthesize a child coord role row.
 		entries = append(entries, entry)
 	}
 
@@ -427,6 +440,7 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceP
 			RoleKind:        string(db.KindFreelance),
 			Name:            t.Name,
 			ArgusTaskID:     t.ID,
+			WorktreePath:    t.WorktreePath,
 			Live:            t.State.Status == "in_progress" && !t.State.Idle,
 			ElapsedOverride: t.Elapsed,
 			HasState:        true,
@@ -480,8 +494,12 @@ func (a *App) CurrentRailSelection() railSelection {
 		return railSelection{
 			Kind:           selOrchestrator,
 			OrchestratorID: ref.ID,
+			CoordRoleID:    ref.CoordRoleID,
 			Name:           ref.Name,
 			Archived:       ref.Archived,
+			// Child agents that `^d` will also destroy: the orchestrator's
+			// live (non-archived) child roles.
+			ChildCount: countLiveRoles(ref.Roles),
 		}
 	case *roleEntry:
 		return railSelection{
@@ -491,9 +509,23 @@ func (a *App) CurrentRailSelection() railSelection {
 			Name:           ref.Name,
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
+			ArgusTaskID:    ref.ArgusTaskID,
+			WorktreePath:   ref.WorktreePath,
 		}
 	}
 	return railSelection{}
+}
+
+// countLiveRoles returns the number of non-archived roles in the slice —
+// the child-agent count used by the `^d` destructive-delete warning.
+func countLiveRoles(roles []*roleEntry) int {
+	n := 0
+	for _, r := range roles {
+		if r != nil && !r.Archived {
+			n++
+		}
+	}
+	return n
 }
 
 // findInitialSelection picks the argus task IDs to bind to the coord and
@@ -597,14 +629,16 @@ func (a *App) OnFocusChanged(state FocusState) {
 	const focused = tcell.ColorYellow
 	const unfocused = tcell.ColorWhite
 
-	// Reflect the focus state in the bottom bar — the operator's primary cue
-	// for "which element am I driving right now". Without this the bar stays
-	// a static [RAIL] string and pane focus looks like a frozen rail.
-	if a.pieces.bottom != nil {
-		a.mu.Lock()
-		coordPresent := !a.freelanceMode
-		a.mu.Unlock()
-		a.pieces.bottom.SetText(bottomBarText(state, coordPresent))
+	// Advertise the focus-aware hotkey dictionary to argus so its plugin-mode
+	// bottom bar + help overlay reflect the current focus (D12). Hera renders
+	// no bottom bar of its own; argus owns that chrome. nil control (no
+	// session conn) makes this a no-op.
+	a.mu.Lock()
+	coordPresent := a.coordPresent
+	control := a.control
+	a.mu.Unlock()
+	if control != nil {
+		_ = control.SendHotkeys(hotkeyItems(state, coordPresent))
 	}
 
 	a.pieces.rail.SetBorderColor(unfocused)
@@ -630,39 +664,152 @@ func (a *App) OnFocusChanged(state FocusState) {
 	}
 }
 
-// OnRailSelectEnter handles Enter pressed while RAIL has focus. It binds the
-// panes to the highlighted row (exactly as a j/k browse would) and then
-// returns FocusAGENT so the operator lands IN the agent PTY ready to type —
-// per the spec ("From RAIL, Enter MUST jump directly to AGENT") and the
-// bottom-bar hint ("Enter agent").
+// OnRailSelectEnter handles Enter pressed while RAIL has focus. It enters the
+// selection's PRIMARY pane (D13 "Enter enters the selection's primary pane"):
 //
-// This is the ONLY reliable way into a pane when the view is hosted inside
-// argus: argus intercepts the Cmd/Ctrl-arrow focus-traversal keys for its own
-// navigation, so they never reach this plugin view. Enter (and Ctrl-Q to
-// return to RAIL) are forwarded, so Enter must be the way in. Browsing many
-// roles without entering a pane is done with j/k, which rebinds the panes live
-// via the selection-changed callback — so making Enter jump no longer harms
-// the browse flow.
+//   - a coordinator row (orchestrator header or sub-coordinator) → its HERA
+//     (COORD) pane, returning FocusCOORD;
+//   - an agent row → its AGENT pane, returning FocusAGENT;
+//   - a freelancer row → its AGENT pane, returning FocusAGENT;
+//   - a header / expando row (Freelance repo group or Archive) → toggle the
+//     section fold and stay in RAIL (returns FocusRAIL). Enter NEVER enters a
+//     pane on these rows; `space` and Enter both fold them.
 //
-// Non-bindable rows (orchestrator / freelance-repo headers, rows without a
-// live argus task) return FocusRAIL so the KeyRouter propagates Enter to the
-// tree for its native fold/unfold behavior.
+// In each pane case the row is bound first (composing the right body mode and
+// tearing down the absent pane's subscription) so the operator lands IN the
+// PTY ready to type. This is the reliable way into a pane when hosted inside
+// argus, which eats the Cmd/Ctrl-arrow focus ladder; browsing without
+// entering is j/k, which rebinds the panes live via the selection callback.
 //
 // Satisfies the KeyRouter.RailSelectHandler contract. Runs on the tview
-// input pump goroutine — direct mutation of pieces / Flex contents is
-// safe here.
+// input pump goroutine — direct mutation of pieces / Flex contents is safe.
 func (a *App) OnRailSelectEnter() FocusState {
 	if a.pieces.rail == nil {
 		return FocusRAIL
 	}
-	ref, ok := a.pieces.rail.CurrentRef().(*roleEntry)
-	if !ok || ref == nil || ref.ArgusTaskID == "" {
+	switch ref := a.pieces.rail.CurrentRef().(type) {
+	case *orchEntry:
+		// Orchestrator header = coordinator selection → full-width HERA pane.
+		if ref == nil {
+			return FocusRAIL
+		}
+		a.applyRailSelection(ref)
+		if ref.CoordTaskID == "" {
+			// No coord task to enter (agent-less / dead coord): stay in RAIL.
+			return FocusRAIL
+		}
+		return FocusCOORD
+	case *roleEntry:
+		if ref == nil || ref.ArgusTaskID == "" {
+			return FocusRAIL
+		}
+		a.applyRailSelection(ref)
+		if ref.RoleKind == string(db.KindCoordinator) {
+			// A sub-coordinator is a coordinator selection → HERA pane.
+			return FocusCOORD
+		}
+		// Worker or freelancer → AGENT pane.
+		return FocusAGENT
+	case *freelanceProject:
+		// Freelance repo-group header: Enter folds the group, never enters a
+		// pane. Toggle the fold and remain in RAIL.
+		a.pieces.rail.ToggleCollapse()
 		return FocusRAIL
 	}
-	// Bind the panes for this row (handles freelance full-width mode, the
-	// orchestrator's coord, and the agent), then land in the AGENT pane.
-	a.applyRailSelection(ref)
-	return FocusAGENT
+	// nil ref → Freelance separator or Archive expando. Fold the section
+	// (ToggleCollapse handles the Archive expando under the cursor) and stay
+	// in RAIL.
+	a.pieces.rail.ToggleCollapse()
+	return FocusRAIL
+}
+
+// ScrollFocusedPane scrolls the pane that currently has focus by delta lines
+// (positive = up into scrollback, negative = down toward the live screen),
+// driving the ⇧↑/⇧↓ keys (D15). It MUST NOT move the rail selection. No-op when
+// focus is RAIL (no pane is focused) or the targeted pane is absent.
+//
+// Satisfies the KeyRouter.PaneScroller contract. Runs on the tview input pump.
+//
+// LIMITATION: the SDK terminalpane paints only the live screen (see
+// pinnedTerminalPane.scrollOffset), so the offset is recorded but the visible
+// surface does not yet scroll. The key is intercepted end-to-end so it never
+// leaks to the PTY or the rail.
+func (a *App) ScrollFocusedPane(state FocusState, delta int) {
+	a.mu.Lock()
+	var pane *pinnedTerminalPane
+	switch state {
+	case FocusCOORD:
+		pane = a.pieces.coord
+	case FocusAGENT:
+		pane = a.pieces.agent
+	}
+	a.mu.Unlock()
+	if pane == nil {
+		return
+	}
+	pane.ScrollBy(delta)
+}
+
+// InPaneNavigate moves the rail selection to the next (dir>0) or previous
+// (dir<0) pane-bindable agent row and re-enters that selection's primary pane,
+// keeping focus INSIDE a pane (D15's ⌘↑/⌘↓ in-pane navigation). It reuses the
+// Stage-O selection+enter-pane logic (applyRailSelection via OnRailSelectEnter)
+// so the body re-composes and the focus machine lands on the new selection's
+// primary pane — never RAIL. Returns the focus state the operator should land
+// in (FocusCOORD for a coordinator selection, FocusAGENT for a worker /
+// freelancer). When there is no further bindable row in the requested
+// direction the selection (and focus) stay put.
+//
+// A coord-less orchestrator header (CoordTaskID == "") is pane-bindable for
+// normal rail navigation (j/k still land on it) but has no pane to enter, so
+// OnRailSelectEnter yields FocusRAIL. In-pane flipping must never strand the
+// operator with the selection on such a header while focus silently lingers in
+// the previous pane, so we keep stepping in the same direction until we reach a
+// row that actually enters a pane (COORD/AGENT). If none exists that way, the
+// original selection + focus are restored so the operator stays put.
+//
+// Satisfies the KeyRouter.InPaneNavigator contract. Runs on the tview input
+// pump goroutine — direct mutation of the rail cursor and panes is safe.
+func (a *App) InPaneNavigate(dir int) FocusState {
+	if a.pieces.rail == nil {
+		return FocusRAIL
+	}
+	startCursor := a.pieces.rail.cursor
+	for a.pieces.rail.StepToBindable(dir) {
+		if target := a.OnRailSelectEnter(); target != FocusRAIL {
+			return target
+		}
+		// Landed on a coord-less header (no pane to enter): keep flipping in the
+		// same direction. StepToBindable clamps at the ends, so this terminates.
+	}
+	// No further pane-bindable row that way: restore the original selection so
+	// the operator's selection + focus stay where they were.
+	a.pieces.rail.cursor = startCursor
+	a.pieces.rail.clampOffset()
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+	return a.focusForCurrentSelection()
+}
+
+// focusForCurrentSelection returns the pane-focus state the current rail
+// selection's primary pane corresponds to, WITHOUT moving the cursor or
+// rebinding. Used when in-pane nav has nowhere to step so the operator stays in
+// the pane they're already in.
+func (a *App) focusForCurrentSelection() FocusState {
+	switch ref := a.pieces.rail.CurrentRef().(type) {
+	case *orchEntry:
+		if ref != nil && ref.CoordTaskID != "" {
+			return FocusCOORD
+		}
+	case *roleEntry:
+		if ref == nil || ref.ArgusTaskID == "" {
+			return FocusRAIL
+		}
+		if ref.RoleKind == string(db.KindCoordinator) {
+			return FocusCOORD
+		}
+		return FocusAGENT
+	}
+	return FocusRAIL
 }
 
 // rebindCoord swaps the COORD pane's underlying paneBridge / subscription
@@ -677,7 +824,7 @@ func (a *App) rebindCoord(taskID string) {
 	oldUnsub := a.coordUnsub
 	oldBridge := a.coordBridge
 	oldPane := a.pieces.coord
-	pane, bridge, unsub := newBoundPane("Coord", "(no coord selected)", taskID, a.src)
+	pane, bridge, unsub := newBoundPane("HERA", "(no coord selected)", taskID, a.src)
 	a.coordTask = taskID
 	a.coordBridge = bridge
 	a.coordUnsub = unsub
@@ -792,44 +939,50 @@ func (a *App) fireRailSelection() {
 	a.applyRailSelection(ref)
 }
 
-// applyRailSelection rebinds the COORD / AGENT panes per the
-// selection-rebind semantics documented on onRailSelectionChanged. Must
-// run on the tview event loop when a.app != nil (the input pump or a
+// applyRailSelection re-composes the body into the mode the highlighted row
+// demands (D13's three modes) and rebinds the present panes' subscriptions.
+// Must run on the tview event loop when a.app != nil (the input pump or a
 // QueueUpdateDraw callback).
+//
+//   - coordinator (orchestrator header or sub-coordinator role) → coordinator
+//     mode: full-width HERA pane bound to the coord task, no AGENT pane;
+//   - worker/agent role → agent mode: HERA bound to its coord + AGENT bound to
+//     the agent (split);
+//   - freelancer role → freelance mode: full-width AGENT bound to the
+//     freelancer, coord released (no HERA pane);
+//   - Freelance repo-group header → not pane-bindable; leave the mode and
+//     panes untouched (Enter/space fold it instead).
 func (a *App) applyRailSelection(ref any) {
 	switch r := ref.(type) {
 	case *orchEntry:
 		if r == nil {
 			return
 		}
-		a.exitFreelanceMode()
+		// Coordinator mode: bind HERA to the coord, drop the agent pane.
 		if r.CoordTaskID != "" {
 			a.rebindCoord(r.CoordTaskID)
 		}
-		// Header selection leaves the agent pane alone so the last-
-		// picked agent stays visible while the operator changes coord
-		// targets. Selecting an agent row (below) rebinds both panes.
+		a.setBodyMode(true, false)
 	case *freelanceProject:
-		// A Freelance repo-group header is not pane-bindable; leave the
-		// panes and the current mode untouched (selecting a task row under
-		// it switches to freelance mode).
+		// A Freelance repo-group header is not pane-bindable; leave the panes
+		// and the current mode untouched (selecting a task row under it
+		// switches to freelance mode).
 		return
 	case *roleEntry:
 		if r == nil {
 			return
 		}
 		if r.RoleKind == string(db.KindFreelance) {
-			// Freelancer selected: full-width agent, no coord (D11).
-			a.enterFreelanceMode()
+			// Freelancer: full-width AGENT, no coord (release the coord sub).
+			a.rebindCoord("")
 			if r.ArgusTaskID != "" {
 				a.rebindAgent(r.ArgusTaskID)
 			}
+			a.setBodyMode(false, true)
 			return
 		}
-		a.exitFreelanceMode()
-		// Locate the orchestrator so we can also rebind COORD to its
-		// coord task. orchestrators is the rail's source of truth so a
-		// linear walk is cheap.
+		// Locate the orchestrator so we can rebind COORD to its coord task.
+		// orchestrators is the rail's source of truth so a linear walk is cheap.
 		var coordTask string
 		for _, o := range a.pieces.rail.orchestrators {
 			if o.ID == r.OrchestratorID {
@@ -837,82 +990,73 @@ func (a *App) applyRailSelection(ref any) {
 				break
 			}
 		}
-		if coordTask != "" {
-			a.rebindCoord(coordTask)
+		// Always rebind COORD to the selected project's coord task — including
+		// "" when the project has no coord. Otherwise the HERA pane would keep
+		// showing the PREVIOUS project's coordinator (the split stays, but bound
+		// to a foreign coord). rebindCoord("") clears it to its placeholder.
+		a.rebindCoord(coordTask)
+		if r.RoleKind == string(db.KindCoordinator) {
+			// A sub-coordinator selection is coordinator mode: full-width HERA.
+			a.setBodyMode(true, false)
+			return
 		}
+		// Worker/agent: HERA + AGENT split.
 		if r.ArgusTaskID != "" {
 			a.rebindAgent(r.ArgusTaskID)
 		}
+		a.setBodyMode(true, true)
 	}
 }
 
-// refreshBody re-composes the body Flex with the current rail + coord +
-// agent panes. Called after a pane rebind so the new pane primitive is
-// drawn in place of the old one.
+// setBodyMode records which panes the body composes, re-lays out the body
+// Flex, and tells the focus machine which positions exist so traversal steps
+// only through present panes and never rests on a torn-down one. Idempotent —
+// a no-op when the mode is unchanged. Runs on the tview event loop.
+func (a *App) setBodyMode(coordPresent, agentPresent bool) {
+	a.mu.Lock()
+	if a.coordPresent == coordPresent && a.agentPresent == agentPresent {
+		a.mu.Unlock()
+		// Still refresh the body so a pane rebind that didn't change the mode
+		// redraws the swapped-in primitive.
+		a.refreshBody()
+		return
+	}
+	a.coordPresent = coordPresent
+	a.agentPresent = agentPresent
+	focus := a.focus
+	a.mu.Unlock()
+
+	a.refreshBody()
+
+	if focus != nil {
+		// Update both present flags; rebalance bumps focus off any now-absent
+		// pane. OnFocusChanged repaints borders and the bottom bar.
+		focus.SetCoordPresent(coordPresent)
+		focus.SetAgentPresent(agentPresent)
+		a.OnFocusChanged(focus.State())
+	}
+}
+
+// refreshBody re-composes the body Flex with the rail plus whichever panes the
+// current mode (coordPresent / agentPresent) includes. The absent pane is
+// removed from the Flex entirely (not hidden) so the present pane(s) take the
+// full canvas. Called after a pane rebind or a mode switch.
 func (a *App) refreshBody() {
 	body := a.pieces.body
 	if body == nil {
 		return
 	}
 	a.mu.Lock()
-	freelance := a.freelanceMode
+	coordPresent := a.coordPresent
+	agentPresent := a.agentPresent
 	a.mu.Unlock()
 
 	body.Clear()
 	body.AddItem(a.pieces.rail, RailWidth, 0, false)
-	if !freelance {
-		// Normal three-column layout. In freelance mode the coord pane is
-		// removed entirely (not hidden) so the agent pane takes the whole
-		// canvas — a freelancer has no coordinator pairing worth showing.
+	if coordPresent {
 		body.AddItem(a.pieces.coord, 0, 1, false)
 	}
-	body.AddItem(a.pieces.agent, 0, 1, false)
-}
-
-// enterFreelanceMode switches the body to rail + full-width agent. It tears
-// down the coord pane's subscription (rebindCoord to the empty task) and
-// tells the focus machine the coord position no longer exists so traversal
-// skips it. Idempotent. Runs on the tview event loop.
-func (a *App) enterFreelanceMode() {
-	a.mu.Lock()
-	if a.freelanceMode {
-		a.mu.Unlock()
-		return
-	}
-	a.freelanceMode = true
-	focus := a.focus
-	a.mu.Unlock()
-
-	// Release the coord subscription and blank the coord task so no
-	// keystroke can route to a coordinator while in freelance mode.
-	a.rebindCoord("")
-	// rebindCoord no-ops (and skips refreshBody) when coord was already
-	// unbound; call refreshBody unconditionally so the coord pane leaves the
-	// Flex on the first entry even from an already-blank coord.
-	a.refreshBody()
-
-	if focus != nil {
-		focus.SetCoordPresent(false)
-		a.OnFocusChanged(focus.State())
-	}
-}
-
-// exitFreelanceMode restores the normal three-column body. The caller
-// (applyRailSelection) rebinds the coord pane to the selected row's coord
-// task immediately after. Idempotent. Runs on the tview event loop.
-func (a *App) exitFreelanceMode() {
-	a.mu.Lock()
-	if !a.freelanceMode {
-		a.mu.Unlock()
-		return
-	}
-	a.freelanceMode = false
-	focus := a.focus
-	a.mu.Unlock()
-
-	a.refreshBody()
-	if focus != nil {
-		focus.SetCoordPresent(true)
-		a.OnFocusChanged(focus.State())
+	if agentPresent {
+		body.AddItem(a.pieces.agent, 0, 1, false)
 	}
 }

@@ -1,13 +1,9 @@
 package view
 
 import (
-	"fmt"
 	"strings"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-
-	"github.com/anutron/hera/internal/view/ops"
 )
 
 // Modal page names used inside *App.pieces.pages. A separate name per
@@ -16,8 +12,8 @@ import (
 const (
 	pageBase    = "base"
 	pageInput   = "modal-input"
+	pageForm2   = "modal-form2"
 	pageConfirm = "modal-confirm"
-	pageHelp    = "modal-help"
 	pageError   = "modal-error"
 )
 
@@ -62,6 +58,54 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 	})
 }
 
+// ShowForm2 opens a two-field input modal centered over the base layout.
+// onSubmit fires with both trimmed values when the operator hits OK; onCancel
+// fires on Cancel or Esc. Mirrors ShowInput's idiom (tview.Form), adding a
+// second field — used by the new-project flow (name required, mission
+// optional).
+//
+// Safe to call from any goroutine — the body runs through app.QueueUpdateDraw
+// so it lands on the tview event loop.
+func (a *App) ShowForm2(title, label1, initial1, label2, initial2 string, onSubmit func(v1, v2 string), onCancel func()) {
+	a.queueModal(func() {
+		field1 := tview.NewInputField().
+			SetLabel(label1 + ": ").
+			SetText(initial1).
+			SetFieldWidth(40)
+		field2 := tview.NewInputField().
+			SetLabel(label2 + ": ").
+			SetText(initial2).
+			SetFieldWidth(40)
+
+		form := tview.NewForm().
+			AddFormItem(field1).
+			AddFormItem(field2).
+			SetButtonsAlign(tview.AlignCenter)
+
+		dismiss := func(submitted bool) {
+			v1 := strings.TrimSpace(field1.GetText())
+			v2 := strings.TrimSpace(field2.GetText())
+			a.closeModal(pageForm2)
+			if submitted {
+				if onSubmit != nil {
+					onSubmit(v1, v2)
+				}
+			} else if onCancel != nil {
+				onCancel()
+			}
+		}
+
+		form.AddButton("OK", func() { dismiss(true) })
+		form.AddButton("Cancel", func() { dismiss(false) })
+		form.SetCancelFunc(func() { dismiss(false) })
+
+		form.SetBorder(true).SetTitle(title).SetTitleAlign(tview.AlignCenter)
+
+		a.pieces.pages.AddPage(pageForm2, centeredModal(form, 60, 9), true, true)
+		a.app.SetFocus(field1)
+	})
+}
+
 // ShowConfirm opens a y/N confirmation modal. onYes runs on Yes;
 // onNo runs on No / Cancel / Esc.
 func (a *App) ShowConfirm(title, message string, onYes func(), onNo func()) {
@@ -85,32 +129,6 @@ func (a *App) ShowConfirm(title, message string, onYes func(), onNo func()) {
 
 		a.pieces.pages.AddPage(pageConfirm, modal, true, true)
 		a.app.SetFocus(modal)
-	})
-}
-
-// ShowHelp opens the help modal with the supplied sections. Dismissed
-// by `q` (Esc is reserved by argus per design.md D5).
-func (a *App) ShowHelp(sections []ops.HelpSection) {
-	a.queueModal(func() {
-		body := tview.NewTextView()
-		body.SetText(formatHelp(sections))
-		body.SetBorder(true).
-			SetTitle("Help — press q to close").
-			SetTitleAlign(tview.AlignCenter)
-		body.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-			if event.Key() == tcell.KeyRune && event.Rune() == 'q' {
-				a.closeModal(pageHelp)
-				return nil
-			}
-			if event.Key() == tcell.KeyEsc {
-				a.closeModal(pageHelp)
-				return nil
-			}
-			return event
-		})
-
-		a.pieces.pages.AddPage(pageHelp, centeredModal(body, 70, 24), true, true)
-		a.app.SetFocus(body)
 	})
 }
 
@@ -172,20 +190,3 @@ func centeredModal(p tview.Primitive, width, height int) tview.Primitive {
 		AddItem(nil, 0, 1, false)
 }
 
-// formatHelp renders the help sections into a plain-text block for
-// the help modal's TextView. One block per section with a blank line
-// between, and one line per binding ("  key — description").
-func formatHelp(sections []ops.HelpSection) string {
-	var sb strings.Builder
-	for i, sec := range sections {
-		if i > 0 {
-			sb.WriteString("\n")
-		}
-		sb.WriteString(sec.Title)
-		sb.WriteString("\n")
-		for _, bnd := range sec.Bindings {
-			fmt.Fprintf(&sb, "  %-12s — %s\n", bnd.Key, bnd.Desc)
-		}
-	}
-	return sb.String()
-}

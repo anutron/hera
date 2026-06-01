@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hera rail — navigation feel</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#11151f; --panel2:#0e1220; --border:#1e2430;
+    --txt:#cfd6e4; --dim:#5b657a; --proj:#7aa2f7; --coord:#cde2ff;
+    --sel:#1b2740; --selbar:#3d6fd6; --live:#7dcfff; --idle:#4a5468;
+    --attn:#faa378; --green:#9ece6a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:13px/1.5 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;height:100vh}
+  .topbar{height:30px;display:flex;align-items:center;padding:0 14px;color:#fff;
+    border-bottom:1px solid var(--border);background:var(--panel2);letter-spacing:1px;font-weight:600;gap:12px}
+  .topbar .leave{margin-left:auto;color:var(--dim);font-weight:400;letter-spacing:.3px;font-size:11.5px}
+  .wrap{flex:1;display:flex;min-height:0;position:relative}
+  .rail{width:320px;flex:0 0 320px;border-right:1px solid var(--border);background:var(--panel);
+    overflow-y:auto;outline:none;transition:opacity .12s}
+  .railhdr{padding:6px 12px;border-bottom:1px solid var(--border);color:var(--dim);
+    font-size:11px;letter-spacing:1px;text-transform:uppercase;background:var(--panel2);position:sticky;top:0}
+  .rail.dim{opacity:.45}
+  .rows{padding:6px 0}
+  .row{display:flex;align-items:center;padding:3px 12px 3px 0;cursor:pointer;white-space:nowrap;position:relative}
+  .row:hover{background:#141a28}
+  .row.sel{background:var(--sel);box-shadow:inset 3px 0 0 var(--selbar)}
+  .row.sel.railfoc{background:#22325a}
+  .row.arch .name{color:var(--dim)}
+  .row.arch .icon{color:var(--idle)}
+  .chev{width:16px;flex:0 0 16px;text-align:center;color:var(--dim)}
+  .chev.leaf{visibility:hidden}
+  .icon{width:18px;flex:0 0 18px;text-align:center}
+  .icon.live{color:var(--live)} .icon.idle{color:var(--idle)}
+  .icon.attn{color:var(--attn);font-weight:700} .icon.proj{color:var(--proj)} .icon.done{color:var(--green)}
+  .name{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis}
+  .name.proj{color:var(--proj);font-weight:600}
+  .name.coord{color:var(--coord)}
+  .count{color:var(--dim);margin-left:6px}
+  .elapsed{color:var(--dim);margin-left:8px;flex:0 0 auto;font-size:11.5px}
+  .archrow{color:var(--dim);font-size:11px;display:flex;align-items:center;gap:8px;cursor:pointer}
+  .archrow .achv{width:16px;flex:0 0 16px;text-align:center}
+  .archrow .line{flex:1;border-top:1px dashed var(--border)}
+  .archrow.sel{background:var(--sel);box-shadow:inset 3px 0 0 var(--selbar)}
+  .sep{padding:5px 12px;color:var(--dim);font-size:11px;display:flex;align-items:center;gap:8px}
+  .sep .line{flex:1;border-top:1px solid var(--border)}
+  .body{flex:1;display:flex;min-width:0;background:var(--bg)}
+  .pane{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border);position:relative}
+  .pane:last-child{border-right:none}
+  .pane.foc{box-shadow:inset 0 0 0 2px var(--selbar)}
+  .pane .ph{padding:5px 12px;border-bottom:1px solid var(--border);background:var(--panel2);
+    display:flex;align-items:center;gap:10px;color:var(--dim);font-size:11.5px}
+  .pane .ph .tag{color:#fff;font-weight:600;letter-spacing:.5px}
+  .pane.foc .ph .tag{color:#bcd4ff}
+  .pane .ph .role{color:var(--coord);font-size:10px;letter-spacing:.6px}
+  .pane .ph .role.agent{color:var(--dim)}
+  .pane .ph .foctag{color:var(--selbar);font-size:10px;letter-spacing:.5px}
+  .pane .ph .st{margin-left:auto;font-size:10px;text-transform:uppercase;letter-spacing:.6px}
+  .st.working{color:var(--green)} .st.idle{color:var(--idle)} .st.attn{color:var(--attn)}
+  .term{flex:1;padding:12px 14px;overflow:auto;white-space:pre-wrap;font-size:12.5px;line-height:1.55;color:#b9c2d4}
+  .term .u{color:var(--proj)} .term .a{color:#e6edf7} .term .d{color:var(--dim)}
+  .term .ok{color:var(--green)} .term .warn{color:var(--attn)}
+  .cursor{display:inline-block;width:7px;height:15px;background:#7dcfff;vertical-align:-2px;animation:blink 1.1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .scrollhint{position:absolute;top:6px;right:10px;font-size:10px;color:var(--selbar);background:#0c1322;border:1px solid #2a3450;border-radius:6px;padding:1px 6px}
+  .empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--idle);font-size:12px;text-align:center;padding:20px}
+  .bottombar{height:28px;display:flex;align-items:center;gap:14px;padding:0 14px;
+    border-top:1px solid var(--border);background:var(--panel2);color:var(--dim);font-size:11.5px}
+  .bottombar .ball{color:var(--green);font-weight:600;flex:0 0 auto}
+  .bottombar .hk{display:flex;gap:11px;flex:1;overflow:hidden;justify-content:flex-end}
+  kbd{background:#1a2030;border:1px solid #2a3450;border-radius:4px;padding:0 5px;color:#cdd6e6;font-size:11px}
+  .overlay{position:absolute;inset:0;background:rgba(6,9,15,.72);display:flex;align-items:center;justify-content:center;z-index:5}
+  .card{background:var(--panel);border:1px solid #2a3450;border-radius:10px;padding:18px 22px;min-width:380px;max-width:560px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+  .card h3{margin:0 0 10px;color:#fff;font-size:13px;letter-spacing:.5px}
+  .card .k{display:flex;justify-content:space-between;gap:24px;padding:3px 0;color:var(--txt)}
+  .card .k .d{color:var(--dim)}
+  .card .foot{margin-top:12px;color:var(--dim);font-size:11px}
+  .left-argus{flex-direction:column;gap:10px;color:var(--txt);text-align:center}
+  .left-argus .big{font-size:20px;color:var(--attn)}
+</style>
+</head>
+<body>
+  <div class="topbar"><span>HERA</span><span class="leave" id="leave"></span></div>
+  <div class="wrap">
+    <div class="rail" id="rail" tabindex="0"><div class="railhdr">Rail</div><div class="rows" id="rows"></div></div>
+    <div class="body" id="bodyEl"></div>
+    <div id="overlayEl"></div>
+  </div>
+  <div class="bottombar" id="bottom"></div>
+
+<script>
+// kind: 'coord' (project root or sub-coord) | 'leaf' (worker). status: working|idle|attn|review|done
+const projects = [
+  { id:'co', name:'checkout-rebuild', kind:'coord', root:true, status:'working',
+    children:[
+      { id:'w1', name:'wave-1', kind:'coord', status:'working',
+        children:[
+          { id:'cart-api', name:'cart-api', kind:'leaf', status:'attn', attn:true, elapsed:'12m' },
+          { id:'cart-ui',  name:'cart-ui',  kind:'leaf', status:'working', elapsed:'4m' },
+          { id:'cart-old', name:'cart-spike', kind:'leaf', status:'idle', archived:true, elapsed:'2d' },
+        ]},
+      { id:'w2', name:'wave-2', kind:'coord', status:'working',
+        children:[
+          { id:'pricing', name:'pricing', kind:'leaf', status:'review', elapsed:'1h' },
+        ]},
+      { id:'smoke', name:'smoke', kind:'leaf', status:'done', elapsed:'2h' },
+      { id:'wave-0', name:'wave-0', kind:'coord', status:'idle', archived:true,
+        children:[ { id:'legacy', name:'legacy-cart', kind:'leaf', status:'idle', elapsed:'3d' } ] },
+    ]},
+  { id:'bp', name:'BIG PROJECT', kind:'coord', root:true, status:'working',
+    children:[
+      { id:'p1', name:'phase-1', kind:'coord', status:'working',
+        children:[
+          { id:'p1-build', name:'p1-build', kind:'leaf', status:'working', elapsed:'3m' },
+          { id:'p1-test',  name:'p1-test',  kind:'leaf', status:'attn', attn:true, elapsed:'18m' },
+          { id:'p1-spec',  name:'p1-spec',  kind:'leaf', status:'done', elapsed:'40m' },
+        ]},
+      { id:'p2', name:'phase-2', kind:'leaf', status:'idle', elapsed:'1h' },
+    ]},
+  { id:'docs', name:'docs-site', kind:'coord', root:true, status:'idle', children:[] },
+  { id:'oldmig', name:'db-migration', kind:'coord', root:true, status:'idle', archived:true,
+    children:[ { id:'mig-1', name:'mig-runner', kind:'leaf', status:'idle', elapsed:'5d' } ] },
+];
+const freelancers = [
+  { id:'fl-scratch', name:'scratch-refactor', kind:'freelance', status:'working', elapsed:'40m' },
+  { id:'fl-spike',   name:'perf-spike',       kind:'freelance', status:'attn', attn:true, elapsed:'5m' },
+];
+
+const collapsed = new Set();
+const archiveOpen = new Set();
+let freelanceOpen = false;
+let selId = null;
+let focus = 'RAIL';                  // RAIL | COORD (shown HERA) | AGENT
+let overlay = null;                  // help | argus | prune | pr
+
+const LIFE = ['working','review','done'];
+function lifeIdx(s){ return s==='review'?1 : s==='done'?2 : 0; }
+
+function ordered(c){ return [...c].sort((a,b)=> (a.kind==='coord'?0:1)-(b.kind==='coord'?0:1)); }
+function activeKids(n){ return ordered((n.children||[]).filter(c=>!c.archived)); }
+function archivedKids(n){ return (n.children||[]).filter(c=>c.archived); }
+let parent = {};
+function reindex(){ parent={}; (function idx(l,p){ l.forEach(n=>{ parent[n.id]=p; if(n.children) idx(n.children,n); }); })(projects,null); }
+reindex();
+
+function visibleRows(){
+  const out=[];
+  function walk(node,depth){
+    out.push({type:'node', node, depth});
+    if(node.kind==='coord' && !collapsed.has(node.id)){
+      activeKids(node).forEach(c=>walk(c,depth+1));
+      const arch=archivedKids(node);
+      if(arch.length){
+        out.push({type:'archhdr', ownerId:node.id, aid:'arch::'+node.id, count:arch.length, depth:depth+1});
+        if(archiveOpen.has(node.id)) arch.forEach(c=> out.push({type:'node', node:c, depth:depth+2, inArchive:true}));
+      }
+    }
+  }
+  projects.filter(p=>!p.archived).forEach(p=>walk(p,0));
+  out.push({type:'freehdr', depth:0});
+  if(freelanceOpen) freelancers.filter(f=>!f.archived).forEach(f=>out.push({type:'node', node:f, depth:1}));
+  const ar=projects.filter(p=>p.archived);
+  if(ar.length){
+    out.push({type:'archhdr', ownerId:'__root__', aid:'arch::__root__', count:ar.length, depth:0});
+    if(archiveOpen.has('__root__')) ar.forEach(p=>out.push({type:'node', node:p, depth:1, inArchive:true}));
+  }
+  return out;
+}
+function rowId(r){ return r.type==='freehdr'?'__free__': r.type==='archhdr'?r.aid : r.node.id; }
+function selectableIds(){ return visibleRows().map(rowId); }
+function nodeIds(){ return visibleRows().filter(r=>r.type==='node').map(r=>r.node.id); }
+
+function iconFor(n){
+  if(n.attn) return {g:'?', c:'icon attn'};
+  if(n.status==='done') return {g:'✓', c:'icon done'};
+  if(n.status==='review') return {g:'✓', c:'icon live'};
+  if(n.kind==='coord' && n.root) return {g:'◆', c:'icon proj'};
+  if(n.status==='idle') return {g:'○', c:'icon idle'};
+  return {g:'☾', c:'icon live'};
+}
+function renderRail(){
+  const railFoc = focus==='RAIL' ? ' railfoc' : '';
+  const html = visibleRows().map(r=>{
+    const sel = (rowId(r)===selId) ? ' sel'+railFoc : '';
+    if(r.type==='freehdr') return `<div class="sep row${sel}" data-id="__free__"><span class="chev">${freelanceOpen?'▾':'▸'}</span><span class="line"></span><span style="padding:0 6px">Freelance (${freelancers.length})</span><span class="line"></span></div>`;
+    if(r.type==='archhdr'){ const open=archiveOpen.has(r.ownerId); const pad=8+r.depth*16;
+      return `<div class="archrow${sel}" data-id="${r.aid}" style="padding-left:${pad}px"><span class="achv">${open?'▾':'▸'}</span><span>Archive (${r.count})</span><span class="line"></span></div>`; }
+    const n=r.node, ic=iconFor(n), isCoord=n.kind==='coord';
+    const chev=(isCoord && !r.inArchive)?(collapsed.has(n.id)?'▸':'▾'):'';
+    const chevCls=(isCoord && !r.inArchive)?'chev':'chev leaf';
+    const nameCls=n.root?'name proj':(isCoord?'name coord':'name');
+    const pad=8+r.depth*16;
+    const count=(isCoord && !r.inArchive && activeKids(n).length)?`<span class="count">(${activeKids(n).length})</span>`:'';
+    return `<div class="row${sel}${r.inArchive?' arch':''}" data-id="${n.id}" style="padding-left:${pad}px">
+        <span class="${chevCls}">${chev}</span><span class="${ic.c}">${ic.g}</span>
+        <span class="${nameCls}">${n.name}</span>${count}${n.elapsed?`<span class="elapsed">${n.elapsed}</span>`:''}</div>`;
+  }).join('');
+  document.getElementById('rows').innerHTML=html;
+  document.getElementById('rail').classList.toggle('dim', focus!=='RAIL');
+  const el=document.querySelector('.sel'); if(el) el.scrollIntoView({block:'nearest'});
+}
+
+function presentPanes(){
+  if(selId==='__free__'||String(selId).startsWith('arch::')) return [];
+  const n=findNode(selId); if(!n) return [];
+  if(n.kind==='leaf') return ['COORD','AGENT'];
+  if(n.kind==='freelance') return ['AGENT'];
+  return ['COORD'];
+}
+function ladder(){ return ['RAIL', ...presentPanes()]; }
+function primaryPane(){ const p=presentPanes(); return p.length?p[p.length-1]:'RAIL'; }
+
+function pty(node, asCoord){
+  if(!node) return '';
+  const c=(cls,t)=>`<span class="${cls}">${t}</span>`;
+  if(node.kind==='freelance') return `${c('d','$ claude  (freelance · unmanaged by hera)')}\n${c('a','I scoped the refactor — 3 files touched, tests green.')}\n${node.attn?c('warn','\n❯ 1. Apply the change   2. Show diff first'):c('d','…running')} <span class="cursor"></span>`;
+  if(asCoord){ const team=(node.children||[]).filter(x=>!x.archived).map(x=>x.name).join(', ')||'(no workers yet)';
+    return `${c('d',`# HERA coordinator · ${node.name}`)}\n${c('a',`Dispatching work across: ${team}`)}\n${c('u','> ')}${c('a','status?')}\n${c('d',`  ${(node.children||[]).filter(x=>!x.archived).length} worker(s) bound. waiting…`)} <span class="cursor"></span>`; }
+  if(node.attn) return `${c('a',`Working ${node.name}. I need a decision:`)}\n${c('warn','\n❯ 1. Yes, rewrite the handler   2. No, keep the shim   3. Explain')}  <span class="cursor"></span>`;
+  if(node.status==='done') return `${c('d',`# ${node.name}`)}\n${c('a','Slice complete. Summary:')}\n${c('ok','  ✓ 24 passed')}  ${c('d','(race)')}\n${c('a','PR opened, CI green, ready to merge.')} <span class="cursor"></span>`;
+  // long output so Shift+↑/↓ scroll is demonstrable
+  return `${c('d',`# ${node.name}`)}\n${c('a','Implementing the slice. Running the suite…')}
+${c('d','  building…')}
+${c('d','  → pkg/handler   ok')}
+${c('d','  → pkg/store     ok')}
+${c('d','  → pkg/api       ok')}
+${c('a','Running tests (race):')}
+${c('d','  === RUN   TestRoundTrip')}
+${c('ok','  --- PASS: TestRoundTrip (0.04s)')}
+${c('d','  === RUN   TestEdgeCases')}
+${c('ok','  --- PASS: TestEdgeCases (0.11s)')}
+${c('d','  === RUN   TestConcurrent')}
+${c('ok','  --- PASS: TestConcurrent (0.20s)')}
+${c('ok','  ✓ 24 passed')}  ${c('d','(race)')}
+${c('d','  committing…')}
+${c('a','Pushed. Want me to open a PR? (^p)')} <span class="cursor"></span>`;
+}
+function findNode(id){ let r=null;(function w(l){l.forEach(n=>{if(n.id===id)r=n;if(n.children)w(n.children);});})(projects); if(!r)r=freelancers.find(f=>f.id===id)||null; return r; }
+
+function paneHtml(node, role, focused){
+  const ic=iconFor(node);
+  const st=node.status==='attn'?'attn':(node.status==='idle'||node.status==='done')?'idle':'working';
+  const stTxt=node.status==='attn'?'needs you':node.status==='done'?'complete':node.status==='review'?'in review':(node.status||'live');
+  const roleCls=role==='HERA'?'role':'role agent';
+  const ft=focused?'<span class="foctag">● keyboard</span>':'';
+  const sh=focused?'<span class="scrollhint">⇧↑↓ scroll</span>':'';
+  return `<div class="pane${focused?' foc':''}">
+    <div class="ph"><span class="${ic.c}">${ic.g}</span><span class="tag">${node.name}</span>
+      <span class="${roleCls}">${role}</span>${ft}<span class="st ${st}">${stTxt}</span></div>
+    <div class="term">${pty(node, role==='HERA')}</div>${sh}</div>`;
+}
+function renderBody(){
+  const body=document.getElementById('bodyEl');
+  if(selId==='__free__'){ body.innerHTML=`<div class="pane"><div class="ph"><span class="tag">Freelance</span><span class="role agent">unmanaged argus agents</span></div><div class="empty">${freelancers.length} freelancer(s) — <kbd style="margin:0 4px">space</kbd> to ${freelanceOpen?'collapse':'expand'}, then j/k in</div></div>`; return; }
+  if(String(selId).startsWith('arch::')){ const owner=selId==='arch::__root__'?'top-level':(findNode(selId.slice(6))||{}).name;
+    body.innerHTML=`<div class="pane"><div class="ph"><span class="tag">Archive</span><span class="role agent">${owner}</span></div><div class="empty">archived under <b style="color:#cfd6e4;margin:0 4px">${owner}</b> — <kbd style="margin:0 4px">space</kbd> to fold</div></div>`; return; }
+  const n=findNode(selId);
+  if(!n){ body.innerHTML=`<div class="pane"><div class="empty">— nothing selected —</div></div>`; return; }
+  if(n.kind==='leaf'){ const coord=parent[n.id];
+    body.innerHTML=paneHtml(coord,'HERA',focus==='COORD')+paneHtml(n,'agent',focus==='AGENT'); }
+  else { const role=n.kind==='freelance'?'freelance':'HERA'; const f=(role==='HERA')?focus==='COORD':focus==='AGENT';
+    body.innerHTML=paneHtml(n, role, f); }
+}
+
+function bottomHotkeys(){
+  if(focus==='RAIL') return ['<kbd>j</kbd>/<kbd>k</kbd> move','<kbd>↵</kbd> enter','<kbd>space</kbd> fold','<kbd>a</kbd> archive','<kbd>s</kbd>/<kbd>S</kbd> status','<kbd>^r</kbd> prune','<kbd>^p</kbd> PR','<kbd>n</kbd> new','<kbd>r</kbd> rename','<kbd>^d</kbd> del','<kbd>?</kbd> help'];
+  if(focus==='COORD') return ['keys → <b>HERA</b> PTY', presentPanes().includes('AGENT')?'<kbd>^→</kbd> agent':'', '<kbd>^←</kbd> rail','<kbd>⌘↑↓</kbd> next','<kbd>⇧↑↓</kbd> scroll','<kbd>^p</kbd> PR','<kbd>^Q</kbd> rail'].filter(Boolean);
+  return ['keys → <b>agent</b> PTY', presentPanes().includes('COORD')?'<kbd>^←</kbd> HERA':'<kbd>^←</kbd> rail','<kbd>⌘↑↓</kbd> next','<kbd>⇧↑↓</kbd> scroll','<kbd>^p</kbd> PR','<kbd>^Q</kbd> rail'];
+}
+function renderTop(){ // persistent "leave hera" note, top-right
+  document.getElementById('leave').innerHTML = focus==='RAIL'
+    ? '<kbd>esc</kbd> / <kbd>^Q^Q</kbd> argus'
+    : '<kbd>^Q^Q</kbd> argus'; }
+function renderBottom(){ const df=focus==='COORD'?'HERA':focus;
+  document.getElementById('bottom').innerHTML=`<span class="ball">▶ ${df}</span><span class="hk">${bottomHotkeys().join('<span style="color:#2a3450">·</span> ')}</span>`; }
+
+function allDone(){ const r=[];(function w(l){l.forEach(n=>{ if(n.status==='done')r.push(n); if(n.children)w(n.children); });})(projects); return r; }
+function renderOverlay(){
+  const el=document.getElementById('overlayEl');
+  if(!overlay){ el.innerHTML=''; return; }
+  if(overlay==='help'){
+    const rows=[['j / k','move selection'],['↵ Enter','enter the selected pane (coord → HERA, agent → agent)'],
+      ['space','fold / unfold a coord or Archive'],['a','archive / unarchive selected'],['s / S','advance / revert status'],
+      ['^r','prune completed (remove finished agents + worktrees)'],['^p','open PR for the selected agent'],
+      ['^→ / ^←','move between panes'],['⌘↑ / ⌘↓','next/prev agent (stays in pane)'],['⇧↑ / ⇧↓','scroll the focused pane'],
+      ['^Q','back to rail'],['Esc','leave to argus (rail); → PTY inside a pane'],['n / r / ^d','new / rename / delete']];
+    el.innerHTML=`<div class="overlay"><div class="card"><h3>hera — keys</h3>${rows.map(r=>`<div class="k"><span>${r[0]}</span><span class="d">${r[1]}</span></div>`).join('')}<div class="foot">(argus renders this from hera's pushed hotkeys · any key to dismiss)</div></div></div>`;
+  } else if(overlay==='argus'){
+    el.innerHTML=`<div class="overlay left-argus"><div class="card left-argus"><div class="big">↩ returned to argus</div><div class="d">Esc from the rail released the keyboard.</div><div class="foot">any key to re-enter hera</div></div></div>`;
+  } else if(overlay==='pr'){
+    const n=findNode(selId);
+    el.innerHTML=`<div class="overlay left-argus"><div class="card left-argus"><div class="big" style="color:#7aa2f7">↗ open PR</div><div class="d">Opening a PR for <b style="color:#cfd6e4">${n?n.name:'—'}</b> via iris…</div><div class="foot">any key to dismiss</div></div></div>`;
+  } else if(overlay==='prune'){
+    const done=allDone();
+    el.innerHTML=`<div class="overlay"><div class="card"><h3>Prune completed</h3>
+      <div class="d">Remove ${done.length} completed agent(s) — worktrees + branches cleaned:</div>
+      ${done.length?done.map(n=>`<div class="k"><span style="color:var(--green)">✓ ${n.name}</span><span class="d">${parent[n.id]?parent[n.id].name:'root'}</span></div>`).join(''):'<div class="k"><span class="d">nothing completed to prune</span></div>'}
+      <div class="foot"><b style="color:#faa378">y</b> prune · any other key cancels · (argus <kbd>^r</kbd> / POST /api/maintenance/prune-completed)</div></div></div>`;
+  } else if(overlay==='delete'){
+    const n=findNode(selId); const kids=n&&n.children?n.children.length:0;
+    el.innerHTML=`<div class="overlay"><div class="card"><h3>Delete agent</h3>
+      <div class="d">Destroy <b style="color:#cfd6e4">${n?n.name:'—'}</b> — its worktree + branch are removed.${kids?` <span style="color:var(--attn)">${kids} child agent(s) go with it.</span>`:''}</div>
+      <div class="foot"><b style="color:#faa378">y</b> delete · any other key cancels · (argus <kbd>^d</kbd> destroy task)</div></div></div>`;
+  }
+}
+function render(){ renderRail(); renderBody(); renderTop(); renderBottom(); renderOverlay(); }
+
+function move(dir){ const ids=selectableIds(); if(!ids.length)return; let i=ids.indexOf(selId);
+  if(i<0){ selId=ids[0]; } else { i=Math.max(0,Math.min(ids.length-1,i+dir)); selId=ids[i]; } focus='RAIL'; render(); }
+function navInPane(dir){ const inPane=focus!=='RAIL'; const ids=inPane?nodeIds():selectableIds(); if(!ids.length)return;
+  let i=ids.indexOf(selId); if(i<0){ selId=ids[0]; } else { i=Math.max(0,Math.min(ids.length-1,i+dir)); selId=ids[i]; }
+  focus = inPane ? primaryPane() : 'RAIL'; render(); }
+function scrollPane(dir){ const t=document.querySelector('.pane.foc .term'); if(t) t.scrollBy({top:dir*60}); }
+function toggleFold(){
+  if(selId==='__free__'){ freelanceOpen=!freelanceOpen; render(); return; }
+  if(String(selId).startsWith('arch::')){ const o=selId.slice(6); if(archiveOpen.has(o))archiveOpen.delete(o); else archiveOpen.add(o); render(); return; }
+  const n=findNode(selId);
+  if(n && n.kind==='coord' && (activeKids(n).length||archivedKids(n).length)){ if(collapsed.has(n.id))collapsed.delete(n.id); else collapsed.add(n.id); render(); }
+}
+function archiveSel(){ if(selId==='__free__'||String(selId).startsWith('arch::'))return; const n=findNode(selId); if(!n||n.kind==='freelance')return;
+  n.archived=!n.archived; const p=parent[n.id]; selId=p?p.id:(projects.find(x=>!x.archived)||projects[0]).id; focus='RAIL'; render(); }
+function statusStep(dir){ if(focus!=='RAIL'||selId==='__free__'||String(selId).startsWith('arch::'))return; const n=findNode(selId); if(!n||n.kind==='freelance')return;
+  let i=Math.max(0,Math.min(2,lifeIdx(n.status)+dir)); n.status=LIFE[i]; if(n.status!=='working')n.attn=false; render(); }
+function enterPane(){ if(selId==='__free__'||String(selId).startsWith('arch::')){ toggleFold(); return; } const p=primaryPane(); if(p!=='RAIL'){ focus=p; render(); } }
+function traverse(dir){ const l=ladder(); let i=l.indexOf(focus); if(i<0)i=0; i=Math.max(0,Math.min(l.length-1,i+dir)); focus=l[i]; render(); }
+function prune(){ allDone().forEach(n=>{ const arr=parent[n.id]?parent[n.id].children:projects; const i=arr.indexOf(n); if(i>=0)arr.splice(i,1); });
+  reindex(); if(!findNode(selId)) selId=(projects.find(x=>!x.archived)||projects[0]).id; focus='RAIL'; }
+function deleteSel(){ const n=findNode(selId); if(!n)return; const p=parent[n.id];
+  const arr = freelancers.includes(n) ? freelancers : (p?p.children:projects);
+  const i=arr.indexOf(n); if(i>=0)arr.splice(i,1);
+  reindex(); selId = p?p.id:(projects.find(x=>!x.archived)||projects[0]).id; focus='RAIL'; }
+
+document.addEventListener('keydown',e=>{
+  if(overlay){ e.preventDefault();
+    if(overlay==='prune'){ if(e.key==='y'||e.key==='Y') prune(); overlay=null; render(); return; }
+    if(overlay==='delete'){ if(e.key==='y'||e.key==='Y') deleteSel(); overlay=null; render(); return; }
+    if(overlay==='argus') focus='RAIL'; overlay=null; render(); return; }
+  const mod=e.ctrlKey||e.metaKey;
+  if(mod && e.key==='ArrowRight'){ e.preventDefault(); traverse(1); return; }
+  if(mod && e.key==='ArrowLeft'){ e.preventDefault(); traverse(-1); return; }
+  if(mod && e.key==='ArrowDown'){ e.preventDefault(); navInPane(1); return; }
+  if(mod && e.key==='ArrowUp'){ e.preventDefault(); navInPane(-1); return; }
+  if(e.shiftKey && e.key==='ArrowDown'){ e.preventDefault(); scrollPane(1); return; }
+  if(e.shiftKey && e.key==='ArrowUp'){ e.preventDefault(); scrollPane(-1); return; }
+  if(e.ctrlKey && (e.key==='q'||e.key==='Q')){ e.preventDefault(); focus='RAIL'; render(); return; }
+  if(e.ctrlKey && (e.key==='r'||e.key==='R')){ e.preventDefault(); overlay='prune'; render(); return; }
+  if(e.ctrlKey && (e.key==='p'||e.key==='P')){ e.preventDefault(); overlay='pr'; render(); return; }
+  if(e.ctrlKey && (e.key==='d'||e.key==='D')){ e.preventDefault(); if(selId!=='__free__' && !String(selId).startsWith('arch::') && findNode(selId)){ overlay='delete'; render(); } return; }
+  if(focus==='RAIL'){
+    if(e.key==='j'||e.key==='ArrowDown'){ e.preventDefault(); move(1); }
+    else if(e.key==='k'||e.key==='ArrowUp'){ e.preventDefault(); move(-1); }
+    else if(e.key===' '){ e.preventDefault(); toggleFold(); }
+    else if(e.key==='Enter'){ e.preventDefault(); enterPane(); }
+    else if(e.key==='a'||e.key==='A'){ e.preventDefault(); archiveSel(); }
+    else if(e.key==='s'){ e.preventDefault(); statusStep(1); }
+    else if(e.key==='S'){ e.preventDefault(); statusStep(-1); }
+    else if(e.key==='?'){ e.preventDefault(); overlay='help'; render(); }
+    else if(e.key==='Escape'){ e.preventDefault(); overlay='argus'; render(); }
+  } else {
+    if(e.key==='Escape'){ e.preventDefault(); /* Esc → PTY inside a pane */ }
+  }
+});
+document.getElementById('rows').addEventListener('click',e=>{ const row=e.target.closest('[data-id]'); if(!row)return; selId=row.dataset.id; focus='RAIL'; render(); });
+
+(function initSel(){ let found=null;(function w(l){ for(const n of ordered(l.filter(x=>!x.archived))){ if(found)return; if(n.kind==='leaf'){found=n.id;return;} if(n.children)w(n.children); } })(projects); selId=found||projects[0].id; })();
+render();
+document.getElementById('rail').focus();
+</script>
+</body>
+</html>

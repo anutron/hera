@@ -42,8 +42,10 @@ func (s *Service) deleteRoleInternal(ctx context.Context, role *Role) error {
 	}
 
 	worktreePath := ""
+	argusTaskID := ""
 	if bnd != nil {
 		worktreePath = bnd.WorktreePath
+		argusTaskID = bnd.ArgusTaskID
 		if err := s.DB.EndBinding(ctx, bnd.ID, EndReasonUserDeleted); err != nil {
 			return fmt.Errorf("ops.DeleteRole: end binding %d: %w", bnd.ID, err)
 		}
@@ -55,6 +57,22 @@ func (s *Service) deleteRoleInternal(ctx context.Context, role *Role) error {
 		}
 	}
 
+	// Destroy the argus task — argus stops the session and cleans up the
+	// task's git worktree AND branch server-side (handleDeleteTask). This is
+	// the extra destruction `^d` promises over `a` archive. A task that is
+	// already gone (404) is treated as success by the argus client, so a
+	// cascade won't abort on a sibling already deleted out-of-band.
+	if argusTaskID != "" {
+		s.logf("delete: destroying argus task %q (worktree+branch)", argusTaskID)
+		if err := s.Argus.DeleteTask(ctx, argusTaskID); err != nil {
+			return fmt.Errorf("ops.DeleteRole: argus delete task %s: %w", argusTaskID, err)
+		}
+	}
+
+	// Local worktree remove is a defensive fallback: argus already cleaned
+	// the worktree above, so this is a soft no-op in the common case
+	// (directory already gone). It still runs to cover bindings whose argus
+	// task vanished out-of-band but whose worktree lingers on disk.
 	if err := s.removeWorktree(ctx, worktreePath); err != nil {
 		return fmt.Errorf("ops.DeleteRole: worktree remove: %w", err)
 	}

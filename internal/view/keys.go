@@ -33,6 +33,52 @@ type MutationHandler interface {
 	OnArchive()
 	OnListAll()
 	OnHelp()
+
+	// Stage P extended keyset (D15). OnPrune (`^r`), OnOpenPR (`^p`), and
+	// OnDelete (`^d`) are RAIL-focus-only, acting on the current selection; in
+	// a pane the control byte forwards to the PTY (Ctrl-D=0x04, Ctrl-R=0x12,
+	// Ctrl-P=0x10). OnStatusAdvance (`s`) / OnStatusRevert (`S`) are likewise
+	// RAIL-focus-only — in a pane the rune forwards to the PTY.
+	OnPrune()
+	OnOpenPR()
+	OnStatusAdvance()
+	OnStatusRevert()
+
+	// OnResurrect is consulted on Enter-in-RAIL BEFORE pane-entry. It returns
+	// true when it owns the Enter (an archived coord with the Archive section
+	// visible — it shows a resurrect confirm), so the router must NOT enter a
+	// pane; false otherwise (the router runs the normal pane-entry path).
+	OnResurrect() bool
+}
+
+// ControlSender sends the argus key-surrender control frames the router needs
+// directly (release). The `?` help frame is sent through the MutationHandler's
+// OnHelp so the existing RAIL-only mutation routing is unchanged; Esc-release
+// is a router concern because it is not a mutation key. *viewControl is the
+// production implementation; tests inject a capturing fake. Nil is a safe
+// no-op (the router simply doesn't release).
+type ControlSender interface {
+	SendRelease() error
+}
+
+// PaneScroller scrolls the currently-focused pane's scrollback by delta lines
+// (positive = up into history, negative = down toward the live screen),
+// driving the ⇧↑/⇧↓ keys (D15). It MUST NOT move the rail selection. The router
+// only calls it when focus is in a pane (COORD/AGENT); nil makes ⇧↑/⇧↓ a no-op
+// scroll (the event is still consumed in a pane so it never reaches the PTY).
+type PaneScroller interface {
+	ScrollFocusedPane(state FocusState, delta int)
+}
+
+// InPaneNavigator moves the rail selection to the next (dir>0) / previous
+// (dir<0) pane-bindable agent and re-enters that selection's primary pane,
+// keeping focus INSIDE a pane — driving the ⌘↑/⌘↓ (and ^↑/^↓) keys (D15). It
+// returns the focus state the operator should land in (FocusCOORD / FocusAGENT,
+// never FocusRAIL when a bindable row was reached). The router only calls it
+// when focus is already in a pane; nil makes the keys a no-op (still consumed
+// in a pane so they never reach the PTY).
+type InPaneNavigator interface {
+	InPaneNavigate(dir int) FocusState
 }
 
 // ModalGate is consulted on every key event so the router can yield to
@@ -77,6 +123,18 @@ type KeyRouter struct {
 	Border     BorderUpdater
 	RailSelect RailSelectHandler
 	Modal      ModalGate
+
+	// Scroller scrolls the focused pane (⇧↑/⇧↓). InPaneNav flips the rail
+	// selection while staying in a pane (⌘↑/⌘↓ / ^↑/^↓). Both are pane-focus-
+	// only; nil makes the corresponding key a consumed no-op in a pane. See
+	// PaneScroller / InPaneNavigator. (D15.)
+	Scroller  PaneScroller
+	InPaneNav InPaneNavigator
+
+	// Control sends key-surrender control frames to argus. Esc-from-RAIL
+	// routes here as a release frame; nil makes Esc-from-RAIL a no-op
+	// (still consumed, never forwarded).
+	Control ControlSender
 
 	// Ctx is the context used when calling Poster.PostTaskInput. Defaults
 	// to context.Background() when nil.
@@ -136,7 +194,49 @@ func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 // else (↑/↓, PgUp/PgDn) propagates so the tree-view native handling
 // applies.
 func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
+	// Esc from RAIL hands the keyboard back to argus (key-surrender
+	// contract, D12). The Esc byte is NOT forwarded to any task; in a pane
+	// (handlePane) Esc is instead forwarded verbatim so vim/Claude can see
+	// it. Consume the event either way.
+	if event.Key() == tcell.KeyEsc {
+		if r.Control != nil {
+			_ = r.Control.SendRelease()
+		}
+		return nil
+	}
+
+	// Destructive + external verbs are RAIL-focus-only (reversed from the
+	// earlier any-focus decision): `^d` delete, `^r` prune-completed, `^p`
+	// open-PR act on the current rail selection and are intercepted here (never
+	// forwarded to a PTY). In a pane (handlePane) the same control bytes are
+	// forwarded verbatim so an agent gets EOF / reverse-search / history-prev.
+	if event.Key() == tcell.KeyCtrlD {
+		if r.Mutations != nil {
+			r.Mutations.OnDelete()
+		}
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlR {
+		if r.Mutations != nil {
+			r.Mutations.OnPrune()
+		}
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlP {
+		if r.Mutations != nil {
+			r.Mutations.OnOpenPR()
+		}
+		return nil
+	}
+
 	if event.Key() == tcell.KeyEnter {
+		// Resurrect-on-Enter takes precedence: an archived coord row with the
+		// Archive section visible shows a resurrect confirm instead of entering
+		// a pane. OnResurrect returns true when it owns the Enter (modal shown);
+		// otherwise we fall through to the normal pane-entry path below.
+		if r.Mutations != nil && r.Mutations.OnResurrect() {
+			return nil
+		}
 		target := FocusRAIL
 		if r.RailSelect != nil {
 			target = r.RailSelect.OnRailSelectEnter()
@@ -156,16 +256,9 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 		// Selection not bindable (orchestrator header, dead row). Let the
-		// tree handle Enter so it can fold/unfold the node — Stage H also
-		// wires the archived-coord resurrect flow off this propagation.
+		// tree handle Enter so it can fold/unfold the node. (The archived-coord
+		// resurrect flow is handled earlier via OnResurrect, before pane-entry.)
 		return event
-	}
-
-	if event.Key() == tcell.KeyCtrlD {
-		if r.Mutations != nil {
-			r.Mutations.OnDelete()
-		}
-		return nil
 	}
 
 	if event.Key() == tcell.KeyRune {
@@ -198,6 +291,18 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 				r.Mutations.OnListAll()
 			}
 			return nil
+		case 's':
+			// `s` advances the selected agent's status; RAIL-focus-only
+			// (in a pane it forwards to the PTY via handlePane).
+			if r.Mutations != nil {
+				r.Mutations.OnStatusAdvance()
+			}
+			return nil
+		case 'S':
+			if r.Mutations != nil {
+				r.Mutations.OnStatusRevert()
+			}
+			return nil
 		case '?':
 			if r.Mutations != nil {
 				r.Mutations.OnHelp()
@@ -216,6 +321,34 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 // terminal would emit for the same key, so the upstream PTY's bubbletea /
 // readline interprets it natively.
 func (r *KeyRouter) handlePane(event *tcell.EventKey) *tcell.EventKey {
+	// ⇧↑/⇧↓ scroll the focused pane's scrollback WITHOUT moving the rail
+	// selection (D15). Intercepted here so the bytes never reach the PTY.
+	if delta, ok := scrollDelta(event); ok {
+		if r.Scroller != nil {
+			r.Scroller.ScrollFocusedPane(r.Focus.State(), delta)
+		}
+		return nil
+	}
+	// ⌘↑/⌘↓ (and ^↑/^↓) move the rail selection to the next/prev agent while
+	// keeping focus inside a pane bound to the new selection (D15). The
+	// navigator re-enters the new selection's primary pane and returns the
+	// focus state to land in; we apply it and repaint the border. Intercepted
+	// so the bytes never reach the PTY and focus never falls back to RAIL.
+	if dir, ok := inPaneNavDir(event); ok {
+		if r.InPaneNav != nil {
+			target := r.InPaneNav.InPaneNavigate(dir)
+			switch target {
+			case FocusCOORD:
+				r.Focus.JumpToCOORD()
+				r.notifyBorder()
+			case FocusAGENT:
+				r.Focus.JumpToAGENT()
+				r.notifyBorder()
+			}
+		}
+		return nil
+	}
+
 	if r.Targets == nil || r.Poster == nil {
 		return nil
 	}
@@ -267,6 +400,46 @@ func isFocusBackward(e *tcell.EventKey) bool {
 
 func isCtrlQ(e *tcell.EventKey) bool {
 	return e.Key() == tcell.KeyCtrlQ
+}
+
+// scrollDelta decodes ⇧↑ / ⇧↓ into a scroll delta: ⇧↑ scrolls UP into history
+// (+1), ⇧↓ scrolls back DOWN toward the live screen (-1). Shift takes
+// precedence over Ctrl/Meta when a terminal reports both, so the scroll keys
+// stay distinct from the in-pane-nav keys. Returns ok=false for anything else.
+func scrollDelta(e *tcell.EventKey) (int, bool) {
+	if e.Modifiers()&tcell.ModShift == 0 {
+		return 0, false
+	}
+	switch e.Key() {
+	case tcell.KeyUp:
+		return +1, true
+	case tcell.KeyDown:
+		return -1, true
+	}
+	return 0, false
+}
+
+// inPaneNavDir decodes ⌘↑/⌘↓ (ModMeta on macOS) or ^↑/^↓ (ModCtrl on Linux)
+// into an in-pane navigation direction: up = previous agent (-1), down = next
+// agent (+1). Mirrors the Cmd/Ctrl acceptance of the focus-ladder keys
+// (isFocusForward/Backward). Shift must NOT be set (that's a scroll); callers
+// check scrollDelta first, but we also guard here so a ⇧+⌘ combo never
+// double-fires. Returns ok=false for anything else.
+func inPaneNavDir(e *tcell.EventKey) (int, bool) {
+	m := e.Modifiers()
+	if m&tcell.ModShift != 0 {
+		return 0, false
+	}
+	if m&tcell.ModCtrl == 0 && m&tcell.ModMeta == 0 {
+		return 0, false
+	}
+	switch e.Key() {
+	case tcell.KeyUp:
+		return -1, true
+	case tcell.KeyDown:
+		return +1, true
+	}
+	return 0, false
 }
 
 // encodeEventForPTY converts a tcell key event into the byte sequence the
