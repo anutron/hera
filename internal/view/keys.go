@@ -42,6 +42,12 @@ type MutationHandler interface {
 	OnOpenPR()
 	OnStatusAdvance()
 	OnStatusRevert()
+
+	// OnResurrect is consulted on Enter-in-RAIL BEFORE pane-entry. It returns
+	// true when it owns the Enter (an archived coord with the Archive section
+	// visible — it shows a resurrect confirm), so the router must NOT enter a
+	// pane; false otherwise (the router runs the normal pane-entry path).
+	OnResurrect() bool
 }
 
 // ControlSender sends the argus key-surrender control frames the router needs
@@ -222,6 +228,13 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	if event.Key() == tcell.KeyEnter {
+		// Resurrect-on-Enter takes precedence: an archived coord row with the
+		// Archive section visible shows a resurrect confirm instead of entering
+		// a pane. OnResurrect returns true when it owns the Enter (modal shown);
+		// otherwise we fall through to the normal pane-entry path below.
+		if r.Mutations != nil && r.Mutations.OnResurrect() {
+			return nil
+		}
 		target := FocusRAIL
 		if r.RailSelect != nil {
 			target = r.RailSelect.OnRailSelectEnter()
@@ -241,8 +254,8 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 		// Selection not bindable (orchestrator header, dead row). Let the
-		// tree handle Enter so it can fold/unfold the node — Stage H also
-		// wires the archived-coord resurrect flow off this propagation.
+		// tree handle Enter so it can fold/unfold the node. (The archived-coord
+		// resurrect flow is handled earlier via OnResurrect, before pane-entry.)
 		return event
 	}
 

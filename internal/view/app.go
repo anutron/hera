@@ -362,6 +362,12 @@ func (a *App) populateRail(database *db.DB) error {
 			// ends up with zero agent rows — see below.
 			if role.Kind == db.KindCoordinator {
 				archived := role.ArchivedAt != nil
+				// Capture the coord role id (first coord seen) regardless of its
+				// archived/live state so the resurrect-on-Enter flow can target it
+				// when the operator presses Enter on an archived root coordinator.
+				if entry.CoordRoleID == 0 {
+					entry.CoordRoleID = role.ID
+				}
 				if !dead && !archived && entry.CoordTaskID == "" && argusTaskID != "" {
 					// Prefer a live coord; fall back to its most-recent binding
 					// (argusTaskID set above) so the coord pane can still show
@@ -516,6 +522,7 @@ func (a *App) CurrentRailSelection() railSelection {
 		return railSelection{
 			Kind:           selOrchestrator,
 			OrchestratorID: ref.ID,
+			CoordRoleID:    ref.CoordRoleID,
 			Name:           ref.Name,
 			Archived:       ref.Archived,
 			// Child agents that `^d` will also destroy: the orchestrator's

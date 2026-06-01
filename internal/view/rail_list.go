@@ -85,6 +85,11 @@ type orchEntry struct {
 	Name        string
 	Archived    bool
 	CoordTaskID string
+	// CoordRoleID is the orchestrator's coord role id, captured so the
+	// resurrect-on-Enter flow can target the coord role when the operator
+	// presses Enter on this (archived root coordinator) header. Zero when the
+	// orchestrator has no coord role.
+	CoordRoleID int64
 	Roles       []*roleEntry
 }
 

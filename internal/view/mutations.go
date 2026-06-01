@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/anutron/hera/internal/db"
 	"github.com/anutron/hera/internal/view/ops"
 )
 
@@ -28,6 +29,12 @@ type mutationService interface {
 	AdvanceStatus(ctx context.Context, roleID int64) (string, error)
 	RevertStatus(ctx context.Context, roleID int64) (string, error)
 	OpenPR(ctx context.Context, roleID int64) (string, error)
+
+	// ResurrectOrchestrator unarchives a dormant orchestrator + coord role and
+	// spawns a fresh argus task that rebinds via hera_join. Backs the
+	// resurrect-on-Enter flow (Enter against an archived coord with the Archive
+	// section visible).
+	ResurrectOrchestrator(ctx context.Context, coordRoleID int64) (*ops.CreatedTask, error)
 }
 
 // listAllState is the subset of *ops.ListAllState the bridge uses to
@@ -47,6 +54,11 @@ type modalAPI interface {
 	// with the entered text when the operator confirms; onCancel runs
 	// on cancel. Either callback may be nil.
 	ShowInput(title, label, initial string, onSubmit func(value string), onCancel func())
+	// ShowForm2 opens a two-field input modal. onSubmit is invoked with both
+	// trimmed values when the operator confirms; onCancel runs on cancel.
+	// Used by the new-project flow (name required, mission optional). Either
+	// callback may be nil.
+	ShowForm2(title, label1, initial1, label2, initial2 string, onSubmit func(v1, v2 string), onCancel func())
 	// ShowConfirm opens a y/N confirmation modal. onYes runs when the
 	// operator picks Yes; onNo runs on No or cancel. Either may be nil.
 	ShowConfirm(title, message string, onYes func(), onNo func())
@@ -75,6 +87,13 @@ type railSelection struct {
 	Name           string
 	RoleKind       string
 	Archived       bool
+
+	// CoordRoleID is the orchestrator's coord role id, carried on orchestrator
+	// rows so the resurrect-on-Enter flow can target the coord role when the
+	// operator presses Enter on an archived root coordinator (whose selection
+	// is the orchestrator header, not a role row). Zero for non-orchestrator
+	// selections or when the orchestrator has no coord role.
+	CoordRoleID int64
 
 	// ArgusTaskID is the selected role's bound argus task id (empty for
 	// orchestrator rows or roles with no live binding). Carried so the
@@ -155,14 +174,16 @@ func newMutationBridge(
 	}
 }
 
-// OnNew prompts for an orchestrator name and spawns the bootstrap
-// argus task via ops.NewOrchestrator. Empty submissions no-op.
+// OnNew prompts for an orchestrator name (required) and an optional coord
+// mission, then spawns the bootstrap argus task via ops.NewOrchestrator. Both
+// fields are passed through so the spawned prompt carries the mission. Empty-
+// name submissions no-op.
 func (b *mutationBridge) OnNew() {
-	b.modals.ShowInput("New project", "Name", "", func(name string) {
+	b.modals.ShowForm2("New project", "Name", "", "Mission (optional)", "", func(name, mission string) {
 		if name == "" {
 			return
 		}
-		if _, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{Name: name}); err != nil {
+		if _, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{Name: name, Mission: mission}); err != nil {
 			b.modals.ShowError(err.Error())
 			return
 		}
@@ -275,6 +296,59 @@ func (b *mutationBridge) OnArchive() {
 		return
 	}
 	b.refresh()
+}
+
+// OnResurrect handles Enter against an archived coord row when the Archive
+// section is visible: it confirms ("Resurrect <project>?") and, on confirm,
+// calls the resurrect op (unarchive orchestrator + coord role, spawn a fresh
+// argus task that rebinds via hera_join). It returns true when it owns the
+// Enter (an archived coord with Archive visible — modal shown), so the router
+// must NOT fall through to pane-entry; false otherwise (the router then runs
+// the normal OnRailSelectEnter pane-entry path).
+//
+// Gate: the Archive section must be visible (listAll.Visible()) — archived
+// root coordinators live in the top-level Archive section, which `l` reveals.
+// A live (non-archived) coord, an archived worker, or any non-coord selection
+// is not a resurrect target.
+func (b *mutationBridge) OnResurrect() bool {
+	if b.listAll == nil || !b.listAll.Visible() {
+		return false
+	}
+	sel := b.sel.CurrentRailSelection()
+	if !sel.Archived {
+		return false
+	}
+	var coordRoleID int64
+	switch sel.Kind {
+	case selOrchestrator:
+		// Archived root coordinator: target its coord role.
+		if sel.CoordRoleID == 0 {
+			return false
+		}
+		coordRoleID = sel.CoordRoleID
+	case selRole:
+		// Only a coordinator role resurrects; archived workers do not.
+		if sel.RoleKind != string(db.KindCoordinator) {
+			return false
+		}
+		coordRoleID = sel.RoleID
+	default:
+		return false
+	}
+
+	b.modals.ShowConfirm(
+		fmt.Sprintf("Resurrect %q?", sel.Name),
+		fmt.Sprintf("Resurrect %q — unarchive its coordinator and spawn a fresh argus task that rebinds via hera_join? (y/N)", sel.Name),
+		func() {
+			if _, err := b.svc.ResurrectOrchestrator(b.ctx, coordRoleID); err != nil {
+				b.modals.ShowError(err.Error())
+				return
+			}
+			b.refresh()
+		},
+		nil,
+	)
+	return true
 }
 
 // OnListAll toggles archive-section visibility. No DB write, no argus

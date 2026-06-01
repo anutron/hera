@@ -29,10 +29,22 @@ type fakeModals struct {
 
 	stubConfirmYes     bool
 	stubConfirmNotOpen bool
+
+	// stubForm2* drive the two-field form (ShowForm2). The fake fires the
+	// submit callback with these values as soon as ShowForm2 is called.
+	form2Calls       []fakeForm2Call
+	stubForm2Name    string
+	stubForm2Second  string
+	stubForm2Cancel  bool
+	stubForm2NotOpen bool
 }
 
 type fakeInputCall struct {
 	Title, Label, Initial string
+}
+
+type fakeForm2Call struct {
+	Title, Label1, Label2 string
 }
 
 type fakeConfirmCall struct {
@@ -58,6 +70,29 @@ func (f *fakeModals) ShowInput(title, label, initial string, onSubmit func(strin
 	}
 	if onSubmit != nil {
 		onSubmit(answer)
+	}
+}
+
+func (f *fakeModals) ShowForm2(title, label1, initial1, label2, initial2 string, onSubmit func(v1, v2 string), onCancel func()) {
+	f.mu.Lock()
+	f.form2Calls = append(f.form2Calls, fakeForm2Call{Title: title, Label1: label1, Label2: label2})
+	v1 := f.stubForm2Name
+	v2 := f.stubForm2Second
+	cancel := f.stubForm2Cancel
+	notOpen := f.stubForm2NotOpen
+	f.mu.Unlock()
+
+	if notOpen {
+		return
+	}
+	if cancel {
+		if onCancel != nil {
+			onCancel()
+		}
+		return
+	}
+	if onSubmit != nil {
+		onSubmit(v1, v2)
 	}
 }
 
@@ -157,6 +192,8 @@ type fakeMutationService struct {
 	revertErr        error
 	openPRCalls      []int64
 	openPRErr        error
+	resurrectCalls   []int64
+	resurrectErr     error
 }
 
 type renameOrchCall struct {
@@ -258,6 +295,16 @@ func (s *fakeMutationService) OpenPR(_ context.Context, id int64) (string, error
 	return "https://example/pr/1", s.openPRErr
 }
 
+func (s *fakeMutationService) ResurrectOrchestrator(_ context.Context, coordRoleID int64) (*ops.CreatedTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resurrectCalls = append(s.resurrectCalls, coordRoleID)
+	if s.resurrectErr != nil {
+		return nil, s.resurrectErr
+	}
+	return &ops.CreatedTask{ID: "task-resurrect"}, nil
+}
+
 // newBridgeUnderTest wires a mutationBridge with all-fake deps. The
 // caller is expected to seed the selector, modals, and service before
 // invoking the verb.
@@ -287,7 +334,7 @@ func newBridgeUnderTestWithHelp() (*mutationBridge, *fakeModals, *fakeSelector, 
 
 func TestBridge_OnNew_ValidName_CallsNewOrchestrator(t *testing.T) {
 	b, m, _, svc, _, rp := newBridgeUnderTest()
-	m.stubInputAnswer = "foo"
+	m.stubForm2Name = "foo"
 
 	b.OnNew()
 
@@ -307,7 +354,7 @@ func TestBridge_OnNew_ValidName_CallsNewOrchestrator(t *testing.T) {
 
 func TestBridge_OnNew_EmptyName_NoServiceCall(t *testing.T) {
 	b, m, _, svc, _, rp := newBridgeUnderTest()
-	m.stubInputAnswer = ""
+	m.stubForm2Name = ""
 
 	b.OnNew()
 
@@ -321,7 +368,7 @@ func TestBridge_OnNew_EmptyName_NoServiceCall(t *testing.T) {
 
 func TestBridge_OnNew_ServiceError_ShowsErrorModal(t *testing.T) {
 	b, m, _, svc, _, rp := newBridgeUnderTest()
-	m.stubInputAnswer = "foo"
+	m.stubForm2Name = "foo"
 	svc.newErr = errors.New("argus down")
 
 	b.OnNew()
@@ -336,7 +383,7 @@ func TestBridge_OnNew_ServiceError_ShowsErrorModal(t *testing.T) {
 
 func TestBridge_OnNew_Cancel_NoServiceCall(t *testing.T) {
 	b, m, _, svc, _, _ := newBridgeUnderTest()
-	m.stubInputCancel = true
+	m.stubForm2Cancel = true
 
 	b.OnNew()
 
@@ -781,6 +828,123 @@ func TestBridge_OnOpenPR_NonRole_NoConfirm(t *testing.T) {
 
 	if len(m.confirms) != 0 || len(svc.openPRCalls) != 0 {
 		t.Fatalf("open-PR on non-role must no-op; confirms=%d prCalls=%v", len(m.confirms), svc.openPRCalls)
+	}
+}
+
+// --- Gap 2: OnNew collects an optional coord mission ---
+
+// Confirming the new-project modal with a name AND a mission must pass BOTH
+// through to the new-orchestrator service (spec: "New-project confirm spawns
+// argus task" asserts the spawned prompt contains mission="ship F").
+func TestBridge_OnNew_NameAndMission_PassesBothThrough(t *testing.T) {
+	b, m, _, svc, _, rp := newBridgeUnderTest()
+	m.stubForm2Name = "foo"
+	m.stubForm2Second = "ship F"
+
+	b.OnNew()
+
+	if len(svc.newCalls) != 1 {
+		t.Fatalf("want 1 NewOrchestrator call, got %d", len(svc.newCalls))
+	}
+	if svc.newCalls[0].Name != "foo" {
+		t.Fatalf("NewOrchestrator.Name: want %q, got %q", "foo", svc.newCalls[0].Name)
+	}
+	if svc.newCalls[0].Mission != "ship F" {
+		t.Fatalf("NewOrchestrator.Mission: want %q, got %q", "ship F", svc.newCalls[0].Mission)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh after successful create; got %d", rp.Count())
+	}
+}
+
+// --- Gap 1: OnResurrect (Enter against an archived coord with Archive visible) ---
+
+// An archived coordinator role with the Archive section visible must show a
+// confirm and, on confirm, invoke the resurrect service with that coord role.
+func TestBridge_OnResurrect_ArchivedCoordRole_ArchiveVisible_Confirms(t *testing.T) {
+	b, m, sel, svc, la, rp := newBridgeUnderTest()
+	la.visible = true // Archive section is visible
+	sel.sel = railSelection{Kind: selRole, RoleID: 55, Name: "coord", RoleKind: "coordinator", Archived: true}
+	m.stubConfirmYes = true
+
+	handled := b.OnResurrect()
+
+	if !handled {
+		t.Fatalf("OnResurrect must report it handled the archived-coord Enter")
+	}
+	if len(m.confirms) != 1 {
+		t.Fatalf("resurrect must open a confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Title+m.confirms[0].Message, "coord") {
+		t.Fatalf("confirm must name the project; got %q / %q", m.confirms[0].Title, m.confirms[0].Message)
+	}
+	if len(svc.resurrectCalls) != 1 || svc.resurrectCalls[0] != 55 {
+		t.Fatalf("want ResurrectOrchestrator(55); got %v", svc.resurrectCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("resurrect must refresh rail; got %d", rp.Count())
+	}
+}
+
+// An archived ROOT orchestrator row (selOrchestrator) carries the coord role id
+// so resurrect targets the coord role.
+func TestBridge_OnResurrect_ArchivedOrchestrator_UsesCoordRoleID(t *testing.T) {
+	b, m, sel, svc, la, _ := newBridgeUnderTest()
+	la.visible = true
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 7, CoordRoleID: 91, Name: "foo", Archived: true}
+	m.stubConfirmYes = true
+
+	handled := b.OnResurrect()
+
+	if !handled {
+		t.Fatalf("OnResurrect must handle an archived root orchestrator")
+	}
+	if len(svc.resurrectCalls) != 1 || svc.resurrectCalls[0] != 91 {
+		t.Fatalf("want ResurrectOrchestrator(91); got %v", svc.resurrectCalls)
+	}
+}
+
+// Archive hidden → Enter on an archived coord is NOT a resurrect (it falls
+// through to pane-entry). OnResurrect reports it did not handle the key.
+func TestBridge_OnResurrect_ArchiveHidden_NotHandled(t *testing.T) {
+	b, _, sel, svc, la, _ := newBridgeUnderTest()
+	la.visible = false
+	sel.sel = railSelection{Kind: selRole, RoleID: 55, Name: "coord", RoleKind: "coordinator", Archived: true}
+
+	if b.OnResurrect() {
+		t.Fatalf("Archive hidden must NOT trigger resurrect")
+	}
+	if len(svc.resurrectCalls) != 0 {
+		t.Fatalf("Archive hidden must not call resurrect; got %v", svc.resurrectCalls)
+	}
+}
+
+// A LIVE (non-archived) coord is never a resurrect target, even with Archive
+// visible.
+func TestBridge_OnResurrect_LiveCoord_NotHandled(t *testing.T) {
+	b, _, sel, svc, la, _ := newBridgeUnderTest()
+	la.visible = true
+	sel.sel = railSelection{Kind: selRole, RoleID: 55, Name: "coord", RoleKind: "coordinator", Archived: false}
+
+	if b.OnResurrect() {
+		t.Fatalf("live coord must NOT trigger resurrect")
+	}
+	if len(svc.resurrectCalls) != 0 {
+		t.Fatalf("live coord must not call resurrect; got %v", svc.resurrectCalls)
+	}
+}
+
+// An archived WORKER (non-coordinator) is not a resurrect target.
+func TestBridge_OnResurrect_ArchivedWorker_NotHandled(t *testing.T) {
+	b, _, sel, svc, la, _ := newBridgeUnderTest()
+	la.visible = true
+	sel.sel = railSelection{Kind: selRole, RoleID: 55, Name: "w1", RoleKind: "worker", Archived: true}
+
+	if b.OnResurrect() {
+		t.Fatalf("archived worker must NOT trigger resurrect")
+	}
+	if len(svc.resurrectCalls) != 0 {
+		t.Fatalf("archived worker must not call resurrect; got %v", svc.resurrectCalls)
 	}
 }
 

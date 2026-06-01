@@ -46,6 +46,12 @@ func (f *fakeTargets) AgentTaskID() string { return f.agent }
 type fakeMutations struct {
 	new, rename, del, archive, listAll, help   int
 	prune, openPR, statusAdvance, statusRevert int
+	resurrect                                  int
+
+	// resurrectHandled is what OnResurrect returns — true means it consumed
+	// the Enter (showed a resurrect confirm) so the router must NOT fall
+	// through to pane-entry.
+	resurrectHandled bool
 }
 
 func (f *fakeMutations) OnNew()           { f.new++ }
@@ -58,6 +64,10 @@ func (f *fakeMutations) OnPrune()         { f.prune++ }
 func (f *fakeMutations) OnOpenPR()        { f.openPR++ }
 func (f *fakeMutations) OnStatusAdvance() { f.statusAdvance++ }
 func (f *fakeMutations) OnStatusRevert()  { f.statusRevert++ }
+func (f *fakeMutations) OnResurrect() bool {
+	f.resurrect++
+	return f.resurrectHandled
+}
 
 type fakeBorder struct {
 	states []FocusState
@@ -630,6 +640,56 @@ func TestKeyRouter_EnterInRAIL_WithHandler_RAIL_Propagates(t *testing.T) {
 	}
 	if len(b.states) != 0 {
 		t.Fatalf("no border update expected when focus did not change; got %v", b.states)
+	}
+}
+
+// --- Gap 1: Enter consults OnResurrect before pane-entry ---
+
+// When OnResurrect handles the Enter (archived coord + Archive visible), the
+// router must consume the event and MUST NOT call the pane-entry handler.
+func TestKeyRouter_EnterInRAIL_Resurrect_Handled(t *testing.T) {
+	r, _, m, _ := newRouter()
+	m.resurrectHandled = true
+	sel := &fakeRailSelect{target: FocusCOORD}
+	r.RailSelect = sel
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if out != nil {
+		t.Fatalf("Enter handled by resurrect must be consumed")
+	}
+	if m.resurrect != 1 {
+		t.Fatalf("Enter must consult OnResurrect once; got %d", m.resurrect)
+	}
+	if sel.calls != 0 {
+		t.Fatalf("resurrect-handled Enter must NOT enter a pane; OnRailSelectEnter called %d times", sel.calls)
+	}
+	if r.Focus.State() != FocusRAIL {
+		t.Fatalf("focus must stay RAIL while the resurrect confirm is up; got %s", r.Focus.State())
+	}
+}
+
+// When OnResurrect declines (returns false), Enter falls through to the
+// existing pane-entry handler (no regression on a LIVE coord).
+func TestKeyRouter_EnterInRAIL_Resurrect_NotHandled_EntersPane(t *testing.T) {
+	r, _, m, _ := newRouter()
+	m.resurrectHandled = false
+	sel := &fakeRailSelect{target: FocusCOORD}
+	r.RailSelect = sel
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if out != nil {
+		t.Fatalf("Enter entering a pane must be consumed")
+	}
+	if m.resurrect != 1 {
+		t.Fatalf("Enter must consult OnResurrect once; got %d", m.resurrect)
+	}
+	if sel.calls != 1 {
+		t.Fatalf("declined resurrect must fall through to OnRailSelectEnter; got %d calls", sel.calls)
+	}
+	if r.Focus.State() != FocusCOORD {
+		t.Fatalf("live coord Enter must enter the COORD pane; got %s", r.Focus.State())
 	}
 }
 

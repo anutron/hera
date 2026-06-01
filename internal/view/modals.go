@@ -12,6 +12,7 @@ import (
 const (
 	pageBase    = "base"
 	pageInput   = "modal-input"
+	pageForm2   = "modal-form2"
 	pageConfirm = "modal-confirm"
 	pageError   = "modal-error"
 )
@@ -54,6 +55,54 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 
 		a.pieces.pages.AddPage(pageInput, centeredModal(form, 60, 7), true, true)
 		a.app.SetFocus(input)
+	})
+}
+
+// ShowForm2 opens a two-field input modal centered over the base layout.
+// onSubmit fires with both trimmed values when the operator hits OK; onCancel
+// fires on Cancel or Esc. Mirrors ShowInput's idiom (tview.Form), adding a
+// second field — used by the new-project flow (name required, mission
+// optional).
+//
+// Safe to call from any goroutine — the body runs through app.QueueUpdateDraw
+// so it lands on the tview event loop.
+func (a *App) ShowForm2(title, label1, initial1, label2, initial2 string, onSubmit func(v1, v2 string), onCancel func()) {
+	a.queueModal(func() {
+		field1 := tview.NewInputField().
+			SetLabel(label1 + ": ").
+			SetText(initial1).
+			SetFieldWidth(40)
+		field2 := tview.NewInputField().
+			SetLabel(label2 + ": ").
+			SetText(initial2).
+			SetFieldWidth(40)
+
+		form := tview.NewForm().
+			AddFormItem(field1).
+			AddFormItem(field2).
+			SetButtonsAlign(tview.AlignCenter)
+
+		dismiss := func(submitted bool) {
+			v1 := strings.TrimSpace(field1.GetText())
+			v2 := strings.TrimSpace(field2.GetText())
+			a.closeModal(pageForm2)
+			if submitted {
+				if onSubmit != nil {
+					onSubmit(v1, v2)
+				}
+			} else if onCancel != nil {
+				onCancel()
+			}
+		}
+
+		form.AddButton("OK", func() { dismiss(true) })
+		form.AddButton("Cancel", func() { dismiss(false) })
+		form.SetCancelFunc(func() { dismiss(false) })
+
+		form.SetBorder(true).SetTitle(title).SetTitleAlign(tview.AlignCenter)
+
+		a.pieces.pages.AddPage(pageForm2, centeredModal(form, 60, 9), true, true)
+		a.app.SetFocus(field1)
 	})
 }
 
