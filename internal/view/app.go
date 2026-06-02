@@ -45,6 +45,13 @@ type App struct {
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool
 
+	// redraw coalesces pane repaints. Each pane's terminalpane.OnNeedRedraw
+	// hook calls redraw.Schedule (marking the surface dirty); a single ticker
+	// goroutine flushes at most one QueueUpdateDraw per frame so a chatty PTY
+	// burst paints settled frames instead of one partial frame per chunk.
+	// Started in BuildApp, stopped in Close. Shared by both panes.
+	redraw *redrawCoalescer
+
 	// coordPresent / agentPresent track which panes the body currently
 	// composes — the three-mode layout (D13), driven by the rail selection:
 	//
@@ -128,7 +135,15 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 	// bounce a repaint through its event loop the moment PTY output arrives
 	// (live repaint, independent of keystroke input).
 	tApp := tview.NewApplication()
-	redraw := func() { tApp.QueueUpdateDraw(func() {}) }
+
+	// Route every pane's OnNeedRedraw through a coalescer instead of calling
+	// QueueUpdateDraw per chunk. A burst of PTY chunks (the settled-snapshot
+	// blob, a SIGWINCH whole-screen re-render, or fast autonomous output) then
+	// drains into the emulator between flushes, so each painted frame is
+	// settled — no scroll-through of history, no partial-frame garble — while
+	// the latest output is still painted within one frame interval.
+	redrawCoalescer := newRedrawCoalescer(func() { tApp.QueueUpdateDraw(func() {}) }, DefaultRedrawInterval)
+	redraw := redrawCoalescer.Schedule
 
 	coordPane, coordBridge, coordUnsub := newBoundPane("HERA", "(no coord selected)", coordTask, src, redraw)
 	agentPane, agentBridge, agentUnsub := newBoundPane("Agent", "(no agent selected)", agentTask, src, redraw)
@@ -152,7 +167,13 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		selectDebounce: DefaultRailSelectDebounce,
 		coordPresent:   true,
 		agentPresent:   true,
+		redraw:         redrawCoalescer,
 	}
+
+	// Start the coalescing flush loop. Pane bytes ingested during BuildApp
+	// (the initial snapshot) have already armed the dirty flag via Schedule;
+	// the first tick paints that settled frame once the event loop runs.
+	redrawCoalescer.start()
 
 	if err := a.populateRail(database); err != nil {
 		return nil, fmt.Errorf("view.BuildApp: populate rail: %w", err)
@@ -254,6 +275,10 @@ func (a *App) Close() {
 	if agentBridge != nil {
 		agentBridge.stop()
 	}
+	// Stop the coalescer's ticker goroutine. redraw is set once in BuildApp and
+	// never reassigned, so reading it outside a.mu is safe. Stop is idempotent
+	// and nil-safe.
+	a.redraw.Stop()
 	a.pieces.coord.Close()
 	a.pieces.agent.Close()
 }
@@ -575,19 +600,17 @@ func (a *App) RepopulateRail() {
 	a.app.QueueUpdateDraw(body)
 }
 
-// scheduleRedraw bounces an empty update through the tview event loop so a
-// pane repaints with content the emulator just ingested. It is wired into each
-// pane's terminalpane.OnNeedRedraw (fired once per non-empty PTY chunk) so pane
-// output paints live, independent of keystroke input. nil-app-safe (tests).
+// scheduleRedraw marks the pane surface dirty so the redraw coalescer flushes
+// a single repaint on its next tick. It is wired into each pane's
+// terminalpane.OnNeedRedraw (fired once per non-empty PTY chunk) so pane output
+// paints live, independent of keystroke input. nil-coalescer-safe (tests).
 //
-// QueueUpdateDraw blocks until the draw completes on the event loop, so this
-// naturally back-pressures the terminalpane consume goroutine — a chatty agent
-// can't schedule redraws faster than the loop drains them, which coalesces
-// bursts without an explicit debounce (mirrors argus's plugin panes).
+// Unlike a per-chunk QueueUpdateDraw, Schedule is non-blocking: it does NOT
+// back-pressure the consume goroutine on the event loop. That lets a burst of
+// chunks drain fully into the emulator between coalesced flushes, so each
+// painted frame is settled rather than a partial mid-stream frame.
 func (a *App) scheduleRedraw() {
-	if a.app != nil {
-		a.app.QueueUpdateDraw(func() {})
-	}
+	a.redraw.Schedule()
 }
 
 // CurrentRailSelection returns the bridge's view of the currently-

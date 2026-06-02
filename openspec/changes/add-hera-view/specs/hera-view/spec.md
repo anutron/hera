@@ -274,7 +274,9 @@ Keystroke forwarding MUST NOT block the UI event loop. The view application reso
 
 The system SHALL repaint a pane's terminal surface whenever new PTY output bytes are ingested into that pane's emulator, WITHOUT depending on any keystroke or other input event to force a draw. This MUST hold for BOTH echoed keystrokes (output the bound task emits in response to typed input) AND fully autonomous agent output (output the task emits with no input at all): in both cases the newly-painted cells MUST become visible as the bytes arrive, not only after some later unrelated event (a re-selection, resize, or focus change) incidentally triggers a draw.
 
-Because the view forwards pane-focus keystrokes as raw bytes at the transport boundary BEFORE the tcell parser (per the keystroke-forwarding requirement), keystrokes no longer incidentally drive a tview redraw. The pane-output path therefore MUST schedule its own redraw: when the pane's emulator ingests a non-empty output chunk, the system MUST schedule a redraw on the UI event loop. The redraw scheduling MUST be safe to invoke from the output-consumer goroutine (it MUST NOT race the event loop) and SHOULD coalesce bursts so a chatty task does not force a wasteful redraw per byte — e.g. by back-pressuring the consumer on the event loop or debouncing — while still guaranteeing the latest output is eventually painted.
+Because the view forwards pane-focus keystrokes as raw bytes at the transport boundary BEFORE the tcell parser (per the keystroke-forwarding requirement), keystrokes no longer incidentally drive a tview redraw. The pane-output path therefore MUST schedule its own redraw: when the pane's emulator ingests a non-empty output chunk, the system MUST schedule a redraw on the UI event loop. The redraw scheduling MUST be safe to invoke from the output-consumer goroutine (it MUST NOT race the event loop).
+
+The redraw scheduling MUST coalesce a burst of ingested chunks into at most one draw per frame interval, and MUST NOT block the output-consumer goroutine on the event loop. The consumer therefore drains a burst fully into the emulator BETWEEN coalesced draws, so each painted frame reflects a settled emulator state rather than a partial mid-stream frame. This prevents the two failure modes of a per-chunk draw: (a) on pane bind, visibly scrolling through the bound task's entire scrollback before landing at the tail — instead the settled snapshot MUST paint once at the tail; and (b) garbled, interleaved, or stale cells while a chatty task or a SIGWINCH whole-screen re-render streams in. The coalescer MUST still guarantee the latest output is painted within approximately one frame interval of the last ingested chunk (it MUST NOT starve a continuous stream). This mirrors argus's own task-terminal repaint cadence (a ticker that draws only when there is new output), not argus's plugin-pane path (one draw per chunk), because hera's panes render a chatty PTY with scrollback rather than discrete full-screen frames.
 
 #### Scenario: Autonomous agent output repaints the pane without input
 
@@ -290,6 +292,16 @@ Because the view forwards pane-focus keystrokes as raw bytes at the transport bo
 
 - **WHEN** a bound task emits output faster than the UI can draw
 - **THEN** the system MUST still repaint with the newest output AND MAY coalesce the redraws (it is not required to perform one full redraw per output byte)
+
+#### Scenario: Pane bind paints the settled snapshot once at the tail
+
+- **WHEN** a pane is bound to a task with existing scrollback and the snapshot bytes are ingested into the emulator as one or more chunks
+- **THEN** the redraw scheduling MUST coalesce those chunks so the pane paints the settled tail of the snapshot, and MUST NOT visibly replay/scroll through the scrollback history one intermediate frame at a time
+
+#### Scenario: A burst of chunks coalesces to a bounded number of settled draws
+
+- **WHEN** the emulator ingests a burst of N output chunks within a single frame interval (e.g. a chatty agent or a whole-screen re-render after a resize)
+- **THEN** the system MUST schedule at most one draw for that interval (far fewer than N), and that draw MUST paint a settled emulator frame rather than a partial mid-stream frame
 
 ### Requirement: Mutation keys are RAIL-focus-only
 
