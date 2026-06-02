@@ -22,8 +22,16 @@ type mutationService interface {
 	RenameRole(ctx context.Context, id int64, newName string) error
 	DeleteOrchestrator(ctx context.Context, id int64) error
 	DeleteRole(ctx context.Context, id int64) error
-	ToggleArchiveOrchestrator(ctx context.Context, id int64) error
-	ToggleArchiveRole(ctx context.Context, id int64) error
+
+	// Explicit archive verbs. The VIEW decides the direction from the
+	// selection's EFFECTIVE rendered archived state (what the operator
+	// sees) and calls the matching verb — never a flag-inspecting toggle,
+	// which on a mixed-flag row (hera-active + argus-archived) would move
+	// the row OPPOSITE to what the operator sees.
+	ArchiveOrchestrator(ctx context.Context, id int64) error
+	UnarchiveOrchestrator(ctx context.Context, id int64) error
+	ArchiveRole(ctx context.Context, id int64) error
+	UnarchiveRole(ctx context.Context, id int64) error
 
 	// Stage P extended keyset.
 	ListCompletedAgents(ctx context.Context) ([]ops.CompletedAgent, error)
@@ -117,10 +125,17 @@ type railSelection struct {
 	ArgusTaskID string
 
 	// ArgusArchived is the argus-side archived state of the selection's task
-	// (per the rail's argus state cache). Carried on freelance rows so `a`
-	// knows whether to archive or unarchive the task — a freelancer has no
-	// hera role row, so the managed-row Archived flag stays false for it.
+	// (per the rail's argus state cache). Carried on every role row so `a`
+	// can compute the EFFECTIVE archived state the rail displays — on a
+	// freelance row it is the whole signal (no hera role row, so Archived
+	// stays false), and on a managed row it catches the mixed-flag state
+	// (hera-active + argus-archived) the hera flag alone would miss.
 	ArgusArchived bool
+
+	// Dead reports the binding-dead state (DB binding open but the argus
+	// task is gone). A dead row DISPLAYS as archived (roleArchived), so `a`
+	// must treat it as an unarchive target, never stamp a fresh archive.
+	Dead bool
 
 	// WorktreePath is the argus task's worktree path, carried on freelance
 	// rows (RoleKind "freelance", RoleID 0) so `^p` can open a PR straight
@@ -418,13 +433,28 @@ func (b *mutationBridge) OnDelete() {
 // is enough. A freelance row (unmanaged argus task, no hera role) is
 // addressed directly by its argus task id; non-addressable rows get
 // visible feedback. The argus call runs off-loop via mutate.
+//
+// The toggle DIRECTION follows the row's EFFECTIVE rendered archived
+// state — the same predicate the rail uses to bucket the row into an
+// Archive expando — and dispatches an explicit verb. Deriving the
+// direction from a single backing flag (the old ToggleArchiveRole read
+// role.Archived alone) moved a mixed-flag row (hera-active +
+// argus-archived) OPPOSITE to what the operator sees: an Archive-expando
+// row got a fresh archived_at instead of clearing both sides.
 func (b *mutationBridge) OnArchive() {
 	sel := b.sel.CurrentRailSelection()
 	switch sel.Kind {
 	case selOrchestrator:
-		b.mutate("archive", true, func() error {
-			return b.svc.ToggleArchiveOrchestrator(b.ctx, sel.OrchestratorID)
-		})
+		// An orchestrator header displays archived from its own flag.
+		if sel.Archived {
+			b.mutate("archive", true, func() error {
+				return b.svc.UnarchiveOrchestrator(b.ctx, sel.OrchestratorID)
+			})
+		} else {
+			b.mutate("archive", true, func() error {
+				return b.svc.ArchiveOrchestrator(b.ctx, sel.OrchestratorID)
+			})
+		}
 	case selRole:
 		if sel.RoleKind == string(db.KindFreelance) {
 			if sel.ArgusTaskID == "" {
@@ -436,9 +466,18 @@ func (b *mutationBridge) OnArchive() {
 			})
 			return
 		}
-		b.mutate("archive", true, func() error {
-			return b.svc.ToggleArchiveRole(b.ctx, sel.RoleID)
-		})
+		// Effective rendered state, mirroring rail_list.roleArchived: the
+		// row sits in an Archive expando when EITHER side is archived or
+		// the binding is dead.
+		if sel.Archived || sel.ArgusArchived || sel.Dead {
+			b.mutate("archive", true, func() error {
+				return b.svc.UnarchiveRole(b.ctx, sel.RoleID)
+			})
+		} else {
+			b.mutate("archive", true, func() error {
+				return b.svc.ArchiveRole(b.ctx, sel.RoleID)
+			})
+		}
 	default:
 		b.notApplicable("a: not applicable to this row")
 	}

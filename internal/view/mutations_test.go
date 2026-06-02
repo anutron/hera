@@ -218,20 +218,24 @@ func (l *fakeListAll) Toggle() bool {
 type fakeMutationService struct {
 	mu sync.Mutex
 
-	newCalls               []ops.NewOrchestratorInput
-	newErr                 error
-	renameOrchCalls        []renameOrchCall
-	renameOrchErr          error
-	renameRoleCalls        []renameRoleCall
-	renameRoleErr          error
-	deleteOrchCalls        []int64
-	deleteOrchErr          error
-	deleteRoleCalls        []int64
-	deleteRoleErr          error
-	toggleArchiveOrchCalls []int64
-	toggleArchiveOrchErr   error
-	toggleArchiveRoleCalls []int64
-	toggleArchiveRoleErr   error
+	newCalls           []ops.NewOrchestratorInput
+	newErr             error
+	renameOrchCalls    []renameOrchCall
+	renameOrchErr      error
+	renameRoleCalls    []renameRoleCall
+	renameRoleErr      error
+	deleteOrchCalls    []int64
+	deleteOrchErr      error
+	deleteRoleCalls    []int64
+	deleteRoleErr      error
+	archiveOrchCalls   []int64
+	archiveOrchErr     error
+	unarchiveOrchCalls []int64
+	unarchiveOrchErr   error
+	archiveRoleCalls   []int64
+	archiveRoleErr     error
+	unarchiveRoleCalls []int64
+	unarchiveRoleErr   error
 
 	completedAgents  []ops.CompletedAgent
 	listCompletedErr error
@@ -323,17 +327,24 @@ func (s *fakeMutationService) DeleteRole(_ context.Context, id int64) error {
 	return s.deleteRoleErr
 }
 
-func (s *fakeMutationService) ToggleArchiveOrchestrator(_ context.Context, id int64) error {
+func (s *fakeMutationService) ArchiveOrchestrator(_ context.Context, id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.toggleArchiveOrchCalls = append(s.toggleArchiveOrchCalls, id)
-	return s.toggleArchiveOrchErr
+	s.archiveOrchCalls = append(s.archiveOrchCalls, id)
+	return s.archiveOrchErr
 }
 
-func (s *fakeMutationService) ToggleArchiveRole(_ context.Context, id int64) error {
+func (s *fakeMutationService) UnarchiveOrchestrator(_ context.Context, id int64) error {
 	s.mu.Lock()
-	s.toggleArchiveRoleCalls = append(s.toggleArchiveRoleCalls, id)
-	err := s.toggleArchiveRoleErr
+	defer s.mu.Unlock()
+	s.unarchiveOrchCalls = append(s.unarchiveOrchCalls, id)
+	return s.unarchiveOrchErr
+}
+
+func (s *fakeMutationService) ArchiveRole(_ context.Context, id int64) error {
+	s.mu.Lock()
+	s.archiveRoleCalls = append(s.archiveRoleCalls, id)
+	err := s.archiveRoleErr
 	started := s.archiveRoleStarted
 	gate := s.archiveRoleGate
 	s.mu.Unlock()
@@ -346,6 +357,13 @@ func (s *fakeMutationService) ToggleArchiveRole(_ context.Context, id int64) err
 		<-gate
 	}
 	return err
+}
+
+func (s *fakeMutationService) UnarchiveRole(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unarchiveRoleCalls = append(s.unarchiveRoleCalls, id)
+	return s.unarchiveRoleErr
 }
 
 func (s *fakeMutationService) ToggleArchiveTask(_ context.Context, taskID string, archived bool) error {
@@ -702,40 +720,118 @@ func TestBridge_OnDelete_ServiceError_ShowsErrorModal(t *testing.T) {
 
 // --- OnArchive ---
 
-func TestBridge_OnArchive_Orchestrator_TogglesArchive(t *testing.T) {
+func TestBridge_OnArchive_ActiveOrchestrator_Archives(t *testing.T) {
 	b, _, sel, svc, _, rp := newBridgeUnderTest()
 	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "foo"}
 
 	b.OnArchive()
 	b.waitIdle()
 
-	if len(svc.toggleArchiveOrchCalls) != 1 || svc.toggleArchiveOrchCalls[0] != 5 {
-		t.Fatalf("want ToggleArchiveOrchestrator(5); got %v", svc.toggleArchiveOrchCalls)
+	if len(svc.archiveOrchCalls) != 1 || svc.archiveOrchCalls[0] != 5 {
+		t.Fatalf("want ArchiveOrchestrator(5); got %v", svc.archiveOrchCalls)
+	}
+	if len(svc.unarchiveOrchCalls) != 0 {
+		t.Fatalf("active orchestrator must not unarchive; got %v", svc.unarchiveOrchCalls)
 	}
 	if rp.Count() != 1 {
 		t.Fatalf("expected rail refresh; got %d", rp.Count())
 	}
 }
 
-func TestBridge_OnArchive_Role_TogglesArchive(t *testing.T) {
+func TestBridge_OnArchive_ArchivedOrchestrator_Unarchives(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "foo", Archived: true}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.unarchiveOrchCalls) != 1 || svc.unarchiveOrchCalls[0] != 5 {
+		t.Fatalf("want UnarchiveOrchestrator(5); got %v", svc.unarchiveOrchCalls)
+	}
+	if len(svc.archiveOrchCalls) != 0 {
+		t.Fatalf("archived orchestrator must not re-archive; got %v", svc.archiveOrchCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnArchive_ActiveRole_Archives(t *testing.T) {
 	b, _, sel, svc, _, rp := newBridgeUnderTest()
 	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
 
 	b.OnArchive()
 	b.waitIdle()
 
-	if len(svc.toggleArchiveRoleCalls) != 1 || svc.toggleArchiveRoleCalls[0] != 9 {
-		t.Fatalf("want ToggleArchiveRole(9); got %v", svc.toggleArchiveRoleCalls)
+	if len(svc.archiveRoleCalls) != 1 || svc.archiveRoleCalls[0] != 9 {
+		t.Fatalf("want ArchiveRole(9); got %v", svc.archiveRoleCalls)
+	}
+	if len(svc.unarchiveRoleCalls) != 0 {
+		t.Fatalf("active role must not unarchive; got %v", svc.unarchiveRoleCalls)
 	}
 	if rp.Count() != 1 {
 		t.Fatalf("expected rail refresh; got %d", rp.Count())
 	}
 }
 
+func TestBridge_OnArchive_HeraArchivedRole_Unarchives(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", Archived: true}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.unarchiveRoleCalls) != 1 || svc.unarchiveRoleCalls[0] != 9 {
+		t.Fatalf("want UnarchiveRole(9); got %v", svc.unarchiveRoleCalls)
+	}
+	if len(svc.archiveRoleCalls) != 0 {
+		t.Fatalf("archived role must not re-archive; got %v", svc.archiveRoleCalls)
+	}
+}
+
+// The live-found bug: a role can be hera-active + argus-archived (mixed flags
+// from historical asymmetric toggles). The rail DISPLAYS it as archived
+// (roleArchived: Archived || ArgusArchived || Dead), so `a` must UNARCHIVE —
+// direction follows the effective rendered state, not the hera flag alone.
+// The old flag-inspecting toggle re-archived it (set a fresh archived_at).
+func TestBridge_OnArchive_MixedFlagRole_ArgusArchived_Unarchives(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", Archived: false, ArgusArchived: true}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.unarchiveRoleCalls) != 1 || svc.unarchiveRoleCalls[0] != 9 {
+		t.Fatalf("mixed-flag row displays archived, want UnarchiveRole(9); got unarchive=%v archive=%v",
+			svc.unarchiveRoleCalls, svc.archiveRoleCalls)
+	}
+	if len(svc.archiveRoleCalls) != 0 {
+		t.Fatalf("mixed-flag row must NOT be re-archived; got %v", svc.archiveRoleCalls)
+	}
+}
+
+// A dead binding also displays as archived — `a` must go the unarchive
+// direction there too, never stamp a fresh archived_at.
+func TestBridge_OnArchive_DeadRole_Unarchives(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", Dead: true}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.unarchiveRoleCalls) != 1 || svc.unarchiveRoleCalls[0] != 9 {
+		t.Fatalf("dead row displays archived, want UnarchiveRole(9); got unarchive=%v archive=%v",
+			svc.unarchiveRoleCalls, svc.archiveRoleCalls)
+	}
+	if len(svc.archiveRoleCalls) != 0 {
+		t.Fatalf("dead row must NOT be re-archived; got %v", svc.archiveRoleCalls)
+	}
+}
+
 func TestBridge_OnArchive_ServiceError_ShowsErrorModal(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
 	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
-	svc.toggleArchiveRoleErr = errors.New("argus 500")
+	svc.archiveRoleErr = errors.New("argus 500")
 
 	b.OnArchive()
 	b.waitIdle()
@@ -1224,8 +1320,8 @@ func TestBridge_OnArchive_ReturnsBeforeSvcCompletes(t *testing.T) {
 	}
 	close(gate)
 	b.waitIdle()
-	if len(svc.toggleArchiveRoleCalls) != 1 {
-		t.Fatalf("want 1 ToggleArchiveRole call after release; got %d", len(svc.toggleArchiveRoleCalls))
+	if len(svc.archiveRoleCalls) != 1 {
+		t.Fatalf("want 1 ArchiveRole call after release; got %d", len(svc.archiveRoleCalls))
 	}
 	if rp.Count() != 1 {
 		t.Fatalf("want exactly 1 refresh after the mutation completed; got %d", rp.Count())
@@ -1329,8 +1425,8 @@ func TestBridge_SecondMutationWhileInFlight_NoOpsWithFeedback(t *testing.T) {
 	if len(svc.advanceCalls) != 0 {
 		t.Fatalf("second mutation must not fire while one is in flight; got %v", svc.advanceCalls)
 	}
-	if len(svc.toggleArchiveRoleCalls) != 1 {
-		t.Fatalf("first mutation must still complete; got %d calls", len(svc.toggleArchiveRoleCalls))
+	if len(svc.archiveRoleCalls) != 1 {
+		t.Fatalf("first mutation must still complete; got %d calls", len(svc.archiveRoleCalls))
 	}
 	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "in flight") {
 		t.Fatalf("dropped second mutation must give visible feedback; errors=%v", m.errors)
@@ -1364,7 +1460,7 @@ func TestBridge_OnArchive_Freelancer_TogglesArgusTaskDirectly(t *testing.T) {
 		svc.toggleArchiveTaskCalls[0] != (toggleTaskCall{TaskID: "T9", Archived: false}) {
 		t.Fatalf("want ToggleArchiveTask(T9, archived=false); got %+v", svc.toggleArchiveTaskCalls)
 	}
-	if len(svc.toggleArchiveRoleCalls)+len(svc.toggleArchiveOrchCalls) != 0 {
+	if len(svc.archiveRoleCalls)+len(svc.unarchiveRoleCalls)+len(svc.archiveOrchCalls)+len(svc.unarchiveOrchCalls) != 0 {
 		t.Fatalf("freelancer `a` must not touch role/orchestrator archive paths")
 	}
 	if rp.Count() != 1 {
@@ -1471,8 +1567,8 @@ func TestBridge_OnArchive_NoSelection_Feedback(t *testing.T) {
 	b.OnArchive()
 	b.waitIdle()
 
-	if len(svc.toggleArchiveOrchCalls)+len(svc.toggleArchiveRoleCalls)+len(svc.toggleArchiveTaskCalls) != 0 {
-		t.Fatalf("selNone must not call ToggleArchive*")
+	if len(svc.archiveOrchCalls)+len(svc.unarchiveOrchCalls)+len(svc.archiveRoleCalls)+len(svc.unarchiveRoleCalls)+len(svc.toggleArchiveTaskCalls) != 0 {
+		t.Fatalf("selNone must not call any archive verb")
 	}
 	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "not applicable") {
 		t.Fatalf("a on a non-addressable row must give feedback; errors=%v", m.errors)

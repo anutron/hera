@@ -848,3 +848,123 @@ func TestRailList_NonSelectedRowHasNoBackground(t *testing.T) {
 		}
 	}
 }
+
+// markerLines returns the indexes of dump lines containing the selection
+// marker glyph. readScreen strips all styling, so these assertions prove the
+// selection is identifiable from a colorless text capture alone (the
+// live-probe grid renderer, screen readers, reduced-color terminals).
+func markerLines(dump string) []int {
+	var out []int
+	for i, ln := range strings.Split(dump, "\n") {
+		if strings.ContainsRune(ln, selectionMarker) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// assertMarkerOnRow asserts the marker glyph renders exactly once across the
+// dump, on the line containing needle.
+func assertMarkerOnRow(t *testing.T, dump, needle string) {
+	t.Helper()
+	rows := markerLines(dump)
+	if len(rows) != 1 {
+		t.Fatalf("selection marker must render exactly once; found on lines %v in:\n%s", rows, dump)
+	}
+	want := rowOf(dump, needle)
+	if want < 0 {
+		t.Fatalf("row %q not rendered; got:\n%s", needle, dump)
+	}
+	if rows[0] != want {
+		t.Fatalf("selection marker on line %d, want line %d (%q); got:\n%s", rows[0], want, needle, dump)
+	}
+}
+
+// Scenario: Selected row is identifiable without color via the marker glyph —
+// for EVERY selectable row kind (coordinator header, worker row, archive
+// expando, freelance repo header, freelance task row).
+func TestRailList_SelectionMarkerOnEverySelectableRowKind(t *testing.T) {
+	mk := func() *railList {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w-active", RoleKind: "worker", Live: true},
+				{OrchestratorID: 1, RoleID: 11, Name: "w-old", RoleKind: "worker", Archived: true},
+			}},
+		})
+		rl.SetFreelance([]*freelanceProject{
+			{Project: "repoX", Tasks: []*roleEntry{
+				{RoleKind: "freelance", Name: "free-1", ArgusTaskID: "f1", HasState: true, Status: "in_progress"},
+			}},
+		})
+		return rl
+	}
+
+	t.Run("coordinator header", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByOrchID(1) {
+			t.Fatal("SelectByOrchID failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "proj1")
+	})
+	t.Run("worker row", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByRoleID(10) {
+			t.Fatal("SelectByRoleID failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "w-active")
+	})
+	t.Run("archive expando", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByArchiveOwner(1) {
+			t.Fatal("SelectByArchiveOwner failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "Archive (1)")
+	})
+	t.Run("freelance repo header", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByProject("repoX") {
+			t.Fatal("SelectByProject failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "repoX")
+	})
+	t.Run("freelance task row", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByArgusTaskID("f1") {
+			t.Fatal("SelectByArgusTaskID failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "free-1")
+	})
+}
+
+// Scenario: Marker gutter keeps columns stable across selection moves — the
+// marker follows the cursor and vacated rows render a space in the gutter, so
+// no row content shifts when the selection moves.
+func TestRailList_SelectionMarkerMovesWithCursorWithoutShift(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", RoleKind: "worker", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2", RoleKind: "worker", Live: true},
+		}},
+	})
+	rl.SelectByOrchID(1)
+	before := renderRail(t, rl, 28, 8)
+	assertMarkerOnRow(t, before, "proj1")
+	colBefore := runeColOf(strings.Split(before, "\n"))
+
+	rl.CursorDown() // header → w1
+	after := renderRail(t, rl, 28, 8)
+	assertMarkerOnRow(t, after, "w1")
+	colAfter := runeColOf(strings.Split(after, "\n"))
+
+	for _, needle := range []string{"proj1", "w1", "w2"} {
+		b, a := colBefore(needle), colAfter(needle)
+		if b < 0 || a < 0 {
+			t.Fatalf("%q missing from a render; before:\n%s\nafter:\n%s", needle, before, after)
+		}
+		if b != a {
+			t.Fatalf("%q shifted from col %d to %d on selection move; before:\n%s\nafter:\n%s", needle, b, a, before, after)
+		}
+	}
+}

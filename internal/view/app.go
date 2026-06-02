@@ -691,10 +691,14 @@ func (a *App) CurrentRailSelection() railSelection {
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
 			ArgusTaskID:    ref.ArgusTaskID,
-			// Argus-side archived state: lets `a` on a freelance row (which
-			// has no hera role row, so Archived stays false) pick archive vs
-			// unarchive for the task-direct toggle.
+			// Argus-side archived + binding-dead state: with the hera flag
+			// these let `a` compute the EFFECTIVE archived state the rail
+			// displays (roleArchived) and pick the explicit verb — a
+			// mixed-flag row (hera-active + argus-archived) must unarchive,
+			// and a freelance row (no hera role row, Archived always false)
+			// toggles purely on the argus side.
 			ArgusArchived: ref.ArgusArchived,
+			Dead:          ref.Dead,
 			WorktreePath:  ref.WorktreePath,
 		}
 	}

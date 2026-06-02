@@ -206,6 +206,20 @@ type railRow struct {
 // 16px-per-level nesting (rail-nav.html `pad=8+depth*16`) at terminal scale.
 const indentStep = 2
 
+// selectionMarker is the color-independent selection indicator. The rail
+// reserves a markerGutter-wide column at the start of EVERY row and draws
+// this glyph there on the selected row only (in ADDITION to
+// theme.StyleSelected text); all other rows draw a space, so nothing shifts
+// when the cursor moves. The styling alone is invisible in any monochrome
+// context — the live-probe grid renderer strips styling, and screen readers
+// and reduced-color terminals never see it — which made blind rail
+// navigation land mutation keys on the wrong rows.
+const selectionMarker = '›'
+
+// markerGutter is the width of the selection-marker gutter: the marker cell
+// plus a separating space.
+const markerGutter = 2
+
 // newRailList constructs an empty rail widget. SetBorder is enabled so
 // OnFocusChanged's SetBorderColor still drives the focus-color paint.
 func newRailList() *railList {
@@ -803,6 +817,12 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		rl.offset = 0
 	}
 
+	// Row content renders right of the selection-marker gutter; the gutter
+	// itself is painted per row below.
+	cx, cw := x+markerGutter, w-markerGutter
+	if cw < 0 {
+		cw = 0
+	}
 	for i := 0; i < h; i++ {
 		idx := rl.offset + i
 		if idx >= len(rl.rows) {
@@ -810,19 +830,27 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		}
 		row := rl.rows[idx]
 		cursor := idx == rl.cursor && rl.selectable(idx)
+		// Selection-marker gutter: `›` on the cursor row, a space everywhere
+		// else, so the selection survives a colorless capture and nothing
+		// shifts on cursor moves.
+		marker := ' '
+		if cursor {
+			marker = selectionMarker
+		}
+		screen.SetContent(x, y+i, marker, nil, theme.StyleSelected)
 		switch row.kind {
 		case railRowOrch:
-			rl.drawOrchRow(screen, x, y+i, w, row.orch, row.depth, cursor)
+			rl.drawOrchRow(screen, cx, y+i, cw, row.orch, row.depth, cursor)
 		case railRowRole:
-			rl.drawRoleRow(screen, x, y+i, w, row.role, row.depth, cursor)
+			rl.drawRoleRow(screen, cx, y+i, cw, row.role, row.depth, cursor)
 		case railRowFreelanceSep:
-			rl.drawSeparator(screen, x, y+i, w, " Freelance ")
+			rl.drawSeparator(screen, cx, y+i, cw, " Freelance ")
 		case railRowFreelanceProj:
-			rl.drawFreelanceProjRow(screen, x, y+i, w, row.fproj, cursor)
+			rl.drawFreelanceProjRow(screen, cx, y+i, cw, row.fproj, cursor)
 		case railRowArchiveExpando:
-			rl.drawArchiveExpando(screen, x, y+i, w, row.archiveOwner, row.archiveCount, row.depth, cursor)
+			rl.drawArchiveExpando(screen, cx, y+i, cw, row.archiveOwner, row.archiveCount, row.depth, cursor)
 		case railRowEmpty:
-			widget.DrawText(screen, x, y+i, w, "(no projects)", theme.StyleDimmed)
+			widget.DrawText(screen, cx, y+i, cw, "(no projects)", theme.StyleDimmed)
 		}
 	}
 }

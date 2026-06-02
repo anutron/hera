@@ -292,3 +292,118 @@ func TestToggleArchiveTask_ArgusErrorPropagates(t *testing.T) {
 		t.Fatalf("ToggleArchiveTask must propagate the argus error")
 	}
 }
+
+// --- explicit archive/unarchive verbs (direction decided by the VIEW from the
+// effective rendered state, not re-derived from the hera flag) ---
+
+func TestArchiveRole_Explicit_SetsHeraAndArgus(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedBinding(role.ID, "T1", "/tmp/wt1")
+
+	if err := s.ArchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("ArchiveRole: %v", err)
+	}
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if !got.Archived {
+		t.Fatalf("role should be archived")
+	}
+	if len(argus.archiveCalls) != 1 || argus.archiveCalls[0] != "T1" {
+		t.Fatalf("argus archive calls = %v, want [T1]", argus.archiveCalls)
+	}
+}
+
+func TestUnarchiveRole_Explicit_ClearsHeraAndArgus(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", true)
+	db.seedBinding(role.ID, "T1", "/tmp/wt1")
+
+	if err := s.UnarchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("UnarchiveRole: %v", err)
+	}
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if got.Archived {
+		t.Fatalf("role should be unarchived")
+	}
+	if len(argus.unarchiveCalls) != 1 || argus.unarchiveCalls[0] != "T1" {
+		t.Fatalf("argus unarchive calls = %v, want [T1]", argus.unarchiveCalls)
+	}
+}
+
+// The live-found mixed-flag state: hera-active (archived_at NULL) but the
+// bound argus task is archived. The row DISPLAYS as archived, so the view
+// dispatches UnarchiveRole. The hera side is already clear (the DB unarchive
+// is a harmless no-op) and the argus side MUST be unarchived — and critically
+// NO fresh archived_at may be stamped (the old flag-derived toggle re-archived
+// exactly this state).
+func TestUnarchiveRole_MixedFlags_HeraActiveArgusArchived(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false) // hera-active
+	db.seedBinding(role.ID, "T1", "/tmp/wt1")                    // argus side archived per rail state
+
+	if err := s.UnarchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("UnarchiveRole: %v", err)
+	}
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if got.Archived {
+		t.Fatalf("role must remain unarchived (no fresh archived_at)")
+	}
+	if len(db.archiveRoleCalls) != 0 {
+		t.Fatalf("UnarchiveRole must never stamp archived_at; got archive DAO calls %v", db.archiveRoleCalls)
+	}
+	if len(argus.unarchiveCalls) != 1 || argus.unarchiveCalls[0] != "T1" {
+		t.Fatalf("argus unarchive calls = %v, want [T1] (clear the argus side)", argus.unarchiveCalls)
+	}
+	if len(argus.archiveCalls) != 0 {
+		t.Fatalf("unexpected argus archive calls: %v", argus.archiveCalls)
+	}
+}
+
+func TestArchiveOrchestrator_Explicit_Cascades(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	w1 := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedBinding(w1.ID, "T1", "/tmp/wt1")
+
+	if err := s.ArchiveOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("ArchiveOrchestrator: %v", err)
+	}
+	gotOrch, _ := db.GetOrchestratorByID(context.Background(), orch.ID)
+	if !gotOrch.Archived {
+		t.Fatalf("orchestrator should be archived")
+	}
+	gotRole, _ := db.GetRoleByID(context.Background(), w1.ID)
+	if !gotRole.Archived {
+		t.Fatalf("role should be cascade-archived")
+	}
+	if len(argus.archiveCalls) != 1 || argus.archiveCalls[0] != "T1" {
+		t.Fatalf("argus archive calls = %v, want [T1]", argus.archiveCalls)
+	}
+}
+
+func TestUnarchiveOrchestrator_Explicit_UnarchivesCoordTask(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", true)
+	coord := db.seedRole(orch.ID, "coord", KindCoordinator, "foo", true)
+	db.seedBinding(coord.ID, "TC", "/tmp/wtc")
+
+	if err := s.UnarchiveOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("UnarchiveOrchestrator: %v", err)
+	}
+	gotOrch, _ := db.GetOrchestratorByID(context.Background(), orch.ID)
+	if gotOrch.Archived {
+		t.Fatalf("orchestrator should be unarchived")
+	}
+	if len(argus.unarchiveCalls) != 1 || argus.unarchiveCalls[0] != "TC" {
+		t.Fatalf("argus unarchive calls = %v, want [TC]", argus.unarchiveCalls)
+	}
+	// Workers (here: none besides coord) stay as-is; coord ROLE row remains
+	// archived per the no-cascade unarchive contract.
+	gotCoord, _ := db.GetRoleByID(context.Background(), coord.ID)
+	if !gotCoord.Archived {
+		t.Fatalf("coord role row must stay archived (unarchive does not cascade)")
+	}
+}
