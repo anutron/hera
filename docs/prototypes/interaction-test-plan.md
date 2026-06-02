@@ -145,3 +145,20 @@ Walked the items that do NOT depend on the in-flight `raw-key-forwarding` input 
 **Observed (known risk, reconfirmed):** initial startup selection binds the first worker (`raw-key-forwarding` under `hera-view-finish`), i.e. picks the worker side rather than a coord — matches the prior "startup auto-selection picks the worker side" risk.
 
 **Deferred to the functional pass (post-`raw-key-forwarding`):** D1–D7 (Enter/focus ladder + arrow traversal), E2–E4 (keystroke→PTY), G1–G7 (keyset actions), F2/F4 (focus-change hotkeys push, Esc `release`). **Manual:** M1–M4 (+ A8 cyan border eyeball).
+
+#### 2026-06-02 — keyset acceptance run (coordinator-driven probe pass; `docs/prototypes/keyset-acceptance.html` T1–T15; final build `a3c1777`, stack rebuilt on main+PR#13)
+
+Probe-driven mechanical pass of the a/s/S keyset (selection marker `›` made cursor position verifiable in captures; one mutation per run; flags verified via sqlite). Fixits landed mid-run, serially: symmetric unarchive (`c91bcee`), latest-binding fallback + focusable/themed modals (`7bb6e6c`), selection marker + effective-state toggle direction (`0759390` post-rebuild), archive-branch fallback (`a3c1777`).
+
+- **T1/T2 — unarchive agent rows: PASS** (after two fixes: unarchive now clears hera AND argus; direction follows the DISPLAYED archived state). Rows visibly return to active children; counts update.
+- **T3/T4 — s/S stepping on agent rows: PASS** (complete↔in_review↔in_progress, icon tracks; works on archived rows too via latest-binding fallback — the original "role has no live binding" error is fixed).
+- **T5 — clamp at ends: PASS** (silent stay; ⚖ for Aaron: should clamping say "already at complete"?).
+- **T6 — archive agent row: PASS** (after the archive-branch fallback — previously hera-archived but silently skipped argus on ended-binding roles).
+- **T7 — header s/S: PASS** (steps the coord task; kbtest-coord left at in_review).
+- **T8/T9 — coord cascade archive + l-mode unarchive: PASS** (both sides both directions; per-spec roles stay archived on coord-unarchive — ⚖ for Aaron).
+- **T10/T12 — freelancer archive/unarchive: PASS** (direct argus verbs; archived freelancers live in their repo group under `l` — ⚖: is that the right home?).
+- **T11 — freelancer s/S: PASS*** (one unreproduced anomaly: the very first `S` advanced instead of reverting; presses 2–3 behaved correctly; watch in manual pass).
+- **T13 — non-applicable feedback: PASS** (themed centered Error modal "s: not applicable to this row"; never silent). Modal dismissal (Enter/Esc) unit-tested, needs the manual eyeball.
+- **T15 — zero freezes** across ~25 mutation presses all night (the tview QueueUpdate self-deadlock is dead).
+- **Bugs found AND fixed by this run:** toggle-direction-vs-display mismatch; archive/unarchive argus-side skips on ended bindings; modal focus stolen by background repopulates (operator was trapped); `l` as FIRST key can race the initial repopulate (workaround: settle keys first — small open item).
+- **Open for Aaron (morning):** ⚖ T5 clamp feedback / T9 roles-stay-archived / T10 archived-freelancer home; T14 double-press feel; M1–M4; modal styling approval.
