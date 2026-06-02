@@ -84,6 +84,45 @@ func TestToggleArchiveRole_UnarchiveNoBindingSkipsArgus(t *testing.T) {
 	}
 }
 
+func TestToggleArchiveRole_UnarchiveEndedBindingFallsBackToLatest(t *testing.T) {
+	// The archived-role shape: archiving the task ENDED the binding
+	// (end_reason='argus_archived') while keeping its argus task id, so
+	// EVERY archived row has no live binding. The unarchive must resolve
+	// the latest ended binding and still POST argus unarchive — skipping
+	// silently defeats the symmetric toggle for exactly the rows that
+	// need it (the row never visibly leaves the Archive expando).
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", true)
+	db.seedEndedBinding(role.ID, "T1", "/tmp/wt1")
+
+	if err := s.ToggleArchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("ToggleArchiveRole: %v", err)
+	}
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if got.Archived {
+		t.Fatalf("role should be unarchived")
+	}
+	if len(argus.unarchiveCalls) != 1 || argus.unarchiveCalls[0] != "T1" {
+		t.Fatalf("argus unarchive calls = %v, want [T1] via latest-binding fallback", argus.unarchiveCalls)
+	}
+}
+
+func TestToggleArchiveRole_UnarchivePrefersLiveBindingOverEnded(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", true)
+	db.seedEndedBinding(role.ID, "T-old", "/tmp/wt1")
+	db.seedBinding(role.ID, "T-live", "/tmp/wt2")
+
+	if err := s.ToggleArchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("ToggleArchiveRole: %v", err)
+	}
+	if len(argus.unarchiveCalls) != 1 || argus.unarchiveCalls[0] != "T-live" {
+		t.Fatalf("argus unarchive calls = %v, want [T-live] (live binding preferred)", argus.unarchiveCalls)
+	}
+}
+
 func TestToggleArchiveRole_UnarchiveArgusErrorPropagates(t *testing.T) {
 	s, db, argus, _, _ := newTestService()
 	orch := db.seedOrchestrator("foo", false)

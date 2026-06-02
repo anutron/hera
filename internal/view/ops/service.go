@@ -33,6 +33,14 @@ type DB interface {
 	// ErrNotFound if the role currently has no live binding.
 	GetLiveBindingByRole(ctx context.Context, roleID int64) (*Binding, error)
 
+	// GetLatestBindingByRole returns the role's most recent binding (by
+	// started_at) regardless of whether it has ended, or ErrNotFound if
+	// the role has never had a binding. Backs the archived-row fallback:
+	// archiving a task ENDS its binding (end_reason='argus_archived')
+	// while preserving the argus_task_id, so live-only lookups miss
+	// exactly the rows whose status/unarchive ops still need the task.
+	GetLatestBindingByRole(ctx context.Context, roleID int64) (*Binding, error)
+
 	// EndBinding marks a binding as ended with the given reason.
 	EndBinding(ctx context.Context, bindingID int64, reason string) error
 

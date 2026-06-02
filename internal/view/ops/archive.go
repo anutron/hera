@@ -48,14 +48,20 @@ func (s *Service) ToggleArchiveRole(ctx context.Context, id int64) error {
 	return nil
 }
 
-// unarchiveBoundArgusTask resolves the role's live binding and, when it
-// carries an argus task id, POSTs argus unarchive. A missing binding
-// (ErrNotFound) is a skip, not an error — the hera-side unarchive has
-// already happened and there is nothing to unarchive on the argus side.
+// unarchiveBoundArgusTask resolves the role's binding — live when one
+// exists, otherwise the most recent ended one — and, when it carries an
+// argus task id, POSTs argus unarchive. The fallback matters: archiving a
+// task ENDS its binding (end_reason='argus_archived'), so EVERY archived
+// row misses the live lookup; skipping there would silently defeat the
+// symmetric unarchive for exactly the rows that need it (the argus side
+// stays archived and the row never visibly leaves the Archive expando).
+// A role with no binding at all (ErrNotFound) is a skip, not an error —
+// the hera-side unarchive has already happened and there is nothing to
+// unarchive on the argus side.
 func (s *Service) unarchiveBoundArgusTask(ctx context.Context, roleID int64, op string) error {
-	bnd, err := s.DB.GetLiveBindingByRole(ctx, roleID)
+	bnd, err := s.resolveBinding(ctx, roleID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("ops.%s: live binding lookup: %w", op, err)
+		return fmt.Errorf("ops.%s: binding lookup: %w", op, err)
 	}
 	if bnd != nil && bnd.ArgusTaskID != "" {
 		if err := s.Argus.UnarchiveTask(ctx, bnd.ArgusTaskID); err != nil {

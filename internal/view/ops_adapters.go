@@ -111,6 +111,14 @@ func (a *dbAdapter) GetLiveBindingByRole(ctx context.Context, roleID int64) (*op
 	return adaptBinding(b), nil
 }
 
+func (a *dbAdapter) GetLatestBindingByRole(ctx context.Context, roleID int64) (*ops.Binding, error) {
+	b, err := a.d.Bindings.GetLatestByRole(ctx, roleID)
+	if err != nil {
+		return nil, translateDBErr(err)
+	}
+	return adaptBinding(b), nil
+}
+
 func (a *dbAdapter) EndBinding(ctx context.Context, bindingID int64, reason string) error {
 	return translateDBErr(a.d.Bindings.End(ctx, bindingID, reason))
 }

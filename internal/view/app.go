@@ -111,6 +111,17 @@ type App struct {
 	selectTimer   *time.Timer
 	selectPending any
 	selectHasRef  bool
+
+	// modalSync (tests only) makes queueModal run its body synchronously
+	// instead of bouncing through QueueUpdateDraw — which blocks forever
+	// when the tview event loop is not running, as in unit tests.
+	modalSync bool
+
+	// modalPrevFocus is the primitive that held tview focus when the
+	// current modal opened; closeModal restores it (falling back to the
+	// rail). Only touched on the tview event loop (queueModal bodies and
+	// modal button callbacks), so it needs no lock.
+	modalPrevFocus tview.Primitive
 }
 
 // BuildApp constructs the hera-view tview Application. It reads the
@@ -835,20 +846,29 @@ func (a *App) OnFocusChanged(state FocusState) {
 	a.pieces.coord.SetBorderColor(unfocused)
 	a.pieces.agent.SetBorderColor(unfocused)
 
+	// While a modal overlay is up, the modal owns tview focus and NOTHING
+	// may steal it: this path also fires from background rail repopulates
+	// (argus state refresh → applyRailSelection → setBodyMode), and an
+	// unconditional SetFocus here yanked focus back to the rail behind the
+	// overlay — leaving the operator trapped with a modal that no longer
+	// received Enter (live acceptance T3). Borders still repaint; only the
+	// focus move is withheld. closeModal restores focus when the modal goes.
+	moveFocus := a.app != nil && !a.IsModalActive()
+
 	switch state {
 	case FocusRAIL:
 		a.pieces.rail.SetBorderColor(focused)
-		if a.app != nil {
+		if moveFocus {
 			a.app.SetFocus(a.pieces.rail)
 		}
 	case FocusCOORD:
 		a.pieces.coord.SetBorderColor(focused)
-		if a.app != nil {
+		if moveFocus {
 			a.app.SetFocus(a.pieces.coord)
 		}
 	case FocusAGENT:
 		a.pieces.agent.SetBorderColor(focused)
-		if a.app != nil {
+		if moveFocus {
 			a.app.SetFocus(a.pieces.agent)
 		}
 	}

@@ -381,7 +381,7 @@ The system SHALL, on `^d` confirmation against a role, end the role's live bindi
 
 ### Requirement: `a` toggles archived state on an orchestrator or role
 
-The system SHALL, on `a` against a non-archived role, set the role's `archived_at` to the current timestamp AND invoke argus's archive endpoint (`POST /api/tasks/{id}/archive`) on the binding's `argus_task_id`. The worktree MUST be preserved. On `a` against a non-archived orchestrator, the same MUST cascade to every role under that orchestrator. The toggle is SYMMETRIC: on `a` against an already-archived role, `archived_at` MUST be cleared AND, when the role has a live binding with an argus task id, hera MUST invoke argus's unarchive endpoint on that task — the rail buckets a row into the Archive expando when EITHER side is archived, so clearing only the hera side would produce no visible change. When the role has no live binding, the argus step is skipped (nothing to unarchive) and the hera-side unarchive still proceeds. On `a` against an already-archived orchestrator, the orchestrator's `archived_at` MUST be cleared AND hera MUST likewise invoke argus's unarchive endpoint on the coord role's live binding's argus task; unarchiving an orchestrator MUST NOT cascade to its worker roles (workers unarchive individually). On `a` against a freelance row (an unmanaged argus task with no hera role or binding), hera MUST address the argus task directly — issuing `POST /api/tasks/{id}/archive` (or the unarchive endpoint when the task is already archived per argus state) against the row's argus task id — with no hera DB write (there is no role row to stamp).
+The system SHALL, on `a` against a non-archived role, set the role's `archived_at` to the current timestamp AND invoke argus's archive endpoint (`POST /api/tasks/{id}/archive`) on the binding's `argus_task_id`. The worktree MUST be preserved. On `a` against a non-archived orchestrator, the same MUST cascade to every role under that orchestrator. The toggle is SYMMETRIC: on `a` against an already-archived role, `archived_at` MUST be cleared AND hera MUST invoke argus's unarchive endpoint on the role's bound argus task — the rail buckets a row into the Archive expando when EITHER side is archived, so clearing only the hera side would produce no visible change. The bound task MUST be resolved from the role's live binding when one exists, FALLING BACK to the role's most recent binding (by `started_at`) regardless of `ended_at` — archiving a task ENDS its binding (`end_reason='argus_archived'`) while preserving its `argus_task_id`, so for exactly the rows that need unarchiving no live binding exists and a live-only lookup would silently skip the argus side, defeating the symmetric toggle. Only when the role has no binding at all (or the resolved binding carries no argus task id) is the argus step skipped (nothing to unarchive); the hera-side unarchive still proceeds. On `a` against an already-archived orchestrator, the orchestrator's `archived_at` MUST be cleared AND hera MUST likewise invoke argus's unarchive endpoint on the coord role's live binding's argus task; unarchiving an orchestrator MUST NOT cascade to its worker roles (workers unarchive individually). On `a` against a freelance row (an unmanaged argus task with no hera role or binding), hera MUST address the argus task directly — issuing `POST /api/tasks/{id}/archive` (or the unarchive endpoint when the task is already archived per argus state) against the row's argus task id — with no hera DB write (there is no role row to stamp).
 
 #### Scenario: Archive role calls argus and preserves worktree
 
@@ -393,9 +393,14 @@ The system SHALL, on `a` against a non-archived role, set the role's `archived_a
 - **WHEN** the operator presses `a` against archived role `foo/w1` whose live binding's argus task `T1` is archived on the argus side
 - **THEN** hera MUST clear the role's `archived_at` AND issue the argus unarchive endpoint for `T1`, so the row visibly returns to the coordinator's active children
 
-#### Scenario: Unarchive role with no live binding skips argus
+#### Scenario: Unarchive role with an ended binding falls back to the latest binding
 
-- **WHEN** the operator presses `a` against an archived role with no live binding
+- **WHEN** the operator presses `a` against an archived role whose only binding was ended by the archive (`end_reason='argus_archived'`) and records argus task `T1`
+- **THEN** hera MUST clear the role's `archived_at` AND issue the argus unarchive endpoint for `T1` resolved via the most recent binding — the ended binding MUST NOT cause the argus side to be silently skipped
+
+#### Scenario: Unarchive role with no binding at all skips argus
+
+- **WHEN** the operator presses `a` against an archived role that has never had a binding
 - **THEN** hera MUST clear the role's `archived_at` AND MUST NOT call argus
 
 #### Scenario: Archive orchestrator cascades to roles
@@ -506,6 +511,35 @@ The system SHALL display a confirmation or input modal for every destructive, cr
 
 - **WHEN** the operator presses `l` in `RAIL`
 - **THEN** the Archive section visibility MUST toggle immediately with no modal
+
+### Requirement: Modal overlays take keyboard focus, dismiss via Enter and Esc, restore prior focus, and use the argus theme
+
+The system SHALL move tview keyboard focus to the modal primitive whenever any modal overlay (input, two-field form, confirm, error) opens — including modals opened from the async mutation goroutine via the event-loop bounce — so the modal's buttons receive Enter directly. While a modal is active, NOTHING ELSE may take focus: background focus writes (the focus-border repaint chokepoint driven by rail repopulates, body-mode changes, or argus state refreshes) MUST NOT move tview focus off the modal — a focus steal leaves the operator trapped with a visible modal that no longer receives keys. Every modal MUST be dismissable from the keyboard: Enter MUST activate the focused button (OK / Yes / No), and Esc MUST dismiss — closing an error modal, and acting as cancel/No for confirm and input modals. On dismissal the system MUST restore tview focus to the primitive that held it before the modal opened (the rail, for RAIL-only mutation keys). Modal surfaces MUST use the argus theme — dark background, argus border/title colors, argus text colors — not tview's default contrast (lavender) styling, so overlays read as part of the same application.
+
+#### Scenario: Error modal from a failed mutation takes focus and Enter dismisses
+
+- **WHEN** a rail mutation fails and the error modal opens via the async goroutine's event-loop bounce, and the operator presses Enter
+- **THEN** the modal MUST have tview keyboard focus on open AND Enter MUST activate OK, closing the modal and restoring focus to the rail
+
+#### Scenario: Esc dismisses an error modal
+
+- **WHEN** an error modal is visible and the operator presses Esc
+- **THEN** the modal MUST close AND focus MUST be restored to the primitive that held it before the modal opened
+
+#### Scenario: Background refresh does not steal focus from an open modal
+
+- **WHEN** a modal is open and a background rail repopulate (DAO write or argus state refresh) triggers the focus-border repaint path
+- **THEN** tview focus MUST remain on the modal AND a subsequent Enter MUST still dismiss it
+
+#### Scenario: Confirm modal dismisses via Esc as No
+
+- **WHEN** a confirm modal (e.g. the `^d` delete flow) is visible and the operator presses Esc
+- **THEN** the modal MUST close without running the destructive action AND focus MUST be restored
+
+#### Scenario: Modals render with the argus theme
+
+- **WHEN** any modal overlay is drawn
+- **THEN** its surface MUST use the argus theme's dark background and border/title/text colors AND MUST NOT render tview's default contrast-color (lavender) background
 
 ### Requirement: Rail refreshes within ~100 ms of any DAO write
 
@@ -667,7 +701,7 @@ The system SHALL provide three distinct removal actions on the rail: `a` toggles
 
 ### Requirement: Status, open-PR, scroll, and in-pane navigation keys
 
-The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected row's argus task status (pending → in_progress → in_review → complete) — an agent/worker row steps its bound task; an orchestrator header steps the orchestrator's coord role's bound task (mirroring how `a` on a header addresses the orchestrator); a freelance row (an unmanaged argus task with no hera role/binding) steps the argus task directly by task id, bypassing the hera binding lookup; `^p` opens a pull request for the selected agent's, coordinator's, OR freelancer's task via the host git flow — an agent/worker row resolves to that role's bound task, a coordinator selection (root orchestrator header or a sub-coordinator role) resolves to the coordinator's bound argus task, and a freelance row (an unmanaged argus task with no hera role/binding) resolves to the argus task's own worktree (the same way argus opens a PR for that task); `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
+The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected row's argus task status (pending → in_progress → in_review → complete) — an agent/worker row steps its bound task; an orchestrator header steps the orchestrator's coord role's bound task (mirroring how `a` on a header addresses the orchestrator); a freelance row (an unmanaged argus task with no hera role/binding) steps the argus task directly by task id, bypassing the hera binding lookup. Status stepping is INDEPENDENT of archive state: a role's bound task MUST be resolved from its live binding when one exists, FALLING BACK to the role's most recent binding (by `started_at`) regardless of `ended_at` — archiving a task ends its binding while preserving its `argus_task_id`, so `s`/`S` against an archived row MUST still step that task rather than erroring. Only when the role has no binding at all (or the resolved binding carries no argus task id) MUST `s`/`S` surface a clear error naming the condition (e.g. "role has no argus task recorded"); `^p` opens a pull request for the selected agent's, coordinator's, OR freelancer's task via the host git flow — an agent/worker row resolves to that role's bound task, a coordinator selection (root orchestrator header or a sub-coordinator role) resolves to the coordinator's bound argus task, and a freelance row (an unmanaged argus task with no hera role/binding) resolves to the argus task's own worktree (the same way argus opens a PR for that task); `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
 
 #### Scenario: s/S step the selected agent's status
 
@@ -683,6 +717,16 @@ The system SHALL support, mirroring argus's keymap now that argus surrenders the
 
 - **WHEN** focus is `RAIL` on an orchestrator header whose coord role is bound to argus task `C1` and the operator presses `s`
 - **THEN** `C1`'s argus status MUST advance one step, resolved via the coord role's live binding (and `S` MUST revert one step)
+
+#### Scenario: s/S on an archived row fall back to the latest ended binding
+
+- **WHEN** focus is `RAIL` on an archived role row whose only binding was ended by the archive (`end_reason='argus_archived'`) and records argus task `T1`, and the operator presses `s`
+- **THEN** `T1`'s argus status MUST advance one step, resolved via the role's most recent binding — the ended binding MUST NOT produce a "no live binding" error
+
+#### Scenario: s/S with no binding at all surface a clear error
+
+- **WHEN** focus is `RAIL` on a role row that has never had a binding and the operator presses `s`
+- **THEN** a dismissible error MUST appear stating the role has no argus task recorded AND no argus call MUST be issued
 
 #### Scenario: `^p` on a coordinator opens a PR for the coord's task
 

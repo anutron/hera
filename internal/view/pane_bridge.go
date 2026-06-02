@@ -18,21 +18,37 @@ import (
 // which in turn lets the terminalpane consumer goroutine exit cleanly.
 type paneBridge struct {
 	out    chan []byte
+	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-// startPaneBridge constructs a bridge and spawns its pump goroutine. The
-// pump emits, in order: snapshot bytes (if any), placeholder bytes (only
-// when no upstream and no snapshot), then every chunk read from upstream.
-// When upstream is closed or the bridge is cancelled, the source channel
-// is closed.
-func startPaneBridge(snapshot []byte, upstream <-chan []byte, placeholder string) *paneBridge {
+// newPaneBridge constructs a bridge WITHOUT starting its pump, so the
+// caller can finish wiring the consuming terminalpane (the OnNeedRedraw
+// hook) before any chunk flows. terminalpane.New starts its consume
+// goroutine immediately, but that goroutine only reads the hook after
+// receiving a chunk from out — the channel send/receive orders the hook
+// assignment ahead of the read, closing the construction race the
+// start-immediately shape had.
+func newPaneBridge() *paneBridge {
 	ctx, cancel := context.WithCancel(context.Background())
-	out := make(chan []byte, 64)
+	return &paneBridge{out: make(chan []byte, 64), ctx: ctx, cancel: cancel}
+}
 
-	go pumpPaneBridge(ctx, out, snapshot, upstream, placeholder)
+// startPump spawns the bridge's pump goroutine. The pump emits, in
+// order: snapshot bytes (if any), placeholder bytes (only when no
+// upstream and no snapshot), then every chunk read from upstream. When
+// upstream is closed or the bridge is cancelled, the source channel is
+// closed.
+func (b *paneBridge) startPump(snapshot []byte, upstream <-chan []byte, placeholder string) {
+	go pumpPaneBridge(b.ctx, b.out, snapshot, upstream, placeholder)
+}
 
-	return &paneBridge{out: out, cancel: cancel}
+// startPaneBridge constructs a bridge and spawns its pump goroutine in
+// one step — for callers with no post-construction wiring to do.
+func startPaneBridge(snapshot []byte, upstream <-chan []byte, placeholder string) *paneBridge {
+	b := newPaneBridge()
+	b.startPump(snapshot, upstream, placeholder)
+	return b
 }
 
 // stop cancels the bridge. Safe to call multiple times.
@@ -137,7 +153,13 @@ func newBoundPane(title, placeholder, taskID string, src PaneSource, redraw func
 		resizer = src
 	}
 
-	bridge := startPaneBridge(snap, upstream, placeholder)
+	// Construct the bridge but do NOT start pumping until the terminalpane
+	// is fully wired: terminalpane.New spawns its consume goroutine right
+	// away, and that goroutine reads OnNeedRedraw on every chunk — so the
+	// hook MUST be assigned before the first chunk is sent (the channel
+	// send/receive then orders the write ahead of the read; assigning after
+	// the pump started was a data race with the consume goroutine).
+	bridge := newPaneBridge()
 	tp := terminalpane.New(bridge.out)
 	tp.SetTitle(title)
 	if redraw != nil {
@@ -146,6 +168,7 @@ func newBoundPane(title, placeholder, taskID string, src PaneSource, redraw func
 		tp.OnNeedRedraw = redraw
 	}
 	pinned := newBoundPinnedTerminalPane(tp, cols, rows, taskID, resizer)
+	bridge.startPump(snap, upstream, placeholder)
 
 	if len(snap) > 0 || (upstream == nil && placeholder != "") {
 		waitForInitialChunk(tp)

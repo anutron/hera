@@ -45,8 +45,11 @@ func prevStatus(status string) string {
 // AdvanceStatus implements `s`: read the role's bound argus task status and
 // step it one rung toward complete (pending → in_progress → in_review →
 // complete), clamping at complete. Returns the resolved status. No-op (returns
-// the current status) when already complete. Errors when the role has no live
-// binding (nothing to step).
+// the current status) when already complete. Status stepping is independent of
+// archive state: the task is resolved via the live binding when one exists,
+// falling back to the role's most recent (ended) binding — archiving ends the
+// binding while keeping its argus task id. Errors only when no binding ever
+// recorded an argus task (nothing to step).
 func (s *Service) AdvanceStatus(ctx context.Context, roleID int64) (string, error) {
 	return s.stepStatus(ctx, roleID, true)
 }
@@ -58,15 +61,15 @@ func (s *Service) RevertStatus(ctx context.Context, roleID int64) (string, error
 }
 
 func (s *Service) stepStatus(ctx context.Context, roleID int64, advance bool) (string, error) {
-	bnd, err := s.DB.GetLiveBindingByRole(ctx, roleID)
+	bnd, err := s.resolveBinding(ctx, roleID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return "", fmt.Errorf("ops.stepStatus: role %d has no live binding", roleID)
+			return "", fmt.Errorf("ops.stepStatus: role %d has no argus task recorded", roleID)
 		}
-		return "", fmt.Errorf("ops.stepStatus: live binding lookup for role %d: %w", roleID, err)
+		return "", fmt.Errorf("ops.stepStatus: binding lookup for role %d: %w", roleID, err)
 	}
 	if bnd.ArgusTaskID == "" {
-		return "", fmt.Errorf("ops.stepStatus: role %d binding has no argus task", roleID)
+		return "", fmt.Errorf("ops.stepStatus: role %d has no argus task recorded", roleID)
 	}
 	return s.StepTaskStatus(ctx, bnd.ArgusTaskID, advance)
 }
