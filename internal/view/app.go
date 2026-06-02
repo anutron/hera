@@ -321,9 +321,12 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 // task has gone away (per the optional TaskAliveChecker on a.src) are
 // marked Dead so the rail can hide or dim them.
 //
-// When a.showArchived is true, archived orchestrators and roles render
-// below the Archive separator and dead bindings are kept (dimmed);
-// otherwise both are filtered out (default per design.md D5).
+// Roles are ALWAYS loaded inclusively (active + archived): buildRows
+// partitions each coordinator's archived/dead children into its Archive (N)
+// expando (collapsed by default, design.md D14), so archiving a row moves
+// it into the expando instead of dropping it from the rail. Archived
+// orchestrators load only when a.showArchived is set (`l` listall), which
+// also force-expands the expandos and reveals dimmed dead rows.
 func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
 
@@ -355,12 +358,15 @@ func (a *App) populateRail(database *db.DB) error {
 			Archived: orch.ArchivedAt != nil,
 		}
 
-		var roles []*db.Role
-		if showArchived {
-			roles, err = database.Roles.ListByOrchestratorInclusive(ctx, orch.ID)
-		} else {
-			roles, err = database.Roles.ListByOrchestrator(ctx, orch.ID)
-		}
+		// ALWAYS load roles inclusively: a hera-archived role (archived_at
+		// set, the `a` key) must reach the rail data so buildRows can bucket
+		// it into its coordinator's Archive (N) expando next to dead and
+		// argus-archived children — the exclusive query made archived rows
+		// vanish from the rail entirely instead of moving into the expando.
+		// Downstream consumers stay archived-aware: visibleRoleCount and
+		// countLiveRoles skip archived rows, and the coord-capture branch
+		// below never feeds an archived coord binding to CoordTaskID.
+		roles, err := database.Roles.ListByOrchestratorInclusive(ctx, orch.ID)
 		if err != nil {
 			return fmt.Errorf("list roles for orch %d: %w", orch.ID, err)
 		}

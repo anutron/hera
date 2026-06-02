@@ -2093,3 +2093,158 @@ func TestApp_OnRailSelectEnter_ArchiveExpandoFolds(t *testing.T) {
 		t.Fatalf("Enter on Archive expando must toggle its fold")
 	}
 }
+
+// TestPopulateRail_HeraArchivedRoleInArchiveExpandoByDefault pins the
+// archive-visibility partition for HERA-archived roles (archived_at set, the
+// `a` key): in the DEFAULT view (showArchived off) the role must move into
+// its coordinator's Archive (N) expando — collapsed, but present and
+// reachable — instead of vanishing from the rail entirely. Dead and
+// argus-archived children already get this treatment; a hera-archived child
+// must not be the odd one out just because the rail's role query dropped it.
+// Also guards the consumers: the header's live-child (N) count must exclude
+// the archived role, and folding the expando open must reveal it.
+func TestPopulateRail_HeraArchivedRoleInArchiveExpandoByDefault(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	liveWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "activerow", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	archWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "stashedrow", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: liveWorker.ID, ArgusTaskID: "t-active", WorktreePath: "/a"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: archWorker.ID, ArgusTaskID: "t-stashed", WorktreePath: "/s"})
+	if err := d.Roles.Archive(ctx, archWorker.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &alivePaneSource{alive: map[string]bool{
+		"t-active":  true,
+		"t-stashed": true,
+	}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// The archived role must be present in the rail DATA (Archived=true) so
+	// buildRows can bucket it into the per-coordinator Archive expando.
+	var archEntry *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == archWorker.ID {
+				archEntry = r
+			}
+		}
+	}
+	if archEntry == nil {
+		t.Fatalf("hera-archived role missing from rail data in default view: it vanished instead of moving into the Archive expando")
+	}
+	if !archEntry.Archived {
+		t.Fatalf("expected Archived=true on hera-archived role; got %+v", archEntry)
+	}
+
+	got := renderApp(t, a, 80, 24)
+	// Collapsed by default: the expando header renders, the row name doesn't.
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("coordinator must render an Archive (1) expando for its hera-archived child in the default view; got:\n%s", got)
+	}
+	if strings.Contains(got, "stashedrow") {
+		t.Fatalf("archived row must stay behind the collapsed expando by default; got:\n%s", got)
+	}
+	// Header live-child count excludes the archived role.
+	if !strings.Contains(got, "proj (1)") {
+		t.Fatalf("coordinator header (N) must count only active children; got:\n%s", got)
+	}
+
+	// Folding the expando open reveals the archived row — never unreachable.
+	a.pieces.rail.archiveExpanded[orch.ID] = true
+	a.pieces.rail.buildRows()
+	got = renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "stashedrow") {
+		t.Fatalf("opening the Archive expando must reveal the hera-archived row; got:\n%s", got)
+	}
+}
+
+// TestFindInitialSelection_SkipsHeraArchivedRole guards startup
+// auto-selection against the inclusive rail load: an archived role — even
+// with a live binding whose argus task is alive — must never be picked for
+// the AGENT or COORD pane.
+func TestFindInitialSelection_SkipsHeraArchivedRole(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	archWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "stashed", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: archWorker.ID, ArgusTaskID: "t-stashed", WorktreePath: "/s"})
+	if err := d.Roles.Archive(ctx, archWorker.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &alivePaneSource{alive: map[string]bool{"t-stashed": true}}
+	coord, agent := findInitialSelection(d, src)
+	if coord != "" || agent != "" {
+		t.Fatalf("startup selection must never bind an archived role's task; got coord=%q agent=%q", coord, agent)
+	}
+}
+
+// TestPopulateRail_ArchivedSubCoordStaysInExpando pins the multi-binding
+// lift for an ARCHIVED worker that is also a child orchestrator's coord:
+// the default view must mirror today's `l` listall behavior (the only mode
+// that previously ran the inclusive query through resolveSubCoordinators) —
+// the worker is promoted to a coordinator row inside its parent's Archive
+// expando, and the child orchestrator is consumed from the top level so it
+// is never double-rendered as an active root.
+func TestPopulateRail_ArchivedSubCoordStaysInExpando(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	parent, _ := d.Orchestrators.Create(ctx, "parent")
+	child, _ := d.Orchestrators.Create(ctx, "childproj")
+	// Worker under parent, bound to the SAME argus task as child's coord.
+	subWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: parent.ID, Name: "subcoord", Kind: db.KindWorker, ArgusProject: "parent",
+	})
+	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: child.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "childproj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subWorker.ID, ArgusTaskID: "t-multi", WorktreePath: "/m"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoord.ID, ArgusTaskID: "t-multi", WorktreePath: "/m"})
+	if err := d.Roles.Archive(ctx, subWorker.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &alivePaneSource{alive: map[string]bool{"t-multi": true}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// The child orchestrator must be consumed by the lift (not a top-level
+	// row), exactly as in `l` mode.
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == child.ID {
+			t.Fatalf("child orchestrator must be consumed by the sub-coordinator lift, not rendered top-level")
+		}
+	}
+	// The archived sub-coord renders only behind the parent's Archive expando.
+	got := renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("parent must render an Archive (1) expando holding the archived sub-coordinator; got:\n%s", got)
+	}
+	if strings.Contains(got, "subcoord") {
+		t.Fatalf("archived sub-coordinator must stay behind the collapsed expando by default; got:\n%s", got)
+	}
+	a.pieces.rail.archiveExpanded[parent.ID] = true
+	a.pieces.rail.buildRows()
+	got = renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "subcoord") {
+		t.Fatalf("opening the parent's Archive expando must reveal the archived sub-coordinator; got:\n%s", got)
+	}
+}
