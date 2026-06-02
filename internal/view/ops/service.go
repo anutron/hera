@@ -20,6 +20,11 @@ type DB interface {
 
 	GetRoleByID(ctx context.Context, id int64) (*Role, error)
 	ListRolesByOrchestrator(ctx context.Context, orchID int64) ([]*Role, error)
+
+	// ListRolesByOrchestratorInclusive returns every role under an
+	// orchestrator INCLUDING archived rows. Backs the unarchive branch
+	// of the `a` toggle, which must locate the archived coord role.
+	ListRolesByOrchestratorInclusive(ctx context.Context, orchID int64) ([]*Role, error)
 	ArchiveRole(ctx context.Context, id int64) error
 	UnarchiveRole(ctx context.Context, id int64) error
 	RenameRole(ctx context.Context, id int64, newName string) error

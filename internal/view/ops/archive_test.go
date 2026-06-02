@@ -42,10 +42,14 @@ func TestToggleArchiveRole_NoLiveBindingSkipsArgus(t *testing.T) {
 	}
 }
 
-func TestToggleArchiveRole_UnarchiveDoesNotTouchArgus(t *testing.T) {
+func TestToggleArchiveRole_UnarchiveUnarchivesArgusToo(t *testing.T) {
+	// Symmetric toggle: the rail buckets a row as archived when EITHER
+	// side is archived, so a hera-only unarchive of an argus-archived
+	// task would produce zero visible change. `a` must clear both.
 	s, db, argus, _, _ := newTestService()
 	orch := db.seedOrchestrator("foo", false)
 	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", true) // already archived
+	db.seedBinding(role.ID, "T1", "/tmp/wt1")
 
 	if err := s.ToggleArchiveRole(context.Background(), role.ID); err != nil {
 		t.Fatalf("ToggleArchiveRole: %v", err)
@@ -54,8 +58,48 @@ func TestToggleArchiveRole_UnarchiveDoesNotTouchArgus(t *testing.T) {
 	if got.Archived {
 		t.Fatalf("role should be unarchived")
 	}
-	if len(argus.archiveCalls) != 0 || len(argus.unarchiveCalls) != 0 {
-		t.Fatalf("unarchive must not call argus (auto-unarchive on argus side is operator concern)")
+	if len(argus.unarchiveCalls) != 1 || argus.unarchiveCalls[0] != "T1" {
+		t.Fatalf("argus unarchive calls = %v, want [T1] (symmetric toggle)", argus.unarchiveCalls)
+	}
+	if len(argus.archiveCalls) != 0 {
+		t.Fatalf("unexpected argus archive calls: %v", argus.archiveCalls)
+	}
+}
+
+func TestToggleArchiveRole_UnarchiveNoBindingSkipsArgus(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", true)
+	// no binding seeded — argus skip, hera unarchive still proceeds.
+
+	if err := s.ToggleArchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("ToggleArchiveRole: %v", err)
+	}
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if got.Archived {
+		t.Fatalf("role should be unarchived even with no live binding")
+	}
+	if len(argus.archiveCalls)+len(argus.unarchiveCalls) != 0 {
+		t.Fatalf("expected no argus calls, got archive=%v unarchive=%v", argus.archiveCalls, argus.unarchiveCalls)
+	}
+}
+
+func TestToggleArchiveRole_UnarchiveArgusErrorPropagates(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", true)
+	db.seedBinding(role.ID, "T1", "/tmp/wt1")
+	argus.unarchiveErr = errors.New("network down")
+
+	err := s.ToggleArchiveRole(context.Background(), role.ID)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	// Role row is still unarchived per DB DAO call ordering — the
+	// argus call comes after. Mirrors the archive direction's choice.
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if got.Archived {
+		t.Fatalf("role should remain unarchived even on argus failure")
 	}
 }
 
@@ -109,10 +153,12 @@ func TestToggleArchiveOrchestrator_CascadesArchive(t *testing.T) {
 }
 
 func TestToggleArchiveOrchestrator_UnarchiveDoesNotCascade(t *testing.T) {
-	s, db, _, _, _ := newTestService()
+	s, db, argus, _, _ := newTestService()
 	orch := db.seedOrchestrator("foo", true)
 	coord := db.seedRole(orch.ID, "coord", KindCoordinator, "foo", true)
 	w1 := db.seedRole(orch.ID, "w1", KindWorker, "foo", true)
+	db.seedBinding(coord.ID, "T-coord", "/tmp/coord")
+	db.seedBinding(w1.ID, "T-w1", "/tmp/w1")
 
 	if err := s.ToggleArchiveOrchestrator(context.Background(), orch.ID); err != nil {
 		t.Fatalf("ToggleArchiveOrchestrator: %v", err)
@@ -121,12 +167,35 @@ func TestToggleArchiveOrchestrator_UnarchiveDoesNotCascade(t *testing.T) {
 	if gotOrch.Archived {
 		t.Fatalf("orchestrator should be unarchived")
 	}
-	// Roles must stay archived.
+	// Symmetric toggle: the coord task unarchives on the argus side —
+	// and ONLY the coord task; worker tasks stay archived.
+	if len(argus.unarchiveCalls) != 1 || argus.unarchiveCalls[0] != "T-coord" {
+		t.Fatalf("argus unarchive calls = %v, want [T-coord]", argus.unarchiveCalls)
+	}
+	// Roles must stay archived hera-side.
 	for _, id := range []int64{coord.ID, w1.ID} {
 		got, _ := db.GetRoleByID(context.Background(), id)
 		if !got.Archived {
 			t.Fatalf("role %d MUST stay archived (no cascade on unarchive)", id)
 		}
+	}
+}
+
+func TestToggleArchiveOrchestrator_UnarchiveNoCoordBindingSkipsArgus(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", true)
+	db.seedRole(orch.ID, "coord", KindCoordinator, "foo", true)
+	// coord has no live binding — argus skip, orchestrator unarchive proceeds.
+
+	if err := s.ToggleArchiveOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("ToggleArchiveOrchestrator: %v", err)
+	}
+	gotOrch, _ := db.GetOrchestratorByID(context.Background(), orch.ID)
+	if gotOrch.Archived {
+		t.Fatalf("orchestrator should be unarchived")
+	}
+	if len(argus.archiveCalls)+len(argus.unarchiveCalls) != 0 {
+		t.Fatalf("expected no argus calls, got archive=%v unarchive=%v", argus.archiveCalls, argus.unarchiveCalls)
 	}
 }
 

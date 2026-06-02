@@ -194,6 +194,20 @@ func (f *fakeDB) ListRolesByOrchestrator(ctx context.Context, orchID int64) ([]*
 	return out, nil
 }
 
+func (f *fakeDB) ListRolesByOrchestratorInclusive(ctx context.Context, orchID int64) ([]*Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []*Role{}
+	for _, r := range f.roles {
+		if r.OrchestratorID != orchID {
+			continue
+		}
+		cp := *r
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
 func (f *fakeDB) ArchiveRole(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

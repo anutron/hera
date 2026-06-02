@@ -381,22 +381,32 @@ The system SHALL, on `^d` confirmation against a role, end the role's live bindi
 
 ### Requirement: `a` toggles archived state on an orchestrator or role
 
-The system SHALL, on `a` against a non-archived role, set the role's `archived_at` to the current timestamp AND invoke argus's archive endpoint (`POST /api/tasks/{id}/archive`) on the binding's `argus_task_id`. The worktree MUST be preserved. On `a` against a non-archived orchestrator, the same MUST cascade to every role under that orchestrator. On `a` against an already-archived role or orchestrator, `archived_at` MUST be cleared (the role unarchives); unarchiving an orchestrator MUST NOT cascade to roles (roles unarchive individually). On `a` against a freelance row (an unmanaged argus task with no hera role or binding), hera MUST address the argus task directly — issuing `POST /api/tasks/{id}/archive` (or the unarchive endpoint when the task is already archived per argus state) against the row's argus task id — with no hera DB write (there is no role row to stamp).
+The system SHALL, on `a` against a non-archived role, set the role's `archived_at` to the current timestamp AND invoke argus's archive endpoint (`POST /api/tasks/{id}/archive`) on the binding's `argus_task_id`. The worktree MUST be preserved. On `a` against a non-archived orchestrator, the same MUST cascade to every role under that orchestrator. The toggle is SYMMETRIC: on `a` against an already-archived role, `archived_at` MUST be cleared AND, when the role has a live binding with an argus task id, hera MUST invoke argus's unarchive endpoint on that task — the rail buckets a row into the Archive expando when EITHER side is archived, so clearing only the hera side would produce no visible change. When the role has no live binding, the argus step is skipped (nothing to unarchive) and the hera-side unarchive still proceeds. On `a` against an already-archived orchestrator, the orchestrator's `archived_at` MUST be cleared AND hera MUST likewise invoke argus's unarchive endpoint on the coord role's live binding's argus task; unarchiving an orchestrator MUST NOT cascade to its worker roles (workers unarchive individually). On `a` against a freelance row (an unmanaged argus task with no hera role or binding), hera MUST address the argus task directly — issuing `POST /api/tasks/{id}/archive` (or the unarchive endpoint when the task is already archived per argus state) against the row's argus task id — with no hera DB write (there is no role row to stamp).
 
 #### Scenario: Archive role calls argus and preserves worktree
 
 - **WHEN** the operator presses `a` against non-archived role `foo/w1` bound to argus task `T1`
 - **THEN** hera MUST set the role's `archived_at` to the current timestamp, issue `POST /api/tasks/T1/archive` to argus, AND MUST NOT touch the worktree directory
 
+#### Scenario: Unarchive role unarchives the argus task too
+
+- **WHEN** the operator presses `a` against archived role `foo/w1` whose live binding's argus task `T1` is archived on the argus side
+- **THEN** hera MUST clear the role's `archived_at` AND issue the argus unarchive endpoint for `T1`, so the row visibly returns to the coordinator's active children
+
+#### Scenario: Unarchive role with no live binding skips argus
+
+- **WHEN** the operator presses `a` against an archived role with no live binding
+- **THEN** hera MUST clear the role's `archived_at` AND MUST NOT call argus
+
 #### Scenario: Archive orchestrator cascades to roles
 
 - **WHEN** the operator presses `a` against non-archived orchestrator `foo` with roles `coord`, `w1`, `w2`
 - **THEN** hera MUST set `archived_at` on `foo`, `coord`, `w1`, and `w2` AND issue an archive call to argus for each role's live binding's argus_task_id
 
-#### Scenario: Unarchive orchestrator does not cascade
+#### Scenario: Unarchive orchestrator unarchives its coord task but does not cascade to workers
 
 - **WHEN** the operator presses `a` against an archived orchestrator `foo` whose roles `coord`, `w1` are also archived
-- **THEN** hera MUST clear `archived_at` on `foo` AND MUST leave `archived_at` on `coord` and `w1` set
+- **THEN** hera MUST clear `archived_at` on `foo`, issue the argus unarchive endpoint for the coord role's live binding's argus task, AND MUST leave `archived_at` on `coord` and `w1` set
 
 #### Scenario: Archive freelancer addresses the argus task directly
 

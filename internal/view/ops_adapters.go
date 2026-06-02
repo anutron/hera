@@ -79,6 +79,18 @@ func (a *dbAdapter) ListRolesByOrchestrator(ctx context.Context, orchID int64) (
 	return out, nil
 }
 
+func (a *dbAdapter) ListRolesByOrchestratorInclusive(ctx context.Context, orchID int64) ([]*ops.Role, error) {
+	rows, err := a.d.Roles.ListByOrchestratorInclusive(ctx, orchID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*ops.Role, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, adaptRole(r))
+	}
+	return out, nil
+}
+
 func (a *dbAdapter) ArchiveRole(ctx context.Context, id int64) error {
 	return translateDBErr(a.d.Roles.Archive(ctx, id))
 }

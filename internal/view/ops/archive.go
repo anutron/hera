@@ -6,15 +6,18 @@ import (
 	"fmt"
 )
 
-// ToggleArchiveRole handles `a` against a role: if active, archive it +
-// POST argus archive; if archived, unarchive it (argus side is not
-// auto-unarchived — that's an operator concern post-resurrect).
+// ToggleArchiveRole handles `a` against a role as a SYMMETRIC toggle:
+// if active, archive it + POST argus archive; if archived, unarchive it
+// + POST argus unarchive. The rail buckets a row into the Archive
+// expando when EITHER side is archived (hera archived_at, argus
+// archived, or dead), so a hera-only unarchive of an argus-archived
+// task would produce zero visible change.
 //
 // The worktree is NOT touched (per spec — archive preserves the
 // worktree; delete is the destructive verb).
 //
-// If the role has no live binding, the argus archive call is skipped
-// (nothing to archive on the argus side).
+// If the role has no live binding, the argus call is skipped in both
+// directions (nothing to archive or unarchive on the argus side).
 func (s *Service) ToggleArchiveRole(ctx context.Context, id int64) error {
 	role, err := s.DB.GetRoleByID(ctx, id)
 	if err != nil {
@@ -25,7 +28,7 @@ func (s *Service) ToggleArchiveRole(ctx context.Context, id int64) error {
 		if err := s.DB.UnarchiveRole(ctx, id); err != nil {
 			return fmt.Errorf("ops.ToggleArchiveRole: unarchive: %w", err)
 		}
-		return nil
+		return s.unarchiveBoundArgusTask(ctx, id, "ToggleArchiveRole")
 	}
 
 	// archive transition
@@ -40,6 +43,23 @@ func (s *Service) ToggleArchiveRole(ctx context.Context, id int64) error {
 	if bnd != nil && bnd.ArgusTaskID != "" {
 		if err := s.Argus.ArchiveTask(ctx, bnd.ArgusTaskID); err != nil {
 			return fmt.Errorf("ops.ToggleArchiveRole: argus archive %s: %w", bnd.ArgusTaskID, err)
+		}
+	}
+	return nil
+}
+
+// unarchiveBoundArgusTask resolves the role's live binding and, when it
+// carries an argus task id, POSTs argus unarchive. A missing binding
+// (ErrNotFound) is a skip, not an error — the hera-side unarchive has
+// already happened and there is nothing to unarchive on the argus side.
+func (s *Service) unarchiveBoundArgusTask(ctx context.Context, roleID int64, op string) error {
+	bnd, err := s.DB.GetLiveBindingByRole(ctx, roleID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("ops.%s: live binding lookup: %w", op, err)
+	}
+	if bnd != nil && bnd.ArgusTaskID != "" {
+		if err := s.Argus.UnarchiveTask(ctx, bnd.ArgusTaskID); err != nil {
+			return fmt.Errorf("ops.%s: argus unarchive %s: %w", op, bnd.ArgusTaskID, err)
 		}
 	}
 	return nil
@@ -71,8 +91,10 @@ func (s *Service) ToggleArchiveTask(ctx context.Context, taskID string, archived
 //   - If active: archive the orchestrator AND cascade-archive every
 //     active role under it (each archive call also POSTs argus archive
 //     on the role's live binding's argus task).
-//   - If archived: unarchive the orchestrator ONLY — roles do not
-//     auto-unarchive (per hera-coordination delta spec). Operators
+//   - If archived: unarchive the orchestrator AND its coord role's
+//     bound argus task (symmetric toggle — the coord task is the
+//     orchestrator's argus face, so the row visibly returns). Roles do
+//     not auto-unarchive (per hera-coordination delta spec). Operators
 //     unarchive individual roles via `a` against the role row.
 func (s *Service) ToggleArchiveOrchestrator(ctx context.Context, id int64) error {
 	orch, err := s.DB.GetOrchestratorByID(ctx, id)
@@ -81,9 +103,21 @@ func (s *Service) ToggleArchiveOrchestrator(ctx context.Context, id int64) error
 	}
 
 	if orch.Archived {
-		// Unarchive ONLY the orchestrator; roles stay archived.
+		// Unarchive the orchestrator; roles stay archived hera-side.
 		if err := s.DB.UnarchiveOrchestrator(ctx, id); err != nil {
 			return fmt.Errorf("ops.ToggleArchiveOrchestrator: unarchive: %w", err)
+		}
+		// The inclusive list is required — the coord role is archived
+		// at this point, so the default (active-only) list misses it.
+		roles, err := s.DB.ListRolesByOrchestratorInclusive(ctx, id)
+		if err != nil {
+			return fmt.Errorf("ops.ToggleArchiveOrchestrator: list roles: %w", err)
+		}
+		for _, role := range roles {
+			if role.Kind != KindCoordinator {
+				continue
+			}
+			return s.unarchiveBoundArgusTask(ctx, role.ID, "ToggleArchiveOrchestrator")
 		}
 		return nil
 	}
