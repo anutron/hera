@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anutron/argus-sdk/theme"
@@ -63,6 +64,14 @@ type App struct {
 	// the App can flip the present-pane flags when the body mode changes.
 	// nil in tests that build the App without a router.
 	focus *FocusMachine
+
+	// focusState is a thread-safe mirror of the focus machine's current state,
+	// updated in OnFocusChanged (the single chokepoint for focus changes). The
+	// raw-input transport layer (rawInputConn) reads it from pluginview's read
+	// goroutine to route inbound bytes, where touching the single-threaded
+	// FocusMachine directly would race. Zero value = FocusRAIL (the start
+	// state), so it reads correctly even before the first OnFocusChanged.
+	focusState atomic.Int32
 
 	// control sends the argus key-surrender control frames (D12). On every
 	// OnFocusChanged the App pushes a focus-aware hotkeys frame so argus's
@@ -695,6 +704,14 @@ func (a *App) AgentTaskID() string {
 	return a.agentTask
 }
 
+// CurrentFocus returns the current focus state from the thread-safe mirror.
+// Satisfies focusReader so the raw-input transport layer can route inbound
+// bytes by focus from pluginview's read goroutine. Reads RAIL until the first
+// OnFocusChanged (atomic zero value), matching the focus machine's start state.
+func (a *App) CurrentFocus() FocusState {
+	return FocusState(a.focusState.Load())
+}
+
 // OnFocusChanged repaints the colored focus border so the operator sees
 // which of the three elements is active and routes tview's primitive
 // focus to the matching widget so propagated keys (the rail's j/k/↑/↓)
@@ -709,6 +726,12 @@ func (a *App) AgentTaskID() string {
 // so pinnedTerminalPane.Draw repaints the pane border in the same cyan; the
 // rail (a plain Box) honors SetBorderColor directly here.
 func (a *App) OnFocusChanged(state FocusState) {
+	// Mirror the new state for the raw-input transport layer (read off the
+	// tview goroutine). This is the single chokepoint for every focus change
+	// (explicit transitions, the Enter/nav jumps, and present-pane rebalance),
+	// so the mirror stays in lockstep with the focus machine.
+	a.focusState.Store(int32(state))
+
 	focused := theme.ColorTitle
 	unfocused := theme.ColorBorder
 

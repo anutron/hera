@@ -41,12 +41,6 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		log = slog.Default()
 	}
 	return func(ctx context.Context, conn *websocket.Conn) {
-		scr, err := pluginview.New(ctx, conn)
-		if err != nil {
-			log.Warn("view: pluginview construct", "err", err)
-			return
-		}
-
 		src := PaneSource(nilPaneSource{})
 		if manager != nil {
 			src = managerPaneSource{mgr: manager, ctx: ctx, states: states}
@@ -55,10 +49,38 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		app, err := BuildApp(database, src)
 		if err != nil {
 			log.Warn("view: build app", "err", err)
-			scr.Fini()
 			return
 		}
 		defer app.Close()
+
+		focus := NewFocusMachine()
+		// Let the App flip the focus machine's coordPresent flag when it
+		// enters/leaves freelance (full-width) mode.
+		app.SetFocusMachine(focus)
+		// Decouple typing from the /input round-trip: the router enqueues
+		// pane-focus bytes onto this forwarder, which drains them in order on a
+		// single goroutine and coalesces consecutive same-task bytes into one
+		// POST. Without it every keystroke blocked the tview input-handler
+		// goroutine on a full HTTP round-trip, serializing fast typing behind
+		// round-trips (the reported input-lag). Tied to this session's ctx and
+		// stopped on teardown so the goroutine never leaks.
+		forwarder := NewPaneForwarder(ctx, client, log, 256)
+		defer forwarder.Stop()
+
+		// Wrap the WebSocket conn so pane-focus keystrokes are forwarded to the
+		// bound task's PTY as RAW BYTES (verbatim), routed by focus state BEFORE
+		// pluginview's tcell parser sees them. This is what gives special keys
+		// (Shift+Enter, Alt+Backspace, Alt+arrows) full terminal fidelity — a
+		// tcell re-parse + re-encode would mangle or swallow them. RAIL-focus
+		// bytes and the view-owned control chords still flow to the parser. The
+		// App's atomic focus mirror is goroutine-safe; CoordTaskID/AgentTaskID
+		// are mutex-guarded.
+		rawConn := newRawInputConn(conn, app, app, forwarder, log)
+		scr, err := pluginview.New(ctx, rawConn)
+		if err != nil {
+			log.Warn("view: pluginview construct", "err", err)
+			return
+		}
 
 		// Bind the key-surrender control sender to this session's conn
 		// (D12). coder/websocket's Conn.Write serializes writers, so these
@@ -116,19 +138,6 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		opsService.PR = ops.ExecPRCreator{}
 		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, control, log)
 
-		focus := NewFocusMachine()
-		// Let the App flip the focus machine's coordPresent flag when it
-		// enters/leaves freelance (full-width) mode.
-		app.SetFocusMachine(focus)
-		// Decouple typing from the /input round-trip: the router enqueues
-		// pane-focus bytes onto this forwarder, which drains them in order on a
-		// single goroutine and coalesces consecutive same-task bytes into one
-		// POST. Without it every keystroke blocked the tview input-handler
-		// goroutine on a full HTTP round-trip, serializing fast typing behind
-		// round-trips (the reported input-lag). Tied to this session's ctx and
-		// stopped on teardown so the goroutine never leaks.
-		forwarder := NewPaneForwarder(ctx, client, log, 256)
-		defer forwarder.Stop()
 		router := &KeyRouter{
 			Focus:      focus,
 			Targets:    app,

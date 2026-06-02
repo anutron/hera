@@ -203,6 +203,10 @@ The system SHALL advance focus along the `RAIL → COORD → AGENT` ladder on Cm
 
 The system SHALL forward keystrokes received while focus is `COORD` or `AGENT` to the bound task's input endpoint (`POST /api/tasks/{id}/input`) verbatim. Keystrokes that match the focus-traversal bindings (Cmd/Ctrl-←/→, Ctrl-Q) MUST be intercepted by the view application and MUST NOT be forwarded.
 
+"Verbatim" means the **raw input bytes** received from the host over the WebSocket MUST be forwarded to the PTY unchanged — they MUST NOT be round-tripped through the view's tcell event parser and re-encoded. The host (argus) has already encoded each keystroke into the byte sequence a real terminal would produce; the view forwards those bytes as-is, preserving full terminal fidelity for keys a tcell re-parse would mangle or swallow — notably Shift+Enter / Alt+Enter (newline-insert, `ESC CR`), Alt+Backspace (word-delete, `ESC DEL`), and Alt+arrows / word-motion sequences. The view therefore routes inbound input by focus state at the WebSocket transport boundary, BEFORE the tcell parser: while focus is in a pane the raw bytes are forwarded to the bound task and MUST NOT additionally drive the parser (no double handling); while focus is `RAIL` the bytes are fed to the tcell parser unchanged so rail navigation and mutation keys work as specified.
+
+The focus-traversal and in-pane control chords the view owns — Ctrl-Q (escape to RAIL), Cmd/Ctrl-←/→ (focus ladder), Cmd/Ctrl-↑/↓ (in-pane navigation), and Shift-↑/↓ (pane scrollback) — MUST continue to be recognized even while focus is in a pane: their byte sequences are fed to the parser (and intercepted by the view) rather than forwarded to the PTY. These chord sequences are modifier-distinguished from forwardable content (e.g. Alt-modified word-motion and ESC-prefixed sequences), so passthrough content never collides with a chord.
+
 Forwarding MUST work regardless of HOW the pane gained focus: stepping in via the arrow ladder (`Ctrl-→`) and entering the selection's primary pane via `Enter` from `RAIL` MUST both leave the focused pane bound to a task such that the next typed key is forwarded to that task. After `Enter` enters a worker/freelancer row's AGENT pane, the AGENT pane's bound task target MUST be the selected row's argus task, so the next keystroke reaches it.
 
 When a forward `POST /api/tasks/{id}/input` fails (argus unreachable, task gone, endpoint unsupported, or auth rejected), the system MUST NOT silently discard the failure: it MUST log a warning carrying the target task id and the underlying error, so a keystroke that never reaches a pane's PTY is diagnosable rather than invisible. A successful forward MUST NOT emit that warning. When focus is in a pane but no task is bound to it, the keystroke is dropped (there is nowhere to send it) and the drop SHOULD be logged at debug level.
@@ -218,6 +222,26 @@ Keystroke forwarding MUST NOT block the UI event loop. The view application reso
 
 - **WHEN** the operator selects a worker/agent row in `RAIL`, presses `Enter` to enter its AGENT pane, then types a single character `Z`
 - **THEN** focus MUST be `AGENT` AND the daemon MUST issue a `POST /api/tasks/{worker_task_id}/input` carrying the byte `Z` to that agent's bound task
+
+#### Scenario: Raw multi-byte sequence forwarded verbatim from a pane
+
+- **WHEN** focus is `AGENT`, a task is bound, and the host delivers the raw input byte sequence `ESC DEL` (`0x1b 0x7f`, Alt+Backspace / word-delete) over the WebSocket
+- **THEN** the daemon MUST forward exactly the bytes `0x1b 0x7f` to that task's `POST /api/tasks/{id}/input` (the sequence MUST NOT be reduced, re-encoded, or split by a tcell re-parse)
+
+#### Scenario: Bare Enter in a pane forwards CR
+
+- **WHEN** focus is in a pane, a task is bound, and the host delivers the raw byte `CR` (`0x0d`)
+- **THEN** the daemon MUST forward the byte `0x0d` to the bound task's input endpoint (so the agent's line discipline submits)
+
+#### Scenario: Rail input is parsed, not forwarded
+
+- **WHEN** focus is `RAIL` and the host delivers input bytes
+- **THEN** the bytes MUST be fed to the view's key parser for rail navigation / mutation AND MUST NOT be forwarded to any task's input endpoint
+
+#### Scenario: In-pane control chord navigates and is not forwarded
+
+- **WHEN** focus is in a pane and the host delivers a view-owned control chord byte sequence (e.g. Ctrl-Q `0x11`, or the in-pane navigation chord `ESC [ 1 ; 5 A`)
+- **THEN** the chord MUST be handled by the view (focus returns to `RAIL`, or the in-pane selection moves) AND its bytes MUST NOT be forwarded to the bound task's input endpoint
 
 #### Scenario: Failed forward is logged, not swallowed
 
