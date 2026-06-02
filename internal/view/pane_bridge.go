@@ -113,7 +113,16 @@ func pumpPaneBridge(ctx context.Context, out chan []byte, snapshot []byte, upstr
 // after BuildApp sees the initial cells already painted. The wait is
 // bounded; if the terminalpane never catches up the function returns
 // anyway — Draw will simply show an empty grid until later frames land.
-func newBoundPane(title, placeholder, taskID string, src PaneSource) (*pinnedTerminalPane, *paneBridge, func()) {
+//
+// redraw is wired to the terminalpane's OnNeedRedraw hook, which the SDK
+// fires once per non-empty inbound chunk AFTER the emulator has ingested
+// it. That is what makes the pane repaint live on PTY output independent
+// of keystroke input: echoed keystrokes AND autonomous agent output both
+// schedule a redraw. (Before raw_input.go forwarded pane keystrokes as raw
+// bytes, each keystroke incidentally drove a tcell→tview redraw; that path
+// is gone, so output must drive its own repaint.) A nil redraw is tolerated
+// (detached panes, tests, the pre-app-loop window).
+func newBoundPane(title, placeholder, taskID string, src PaneSource, redraw func()) (*pinnedTerminalPane, *paneBridge, func()) {
 	var snap []byte
 	var upstream <-chan []byte
 	unsub := func() {}
@@ -131,6 +140,11 @@ func newBoundPane(title, placeholder, taskID string, src PaneSource) (*pinnedTer
 	bridge := startPaneBridge(snap, upstream, placeholder)
 	tp := terminalpane.New(bridge.out)
 	tp.SetTitle(title)
+	if redraw != nil {
+		// Repaint the pane whenever the emulator ingests a new chunk, so PTY
+		// output paints live without depending on a keystroke to force a draw.
+		tp.OnNeedRedraw = redraw
+	}
 	pinned := newBoundPinnedTerminalPane(tp, cols, rows, taskID, resizer)
 
 	if len(snap) > 0 || (upstream == nil && placeholder != "") {

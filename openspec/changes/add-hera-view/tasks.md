@@ -150,6 +150,13 @@
 - [x] 17.2 `internal/view/keys.go` + pane/terminalpane wiring: implement scrollback scroll on the focused pane; implement in-pane selection nav that preserves pane focus. NOTE: in-pane nav fully works (skips headers/expandos + coord-less coords). `⇧↑/↓` keys are intercepted (never moved-rail / never forwarded to PTY) and a clamped scroll offset is tracked, BUT visible scrollback rendering is blocked upstream: argus-sdk `terminalpane@v0.0.2` keeps its emulator unexported and ships "no scrollback rendering". True visible scroll needs an argus-sdk paint hook surfacing `charmbracelet/x/vt` `ScrollbackCellAt`/`ScrollbackLen` — tracked as a follow-up; the scroll scenario is behaviorally wired but not visibly shipped.
 - [ ] 17.3 Probe-validate scroll + in-pane nav against the prototype.
 
+## 17b. Stage R — Live pane repaint on PTY output (decouple redraw from input)
+
+**Depends on:** Stage O + the raw-keystroke-forwarding change. Once pane keystrokes are forwarded as raw bytes BEFORE tcell, the incidental keystroke-driven redraw is gone, so PTY output (echoed keys AND autonomous agent output) no longer repaints live until an unrelated event forces a draw.
+
+- [x] 17b.1 Write failing test at the bridge→redraw seam: a chunk arriving on the bound task's upstream channel MUST invoke the pane's redraw callback (`internal/view/pane_bridge_test.go`).
+- [x] 17b.2 `internal/view/pane_bridge.go` + `app.go`: wire the SDK terminalpane's `OnNeedRedraw` hook (fires once per non-empty ingested chunk) to `tview.Application.QueueUpdateDraw` via a redraw callback threaded into `newBoundPane`. Mirrors argus's plugin-pane wiring (`internal/tui/plugin_views.go`). The blocking `QueueUpdateDraw` back-pressures the consumer goroutine so a chatty task coalesces bursts without an explicit debounce. nil-redraw-safe for detached panes / tests / the pre-app-loop window.
+
 ## 18. Validation + archive
 
 - [x] 18.1 Run `openspec validate add-hera-view --strict`. Fix any issues.

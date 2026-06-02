@@ -270,6 +270,27 @@ Keystroke forwarding MUST NOT block the UI event loop. The view application reso
 - **AND WHEN** the queued bytes target two DIFFERENT tasks (a focus change occurred mid-stream)
 - **THEN** the sender MUST NOT merge them into one POST: the earlier task's bytes go out in their own `POST` before the new target's bytes
 
+### Requirement: Panes repaint live on PTY output, independent of keystroke input
+
+The system SHALL repaint a pane's terminal surface whenever new PTY output bytes are ingested into that pane's emulator, WITHOUT depending on any keystroke or other input event to force a draw. This MUST hold for BOTH echoed keystrokes (output the bound task emits in response to typed input) AND fully autonomous agent output (output the task emits with no input at all): in both cases the newly-painted cells MUST become visible as the bytes arrive, not only after some later unrelated event (a re-selection, resize, or focus change) incidentally triggers a draw.
+
+Because the view forwards pane-focus keystrokes as raw bytes at the transport boundary BEFORE the tcell parser (per the keystroke-forwarding requirement), keystrokes no longer incidentally drive a tview redraw. The pane-output path therefore MUST schedule its own redraw: when the pane's emulator ingests a non-empty output chunk, the system MUST schedule a redraw on the UI event loop. The redraw scheduling MUST be safe to invoke from the output-consumer goroutine (it MUST NOT race the event loop) and SHOULD coalesce bursts so a chatty task does not force a wasteful redraw per byte — e.g. by back-pressuring the consumer on the event loop or debouncing — while still guaranteeing the latest output is eventually painted.
+
+#### Scenario: Autonomous agent output repaints the pane without input
+
+- **WHEN** a pane is bound to a task and the task emits output bytes while the operator types nothing
+- **THEN** the pane MUST repaint to show the new output as it arrives (a redraw is scheduled on the event loop when the emulator ingests the chunk), without waiting for a keystroke, re-selection, resize, or focus change
+
+#### Scenario: Echoed keystrokes appear live in the focused pane
+
+- **WHEN** focus is in a pane bound to a task, the operator types characters, and the task echoes them back as PTY output
+- **THEN** the echoed characters MUST become visible in the pane as the echo arrives, NOT only after the operator navigates away and back to re-select the pane
+
+#### Scenario: Output-driven redraw does not require a redraw per byte
+
+- **WHEN** a bound task emits output faster than the UI can draw
+- **THEN** the system MUST still repaint with the newest output AND MAY coalesce the redraws (it is not required to perform one full redraw per output byte)
+
 ### Requirement: Mutation keys are RAIL-focus-only
 
 The system SHALL recognize the RAIL-only key set (`n`, `r`, `a`, `l`, `?`, `s`, `S`, `^d`, `^r`, `^p`) ONLY when focus is `RAIL`. When focus is `COORD` or `AGENT`, every one of these keys — including the destructive/external verbs `^d`, `^r`, and `^p` — MUST be treated as ordinary input and forwarded to the bound task's PTY (per the keystroke-forwarding requirement): a printable key forwards its byte, and `^d`/`^r`/`^p` forward their control bytes (Ctrl-D=0x04, Ctrl-R=0x12, Ctrl-P=0x10) so an agent gets EOF / reverse-search / history-prev normally. None of these keys fires a mutation or is intercepted while focus is in a pane.

@@ -124,12 +124,17 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 
 	coordTask, agentTask := findInitialSelection(database, src)
 
-	coordPane, coordBridge, coordUnsub := newBoundPane("HERA", "(no coord selected)", coordTask, src)
-	agentPane, agentBridge, agentUnsub := newBoundPane("Agent", "(no agent selected)", agentTask, src)
+	// tApp is constructed before the panes so each pane's OnNeedRedraw hook can
+	// bounce a repaint through its event loop the moment PTY output arrives
+	// (live repaint, independent of keystroke input).
+	tApp := tview.NewApplication()
+	redraw := func() { tApp.QueueUpdateDraw(func() {}) }
+
+	coordPane, coordBridge, coordUnsub := newBoundPane("HERA", "(no coord selected)", coordTask, src, redraw)
+	agentPane, agentBridge, agentUnsub := newBoundPane("Agent", "(no agent selected)", agentTask, src, redraw)
 
 	pieces := buildLayout(coordPane, agentPane)
 
-	tApp := tview.NewApplication()
 	tApp.SetRoot(pieces.pages, true)
 	tApp.EnableMouse(false)
 
@@ -570,6 +575,21 @@ func (a *App) RepopulateRail() {
 	a.app.QueueUpdateDraw(body)
 }
 
+// scheduleRedraw bounces an empty update through the tview event loop so a
+// pane repaints with content the emulator just ingested. It is wired into each
+// pane's terminalpane.OnNeedRedraw (fired once per non-empty PTY chunk) so pane
+// output paints live, independent of keystroke input. nil-app-safe (tests).
+//
+// QueueUpdateDraw blocks until the draw completes on the event loop, so this
+// naturally back-pressures the terminalpane consume goroutine — a chatty agent
+// can't schedule redraws faster than the loop drains them, which coalesces
+// bursts without an explicit debounce (mirrors argus's plugin panes).
+func (a *App) scheduleRedraw() {
+	if a.app != nil {
+		a.app.QueueUpdateDraw(func() {})
+	}
+}
+
 // CurrentRailSelection returns the bridge's view of the currently-
 // highlighted rail row. Returns a zero-value railSelection when the
 // cursor is not on an addressable row (archive separator, empty).
@@ -930,7 +950,7 @@ func (a *App) rebindCoord(taskID string) {
 	oldUnsub := a.coordUnsub
 	oldBridge := a.coordBridge
 	oldPane := a.pieces.coord
-	pane, bridge, unsub := newBoundPane("HERA", "(no coord selected)", taskID, a.src)
+	pane, bridge, unsub := newBoundPane("HERA", "(no coord selected)", taskID, a.src, a.scheduleRedraw)
 	a.coordTask = taskID
 	a.coordBridge = bridge
 	a.coordUnsub = unsub
@@ -961,7 +981,7 @@ func (a *App) rebindAgent(taskID string) {
 	oldUnsub := a.agentUnsub
 	oldBridge := a.agentBridge
 	oldPane := a.pieces.agent
-	pane, bridge, unsub := newBoundPane("Agent", "(no agent selected)", taskID, a.src)
+	pane, bridge, unsub := newBoundPane("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw)
 	a.agentTask = taskID
 	a.agentBridge = bridge
 	a.agentUnsub = unsub
