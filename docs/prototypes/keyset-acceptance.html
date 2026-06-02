@@ -117,6 +117,17 @@ const SECTIONS = [
       steps: "Judged across the whole pass.",
       expected: "UI never freezes; every mutation's effect appears without navigating away; j/k always responsive. (Overnight: ~25 presses, zero freezes.)" },
   ]},
+  { title: "N — new since the overnight run (untested by probe where noted)", items: [
+    { id: "N1", probe: "PASS", title: "Nested chain renders + folds",
+      steps: "Find <b>nested-parent → 󰹻 nested-sub (1) → nested-leaf</b>. <b>space</b> on nested-sub (leaf hides), space again (returns). Fold nested-parent (whole chain tucks).",
+      expected: "Sub-coordinator is a real foldable coord row (chevron + 󰹻 + count) nested under its parent — the demo's checkout-rebuild → wave-1 shape." },
+    { id: "N2", probe: "—", human: true, title: "Nested selection binding",
+      steps: "<b>Enter</b> on <b>nested-sub</b>, then back to rail (^Q) and <b>Enter</b> on <b>nested-leaf</b>.",
+      expected: "nested-sub → full-width HERA bound to nested-sub's OWN task (not the parent's). nested-leaf → HERA+AGENT split where HERA shows nested-sub. Type into each (Shift+Enter too) — it lands in the right pane." },
+    { id: "N3", probe: "PASS", title: "Collapse-by-default rule (your new rule)",
+      steps: "Observe the default rail: every (0) coord is a single ▸ line. <b>space</b> one open (its Archive expando appears), navigate away and back — your toggle persists. Press <b>l</b> — everything reveals; <b>l</b> again restores.",
+      expected: "Zero-active coords default collapsed; ≥1-active default expanded; manual toggles win for the session; l force-reveals." },
+  ]},
   { title: "J — judgment calls (yours alone)", items: [
     { id: "J1", probe: "⚖", human: true, title: "Clamp feedback ruling",
       steps: "From R3: pressing s at complete (or S at pending) silently stays put.",
