@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
 )
 
@@ -288,13 +289,8 @@ func taskFor(id, worktree string) argusTask {
 	return argusTask{ID: id, WorktreePath: worktree, Project: "p", Name: id}
 }
 
-// We re-export argus.Task here as argusTask so the test file doesn't
-// need an extra import (handlers_test.go already imports argus). The
-// helper is a thin shim that adds clarity at call sites.
-type argusTask = struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Project      string `json:"project"`
-	Status       string `json:"status"`
-	WorktreePath string `json:"worktree_path"`
-}
+// argusTask is a TRUE alias of argus.Task so this file's helpers track the
+// real struct exactly. The previous STRUCTURAL re-declaration silently broke
+// every time argus.Task gained a field (Elapsed / Idle / NeedsInput /
+// Archived) — a drift class a real alias cannot have.
+type argusTask = argus.Task
