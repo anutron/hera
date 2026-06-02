@@ -5,10 +5,39 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/view/proxy"
 )
+
+// Resize-dispatch tuning. The debounce absorbs transient pane geometries —
+// most importantly the first frame(s) a session draws at the SDK wsTty
+// default 80x24 surface before argus's resize envelope is processed. At
+// 80x24 the panes' inner rects come out to 20x21; dispatching that to
+// argus resizes the worker PTY to 20 cols AND kick-rerenders the agent's
+// Claude there (stop + --resume), permanently baking ~20-char-wrapped
+// output into the session history. The real envelope lands within
+// milliseconds, so a short debounce means the bogus size never leaves
+// hera. The retry interval/cap heal the opposite failure: a correction
+// that reaches argus while the worker is mid-kick-restart 404s ("no
+// active session") and must be re-sent once the session is back.
+const (
+	defaultResizeDebounce    = 250 * time.Millisecond
+	defaultResizeRetryDelay  = time.Second
+	defaultResizeMaxAttempts = 5
+)
+
+// resizeState tracks the per-task resize dispatcher. desired is the most
+// recent size any pane asked for; applied is the last size argus
+// acknowledged. running guards the single dispatch goroutine per task.
+// All fields are protected by ProxyManager.resizeMu.
+type resizeState struct {
+	desiredCols, desiredRows int
+	appliedCols, appliedRows int
+	applied                  bool
+	running                  bool
+}
 
 // ProxyManager owns one PTY proxy.Subscription per live argus task. The
 // daemon seeds it at startup from the bindings table and closes every
@@ -25,12 +54,21 @@ type ProxyManager struct {
 
 	mu   sync.Mutex
 	subs map[string]*proxy.Subscription
-	// lastResize records the (cols, rows) most-recently dispatched to
-	// argus per taskID. ResizeTask short-circuits when the requested
-	// dimensions match the last successful dispatch — argus also caches
-	// redundant calls, but the local dedup avoids waking a goroutine and
-	// burning an HTTP roundtrip on every Draw.
-	lastResize map[string][2]int
+
+	// resizes holds the per-task resize dispatcher state (see
+	// resizeState). ResizeTask short-circuits when the requested
+	// dimensions match the last size argus ACKNOWLEDGED — argus also
+	// caches redundant calls, but the local dedup avoids waking a
+	// goroutine and burning an HTTP roundtrip on every Draw.
+	resizeMu sync.Mutex
+	resizes  map[string]*resizeState
+
+	// Resize dispatcher knobs; production uses the defaultResize*
+	// constants, tests shrink them so they don't sit through real
+	// debounce/retry intervals.
+	resizeDebounce    time.Duration
+	resizeRetryDelay  time.Duration
+	resizeMaxAttempts int
 }
 
 // NewProxyManager constructs a ProxyManager. fetcher is the source for
@@ -40,10 +78,13 @@ func NewProxyManager(fetcher proxy.Fetcher, log *slog.Logger) *ProxyManager {
 		log = slog.Default()
 	}
 	return &ProxyManager{
-		fetcher:    fetcher,
-		log:        log,
-		subs:       make(map[string]*proxy.Subscription),
-		lastResize: make(map[string][2]int),
+		fetcher:           fetcher,
+		log:               log,
+		subs:              make(map[string]*proxy.Subscription),
+		resizes:           make(map[string]*resizeState),
+		resizeDebounce:    defaultResizeDebounce,
+		resizeRetryDelay:  defaultResizeRetryDelay,
+		resizeMaxAttempts: defaultResizeMaxAttempts,
 	}
 }
 
@@ -140,14 +181,27 @@ func taskStatusAlive(status string) bool {
 
 // ResizeTask asks argus to resize the worker PTY for taskID to (cols, rows).
 // The HTTP call is dispatched on a background goroutine so Draw paths
-// stay non-blocking; the result is logged at debug. Calls that repeat
-// the most-recently dispatched dimensions for the same taskID short-
-// circuit locally (argus also caches redundant calls, but skipping the
-// goroutine and the HTTP roundtrip reduces churn during a resize-drag).
+// stay non-blocking. Dispatching is coalesced per task behind a short
+// debounce window (latest size wins): the first frames of a session can
+// draw at the SDK's default 80x24 surface before argus's resize envelope
+// is processed, and the 20x21 pane allocation that geometry produces
+// must never reach argus — argus would kick-rerender the worker's Claude
+// at 20 cols and permanently bake narrow-wrapped output into the session
+// history. Within the debounce, the real envelope re-layout supersedes
+// the transient size.
 //
-// ctx bounds the dispatched HTTP request. Callers typically pass the
-// session-scoped context so resize requests are abandoned when the
-// hera-view session ends.
+// Calls that repeat the dimensions argus last ACKNOWLEDGED short-circuit
+// locally (argus also caches redundant calls, but skipping the goroutine
+// and the HTTP roundtrip reduces churn during a resize-drag). A failed
+// dispatch — typically a 404 while the worker is mid-kick-restart from a
+// previous resize — is retried with the latest desired size at
+// resizeRetryDelay intervals, bounded by resizeMaxAttempts, so the
+// correction lands once the session is back instead of stranding the PTY
+// at a stale size.
+//
+// ctx bounds the dispatcher goroutine and its HTTP requests. Callers
+// typically pass the session-scoped context so pending resizes are
+// abandoned when the hera-view session ends.
 func (m *ProxyManager) ResizeTask(ctx context.Context, taskID string, cols, rows int) {
 	if m == nil || m.fetcher == nil || taskID == "" {
 		return
@@ -155,22 +209,103 @@ func (m *ProxyManager) ResizeTask(ctx context.Context, taskID string, cols, rows
 	if cols <= 0 || rows <= 0 {
 		return
 	}
-	m.mu.Lock()
-	prev, ok := m.lastResize[taskID]
-	if ok && prev[0] == cols && prev[1] == rows {
-		m.mu.Unlock()
+	m.resizeMu.Lock()
+	st, ok := m.resizes[taskID]
+	if !ok {
+		st = &resizeState{}
+		m.resizes[taskID] = st
+	}
+	st.desiredCols, st.desiredRows = cols, rows
+	if st.running || (st.applied && st.appliedCols == cols && st.appliedRows == rows) {
+		// A live dispatcher will pick up the new desired size; an
+		// already-applied size needs no dispatch at all.
+		m.resizeMu.Unlock()
 		return
 	}
-	m.lastResize[taskID] = [2]int{cols, rows}
-	m.mu.Unlock()
+	st.running = true
+	m.resizeMu.Unlock()
 
-	go func() {
-		if err := m.fetcher.ResizeTask(ctx, taskID, cols, rows); err != nil {
-			// 404 (no active session) is expected for inactive workers;
-			// log at debug so we don't spam on every pane swap.
-			m.log.Debug("argus resize task failed", "task_id", taskID, "cols", cols, "rows", rows, "err", err)
+	go m.runResizeDispatch(ctx, taskID, st)
+}
+
+// runResizeDispatch is the per-task resize dispatcher goroutine: wait out
+// the debounce, send the latest desired size, retry on failure, exit once
+// desired == applied (or the attempt budget / ctx runs out). At most one
+// dispatcher runs per task (guarded by resizeState.running).
+func (m *ProxyManager) runResizeDispatch(ctx context.Context, taskID string, st *resizeState) {
+	stop := func() {
+		m.resizeMu.Lock()
+		st.running = false
+		m.resizeMu.Unlock()
+	}
+
+	wait := m.resizeDebounce
+	attempts := 0
+	// triedCols/triedRows start at zero on purpose: valid dims are always
+	// >= 1, so the first pass through the loop always differs and seeds a
+	// fresh attempt budget. The zero value is the "nothing tried yet"
+	// sentinel.
+	var triedCols, triedRows int
+	for {
+		select {
+		case <-ctx.Done():
+			stop()
+			return
+		case <-time.After(wait):
 		}
-	}()
+
+		m.resizeMu.Lock()
+		cols, rows := st.desiredCols, st.desiredRows
+		if st.applied && st.appliedCols == cols && st.appliedRows == rows {
+			st.running = false
+			m.resizeMu.Unlock()
+			return
+		}
+		m.resizeMu.Unlock()
+
+		// A new desired size gets a fresh attempt budget.
+		if cols != triedCols || rows != triedRows {
+			attempts = 0
+			triedCols, triedRows = cols, rows
+		}
+
+		err := m.fetcher.ResizeTask(ctx, taskID, cols, rows)
+		if err == nil {
+			m.resizeMu.Lock()
+			st.applied = true
+			st.appliedCols, st.appliedRows = cols, rows
+			m.resizeMu.Unlock()
+			// Loop once more: the desired size may have moved while the
+			// HTTP call was in flight.
+			wait = m.resizeDebounce
+			continue
+		}
+
+		// 404 (no active session) is expected for inactive workers and for
+		// workers mid-kick-restart; log at debug so we don't spam on every
+		// pane swap.
+		attempts++
+		m.log.Debug("argus resize task failed", "task_id", taskID, "cols", cols, "rows", rows, "attempt", attempts, "err", err)
+		if attempts >= m.resizeMaxAttempts {
+			// Before giving up, re-check desired ATOMICALLY with the
+			// running-flag clear: a ResizeTask call that landed while this
+			// attempt was in flight saw running=true and only updated
+			// desired — exiting now would orphan that size until some
+			// later layout change. A changed desired instead gets a fresh
+			// attempt budget on the next iteration.
+			m.resizeMu.Lock()
+			if st.desiredCols != cols || st.desiredRows != rows {
+				m.resizeMu.Unlock()
+				wait = m.resizeRetryDelay
+				continue
+			}
+			st.running = false
+			m.resizeMu.Unlock()
+			m.log.Debug("argus resize task gave up", "task_id", taskID, "cols", cols, "rows", rows, "attempts", attempts)
+			return
+		}
+		wait = m.resizeRetryDelay
+	}
 }
 
 // Close tears down every subscription. Safe to call multiple times; after
