@@ -2233,6 +2233,11 @@ func TestPopulateRail_ArchivedSubCoordStaysInExpando(t *testing.T) {
 			t.Fatalf("child orchestrator must be consumed by the sub-coordinator lift, not rendered top-level")
 		}
 	}
+	// The parent has zero non-archived children, so it defaults collapsed;
+	// expand it explicitly (the operator's toggle) to reach its Archive expando.
+	a.pieces.rail.collapsed[parent.ID] = false
+	a.pieces.rail.buildRows()
+
 	// The archived sub-coord renders only behind the parent's Archive expando.
 	got := renderApp(t, a, 80, 24)
 	if !strings.Contains(got, "Archive (1)") {

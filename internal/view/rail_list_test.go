@@ -490,9 +490,10 @@ func TestRailList_CoordHeaderStatusIconAndMarker(t *testing.T) {
 	if !strings.Contains(got, string(theme.IconNeedsInput)+" ▾ "+string(iconCoord)+" blocked") {
 		t.Fatalf("expected needs-input icon + chevron + marker on coord header; got:\n%s", got)
 	}
-	// complete coordinator: ✓ icon before its (coord-less) header.
-	if !strings.Contains(got, "✓ ▾ "+string(iconCoord)+" shipped") {
-		t.Fatalf("expected ✓ status icon on completed coord header; got:\n%s", got)
+	// complete coordinator: ✓ icon before its (worker-less) header. Zero
+	// non-archived children → the row defaults collapsed (▸).
+	if !strings.Contains(got, "✓ ▸ "+string(iconCoord)+" shipped") {
+		t.Fatalf("expected ✓ status icon on completed (default-collapsed) coord header; got:\n%s", got)
 	}
 }
 
@@ -966,5 +967,190 @@ func TestRailList_SelectionMarkerMovesWithCursorWithoutShift(t *testing.T) {
 		if b != a {
 			t.Fatalf("%q shifted from col %d to %d on selection move; before:\n%s\nafter:\n%s", needle, b, a, before, after)
 		}
+	}
+}
+
+// Scenario: Empty coordinator defaults collapsed. A coordinator with zero
+// non-archived children — none at all, or only archived/dead ones — renders
+// header-only with the ▸ chevron; its children (including the Archive (N)
+// expando) stay hidden until the operator expands it. A coordinator with at
+// least one active child keeps the expanded (▾) default.
+func TestRailList_EmptyCoordinatorDefaultsCollapsed(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "bare", Roles: nil},
+		{ID: 2, Name: "spent", Roles: []*roleEntry{
+			{OrchestratorID: 2, RoleID: 20, Name: "w-arch", Archived: true},
+			{OrchestratorID: 2, RoleID: 21, Name: "w-dead", Dead: true},
+		}},
+		{ID: 3, Name: "busy", Roles: []*roleEntry{
+			{OrchestratorID: 3, RoleID: 30, Name: "w-live", Live: true},
+		}},
+	})
+
+	got := renderRail(t, rl, 30, 10)
+	// No children at all → collapsed header only.
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" bare (0)") {
+		t.Fatalf("coordinator with no children must default collapsed; got:\n%s", got)
+	}
+	// Only archived/dead children → still zero non-archived → collapsed, and
+	// its Archive expando must NOT render while the coordinator is folded.
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("coordinator with only archived children must default collapsed; got:\n%s", got)
+	}
+	if strings.Contains(got, "Archive (2)") {
+		t.Fatalf("a default-collapsed coordinator must hide its Archive expando; got:\n%s", got)
+	}
+	// ≥1 active child → expanded default unchanged.
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" busy (1)") {
+		t.Fatalf("coordinator with an active child must default expanded; got:\n%s", got)
+	}
+	if !strings.Contains(got, "w-live") {
+		t.Fatalf("active child of an expanded coordinator must render; got:\n%s", got)
+	}
+}
+
+// Scenario: Manual toggle overrides the default and persists. Expanding a
+// default-collapsed empty coordinator reveals its Archive expando and the
+// choice survives rebuilds; collapsing a busy coordinator also persists.
+func TestRailList_ManualToggleOverridesCollapsedDefault(t *testing.T) {
+	mk := func() []*orchEntry {
+		return []*orchEntry{
+			{ID: 1, Name: "spent", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w-arch", Archived: true},
+			}},
+			{ID: 2, Name: "busy", Roles: []*roleEntry{
+				{OrchestratorID: 2, RoleID: 20, Name: "w-live", Live: true},
+			}},
+		}
+	}
+	rl := newRailList()
+	rl.SetOrchestrators(mk())
+
+	// space on the default-collapsed empty coordinator expands it: the
+	// Archive (1) expando appears (collapsed itself, per D14).
+	if !rl.SelectByOrchID(1) {
+		t.Fatal("could not select empty coordinator")
+	}
+	rl.ToggleCollapse()
+	got := renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("toggling a default-collapsed coordinator must expand it; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("expanding an empty coordinator must reveal its Archive expando; got:\n%s", got)
+	}
+
+	// The explicit expand persists across a data rebuild (fresh pointers).
+	rl.SetOrchestrators(mk())
+	got = renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("explicit expand must persist across rebuilds; got:\n%s", got)
+	}
+
+	// Toggling again re-collapses (explicit collapsed, not back to default).
+	if !rl.SelectByOrchID(1) {
+		t.Fatal("could not re-select empty coordinator")
+	}
+	rl.ToggleCollapse()
+	got = renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("second toggle must re-collapse the coordinator; got:\n%s", got)
+	}
+
+	// Manually collapsing the busy coordinator persists across rebuilds too.
+	if !rl.SelectByOrchID(2) {
+		t.Fatal("could not select busy coordinator")
+	}
+	rl.ToggleCollapse()
+	rl.SetOrchestrators(mk())
+	got = renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" busy (1)") {
+		t.Fatalf("manual collapse of a busy coordinator must persist; got:\n%s", got)
+	}
+	if strings.Contains(got, "w-live") {
+		t.Fatalf("children of a manually-collapsed coordinator must stay hidden; got:\n%s", got)
+	}
+}
+
+// Scenario: `l` force-reveal overrides the collapsed default while active —
+// an untouched empty coordinator expands (its archived children visible via
+// the force-expanded Archive expando), but an explicit manual collapse still
+// wins over `l`.
+func TestRailList_ShowArchivedOverridesCollapsedDefault(t *testing.T) {
+	mk := func() []*orchEntry {
+		return []*orchEntry{
+			{ID: 1, Name: "spent", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w-arch", Archived: true},
+			}},
+			{ID: 2, Name: "pinned", Roles: []*roleEntry{
+				{OrchestratorID: 2, RoleID: 20, Name: "w-hidden", Archived: true},
+			}},
+		}
+	}
+	rl := newRailList()
+	rl.SetOrchestrators(mk())
+	// Explicitly collapse "pinned" (it is already default-collapsed; the
+	// operator's toggle-expand + toggle-collapse pins the explicit state).
+	if !rl.SelectByOrchID(2) {
+		t.Fatal("could not select pinned coordinator")
+	}
+	rl.ToggleCollapse() // explicit expand
+	rl.ToggleCollapse() // explicit collapse — pinned
+	rl.SetShowArchived(true)
+
+	got := renderRail(t, rl, 32, 12)
+	// Untouched empty coordinator: default overridden → expanded, archived
+	// child reachable through the force-expanded expando.
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("`l` must override the collapsed default on an untouched empty coordinator; got:\n%s", got)
+	}
+	if !strings.Contains(got, "w-arch") {
+		t.Fatalf("`l` must reveal the archived child of an untouched empty coordinator; got:\n%s", got)
+	}
+	// Explicitly collapsed coordinator stays collapsed even under `l`.
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" pinned (0)") {
+		t.Fatalf("explicit collapse must win over `l`; got:\n%s", got)
+	}
+	if strings.Contains(got, "w-hidden") {
+		t.Fatalf("children of an explicitly collapsed coordinator must stay hidden under `l`; got:\n%s", got)
+	}
+}
+
+// Scenario: the collapsed-empty default applies to nested sub-coordinators
+// too — a sub-coordinator whose child orchestrator has zero non-archived
+// children renders with the ▸ chevron and no nested rows.
+func TestRailList_EmptySubCoordinatorDefaultsCollapsed(t *testing.T) {
+	rl := newRailList()
+	child := &orchEntry{ID: 2, Name: "sub", CoordTaskID: "t-sub", Roles: []*roleEntry{
+		{OrchestratorID: 2, RoleID: 20, Name: "leaf-arch", RoleKind: "worker", Archived: true},
+	}}
+	sub := &roleEntry{OrchestratorID: 1, RoleID: 11, Name: "sub", RoleKind: "coordinator", ArgusTaskID: "t-sub", childOrch: child}
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "parent", CoordTaskID: "t-parent", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "plain-worker", RoleKind: "worker", Live: true},
+			sub,
+		}},
+	})
+
+	got := renderRail(t, rl, 36, 12)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" sub (0)") {
+		t.Fatalf("empty sub-coordinator must default collapsed; got:\n%s", got)
+	}
+	if strings.Contains(got, "leaf-arch") || strings.Contains(got, "Archive (1)") {
+		t.Fatalf("collapsed empty sub-coordinator must hide its children and Archive expando; got:\n%s", got)
+	}
+
+	// Toggling the sub-coordinator row expands it and reveals its expando.
+	if !rl.SelectByRoleID(11) {
+		t.Fatal("could not select sub-coordinator row")
+	}
+	rl.ToggleCollapse()
+	got = renderRail(t, rl, 36, 12)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" sub (0)") {
+		t.Fatalf("toggled empty sub-coordinator must expand; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("expanded empty sub-coordinator must reveal its Archive expando; got:\n%s", got)
 	}
 }

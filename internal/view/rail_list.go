@@ -35,9 +35,13 @@ type railList struct {
 	cursor        int
 	offset        int
 
-	// collapsed tracks which orchestrators are collapsed. Default is
-	// expanded; an entry is created the first time the operator hides
-	// a section so the (zero-value) default behavior is "expanded".
+	// collapsed tracks the operator's EXPLICIT fold choices, keyed by
+	// orchestrator ID. An entry present means the operator toggled that
+	// coordinator (true=collapsed, false=expanded) and that choice persists
+	// for the session; an absent key means "never touched" and the DEFAULT
+	// applies — expanded, except a coordinator with zero non-archived
+	// children defaults collapsed (orchCollapsed resolves the effective
+	// state). Reads go through orchCollapsed, never this map directly.
 	collapsed map[int64]bool
 
 	// freelanceCollapsed tracks which Freelance repo groups are collapsed,
@@ -522,10 +526,13 @@ func (rl *railList) ToggleCollapse() {
 		return
 	case railRowRole:
 		// A sub-coordinator row (a worker that is also another orchestrator's
-		// coord) folds ITS OWN nested children, keyed on its childOrch.
+		// coord) folds ITS OWN nested children, keyed on its childOrch. The
+		// toggle flips the EFFECTIVE state (orchCollapsed), pinning an explicit
+		// choice — a raw map flip would mis-toggle a default-collapsed empty
+		// coordinator (zero-value false → "collapse" an already-folded row).
 		if r.role != nil && r.role.childOrch != nil {
-			id := r.role.childOrch.ID
-			rl.collapsed[id] = !rl.collapsed[id]
+			child := r.role.childOrch
+			rl.collapsed[child.ID] = !rl.orchCollapsed(child)
 			prev := rl.currentRef()
 			rl.buildRows()
 			rl.restoreCursor(prev)
@@ -554,7 +561,9 @@ func (rl *railList) ToggleCollapse() {
 	}
 	switch {
 	case orch != nil:
-		rl.collapsed[orch.ID] = !rl.collapsed[orch.ID]
+		// Flip the EFFECTIVE state so the first toggle on a default-collapsed
+		// empty coordinator expands it; the explicit entry persists thereafter.
+		rl.collapsed[orch.ID] = !rl.orchCollapsed(orch)
 	case fproj != nil:
 		rl.freelanceCollapsed[fproj.Project] = !rl.freelanceCollapsed[fproj.Project]
 	default:
@@ -637,6 +646,25 @@ func (rl *railList) archiveOpen(owner int64) bool {
 	return rl.showArchived || rl.archiveExpanded[owner]
 }
 
+// orchCollapsed resolves a coordinator's EFFECTIVE fold state. An explicit
+// operator toggle (an entry in collapsed) always wins; otherwise the default
+// applies: a coordinator with zero non-archived children collapses so dead and
+// finished orchestrators fold away instead of burning rail rows, while a
+// coordinator with at least one active child stays expanded. showArchived
+// (`l`) overrides the collapsed DEFAULT — an untouched empty coordinator
+// expands so its archived children are reachable — but never an explicit
+// collapse. Applies to root coordinators and nested sub-coordinators alike;
+// all fold reads route through here rather than the collapsed map.
+func (rl *railList) orchCollapsed(o *orchEntry) bool {
+	if v, ok := rl.collapsed[o.ID]; ok {
+		return v
+	}
+	if rl.showArchived {
+		return false
+	}
+	return rl.visibleRoleCount(o) == 0
+}
+
 func (rl *railList) buildRows() {
 	rl.rows = nil
 	var active, archived []*orchEntry
@@ -659,7 +687,7 @@ func (rl *railList) buildRows() {
 	// orchestrator already on the current ancestry path is not re-expanded.
 	appendOrch := func(o *orchEntry, depth int) {
 		rl.rows = append(rl.rows, railRow{kind: railRowOrch, orch: o, depth: depth})
-		if rl.collapsed[o.ID] {
+		if rl.orchCollapsed(o) {
 			return
 		}
 		appendOrchChildren(rl, o, depth+1, map[int64]bool{o.ID: true})
@@ -730,7 +758,7 @@ func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int
 		// child orchestrator's roles one level deeper, recursively, unless it
 		// is collapsed or would form a cycle (its child already on the ancestry
 		// path). The role row itself is drawn coord-style by drawRoleRow.
-		if role.childOrch != nil && !seen[role.childOrch.ID] && !rl.collapsed[role.childOrch.ID] {
+		if role.childOrch != nil && !seen[role.childOrch.ID] && !rl.orchCollapsed(role.childOrch) {
 			seen[role.childOrch.ID] = true
 			appendOrchChildren(rl, role.childOrch, childDepth+1, seen)
 			delete(seen, role.childOrch.ID)
@@ -877,7 +905,7 @@ func (rl *railList) drawOrchRow(screen tcell.Screen, x, y, w int, o *orchEntry, 
 	col += 2
 
 	chevron := '▾'
-	if rl.collapsed[o.ID] {
+	if rl.orchCollapsed(o) {
 		chevron = '▸'
 	}
 	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
@@ -993,7 +1021,7 @@ func (rl *railList) drawSubCoordRow(screen tcell.Screen, x, y, w int, r *roleEnt
 	col += 2
 
 	chevron := '▾'
-	if rl.collapsed[r.childOrch.ID] {
+	if rl.orchCollapsed(r.childOrch) {
 		chevron = '▸'
 	}
 	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
