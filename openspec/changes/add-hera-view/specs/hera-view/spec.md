@@ -408,7 +408,9 @@ The system SHALL subscribe the rail to an in-process broadcaster fed by the orch
 
 ### Requirement: Resize envelope re-lays out the local view and source PTYs
 
-The system SHALL handle a `{type:"resize", cols, rows}` text-frame envelope from argus by recalculating the tview Application's layout (top bar, bottom bar, fixed-width rail, equal-split coord + agent panes). For each task bound to a coord or agent pane, the system SHALL also request that the task's source PTY be resized to match the pane's allocated cols/rows via `POST /api/tasks/{id}/size`. The system MUST dedupe redundant resize requests (same cols/rows as the last value sent for that task).
+The system SHALL handle a `{type:"resize", cols, rows}` text-frame envelope from argus by recalculating the tview Application's layout (top bar, bottom bar, fixed-width rail, equal-split coord + agent panes). For each task bound to a coord or agent pane, the system SHALL also request that the task's source PTY be resized to match the pane's allocated cols/rows via `POST /api/tasks/{id}/size`.
+
+Source-PTY resize dispatches MUST be coalesced per task behind a short debounce window in which the latest requested size wins: a session's first frames can draw at the WebSocket screen's default 80x24 geometry before argus's resize envelope is processed, and the transient pane allocation that geometry produces (20x21) MUST NOT reach argus — argus kick-rerenders the worker's agent at the requested width, permanently baking narrow-wrapped output into the session history. The system MUST dedupe redundant resize requests (same cols/rows as the last value argus ACKNOWLEDGED for that task). A dispatch that fails (e.g., argus returns 404 "no active session" while the worker is mid-kick-restart from a prior resize) MUST NOT be recorded as applied; the system MUST retry with the latest desired size at a short interval, bounded by a maximum attempt count, so the correction lands once the worker session is back.
 
 #### Scenario: Resize re-lays out panes
 
@@ -418,17 +420,27 @@ The system SHALL handle a `{type:"resize", cols, rows}` text-frame envelope from
 #### Scenario: Initial bind aligns source PTY to pane allocation
 
 - **WHEN** a coord or agent pane is bound to an argus task and rendered for the first time
-- **THEN** the daemon MUST issue `POST /api/tasks/{id}/size` with the pane's allocated cols/rows unless that size already matches the task's current PTY size
+- **THEN** the daemon MUST issue `POST /api/tasks/{id}/size` with the pane's allocated cols/rows (after the debounce window settles) unless that size already matches the task's current PTY size
 
 #### Scenario: Layout change re-aligns source PTY
 
 - **WHEN** the bound pane's allocated cols/rows change (whether from a WebSocket resize envelope or any other layout shift)
-- **THEN** the daemon MUST issue `POST /api/tasks/{id}/size` with the new allocation
+- **THEN** the daemon MUST issue `POST /api/tasks/{id}/size` with the new allocation once the debounce window settles
+
+#### Scenario: Transient pre-envelope allocation never reaches argus
+
+- **WHEN** a pane dispatches a resize for the default-surface allocation (e.g., 20x21 from an 80x24 screen) and the real resize envelope re-layout supersedes it within the debounce window
+- **THEN** the daemon MUST issue exactly one `POST /api/tasks/{id}/size` carrying only the settled allocation
 
 #### Scenario: Redundant resize is deduped
 
-- **WHEN** the daemon would issue `POST /api/tasks/{id}/size` with cols/rows equal to the last value it sent for that task
+- **WHEN** the daemon would issue `POST /api/tasks/{id}/size` with cols/rows equal to the last value argus acknowledged for that task
 - **THEN** the daemon MUST skip the HTTP call
+
+#### Scenario: Failed resize is retried with the latest size
+
+- **WHEN** a `POST /api/tasks/{id}/size` dispatch fails (e.g., 404 while the worker is mid-kick-restart)
+- **THEN** the daemon MUST NOT record the size as applied AND MUST retry with the current desired size at a bounded interval until it succeeds or the attempt cap is reached
 
 ### Requirement: Rail renders coordinators as foldable rows with Archive expandos
 
