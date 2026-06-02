@@ -314,6 +314,63 @@ func TestArchiveRole_Explicit_SetsHeraAndArgus(t *testing.T) {
 	}
 }
 
+func TestArchiveRole_EndedBindingFallsBackToLatest(t *testing.T) {
+	// The mirror of the unarchive fallback: a role whose binding was ended
+	// by a PREVIOUS archive (end_reason='argus_archived') keeps its argus
+	// task id but has no live binding. When such a role is active again
+	// (e.g. only the argus side was unarchived — the live mixed state) and
+	// the operator archives it, the argus archive MUST still be issued via
+	// the latest-binding fallback — skipping silently leaves the argus task
+	// active while hera stamps archived_at, recreating the mixed state.
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedEndedBinding(role.ID, "T1", "/tmp/wt1")
+
+	if err := s.ArchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("ArchiveRole: %v", err)
+	}
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if !got.Archived {
+		t.Fatalf("role should be archived")
+	}
+	if len(argus.archiveCalls) != 1 || argus.archiveCalls[0] != "T1" {
+		t.Fatalf("argus archive calls = %v, want [T1] via latest-binding fallback", argus.archiveCalls)
+	}
+}
+
+func TestArchiveRole_PrefersLiveBindingOverEnded(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedEndedBinding(role.ID, "T-old", "/tmp/wt1")
+	db.seedBinding(role.ID, "T-live", "/tmp/wt2")
+
+	if err := s.ArchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("ArchiveRole: %v", err)
+	}
+	if len(argus.archiveCalls) != 1 || argus.archiveCalls[0] != "T-live" {
+		t.Fatalf("argus archive calls = %v, want [T-live] (live binding preferred)", argus.archiveCalls)
+	}
+}
+
+func TestArchiveOrchestrator_CascadeArchivesEndedBindingTask(t *testing.T) {
+	// The cascade path calls the role-level ArchiveRole, so it MUST inherit
+	// the latest-binding fallback — a cascaded role with only an ended
+	// binding still archives its argus task.
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	w1 := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedEndedBinding(w1.ID, "T1", "/tmp/wt1")
+
+	if err := s.ArchiveOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("ArchiveOrchestrator: %v", err)
+	}
+	if len(argus.archiveCalls) != 1 || argus.archiveCalls[0] != "T1" {
+		t.Fatalf("argus archive calls = %v, want [T1] (cascade inherits the fallback)", argus.archiveCalls)
+	}
+}
+
 func TestUnarchiveRole_Explicit_ClearsHeraAndArgus(t *testing.T) {
 	s, db, argus, _, _ := newTestService()
 	orch := db.seedOrchestrator("foo", false)

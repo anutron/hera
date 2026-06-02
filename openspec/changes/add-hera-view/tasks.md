@@ -193,3 +193,12 @@
 - [x] 19.3 `rail_list.go`: 2-col selection-marker gutter at the start of every row (`›` + `theme.StyleSelected` on the cursor row, space elsewhere); all row painters shifted right by the gutter.
 - [x] 19.4 `ops/archive.go`: explicit `ArchiveRole`/`UnarchiveRole`/`ArchiveOrchestrator`/`UnarchiveOrchestrator` verbs; `ToggleArchive{Role,Orchestrator}` kept as thin flag-derived wrappers (documented as unsafe for mixed-flag rows). `mutations.go` `OnArchive` computes the effective state from the selection (`Archived ∨ ArgusArchived ∨ Dead`, mirroring `roleArchived`) and dispatches the explicit verb; `railSelection` carries `Dead`; `app.go` populates it. Freelance path unchanged (already effective-state-driven via `sel.ArgusArchived`).
 - [x] 19.5 `go test ./... -race -count=1` green (view marker/mutation/ops suites + no regressions in async-mutate, modal focus/theme, archived visibility, symmetric unarchive, raw input, coalescer).
+
+## 20. Fixit: archive branch resolves latest binding (symmetric with unarchive)
+
+**Depends on:** 17c (resolveBinding) + 19 (explicit verbs). Live-repro (keyset acceptance T6): `a` on an ACTIVE role whose binding was previously ended (`end_reason='argus_archived'` — true of every role that was ever archived) stamped hera's `archived_at` but SILENTLY SKIPPED the argus archive: `ArchiveRole` still resolved via the live-only lookup and treated `ErrNotFound` as "nothing to archive". Verified flags after a live press: hera archived=1, argus archived=0 — the argus task wrongly stays active (argus's own UI shows it unarchived; future bindings/reconciles disagree). 17c wired `resolveBinding` into `stepStatus` and the UNARCHIVE direction only.
+
+- [x] 20.1 Spec delta: the binding-resolution rule (live preferred, latest fallback) applies to BOTH archive directions; archive-with-ended-binding scenario added; cascade scenario notes it inherits the role-level resolution. `openspec validate add-hera-view --strict` green.
+- [x] 20.2 Failing tests first: `ops/archive_test.go` — `ArchiveRole` on an ended-binding role MUST POST argus archive via the fallback (live preferred over ended guarded); `ArchiveOrchestrator` cascade inherits the fallback.
+- [x] 20.3 `ops/archive.go` `ArchiveRole`: `GetLiveBindingByRole` → `resolveBinding`; skip the argus call only when NO binding ever recorded a task id. Cascade path inherits (it calls `ArchiveRole`).
+- [x] 20.4 `go test ./... -race -count=1` green.

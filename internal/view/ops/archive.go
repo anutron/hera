@@ -7,8 +7,8 @@ import (
 )
 
 // ArchiveRole handles the explicit ARCHIVE verb against a role: set the
-// role's hera archived_at AND POST argus archive on the live binding's
-// argus task. The caller (the view) decides the direction from the row's
+// role's hera archived_at AND POST argus archive on the bound argus task.
+// The caller (the view) decides the direction from the row's
 // EFFECTIVE rendered state — never from a single backing flag — so a row
 // that DISPLAYS as active always archives and one that displays as
 // archived always unarchives, even when the hera and argus flags disagree
@@ -17,16 +17,21 @@ import (
 // The worktree is NOT touched (per spec — archive preserves the
 // worktree; delete is the destructive verb).
 //
-// If the role has no live binding, the argus call is skipped (nothing to
-// archive on the argus side).
+// The binding resolves live-first with the latest-binding fallback
+// (symmetric with unarchive): a role whose binding was ended by a
+// previous archive (end_reason='argus_archived') keeps its argus_task_id
+// but misses the live-only lookup, and skipping there would stamp hera's
+// archived_at while silently leaving the argus task active — recreating
+// the mixed state. The argus call is skipped only when NO binding ever
+// recorded a task id (nothing to archive on the argus side).
 func (s *Service) ArchiveRole(ctx context.Context, id int64) error {
 	if err := s.DB.ArchiveRole(ctx, id); err != nil {
 		return fmt.Errorf("ops.ArchiveRole: archive: %w", err)
 	}
 
-	bnd, err := s.DB.GetLiveBindingByRole(ctx, id)
+	bnd, err := s.resolveBinding(ctx, id)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("ops.ArchiveRole: live binding lookup: %w", err)
+		return fmt.Errorf("ops.ArchiveRole: binding lookup: %w", err)
 	}
 	if bnd != nil && bnd.ArgusTaskID != "" {
 		if err := s.Argus.ArchiveTask(ctx, bnd.ArgusTaskID); err != nil {
@@ -115,7 +120,8 @@ func (s *Service) ToggleArchiveTask(ctx context.Context, taskID string, archived
 // ArchiveOrchestrator handles the explicit ARCHIVE verb against an
 // orchestrator: archive the orchestrator AND cascade-archive every active
 // role under it (each role archive also POSTs argus archive on the role's
-// live binding's argus task).
+// resolved binding's argus task — live preferred, latest fallback, via
+// the role-level ArchiveRole).
 func (s *Service) ArchiveOrchestrator(ctx context.Context, id int64) error {
 	// Cascade archive: every active role first, then the orchestrator.
 	// Ordering doesn't matter for correctness — the DB rows are
