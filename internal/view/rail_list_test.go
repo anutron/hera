@@ -1154,3 +1154,108 @@ func TestRailList_EmptySubCoordinatorDefaultsCollapsed(t *testing.T) {
 		t.Fatalf("expanded empty sub-coordinator must reveal its Archive expando; got:\n%s", got)
 	}
 }
+
+// Spec (rail-truthfulness): Rail status icons reflect the bound task's actual
+// argus state — archive state and binding liveness modulate only STYLE
+// (dimmed), never the GLYPH. An archived/dead row with known state renders its
+// true status glyph dimmed.
+func TestStatusIcon_ArchivedRowsKeepTrueStatusGlyph(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		needsInput bool
+		idle       bool
+		want       rune
+	}{
+		{"complete", "complete", false, false, '✓'},
+		{"in_review", "in_review", false, false, '✓'},
+		{"working", "in_progress", false, false, theme.IconMoonStars},
+		{"idle", "in_progress", false, true, theme.IconMoonOutline},
+		{"pending", "pending", false, false, theme.IconMoonOutline},
+		{"needs-input", "in_progress", true, false, theme.IconNeedsInput},
+	}
+	for _, tc := range cases {
+		glyph, style := statusIcon(true, true, tc.needsInput, tc.status, tc.idle, false)
+		if glyph != tc.want {
+			t.Errorf("%s: archived row with known state: glyph = %q, want %q (true status, dimmed)", tc.name, glyph, tc.want)
+		}
+		if style != theme.StyleDimmed {
+			t.Errorf("%s: archived row with known state must render dimmed; got %v", tc.name, style)
+		}
+	}
+}
+
+// Spec (rail-truthfulness): unknown-state archived/dead rows keep the dimmed
+// circle fallback — '○' is the fallback ONLY when argus state is unknown.
+func TestStatusIcon_UnknownStateArchivedFallsBackToCircle(t *testing.T) {
+	glyph, style := statusIcon(true, false, false, "", false, false)
+	if glyph != '○' {
+		t.Fatalf("archived row with UNKNOWN state: glyph = %q, want '○' fallback", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("archived unknown-state fallback must be dimmed; got %v", style)
+	}
+}
+
+// Spec (rail-truthfulness): the R1/R2 QA shape — a complete agent archived
+// then unarchived must render '✓' at every step of the round trip; the glyph
+// never mutates while the argus status is unchanged.
+func TestRoleIcon_ArchiveRoundTripNeverMutatesGlyph(t *testing.T) {
+	rl := newRailList()
+	r := &roleEntry{Name: "archive-this-agent", HasState: true, Status: "complete"}
+
+	active, _ := rl.roleIcon(r)
+	if active != '✓' {
+		t.Fatalf("active complete row: glyph = %q, want '✓'", active)
+	}
+
+	// Archive (both sides, the `a` verb): glyph must hold, style dims.
+	r.Archived, r.ArgusArchived = true, true
+	archived, archivedStyle := rl.roleIcon(r)
+	if archived != active {
+		t.Fatalf("archiving mutated the status glyph: %q -> %q (argus status unchanged)", active, archived)
+	}
+	if archivedStyle != theme.StyleDimmed {
+		t.Fatalf("archived row must render dimmed; got %v", archivedStyle)
+	}
+
+	// Unarchive: back to the active rendering.
+	r.Archived, r.ArgusArchived = false, false
+	back, _ := rl.roleIcon(r)
+	if back != active {
+		t.Fatalf("unarchiving mutated the status glyph: %q -> %q", active, back)
+	}
+}
+
+// Spec (rail-truthfulness): a row classified Dead by the aliveness checker
+// (IsTaskAlive treats status=complete as dead) with the state cache still
+// holding that status renders '✓' dimmed, not '○'.
+func TestRoleIcon_DeadCompleteShowsCheckDimmed(t *testing.T) {
+	rl := newRailList()
+	r := &roleEntry{Name: "done-agent", Dead: true, Live: true, HasState: true, Status: "complete"}
+	glyph, style := rl.roleIcon(r)
+	if glyph != '✓' {
+		t.Fatalf("dead-classified complete row: glyph = %q, want '✓'", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("dead-classified row must render dimmed; got %v", style)
+	}
+}
+
+// Spec (rail-truthfulness): coordinator headers obey the same rule — an
+// archived orchestrator whose coord task state is known renders the true
+// status glyph dimmed, not '○'.
+func TestOrchIcon_ArchivedHeaderKeepsTrueStatusGlyph(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "shipped", Archived: true, CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "complete",
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != '✓' {
+		t.Fatalf("archived coord header with known complete state: glyph = %q, want '✓'", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("archived coord header must render dimmed; got %v", style)
+	}
+}

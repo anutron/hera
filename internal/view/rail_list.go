@@ -1159,34 +1159,51 @@ func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner i
 
 // statusIcon picks the moon-style status icon from argus-reported task state,
 // shared by worker rows (roleIcon) and coordinator headers (orchIcon) so both
-// mirror argus's vocabulary identically. Preference order mirrors argus:
-// archived/gone → dimmed circle; then needs-input, done (complete/in_review),
-// in-progress idle/working, pending; then a binding-presence fallback when
-// argus has no state for the task.
+// mirror argus's vocabulary identically. The GLYPH always reflects the task's
+// actual argus state when that state is known — needs-input, done
+// (complete/in_review), in-progress idle/working, pending — REGARDLESS of the
+// row's archived/dead bucketing, which modulates only the STYLE (dimmed).
+// An icon that mutated on archive read as "archiving killed/reset my agent"
+// (live QA R1/R2); the glyph must never lie about argus reality. The dimmed
+// circle is the fallback ONLY for an archived/dead row with UNKNOWN state;
+// active rows without state fall back on binding presence.
 func statusIcon(archived, hasState, needsInput bool, status string, idle, live bool) (rune, tcell.Style) {
+	if hasState {
+		if glyph, style, ok := stateGlyph(needsInput, status, idle); ok {
+			if archived {
+				return glyph, theme.StyleDimmed
+			}
+			return glyph, style
+		}
+	}
 	if archived {
 		return '○', theme.StyleDimmed
-	}
-	if hasState {
-		switch {
-		case needsInput:
-			return theme.IconNeedsInput, theme.StyleNeedsInput
-		case status == "complete":
-			return '✓', theme.StyleComplete
-		case status == "in_review":
-			return '✓', theme.StyleInReview
-		case status == "in_progress" && idle:
-			return theme.IconMoonOutline, theme.StyleDimmed
-		case status == "in_progress":
-			return theme.IconMoonStars, theme.StyleInProgress
-		case status == "pending":
-			return theme.IconMoonOutline, theme.StylePending
-		}
 	}
 	if live {
 		return theme.IconMoonStars, theme.StyleInReview
 	}
 	return theme.IconMoonOutline, tcell.StyleDefault.Foreground(theme.ColorInReview)
+}
+
+// stateGlyph maps a KNOWN argus task state to its status glyph and active
+// style. ok is false for an unrecognized status so statusIcon can fall back
+// to the binding-presence icons instead of guessing.
+func stateGlyph(needsInput bool, status string, idle bool) (rune, tcell.Style, bool) {
+	switch {
+	case needsInput:
+		return theme.IconNeedsInput, theme.StyleNeedsInput, true
+	case status == "complete":
+		return '✓', theme.StyleComplete, true
+	case status == "in_review":
+		return '✓', theme.StyleInReview, true
+	case status == "in_progress" && idle:
+		return theme.IconMoonOutline, theme.StyleDimmed, true
+	case status == "in_progress":
+		return theme.IconMoonStars, theme.StyleInProgress, true
+	case status == "pending":
+		return theme.IconMoonOutline, theme.StylePending, true
+	}
+	return 0, tcell.Style{}, false
 }
 
 // roleIcon picks the moon-style icon for a role based on its argus-reported

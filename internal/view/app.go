@@ -362,6 +362,13 @@ func (a *App) populateRail(database *db.DB) error {
 	}
 
 	entries := make([]*orchEntry, 0, len(orchs))
+	// rendered collects the argus task ids carried by role ROWS appended to
+	// the tree (via live bindings or the latest-binding fallback), so
+	// buildFreelance can avoid duplicating them. Coordinator roles are NOT
+	// collected — they render only as the anonymous orchestrator header —
+	// which is exactly why a live task whose coord binding lapsed must fall
+	// back to the Freelance section to stay findable (rail-truthfulness).
+	rendered := map[string]struct{}{}
 	for _, orch := range orchs {
 		entry := &orchEntry{
 			ID:       orch.ID,
@@ -455,6 +462,9 @@ func (a *App) populateRail(database *db.DB) error {
 			}
 			applyArgusState(r, stateProv)
 			entry.Roles = append(entry.Roles, r)
+			if argusTaskID != "" {
+				rendered[argusTaskID] = struct{}{}
+			}
 		}
 
 		// Coord-only (worker-less) orchestrators render HEADER-ONLY: the
@@ -476,7 +486,7 @@ func (a *App) populateRail(database *db.DB) error {
 	entries = resolveSubCoordinators(entries)
 
 	a.pieces.rail.SetShowArchived(showArchived)
-	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database, showArchived))
+	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database, showArchived, rendered))
 	a.pieces.rail.SetOrchestrators(entries)
 	return nil
 }
@@ -542,12 +552,17 @@ func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
 }
 
 // buildFreelance partitions the live argus task list into the Freelance
-// section: every non-archived argus task that hera has never bound (a
-// "freelancer") grouped by argus project/repo, "the same way Argus shows
-// them". Returns nil when no FreelanceProvider is wired (tests) or no
-// freelancers exist. Archived freelancers are included only when
-// showArchived is set, so the active rail mirrors argus's non-archived set.
-func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived bool) []*freelanceProject {
+// section, grouped by argus project/repo "the same way Argus shows them". A
+// freelancer is a live argus task hera does not CURRENTLY manage: no LIVE
+// binding claims it AND no role row already renders it (rendered — workers
+// carry ended bindings' tasks via the latest-binding fallback). A task whose
+// bindings have ALL ENDED and that no row carries (a coord binding reconciled
+// away — the live-QA lost-session shape) falls back here so every non-archived
+// argus task stays findable in the rail. Returns nil when no FreelanceProvider
+// is wired (tests) or no freelancers exist. Archived freelancers are included
+// only when showArchived is set, so the active rail mirrors argus's
+// non-archived set.
+func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived bool, rendered map[string]struct{}) []*freelanceProject {
 	prov, ok := a.src.(FreelanceProvider)
 	if !ok {
 		return nil
@@ -556,17 +571,24 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived 
 	if len(tasks) == 0 {
 		return nil
 	}
-	bound, err := database.Bindings.AllArgusTaskIDs(ctx)
+	liveBindings, err := database.Bindings.ListLive(ctx)
 	if err != nil {
 		// On a query failure, fail safe to "everything looks managed" so we
 		// never mislabel a hera-managed task as a freelancer.
 		return nil
 	}
+	liveBound := make(map[string]struct{}, len(liveBindings))
+	for _, b := range liveBindings {
+		liveBound[b.ArgusTaskID] = struct{}{}
+	}
 
 	byProject := map[string]*freelanceProject{}
 	var order []string
 	for _, t := range tasks {
-		if _, managed := bound[t.ID]; managed {
+		if _, managed := liveBound[t.ID]; managed {
+			continue
+		}
+		if _, shown := rendered[t.ID]; shown {
 			continue
 		}
 		if t.State.Archived && !showArchived {

@@ -2253,3 +2253,118 @@ func TestPopulateRail_ArchivedSubCoordStaysInExpando(t *testing.T) {
 		t.Fatalf("opening the parent's Archive expando must reveal the archived sub-coordinator; got:\n%s", got)
 	}
 }
+
+// Spec (rail-truthfulness): a live (non-archived) argus task whose hera
+// bindings have ALL ENDED — and that no rendered role row carries — falls back
+// to the Freelance section. This is the live-QA hera-1.0-ux-qa shape: a
+// coordinator role's only binding ended (resync_missing); coord roles render
+// only as the anonymous orchestrator header, so without the fallback the task
+// is findable nowhere by name.
+func TestBuildApp_EndedBindingCoordTaskFallsBackToFreelance(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "hera-view-finish")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	coord, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	bnd, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coord.ID, ArgusTaskID: "ux-qa", WorktreePath: "/w",
+	})
+	if err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	if err := d.Bindings.End(ctx, bnd.ID, "resync_missing"); err != nil {
+		t.Fatalf("end binding: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{"ux-qa": {Status: "in_review"}},
+		tasks: []ArgusTaskInfo{
+			{ID: "ux-qa", Name: "hera-1.0-ux-qa", Project: "Hera", Elapsed: "2h", State: ArgusTaskState{Status: "in_review"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	fl := a.pieces.rail.freelance
+	if len(fl) != 1 || fl[0].Project != "Hera" {
+		t.Fatalf("want 1 freelance project (Hera) carrying the lapsed coord task, got %+v", fl)
+	}
+	if len(fl[0].Tasks) != 1 || fl[0].Tasks[0].ArgusTaskID != "ux-qa" {
+		t.Fatalf("lapsed coord task must appear in Freelance; got %+v", fl[0].Tasks)
+	}
+	if fl[0].Tasks[0].Name != "hera-1.0-ux-qa" {
+		t.Fatalf("freelance fallback row must carry the argus task NAME; got %q", fl[0].Tasks[0].Name)
+	}
+
+	// The named row renders in the rail, so the operator can FIND the session.
+	out := renderApp(t, a, 100, 40)
+	if !strings.Contains(out, "hera-1.0-ux-qa") {
+		t.Fatalf("rail render must contain the lapsed coord task by name\n%s", out)
+	}
+}
+
+// Spec (rail-truthfulness): a worker role whose only binding ended still
+// renders as a role ROW via the latest-binding fallback — it must NOT
+// additionally appear in the Freelance section.
+func TestBuildApp_EndedBindingWorkerRowDoesNotDuplicateIntoFreelance(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "kbtest")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	w, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "hit-s-on-this-agent", Kind: db.KindWorker, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	bnd, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: w.ID, ArgusTaskID: "hit-s", WorktreePath: "/w",
+	})
+	if err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	if err := d.Bindings.End(ctx, bnd.ID, "argus_archived"); err != nil {
+		t.Fatalf("end binding: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{"hit-s": {Status: "in_review"}},
+		tasks: []ArgusTaskInfo{
+			{ID: "hit-s", Name: "hit-s-on-this-agent", Project: "Hera", State: ArgusTaskState{Status: "in_review"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// The worker renders as a tree row carrying the task id...
+	var rowTask string
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == w.ID {
+				rowTask = r.ArgusTaskID
+			}
+		}
+	}
+	if rowTask != "hit-s" {
+		t.Fatalf("worker row must carry the ended binding's task id via the latest-binding fallback; got %q", rowTask)
+	}
+	// ...so Freelance must not duplicate it.
+	if fl := a.pieces.rail.freelance; len(fl) != 0 {
+		t.Fatalf("task rendered as a role row must not duplicate into Freelance; got %+v", fl)
+	}
+}
