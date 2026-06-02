@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/anutron/hera/internal/db"
 	"github.com/anutron/hera/internal/view/ops"
@@ -20,8 +22,16 @@ type mutationService interface {
 	RenameRole(ctx context.Context, id int64, newName string) error
 	DeleteOrchestrator(ctx context.Context, id int64) error
 	DeleteRole(ctx context.Context, id int64) error
-	ToggleArchiveOrchestrator(ctx context.Context, id int64) error
-	ToggleArchiveRole(ctx context.Context, id int64) error
+
+	// Explicit archive verbs. The VIEW decides the direction from the
+	// selection's EFFECTIVE rendered archived state (what the operator
+	// sees) and calls the matching verb — never a flag-inspecting toggle,
+	// which on a mixed-flag row (hera-active + argus-archived) would move
+	// the row OPPOSITE to what the operator sees.
+	ArchiveOrchestrator(ctx context.Context, id int64) error
+	UnarchiveOrchestrator(ctx context.Context, id int64) error
+	ArchiveRole(ctx context.Context, id int64) error
+	UnarchiveRole(ctx context.Context, id int64) error
 
 	// Stage P extended keyset.
 	ListCompletedAgents(ctx context.Context) ([]ops.CompletedAgent, error)
@@ -40,6 +50,14 @@ type mutationService interface {
 	// resurrect-on-Enter flow (Enter against an archived coord with the Archive
 	// section visible).
 	ResurrectOrchestrator(ctx context.Context, coordRoleID int64) (*ops.CreatedTask, error)
+
+	// Task-direct verbs for freelance rows (unmanaged argus tasks with no hera
+	// role or binding): both bypass the hera-binding lookup and address the
+	// argus task by id. ToggleArchiveTask backs `a`; archived is the task's
+	// current argus archived state per the rail's state cache. StepTaskStatus
+	// backs `s`/`S` (advance=true steps toward complete).
+	ToggleArchiveTask(ctx context.Context, taskID string, archived bool) error
+	StepTaskStatus(ctx context.Context, taskID string, advance bool) (string, error)
 }
 
 // listAllState is the subset of *ops.ListAllState the bridge uses to
@@ -83,8 +101,9 @@ const (
 )
 
 // railSelection is the bridge's view of the currently-highlighted
-// rail row. Empty Kind means "nothing addressable selected" —
-// rename/delete/archive silently no-op in that case.
+// rail row. Empty Kind means "nothing addressable selected" — mutation
+// keys then surface a short "not applicable" notice (never a silent
+// no-op).
 type railSelection struct {
 	Kind           selectionKind
 	OrchestratorID int64
@@ -104,6 +123,19 @@ type railSelection struct {
 	// orchestrator rows or roles with no live binding). Carried so the
 	// extended keyset can act on the selection's task.
 	ArgusTaskID string
+
+	// ArgusArchived is the argus-side archived state of the selection's task
+	// (per the rail's argus state cache). Carried on every role row so `a`
+	// can compute the EFFECTIVE archived state the rail displays — on a
+	// freelance row it is the whole signal (no hera role row, so Archived
+	// stays false), and on a managed row it catches the mixed-flag state
+	// (hera-active + argus-archived) the hera flag alone would miss.
+	ArgusArchived bool
+
+	// Dead reports the binding-dead state (DB binding open but the argus
+	// task is gone). A dead row DISPLAYS as archived (roleArchived), so `a`
+	// must treat it as an unarchive target, never stamp a fresh archive.
+	Dead bool
 
 	// WorktreePath is the argus task's worktree path, carried on freelance
 	// rows (RoleKind "freelance", RoleID 0) so `^p` can open a PR straight
@@ -133,6 +165,15 @@ type repopulator interface {
 	RepopulateRail()
 }
 
+// archiveVisibilitySetter is optionally implemented by the repopulator
+// (production *App) so the `l` toggle can sync the rail's archive
+// visibility before the refresh repopulates. Without this sync the toggle
+// only flipped ops.ListAllState — which populateRail never reads — so the
+// Archive section never actually revealed.
+type archiveVisibilitySetter interface {
+	SetShowArchived(bool)
+}
+
 // helpFrameSender sends argus's help control frame so argus pops its help
 // overlay rendered from hera's pushed hotkey dictionary (D12). The bridge's
 // OnHelp routes here instead of opening an in-surface modal. nil makes OnHelp
@@ -145,6 +186,13 @@ type helpFrameSender interface {
 // mutation key to modals + ops.Service. Construction wires it to the
 // surrounding App via the small interfaces above; tests inject
 // fakes for each.
+//
+// CONCURRENCY CONTRACT: every handler is invoked synchronously on the
+// tview event loop and MUST return without blocking. Selection reads
+// happen synchronously (UI state, on-loop); everything that blocks —
+// svc calls AND every modal/refresh helper (each bounces through
+// tview's QueueUpdateDraw, which deadlocks the loop when called from
+// it) — is handed to a goroutine via goUI / mutate.
 type mutationBridge struct {
 	ctx     context.Context
 	modals  modalAPI
@@ -154,6 +202,81 @@ type mutationBridge struct {
 	repop   repopulator
 	help    helpFrameSender
 	log     *slog.Logger
+
+	// inFlight guards the blocking phase of a mutation: while a svc call is
+	// executing on a background goroutine, a second mutation key no-ops with
+	// visible feedback instead of firing a concurrent conflicting operation
+	// on the same row.
+	inFlight atomic.Bool
+
+	// wg tracks every goroutine the bridge spawns (modal opens, mutation
+	// execution) so tests can deterministically wait for the async work to
+	// settle (waitIdle). Production never waits on it.
+	wg sync.WaitGroup
+}
+
+// waitIdle blocks until every goroutine the bridge has spawned so far has
+// finished. Test synchronization only — the async hand-off is the point of
+// the bridge (handlers MUST return to the event loop before their blocking
+// work runs), so tests use this instead of sleeping.
+func (b *mutationBridge) waitIdle() { b.wg.Wait() }
+
+// goUI runs fn on its own goroutine so the on-loop caller never blocks.
+//
+// WHY THIS EXISTS: the bridge's handlers run synchronously on the tview
+// event loop (KeyRouter.HandleKey), and tview v0.42's QueueUpdate BLOCKS
+// until the queued func has executed on that same loop. Every UI helper the
+// bridge touches — the modal openers and RepopulateRail — bounces through
+// QueueUpdateDraw, so calling one directly from a handler deadlocks the loop
+// on itself (the live-repro freeze: `s`/`a` on a rail row bricked the
+// session). From a goroutine the bounce merely blocks the goroutine until
+// the loop services it, which is the safe direction.
+func (b *mutationBridge) goUI(fn func()) {
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		fn()
+	}()
+}
+
+// mutate executes op — a blocking svc call (argus HTTP, DB cascade, worktree
+// removal) — off the event loop, then bounces the UI follow-up (error modal
+// on failure, rail refresh on success when refreshAfter) from that goroutine.
+//
+// The in-flight flag is claimed on the CALLER's goroutine, so by the time
+// the handler returns a second mutation key deterministically sees "busy"
+// and no-ops with visible feedback instead of firing a concurrent
+// conflicting op on the same row. The flag spans only the blocking phase;
+// modal opens (goUI) don't hold it — while a modal is up the ModalGate
+// already keeps mutation keys from reaching the bridge.
+func (b *mutationBridge) mutate(name string, refreshAfter bool, op func() error) {
+	if !b.inFlight.CompareAndSwap(false, true) {
+		b.log.Warn("view.mutations: mutation already in flight; dropping", "op", name)
+		b.goUI(func() {
+			b.modals.ShowError(fmt.Sprintf("%s: another operation is in flight — try again in a moment", name))
+		})
+		return
+	}
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		defer b.inFlight.Store(false)
+		if err := op(); err != nil {
+			b.modals.ShowError(err.Error())
+			return
+		}
+		if refreshAfter {
+			b.refresh()
+		}
+	}()
+}
+
+// notApplicable surfaces short feedback for a mutation key pressed on a
+// selection it cannot act on. NEVER a silent no-op: silence on a live
+// surface reads as a freeze and sends the operator hunting (the reported
+// symptom behind the addressability gaps).
+func (b *mutationBridge) notApplicable(msg string) {
+	b.goUI(func() { b.modals.ShowError(msg) })
 }
 
 // newMutationBridge constructs the bridge. log defaults to
@@ -189,65 +312,78 @@ func newMutationBridge(
 // OnNew prompts for an orchestrator name (required) and an optional coord
 // mission, then spawns the bootstrap argus task via ops.NewOrchestrator. Both
 // fields are passed through so the spawned prompt carries the mission. Empty-
-// name submissions no-op.
+// name submissions no-op. The modal opens via goUI (the open bounces through
+// QueueUpdateDraw); the submit callback runs back on the event loop, so the
+// spawn itself goes through mutate.
 func (b *mutationBridge) OnNew() {
-	b.modals.ShowForm2("New project", "Name", "", "Mission (optional)", "", func(name, mission string) {
-		if name == "" {
-			return
-		}
-		if _, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{Name: name, Mission: mission}); err != nil {
-			b.modals.ShowError(err.Error())
-			return
-		}
-		b.refresh()
-	}, nil)
+	b.goUI(func() {
+		b.modals.ShowForm2("New project", "Name", "", "Mission (optional)", "", func(name, mission string) {
+			if name == "" {
+				return
+			}
+			b.mutate("new project", true, func() error {
+				_, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{Name: name, Mission: mission})
+				return err
+			})
+		}, nil)
+	})
 }
 
 // OnRename prompts for a new name on the currently-selected row and
-// dispatches to RenameOrchestrator or RenameRole based on kind. No-op
-// when nothing addressable is selected.
+// dispatches to RenameOrchestrator or RenameRole based on kind. The
+// selection is captured synchronously (it reads UI state, which must stay
+// on-loop); the modal open and the rename itself run off-loop. Freelancers
+// and non-addressable rows get visible feedback, never a silent no-op.
 func (b *mutationBridge) OnRename() {
 	sel := b.sel.CurrentRailSelection()
 	switch sel.Kind {
 	case selOrchestrator:
-		b.modals.ShowInput(
-			fmt.Sprintf("Rename project %q", sel.Name),
-			"New name",
-			sel.Name,
-			func(name string) {
-				if name == "" || name == sel.Name {
-					return
-				}
-				if err := b.svc.RenameOrchestrator(b.ctx, sel.OrchestratorID, name); err != nil {
-					b.modals.ShowError(err.Error())
-					return
-				}
-				b.refresh()
-			},
-			nil,
-		)
+		b.goUI(func() {
+			b.modals.ShowInput(
+				fmt.Sprintf("Rename project %q", sel.Name),
+				"New name",
+				sel.Name,
+				func(name string) {
+					if name == "" || name == sel.Name {
+						return
+					}
+					b.mutate("rename", true, func() error {
+						return b.svc.RenameOrchestrator(b.ctx, sel.OrchestratorID, name)
+					})
+				},
+				nil,
+			)
+		})
 	case selRole:
-		b.modals.ShowInput(
-			fmt.Sprintf("Rename role %q", sel.Name),
-			"New name",
-			sel.Name,
-			func(name string) {
-				if name == "" || name == sel.Name {
-					return
-				}
-				if err := b.svc.RenameRole(b.ctx, sel.RoleID, name); err != nil {
-					b.modals.ShowError(err.Error())
-					return
-				}
-				b.refresh()
-			},
-			nil,
-		)
+		if sel.RoleKind == string(db.KindFreelance) {
+			b.notApplicable("r: a freelancer is an unmanaged argus task — there is no hera role to rename")
+			return
+		}
+		b.goUI(func() {
+			b.modals.ShowInput(
+				fmt.Sprintf("Rename role %q", sel.Name),
+				"New name",
+				sel.Name,
+				func(name string) {
+					if name == "" || name == sel.Name {
+						return
+					}
+					b.mutate("rename", true, func() error {
+						return b.svc.RenameRole(b.ctx, sel.RoleID, name)
+					})
+				},
+				nil,
+			)
+		})
+	default:
+		b.notApplicable("r: not applicable to this row")
 	}
 }
 
 // OnDelete confirms then dispatches to DeleteOrchestrator or DeleteRole.
-// No-op when nothing addressable is selected.
+// The confirm opens off-loop; the destructive cascade runs through mutate
+// (the modal's Yes callback fires back on the event loop). Freelancers and
+// non-addressable rows get visible feedback.
 func (b *mutationBridge) OnDelete() {
 	sel := b.sel.CurrentRailSelection()
 	var (
@@ -266,6 +402,10 @@ func (b *mutationBridge) OnDelete() {
 		)
 		do = func() error { return b.svc.DeleteOrchestrator(b.ctx, sel.OrchestratorID) }
 	case selRole:
+		if sel.RoleKind == string(db.KindFreelance) {
+			b.notApplicable("^d: a freelancer is an unmanaged argus task — delete it from argus instead")
+			return
+		}
 		warn := ""
 		if sel.ChildCount > 0 {
 			warn = fmt.Sprintf(" WARNING: %q has %d child agent(s) that will also be destroyed.", sel.Name, sel.ChildCount)
@@ -278,36 +418,69 @@ func (b *mutationBridge) OnDelete() {
 		)
 		do = func() error { return b.svc.DeleteRole(b.ctx, sel.RoleID) }
 	default:
+		b.notApplicable("^d: not applicable to this row")
 		return
 	}
-	b.modals.ShowConfirm(title, message, func() {
-		if err := do(); err != nil {
-			b.modals.ShowError(err.Error())
-			return
-		}
-		b.refresh()
-	}, nil)
+	b.goUI(func() {
+		b.modals.ShowConfirm(title, message, func() {
+			b.mutate("delete", true, do)
+		}, nil)
+	})
 }
 
 // OnArchive toggles the archived state of the selected row. No modal
 // — archive is non-destructive (worktree survives), so a single key
-// is enough.
+// is enough. A freelance row (unmanaged argus task, no hera role) is
+// addressed directly by its argus task id; non-addressable rows get
+// visible feedback. The argus call runs off-loop via mutate.
+//
+// The toggle DIRECTION follows the row's EFFECTIVE rendered archived
+// state — the same predicate the rail uses to bucket the row into an
+// Archive expando — and dispatches an explicit verb. Deriving the
+// direction from a single backing flag (the old ToggleArchiveRole read
+// role.Archived alone) moved a mixed-flag row (hera-active +
+// argus-archived) OPPOSITE to what the operator sees: an Archive-expando
+// row got a fresh archived_at instead of clearing both sides.
 func (b *mutationBridge) OnArchive() {
 	sel := b.sel.CurrentRailSelection()
-	var err error
 	switch sel.Kind {
 	case selOrchestrator:
-		err = b.svc.ToggleArchiveOrchestrator(b.ctx, sel.OrchestratorID)
+		// An orchestrator header displays archived from its own flag.
+		if sel.Archived {
+			b.mutate("archive", true, func() error {
+				return b.svc.UnarchiveOrchestrator(b.ctx, sel.OrchestratorID)
+			})
+		} else {
+			b.mutate("archive", true, func() error {
+				return b.svc.ArchiveOrchestrator(b.ctx, sel.OrchestratorID)
+			})
+		}
 	case selRole:
-		err = b.svc.ToggleArchiveRole(b.ctx, sel.RoleID)
+		if sel.RoleKind == string(db.KindFreelance) {
+			if sel.ArgusTaskID == "" {
+				b.notApplicable("a: this freelancer has no argus task id to archive")
+				return
+			}
+			b.mutate("archive", true, func() error {
+				return b.svc.ToggleArchiveTask(b.ctx, sel.ArgusTaskID, sel.ArgusArchived)
+			})
+			return
+		}
+		// Effective rendered state, mirroring rail_list.roleArchived: the
+		// row sits in an Archive expando when EITHER side is archived or
+		// the binding is dead.
+		if sel.Archived || sel.ArgusArchived || sel.Dead {
+			b.mutate("archive", true, func() error {
+				return b.svc.UnarchiveRole(b.ctx, sel.RoleID)
+			})
+		} else {
+			b.mutate("archive", true, func() error {
+				return b.svc.ArchiveRole(b.ctx, sel.RoleID)
+			})
+		}
 	default:
-		return
+		b.notApplicable("a: not applicable to this row")
 	}
-	if err != nil {
-		b.modals.ShowError(err.Error())
-		return
-	}
-	b.refresh()
 }
 
 // OnResurrect handles Enter against an archived coord row when the Archive
@@ -348,28 +521,36 @@ func (b *mutationBridge) OnResurrect() bool {
 		return false
 	}
 
-	b.modals.ShowConfirm(
-		fmt.Sprintf("Resurrect %q?", sel.Name),
-		fmt.Sprintf("Resurrect %q — unarchive its coordinator and spawn a fresh argus task that rebinds via hera_join? (y/N)", sel.Name),
-		func() {
-			if _, err := b.svc.ResurrectOrchestrator(b.ctx, coordRoleID); err != nil {
-				b.modals.ShowError(err.Error())
-				return
-			}
-			b.refresh()
-		},
-		nil,
-	)
+	b.goUI(func() {
+		b.modals.ShowConfirm(
+			fmt.Sprintf("Resurrect %q?", sel.Name),
+			fmt.Sprintf("Resurrect %q — unarchive its coordinator and spawn a fresh argus task that rebinds via hera_join? (y/N)", sel.Name),
+			func() {
+				b.mutate("resurrect", true, func() error {
+					_, err := b.svc.ResurrectOrchestrator(b.ctx, coordRoleID)
+					return err
+				})
+			},
+			nil,
+		)
+	})
 	return true
 }
 
 // OnListAll toggles archive-section visibility. No DB write, no argus
-// call — pure view state per design.md D5.
+// call — pure view state per design.md D5. The toggle itself is cheap
+// in-memory state and runs synchronously; the new visibility is synced
+// into the repopulator (production *App reads it in populateRail) and the
+// refresh bounces off-loop.
 func (b *mutationBridge) OnListAll() {
+	visible := false
 	if b.listAll != nil {
-		b.listAll.Toggle()
+		visible = b.listAll.Toggle()
 	}
-	b.refresh()
+	if s, ok := b.repop.(archiveVisibilitySetter); ok {
+		s.SetShowArchived(visible)
+	}
+	b.goUI(b.refresh)
 }
 
 // OnHelp sends argus's help control frame so argus pops its help overlay
@@ -386,32 +567,36 @@ func (b *mutationBridge) OnHelp() {
 // It first lists the completed agents so the confirmation names exactly what
 // disappears; no destruction occurs unless the operator confirms. With no
 // completed agents it surfaces an informational modal and does nothing.
+// The listing is itself a blocking argus sweep, so the WHOLE pre-confirm
+// phase runs off-loop; the destructive prune then goes through mutate from
+// the modal's Yes callback.
 func (b *mutationBridge) OnPrune() {
-	agents, err := b.svc.ListCompletedAgents(b.ctx)
-	if err != nil {
-		b.modals.ShowError(err.Error())
-		return
-	}
-	if len(agents) == 0 {
-		b.modals.ShowError("No completed agents to prune.")
-		return
-	}
-	var names []string
-	for _, a := range agents {
-		names = append(names, a.Name)
-	}
-	message := fmt.Sprintf(
-		"DESTRUCTIVE: prune %d completed agent(s) — %s — removing each task, worktree, and branch. "+
-			"This cannot be undone. Continue? (y/N)",
-		len(agents), strings.Join(names, ", "),
-	)
-	b.modals.ShowConfirm("Prune completed?", message, func() {
-		if _, err := b.svc.PruneCompleted(b.ctx, agents); err != nil {
+	b.goUI(func() {
+		agents, err := b.svc.ListCompletedAgents(b.ctx)
+		if err != nil {
 			b.modals.ShowError(err.Error())
 			return
 		}
-		b.refresh()
-	}, nil)
+		if len(agents) == 0 {
+			b.modals.ShowError("No completed agents to prune.")
+			return
+		}
+		var names []string
+		for _, a := range agents {
+			names = append(names, a.Name)
+		}
+		message := fmt.Sprintf(
+			"DESTRUCTIVE: prune %d completed agent(s) — %s — removing each task, worktree, and branch. "+
+				"This cannot be undone. Continue? (y/N)",
+			len(agents), strings.Join(names, ", "),
+		)
+		b.modals.ShowConfirm("Prune completed?", message, func() {
+			b.mutate("prune", true, func() error {
+				_, err := b.svc.PruneCompleted(b.ctx, agents)
+				return err
+			})
+		}, nil)
+	})
 }
 
 // OnOpenPR opens a pull request for the selected agent's, coordinator's, OR
@@ -433,38 +618,45 @@ func (b *mutationBridge) OnOpenPR() {
 	// the PR straight from that path.
 	if sel.Kind == selRole && sel.RoleKind == string(db.KindFreelance) {
 		if sel.WorktreePath == "" {
+			b.notApplicable("^p: this freelancer has no worktree to open a PR from")
 			return
 		}
 		wt := sel.WorktreePath
-		b.modals.ShowConfirm(
-			fmt.Sprintf("Open PR for %q?", sel.Name),
-			fmt.Sprintf("Open a pull request from %q's argus-task worktree via the host git flow? (y/N)", sel.Name),
-			func() {
-				if _, err := b.svc.OpenPRFromWorktree(b.ctx, wt); err != nil {
-					b.modals.ShowError(err.Error())
-					return
-				}
-			},
-			nil,
-		)
+		b.goUI(func() {
+			b.modals.ShowConfirm(
+				fmt.Sprintf("Open PR for %q?", sel.Name),
+				fmt.Sprintf("Open a pull request from %q's argus-task worktree via the host git flow? (y/N)", sel.Name),
+				func() {
+					// No refresh: opening a PR mutates nothing the rail renders.
+					b.mutate("open PR", false, func() error {
+						_, err := b.svc.OpenPRFromWorktree(b.ctx, wt)
+						return err
+					})
+				},
+				nil,
+			)
+		})
 		return
 	}
 
 	roleID := b.openPRRoleID(sel)
 	if roleID == 0 {
+		b.notApplicable("^p: no worktree resolvable from this row")
 		return
 	}
-	b.modals.ShowConfirm(
-		fmt.Sprintf("Open PR for %q?", sel.Name),
-		fmt.Sprintf("Open a pull request from %q's worktree via the host git flow? (y/N)", sel.Name),
-		func() {
-			if _, err := b.svc.OpenPR(b.ctx, roleID); err != nil {
-				b.modals.ShowError(err.Error())
-				return
-			}
-		},
-		nil,
-	)
+	b.goUI(func() {
+		b.modals.ShowConfirm(
+			fmt.Sprintf("Open PR for %q?", sel.Name),
+			fmt.Sprintf("Open a pull request from %q's worktree via the host git flow? (y/N)", sel.Name),
+			func() {
+				b.mutate("open PR", false, func() error {
+					_, err := b.svc.OpenPR(b.ctx, roleID)
+					return err
+				})
+			},
+			nil,
+		)
+	})
 }
 
 // openPRRoleID resolves which role's binding the `^p` PR opens from:
@@ -484,33 +676,68 @@ func (b *mutationBridge) openPRRoleID(sel railSelection) int64 {
 	return 0
 }
 
-// OnStatusAdvance steps the selected agent's argus status forward (`s`).
-// No modal — status stepping is reversible (`S`). No-op for non-role rows.
+// OnStatusAdvance steps the selected row's argus status forward (`s`).
+// No modal — status stepping is reversible (`S`).
 func (b *mutationBridge) OnStatusAdvance() {
 	b.stepStatus(true)
 }
 
-// OnStatusRevert steps the selected agent's argus status backward (`S`).
+// OnStatusRevert steps the selected row's argus status backward (`S`).
 func (b *mutationBridge) OnStatusRevert() {
 	b.stepStatus(false)
 }
 
+// stepStatus routes `s`/`S` by selection kind, mirroring how `a` resolves
+// its target:
+//   - worker / sub-coordinator role → the role's live binding's task
+//     (AdvanceStatus / RevertStatus);
+//   - freelance row → the argus task directly by id (StepTaskStatus — a
+//     freelancer has no hera binding to resolve);
+//   - orchestrator header → the orchestrator's coord role's task;
+//   - anything else → visible feedback, never silence.
+//
+// The argus round-trip runs off-loop via mutate.
 func (b *mutationBridge) stepStatus(advance bool) {
 	sel := b.sel.CurrentRailSelection()
-	if sel.Kind != selRole {
-		return
+	verb := "s"
+	if !advance {
+		verb = "S"
 	}
-	var err error
-	if advance {
-		_, err = b.svc.AdvanceStatus(b.ctx, sel.RoleID)
-	} else {
-		_, err = b.svc.RevertStatus(b.ctx, sel.RoleID)
+	stepRole := func(roleID int64) {
+		b.mutate("status step", true, func() error {
+			var err error
+			if advance {
+				_, err = b.svc.AdvanceStatus(b.ctx, roleID)
+			} else {
+				_, err = b.svc.RevertStatus(b.ctx, roleID)
+			}
+			return err
+		})
 	}
-	if err != nil {
-		b.modals.ShowError(err.Error())
-		return
+	switch sel.Kind {
+	case selRole:
+		if sel.RoleKind == string(db.KindFreelance) {
+			if sel.ArgusTaskID == "" {
+				b.notApplicable(verb + ": this freelancer has no argus task id to step")
+				return
+			}
+			taskID := sel.ArgusTaskID
+			b.mutate("status step", true, func() error {
+				_, err := b.svc.StepTaskStatus(b.ctx, taskID, advance)
+				return err
+			})
+			return
+		}
+		stepRole(sel.RoleID)
+	case selOrchestrator:
+		if sel.CoordRoleID == 0 {
+			b.notApplicable(verb + ": this project has no coordinator role to step")
+			return
+		}
+		stepRole(sel.CoordRoleID)
+	default:
+		b.notApplicable(verb + ": not applicable to this row")
 	}
-	b.refresh()
 }
 
 func (b *mutationBridge) refresh() {

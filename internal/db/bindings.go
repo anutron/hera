@@ -194,6 +194,18 @@ func (b *BindingsDAO) GetLiveByRole(ctx context.Context, roleID int64) (*Binding
 		 FROM bindings WHERE role_id = ? AND ended_at IS NULL`, roleID)
 }
 
+// GetLatestByRole returns the role's most recent binding by started_at
+// regardless of whether it has ended (id breaks same-instant ties).
+// Returns ErrNotFound when the role has never had a binding. Backs the
+// role-ops fallback for archived rows: archiving a task ENDS its binding
+// (end_reason='argus_archived') while preserving the argus_task_id, so a
+// live-only lookup misses exactly the rows whose ops still need the task.
+func (b *BindingsDAO) GetLatestByRole(ctx context.Context, roleID int64) (*Binding, error) {
+	return b.scanOne(ctx,
+		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM bindings WHERE role_id = ? ORDER BY started_at DESC, id DESC LIMIT 1`, roleID)
+}
+
 // ListLive returns every binding whose ended_at is NULL. Ordered by
 // started_at ascending so callers iterating for startup-seed purposes
 // see oldest bindings first (the order is informational, not contract).

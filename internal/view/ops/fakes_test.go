@@ -17,7 +17,8 @@ type fakeDB struct {
 
 	orchestrators map[int64]*Orchestrator
 	roles         map[int64]*Role
-	bindings      map[int64]*Binding // keyed by binding id; live = ended bindings purged or marked via separate map
+	bindings      map[int64]*Binding // keyed by binding id; live bindings only
+	ended         map[int64]*Binding // bindings moved here by EndBinding / seedEndedBinding
 
 	// renameOrchCalls / renameRoleCalls track DAO-level mutation calls
 	// for tests that need to assert "only the name column is touched".
@@ -46,6 +47,7 @@ func newFakeDB() *fakeDB {
 		orchestrators: map[int64]*Orchestrator{},
 		roles:         map[int64]*Role{},
 		bindings:      map[int64]*Binding{},
+		ended:         map[int64]*Binding{},
 	}
 }
 
@@ -90,6 +92,24 @@ func (f *fakeDB) seedBinding(roleID int64, argusTaskID, worktreePath string) *Bi
 		WorktreePath: worktreePath,
 	}
 	f.bindings[b.ID] = b
+	return b
+}
+
+// seedEndedBinding installs a binding that has already ended (the
+// archived-role shape: the live lookup misses it, the latest lookup
+// resolves it). Later seeds are more recent — GetLatestBindingByRole
+// uses the binding id as the recency proxy.
+func (f *fakeDB) seedEndedBinding(roleID int64, argusTaskID, worktreePath string) *Binding {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextBindingID++
+	b := &Binding{
+		ID:           f.nextBindingID,
+		RoleID:       roleID,
+		ArgusTaskID:  argusTaskID,
+		WorktreePath: worktreePath,
+	}
+	f.ended[b.ID] = b
 	return b
 }
 
@@ -194,6 +214,20 @@ func (f *fakeDB) ListRolesByOrchestrator(ctx context.Context, orchID int64) ([]*
 	return out, nil
 }
 
+func (f *fakeDB) ListRolesByOrchestratorInclusive(ctx context.Context, orchID int64) ([]*Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []*Role{}
+	for _, r := range f.roles {
+		if r.OrchestratorID != orchID {
+			continue
+		}
+		cp := *r
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
 func (f *fakeDB) ArchiveRole(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -242,6 +276,30 @@ func (f *fakeDB) GetLiveBindingByRole(ctx context.Context, roleID int64) (*Bindi
 	return nil, ErrNotFound
 }
 
+func (f *fakeDB) GetLatestBindingByRole(ctx context.Context, roleID int64) (*Binding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Most recent = highest binding id (the fake's recency proxy for
+	// started_at), across live AND ended bindings — mirroring the DAO's
+	// "regardless of ended_at" contract.
+	var latest *Binding
+	for _, m := range []map[int64]*Binding{f.bindings, f.ended} {
+		for _, b := range m {
+			if b.RoleID != roleID {
+				continue
+			}
+			if latest == nil || b.ID > latest.ID {
+				latest = b
+			}
+		}
+	}
+	if latest == nil {
+		return nil, ErrNotFound
+	}
+	cp := *latest
+	return &cp, nil
+}
+
 func (f *fakeDB) ListLiveBindings(ctx context.Context) ([]*Binding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -257,12 +315,15 @@ func (f *fakeDB) EndBinding(ctx context.Context, bindingID int64, reason string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.endBindingCalls = append(f.endBindingCalls, endCall{BindingID: bindingID, Reason: reason})
-	if _, ok := f.bindings[bindingID]; !ok {
+	b, ok := f.bindings[bindingID]
+	if !ok {
 		return ErrNotFound
 	}
-	// "Ended" bindings are removed from the live-binding map so
-	// subsequent GetLiveBindingByRole returns ErrNotFound.
+	// "Ended" bindings move out of the live-binding map (subsequent
+	// GetLiveBindingByRole returns ErrNotFound) but stay resolvable via
+	// GetLatestBindingByRole, mirroring the real DAO.
 	delete(f.bindings, bindingID)
+	f.ended[bindingID] = b
 	return nil
 }
 

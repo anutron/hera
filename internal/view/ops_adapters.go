@@ -79,6 +79,18 @@ func (a *dbAdapter) ListRolesByOrchestrator(ctx context.Context, orchID int64) (
 	return out, nil
 }
 
+func (a *dbAdapter) ListRolesByOrchestratorInclusive(ctx context.Context, orchID int64) ([]*ops.Role, error) {
+	rows, err := a.d.Roles.ListByOrchestratorInclusive(ctx, orchID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*ops.Role, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, adaptRole(r))
+	}
+	return out, nil
+}
+
 func (a *dbAdapter) ArchiveRole(ctx context.Context, id int64) error {
 	return translateDBErr(a.d.Roles.Archive(ctx, id))
 }
@@ -93,6 +105,14 @@ func (a *dbAdapter) RenameRole(ctx context.Context, id int64, newName string) er
 
 func (a *dbAdapter) GetLiveBindingByRole(ctx context.Context, roleID int64) (*ops.Binding, error) {
 	b, err := a.d.Bindings.GetLiveByRole(ctx, roleID)
+	if err != nil {
+		return nil, translateDBErr(err)
+	}
+	return adaptBinding(b), nil
+}
+
+func (a *dbAdapter) GetLatestBindingByRole(ctx context.Context, roleID int64) (*ops.Binding, error) {
+	b, err := a.d.Bindings.GetLatestByRole(ctx, roleID)
 	if err != nil {
 		return nil, translateDBErr(err)
 	}

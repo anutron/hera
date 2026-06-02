@@ -1,9 +1,14 @@
 package view
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -422,6 +427,150 @@ func TestKeyRouter_NoAgentTaskID_DropsKeystroke(t *testing.T) {
 	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'z', tcell.ModNone))
 	if len(p.Calls()) != 0 {
 		t.Fatalf("missing task ID must drop keystroke, not forward; got %d calls", len(p.Calls()))
+	}
+}
+
+// failingPoster always errors so we can assert the router surfaces (rather than
+// swallows) a failed forward to the pane's PTY — the diagnostic gap behind the
+// reported E1 "focus moves into the pane but keystrokes never echo, with no
+// error anywhere."
+type failingPoster struct {
+	calls int
+	err   error
+}
+
+func (f *failingPoster) PostTaskInput(_ context.Context, _ string, _ []byte) (int, error) {
+	f.calls++
+	return 0, f.err
+}
+
+// TestKeyRouter_ForwardFailure_IsLogged_NotSwallowed proves that when the
+// forward POST to a focused pane's PTY input endpoint fails, the router logs a
+// warning carrying the focus, task id, and error — instead of silently
+// dropping it. Before the fix the error was discarded (`_, _ = …`), so a key
+// that never reached the agent left no trace; this test fails in that world.
+func TestKeyRouter_ForwardFailure_IsLogged_NotSwallowed(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	r, _, _, _ := newRouter()
+	fp := &failingPoster{err: errors.New("argus down")}
+	r.Poster = fp
+	r.Log = logger
+	r.Targets = &fakeTargets{coord: "coord-1", agent: "agent-1"}
+	r.Focus.JumpToAGENT()
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'Z', tcell.ModNone))
+
+	if fp.calls != 1 {
+		t.Fatalf("router must attempt the forward exactly once; got %d", fp.calls)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "forward keystroke to pane PTY failed") {
+		t.Fatalf("forward failure must be logged, not swallowed; log was: %q", out)
+	}
+	if !strings.Contains(out, "agent-1") || !strings.Contains(out, "argus down") {
+		t.Fatalf("forward-failure log must carry task id + error; log was: %q", out)
+	}
+}
+
+// TestKeyRouter_ForwardSuccess_NotLoggedAsFailure guards against noisy logging:
+// a successful forward (the common case) must NOT emit the failure warning.
+func TestKeyRouter_ForwardSuccess_NotLoggedAsFailure(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	r, p, _, _ := newRouter()
+	r.Log = logger
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'Z', tcell.ModNone))
+
+	if len(p.Calls()) != 1 {
+		t.Fatalf("want 1 forwarded byte, got %d", len(p.Calls()))
+	}
+	if strings.Contains(buf.String(), "forward keystroke to pane PTY failed") {
+		t.Fatalf("successful forward must NOT log a failure; log was: %q", buf.String())
+	}
+}
+
+// blockingForwarder blocks forever in Enqueue unless released, so a router
+// test can prove handlePane returns without waiting on the forward path.
+type blockingForwarder struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingForwarder) Enqueue(taskID string, payload []byte) {
+	close(b.entered)
+	<-b.release
+}
+
+// recordingForwarder records Enqueue calls so a router test can assert the
+// router enqueues (rather than POSTs synchronously) when a forwarder is wired.
+type recordingForwarder struct {
+	mu    sync.Mutex
+	calls []postCall
+}
+
+func (r *recordingForwarder) Enqueue(taskID string, payload []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, postCall{TaskID: taskID, Payload: append([]byte(nil), payload...)})
+}
+
+func (r *recordingForwarder) Calls() []postCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]postCall, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+// TestKeyRouter_Forward_EnqueuesNotSynchronousPost proves that when an async
+// Forward is wired, handlePane enqueues the bytes (and does NOT call the
+// synchronous Poster directly).
+func TestKeyRouter_Forward_EnqueuesNotSynchronousPost(t *testing.T) {
+	r, p, _, _ := newRouter()
+	fwd := &recordingForwarder{}
+	r.Forward = fwd
+	r.Focus.JumpToAGENT()
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+
+	calls := fwd.Calls()
+	if len(calls) != 1 || calls[0].TaskID != "agent-1" || string(calls[0].Payload) != "x" {
+		t.Fatalf("router must enqueue 'x' for agent-1; got %+v", calls)
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("with a Forward wired the router must NOT call the synchronous Poster; got %d", len(p.Calls()))
+	}
+}
+
+// TestKeyRouter_Forward_NonBlocking proves HandleKey returns promptly even when
+// the wired forwarder's Enqueue is stuck — the tview input-handler goroutine
+// must never block on the forward path.
+func TestKeyRouter_Forward_NonBlocking(t *testing.T) {
+	r, _, _, _ := newRouter()
+	bf := &blockingForwarder{entered: make(chan struct{}), release: make(chan struct{})}
+	r.Forward = bf
+	r.Focus.JumpToAGENT()
+
+	done := make(chan struct{})
+	go func() {
+		r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+		close(done)
+	}()
+
+	// A correct forwarder Enqueue never blocks; this fake blocks deliberately,
+	// proving the test would catch a router that blocks the event loop on the
+	// forward path. With a non-blocking Enqueue (the production PaneForwarder)
+	// HandleKey returns immediately.
+	<-bf.entered
+	close(bf.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("HandleKey did not return after Enqueue unblocked")
 	}
 }
 

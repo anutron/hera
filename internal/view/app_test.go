@@ -10,6 +10,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"github.com/anutron/argus-sdk/theme"
+
 	"github.com/anutron/hera/internal/db"
 )
 
@@ -216,6 +218,66 @@ func TestApp_OnFocusChanged_PushesFocusAwareHotkeys(t *testing.T) {
 	coordLabels := labelsFor(items)
 	if !strings.Contains(coordLabels, "coord PTY") || strings.Contains(coordLabels, "j/k:move") {
 		t.Fatalf("COORD hotkeys should reflect coord focus, not RAIL: %s", coordLabels)
+	}
+}
+
+// TestApp_OnFocusChanged_PaintsArgusCyanBorders proves the focus-feedback
+// color contract (D12): the focused element's border is painted in argus's
+// title/focus cyan (theme.ColorTitle) and the two unfocused borders in argus's
+// dim border gray (theme.ColorBorder), so Ctrl-H into hera feels like the same
+// app. A regression to tcell.ColorYellow / ColorWhite (the pre-stage colors)
+// must fail here. The rail and both panes embed tview.Box, so GetBorderColor
+// reflects exactly what OnFocusChanged's SetBorderColor calls set.
+func TestApp_OnFocusChanged_PaintsArgusCyanBorders(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Each case: the focused element shows ColorTitle, the other two ColorBorder.
+	cases := []struct {
+		name  string
+		state FocusState
+	}{
+		{name: "RAIL", state: FocusRAIL},
+		{name: "COORD", state: FocusCOORD},
+		{name: "AGENT", state: FocusAGENT},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a.OnFocusChanged(tc.state)
+
+			want := func(state FocusState, this FocusState) tcell.Color {
+				if state == this {
+					return theme.ColorTitle
+				}
+				return theme.ColorBorder
+			}
+
+			if got := a.pieces.rail.GetBorderColor(); got != want(tc.state, FocusRAIL) {
+				t.Errorf("rail border = %v, want %v", got, want(tc.state, FocusRAIL))
+			}
+			if got := a.pieces.coord.GetBorderColor(); got != want(tc.state, FocusCOORD) {
+				t.Errorf("coord border = %v, want %v", got, want(tc.state, FocusCOORD))
+			}
+			if got := a.pieces.agent.GetBorderColor(); got != want(tc.state, FocusAGENT) {
+				t.Errorf("agent border = %v, want %v", got, want(tc.state, FocusAGENT))
+			}
+
+			// Guard against a silent regression to the retired focus colors.
+			focusedColor := a.pieces.rail.GetBorderColor()
+			switch tc.state {
+			case FocusCOORD:
+				focusedColor = a.pieces.coord.GetBorderColor()
+			case FocusAGENT:
+				focusedColor = a.pieces.agent.GetBorderColor()
+			}
+			if focusedColor == tcell.ColorYellow || focusedColor == tcell.ColorWhite {
+				t.Errorf("focused border regressed to the pre-stage yellow/white: %v", focusedColor)
+			}
+		})
 	}
 }
 
@@ -978,6 +1040,104 @@ func TestApp_OnRailSelectEnter_OrchHeaderEntersHERA(t *testing.T) {
 	}
 	if a.CoordTaskID() != "tc" {
 		t.Fatalf("coord task should be tc after header Enter; got %q", a.CoordTaskID())
+	}
+}
+
+// TestPopulateRail_SubCoordinatorNestsAndBindsOwnTask is the end-to-end
+// multi-binding fixture: orchestrator "parent" has a worker role "sub" whose
+// live binding's argus task is ALSO orchestrator "child"'s coord task. populate
+// must (a) nest "child"'s leaf under the "sub" sub-coordinator row, (b) NOT
+// double-render "child" at top level, and (c) bind HERA to the SUB-COORD's OWN
+// task (not the parent's coord) when the sub-coordinator is selected →
+// full-width HERA (coordPresent=true, agentPresent=false).
+func TestPopulateRail_SubCoordinatorNestsAndBindsOwnTask(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	parent, _ := d.Orchestrators.Create(ctx, "parent")
+	parentCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: parent.ID, Name: "parent-coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	subWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: parent.ID, Name: "sub", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: parentCoord.ID, ArgusTaskID: "t-parent-coord", WorktreePath: "/pc"})
+	// The sub worker's task IS the child orchestrator's coord task (multi-binding).
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subWorker.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	child, _ := d.Orchestrators.Create(ctx, "child")
+	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: child.ID, Name: "child-coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	childLeaf, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: child.ID, Name: "child-leaf", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoord.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childLeaf.ID, ArgusTaskID: "t-child-leaf", WorktreePath: "/cl"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	// The child orchestrator must NOT render as a top-level row (it's consumed
+	// as a nested sub-coordinator). Top-level rows are only "parent".
+	topLevelOrchs := 0
+	var subCoordRow *roleEntry
+	for _, row := range a.pieces.rail.rows {
+		if row.kind == railRowOrch && row.orch != nil && !row.orch.Archived {
+			topLevelOrchs++
+			if row.orch.ID == child.ID {
+				t.Fatalf("child orchestrator must NOT render at top level; it nests under the sub-coordinator")
+			}
+		}
+		if row.kind == railRowRole && row.role != nil && row.role.RoleID == subWorker.ID {
+			subCoordRow = row.role
+		}
+	}
+	if topLevelOrchs != 1 {
+		t.Fatalf("expected exactly one top-level orchestrator (parent); got %d", topLevelOrchs)
+	}
+	if subCoordRow == nil {
+		t.Fatalf("sub-coordinator role row missing from the rail rows")
+	}
+	if subCoordRow.RoleKind != string(db.KindCoordinator) {
+		t.Fatalf("the sub worker must be promoted to coordinator kind; got %q", subCoordRow.RoleKind)
+	}
+	if subCoordRow.childOrch == nil || subCoordRow.childOrch.ID != child.ID {
+		t.Fatalf("sub-coordinator must carry its childOrch pointer; got %+v", subCoordRow.childOrch)
+	}
+
+	// The child's leaf must be present as a nested row.
+	foundChildLeaf := false
+	for _, row := range a.pieces.rail.rows {
+		if row.kind == railRowRole && row.role != nil && row.role.RoleID == childLeaf.ID {
+			foundChildLeaf = true
+		}
+	}
+	if !foundChildLeaf {
+		t.Fatalf("child orchestrator's leaf must render nested under the sub-coordinator")
+	}
+
+	// Selecting the sub-coordinator composes full-width HERA bound to ITS OWN
+	// task (t-sub), not the parent's coord (t-parent-coord).
+	if !a.pieces.rail.SelectByRoleID(subWorker.ID) {
+		t.Fatalf("could not select the sub-coordinator row")
+	}
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+	if a.CoordTaskID() != "t-sub" {
+		t.Fatalf("HERA must bind to the sub-coordinator's OWN task t-sub; got %q", a.CoordTaskID())
+	}
+	if !a.coordPresent || a.agentPresent {
+		t.Fatalf("sub-coordinator selection must be full-width HERA (coordPresent=true, agentPresent=false); got coord=%v agent=%v", a.coordPresent, a.agentPresent)
+	}
+
+	// Enter on the sub-coordinator enters the HERA pane.
+	if got := a.OnRailSelectEnter(); got != FocusCOORD {
+		t.Fatalf("Enter on a sub-coordinator must enter HERA (FocusCOORD); got %s", got)
 	}
 }
 
@@ -1931,5 +2091,160 @@ func TestApp_OnRailSelectEnter_ArchiveExpandoFolds(t *testing.T) {
 	}
 	if a.pieces.rail.archiveExpanded[orch.ID] == wasOpen {
 		t.Fatalf("Enter on Archive expando must toggle its fold")
+	}
+}
+
+// TestPopulateRail_HeraArchivedRoleInArchiveExpandoByDefault pins the
+// archive-visibility partition for HERA-archived roles (archived_at set, the
+// `a` key): in the DEFAULT view (showArchived off) the role must move into
+// its coordinator's Archive (N) expando — collapsed, but present and
+// reachable — instead of vanishing from the rail entirely. Dead and
+// argus-archived children already get this treatment; a hera-archived child
+// must not be the odd one out just because the rail's role query dropped it.
+// Also guards the consumers: the header's live-child (N) count must exclude
+// the archived role, and folding the expando open must reveal it.
+func TestPopulateRail_HeraArchivedRoleInArchiveExpandoByDefault(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	liveWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "activerow", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	archWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "stashedrow", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: liveWorker.ID, ArgusTaskID: "t-active", WorktreePath: "/a"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: archWorker.ID, ArgusTaskID: "t-stashed", WorktreePath: "/s"})
+	if err := d.Roles.Archive(ctx, archWorker.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &alivePaneSource{alive: map[string]bool{
+		"t-active":  true,
+		"t-stashed": true,
+	}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// The archived role must be present in the rail DATA (Archived=true) so
+	// buildRows can bucket it into the per-coordinator Archive expando.
+	var archEntry *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == archWorker.ID {
+				archEntry = r
+			}
+		}
+	}
+	if archEntry == nil {
+		t.Fatalf("hera-archived role missing from rail data in default view: it vanished instead of moving into the Archive expando")
+	}
+	if !archEntry.Archived {
+		t.Fatalf("expected Archived=true on hera-archived role; got %+v", archEntry)
+	}
+
+	got := renderApp(t, a, 80, 24)
+	// Collapsed by default: the expando header renders, the row name doesn't.
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("coordinator must render an Archive (1) expando for its hera-archived child in the default view; got:\n%s", got)
+	}
+	if strings.Contains(got, "stashedrow") {
+		t.Fatalf("archived row must stay behind the collapsed expando by default; got:\n%s", got)
+	}
+	// Header live-child count excludes the archived role.
+	if !strings.Contains(got, "proj (1)") {
+		t.Fatalf("coordinator header (N) must count only active children; got:\n%s", got)
+	}
+
+	// Folding the expando open reveals the archived row — never unreachable.
+	a.pieces.rail.archiveExpanded[orch.ID] = true
+	a.pieces.rail.buildRows()
+	got = renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "stashedrow") {
+		t.Fatalf("opening the Archive expando must reveal the hera-archived row; got:\n%s", got)
+	}
+}
+
+// TestFindInitialSelection_SkipsHeraArchivedRole guards startup
+// auto-selection against the inclusive rail load: an archived role — even
+// with a live binding whose argus task is alive — must never be picked for
+// the AGENT or COORD pane.
+func TestFindInitialSelection_SkipsHeraArchivedRole(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	archWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "stashed", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: archWorker.ID, ArgusTaskID: "t-stashed", WorktreePath: "/s"})
+	if err := d.Roles.Archive(ctx, archWorker.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &alivePaneSource{alive: map[string]bool{"t-stashed": true}}
+	coord, agent := findInitialSelection(d, src)
+	if coord != "" || agent != "" {
+		t.Fatalf("startup selection must never bind an archived role's task; got coord=%q agent=%q", coord, agent)
+	}
+}
+
+// TestPopulateRail_ArchivedSubCoordStaysInExpando pins the multi-binding
+// lift for an ARCHIVED worker that is also a child orchestrator's coord:
+// the default view must mirror today's `l` listall behavior (the only mode
+// that previously ran the inclusive query through resolveSubCoordinators) —
+// the worker is promoted to a coordinator row inside its parent's Archive
+// expando, and the child orchestrator is consumed from the top level so it
+// is never double-rendered as an active root.
+func TestPopulateRail_ArchivedSubCoordStaysInExpando(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	parent, _ := d.Orchestrators.Create(ctx, "parent")
+	child, _ := d.Orchestrators.Create(ctx, "childproj")
+	// Worker under parent, bound to the SAME argus task as child's coord.
+	subWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: parent.ID, Name: "subcoord", Kind: db.KindWorker, ArgusProject: "parent",
+	})
+	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: child.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "childproj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subWorker.ID, ArgusTaskID: "t-multi", WorktreePath: "/m"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoord.ID, ArgusTaskID: "t-multi", WorktreePath: "/m"})
+	if err := d.Roles.Archive(ctx, subWorker.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &alivePaneSource{alive: map[string]bool{"t-multi": true}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// The child orchestrator must be consumed by the lift (not a top-level
+	// row), exactly as in `l` mode.
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == child.ID {
+			t.Fatalf("child orchestrator must be consumed by the sub-coordinator lift, not rendered top-level")
+		}
+	}
+	// The archived sub-coord renders only behind the parent's Archive expando.
+	got := renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("parent must render an Archive (1) expando holding the archived sub-coordinator; got:\n%s", got)
+	}
+	if strings.Contains(got, "subcoord") {
+		t.Fatalf("archived sub-coordinator must stay behind the collapsed expando by default; got:\n%s", got)
+	}
+	a.pieces.rail.archiveExpanded[parent.ID] = true
+	a.pieces.rail.buildRows()
+	got = renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "subcoord") {
+		t.Fatalf("opening the parent's Archive expando must reveal the archived sub-coordinator; got:\n%s", got)
 	}
 }

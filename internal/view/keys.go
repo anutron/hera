@@ -2,6 +2,7 @@ package view
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -24,8 +25,13 @@ type PaneTargets interface {
 
 // MutationHandler receives the six rail-only mutation key events. Stage H
 // implements the modal flows behind each; Stage G only fires the trigger.
-// All methods are invoked synchronously from the key pump — the
-// implementation MUST NOT block (open modals via QueueUpdateDraw, etc.).
+// All methods are invoked synchronously from the key pump (the tview event
+// loop) — the implementation MUST NOT block AND MUST NOT call anything that
+// bounces through tview's QueueUpdate from the calling goroutine (QueueUpdate
+// blocks until the queued func runs on this same loop — a self-deadlock).
+// The mutationBridge satisfies this by capturing the selection synchronously
+// and handing every blocking phase (svc calls, modal opens, refresh) to a
+// goroutine; see mutationBridge's concurrency contract.
 type MutationHandler interface {
 	OnNew()
 	OnRename()
@@ -108,6 +114,15 @@ type RailSelectHandler interface {
 	OnRailSelectEnter() FocusState
 }
 
+// PaneByteForwarder enqueues pane-focus keystroke bytes for asynchronous,
+// order-preserving, coalesced delivery to a task's PTY input endpoint. Enqueue
+// MUST NOT block the caller (the tview input-handler goroutine). *PaneForwarder
+// is the production implementation; tests inject a recording/blocking fake. A
+// nil Forward makes the router fall back to a synchronous PostTaskInput.
+type PaneByteForwarder interface {
+	Enqueue(taskID string, payload []byte)
+}
+
 // KeyRouter is the top-level input capture handler. It owns the focus
 // state machine and decides for each key event whether to (1) transition
 // focus, (2) fire a mutation handler, (3) forward bytes to a task's PTY,
@@ -124,6 +139,12 @@ type KeyRouter struct {
 	RailSelect RailSelectHandler
 	Modal      ModalGate
 
+	// Forward, when set, receives pane-focus keystroke bytes for asynchronous
+	// ordered+coalesced delivery — handlePane enqueues and returns immediately
+	// so a slow round-trip never serializes typing on the event loop. When nil
+	// the router falls back to the synchronous Poster path below.
+	Forward PaneByteForwarder
+
 	// Scroller scrolls the focused pane (⇧↑/⇧↓). InPaneNav flips the rail
 	// selection while staying in a pane (⌘↑/⌘↓ / ^↑/^↓). Both are pane-focus-
 	// only; nil makes the corresponding key a consumed no-op in a pane. See
@@ -139,6 +160,15 @@ type KeyRouter struct {
 	// Ctx is the context used when calling Poster.PostTaskInput. Defaults
 	// to context.Background() when nil.
 	Ctx context.Context
+
+	// Log records why a focused-pane keystroke failed to reach its PTY. The
+	// forward POST to argus's /api/tasks/{id}/input endpoint can fail at the
+	// boundary (argus down, task gone, endpoint unsupported, auth) — without a
+	// log that failure is INVISIBLE: focus moved into the pane but nothing
+	// echoes, with no clue why (the reported E1 symptom). Logging the error
+	// turns a silent drop into a diagnosable event. A nil Log is a safe no-op
+	// (falls back to slog.Default()).
+	Log *slog.Logger
 }
 
 // HandleKey is the tview-compatible input capture. Returns nil when the
@@ -352,25 +382,56 @@ func (r *KeyRouter) handlePane(event *tcell.EventKey) *tcell.EventKey {
 	if r.Targets == nil || r.Poster == nil {
 		return nil
 	}
+	state := r.Focus.State()
 	var taskID string
-	if r.Focus.State() == FocusCOORD {
+	if state == FocusCOORD {
 		taskID = r.Targets.CoordTaskID()
 	} else {
 		taskID = r.Targets.AgentTaskID()
 	}
 	if taskID == "" {
+		// Defense-in-depth: focus is in a pane but no task is bound to it, so
+		// the keystroke has nowhere to go. Surface it — a persistently empty
+		// target while a pane holds focus is the binding-not-loaded face of E1.
+		r.logger().Debug("view.keys: focused pane has no bound task; dropping keystroke",
+			"focus", state.String())
 		return nil
 	}
 	payload := encodeEventForPTY(event)
 	if len(payload) == 0 {
 		return nil
 	}
+	// Fast path: hand the byte(s) to the async forwarder and return IMMEDIATELY.
+	// The forwarder drains in FIFO order (preserving key order) on its own
+	// goroutine and coalesces consecutive same-task bytes into one POST, so fast
+	// typing never serializes behind per-keystroke HTTP round-trips on the tview
+	// input-handler goroutine. The forwarder emits the E1 failure log itself.
+	if r.Forward != nil {
+		r.Forward.Enqueue(taskID, payload)
+		return nil
+	}
+	// Synchronous fallback (no async forwarder wired, e.g. unit tests): POST on
+	// the calling goroutine. A failure here is the reported E1 symptom — focus
+	// moved into the pane but typed keys never echo. Log it (with enough context
+	// to act) instead of swallowing.
 	ctx := r.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, _ = r.Poster.PostTaskInput(ctx, taskID, payload)
+	if _, err := r.Poster.PostTaskInput(ctx, taskID, payload); err != nil && ctx.Err() == nil {
+		r.logger().Warn("view.keys: forward keystroke to pane PTY failed",
+			"focus", state.String(), "task_id", taskID, "bytes", len(payload), "err", err)
+	}
 	return nil
+}
+
+// logger returns the router's logger, defaulting to slog.Default() when none
+// was wired. Centralized so callers don't repeat the nil check.
+func (r *KeyRouter) logger() *slog.Logger {
+	if r.Log != nil {
+		return r.Log
+	}
+	return slog.Default()
 }
 
 func (r *KeyRouter) notifyBorder() {

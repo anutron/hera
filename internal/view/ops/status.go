@@ -45,8 +45,11 @@ func prevStatus(status string) string {
 // AdvanceStatus implements `s`: read the role's bound argus task status and
 // step it one rung toward complete (pending → in_progress → in_review →
 // complete), clamping at complete. Returns the resolved status. No-op (returns
-// the current status) when already complete. Errors when the role has no live
-// binding (nothing to step).
+// the current status) when already complete. Status stepping is independent of
+// archive state: the task is resolved via the live binding when one exists,
+// falling back to the role's most recent (ended) binding — archiving ends the
+// binding while keeping its argus task id. Errors only when no binding ever
+// recorded an argus task (nothing to step).
 func (s *Service) AdvanceStatus(ctx context.Context, roleID int64) (string, error) {
 	return s.stepStatus(ctx, roleID, true)
 }
@@ -58,20 +61,33 @@ func (s *Service) RevertStatus(ctx context.Context, roleID int64) (string, error
 }
 
 func (s *Service) stepStatus(ctx context.Context, roleID int64, advance bool) (string, error) {
-	bnd, err := s.DB.GetLiveBindingByRole(ctx, roleID)
+	bnd, err := s.resolveBinding(ctx, roleID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return "", fmt.Errorf("ops.stepStatus: role %d has no live binding", roleID)
+			return "", fmt.Errorf("ops.stepStatus: role %d has no argus task recorded", roleID)
 		}
-		return "", fmt.Errorf("ops.stepStatus: live binding lookup for role %d: %w", roleID, err)
+		return "", fmt.Errorf("ops.stepStatus: binding lookup for role %d: %w", roleID, err)
 	}
 	if bnd.ArgusTaskID == "" {
-		return "", fmt.Errorf("ops.stepStatus: role %d binding has no argus task", roleID)
+		return "", fmt.Errorf("ops.stepStatus: role %d has no argus task recorded", roleID)
+	}
+	return s.StepTaskStatus(ctx, bnd.ArgusTaskID, advance)
+}
+
+// StepTaskStatus steps an argus task's status directly by task id, bypassing
+// the hera-binding lookup. Backs `s`/`S` against a freelance row — an
+// unmanaged argus task with no hera role or binding to resolve — where the
+// rail already knows the task id. advance=true steps toward complete;
+// advance=false toward pending; both clamp at the ends (no argus write when
+// already clamped). Returns the resolved status.
+func (s *Service) StepTaskStatus(ctx context.Context, taskID string, advance bool) (string, error) {
+	if taskID == "" {
+		return "", fmt.Errorf("ops.StepTaskStatus: empty argus task id")
 	}
 
-	cur, err := s.Argus.GetTaskStatus(ctx, bnd.ArgusTaskID)
+	cur, err := s.Argus.GetTaskStatus(ctx, taskID)
 	if err != nil {
-		return "", fmt.Errorf("ops.stepStatus: get status %s: %w", bnd.ArgusTaskID, err)
+		return "", fmt.Errorf("ops.StepTaskStatus: get status %s: %w", taskID, err)
 	}
 
 	var target string
@@ -87,9 +103,9 @@ func (s *Service) stepStatus(ctx context.Context, roleID int64, advance bool) (s
 		return cur, nil
 	}
 
-	resolved, err := s.Argus.SetTaskStatus(ctx, bnd.ArgusTaskID, target)
+	resolved, err := s.Argus.SetTaskStatus(ctx, taskID, target)
 	if err != nil {
-		return "", fmt.Errorf("ops.stepStatus: set status %s -> %s: %w", bnd.ArgusTaskID, target, err)
+		return "", fmt.Errorf("ops.StepTaskStatus: set status %s -> %s: %w", taskID, target, err)
 	}
 	return resolved, nil
 }

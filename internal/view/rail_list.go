@@ -91,6 +91,17 @@ type orchEntry struct {
 	// orchestrator has no coord role.
 	CoordRoleID int64
 	Roles       []*roleEntry
+
+	// Coord-task argus state, populated from the ArgusStateCache for the
+	// orchestrator's CoordTaskID. Drives the status icon on the coordinator
+	// header so it mirrors argus reality (☾ working, ○ idle, ✓ complete/review,
+	// ? needs-input) the same way a worker row does. CoordHasState is false when
+	// argus has no entry for the coord task (cold cache / no coord) — the icon
+	// then falls back to coord-binding presence.
+	CoordHasState   bool
+	CoordStatus     string // pending | in_progress | in_review | complete
+	CoordIdle       bool
+	CoordNeedsInput bool
 }
 
 // roleEntry is one role under an orchestrator. Live indicates an open
@@ -130,6 +141,15 @@ type roleEntry struct {
 	// freelance rows so `^p` can open a PR straight from it (a freelancer has
 	// no hera binding to resolve the path from). Empty for managed roles.
 	WorktreePath string
+
+	// childOrch is set when this worker role is ALSO the coordinator of another
+	// orchestrator — a sub-coordinator (a multi-binding: this role's ArgusTaskID
+	// equals childOrch.CoordTaskID). When non-nil, the rail renders this row as a
+	// foldable coordinator row (chevron + 󰹻 marker + count) and nests
+	// childOrch's roles one level deeper, recursively. populateRail promotes the
+	// role's RoleKind to coordinator when it sets this, so selection/PR/icon
+	// logic treats it like any other coordinator. nil for plain leaf workers.
+	childOrch *orchEntry
 }
 
 // freelanceProject is one repo's worth of freelance agents — unmanaged
@@ -157,17 +177,48 @@ const (
 // expandos are keyed by their orchestrator's ID (always > 0).
 const archiveTopLevelOwner int64 = 0
 
+// iconCoord marks a coordinator/orchestrator row, drawn between the chevron and
+// the name in addition to the status icon. A coordinator is a node that
+// dispatches work to a team of agents; the marker makes coord rows scannable
+// at a glance (the prototype's ◆ is superseded by argus's moon/✓/? status set
+// for state, so the coordinator identity needs its own glyph). nf-md U+F0E7B.
+const iconCoord = rune(0x0F0E7B) // 󰹻
+
 type railRow struct {
 	kind  railRowKind
 	orch  *orchEntry
 	role  *roleEntry
 	fproj *freelanceProject
 
+	// depth is the row's nesting level, used for indentation (depth*indentStep
+	// columns). A root coordinator is depth 0; its direct children are depth 1;
+	// a sub-coordinator's children are depth 2; and so on. An Archive expando
+	// sits at its owner's child depth, and its archived children one deeper.
+	depth int
+
 	// archiveOwner / archiveCount populate a railRowArchiveExpando: the owner
 	// is an orchestrator ID (per-coordinator) or archiveTopLevelOwner.
 	archiveOwner int64
 	archiveCount int
 }
+
+// indentStep is the per-depth indentation in columns. Mirrors the prototype's
+// 16px-per-level nesting (rail-nav.html `pad=8+depth*16`) at terminal scale.
+const indentStep = 2
+
+// selectionMarker is the color-independent selection indicator. The rail
+// reserves a markerGutter-wide column at the start of EVERY row and draws
+// this glyph there on the selected row only (in ADDITION to
+// theme.StyleSelected text); all other rows draw a space, so nothing shifts
+// when the cursor moves. The styling alone is invisible in any monochrome
+// context — the live-probe grid renderer strips styling, and screen readers
+// and reduced-color terminals never see it — which made blind rail
+// navigation land mutation keys on the wrong rows.
+const selectionMarker = '›'
+
+// markerGutter is the width of the selection-marker gutter: the marker cell
+// plus a separating space.
+const markerGutter = 2
 
 // newRailList constructs an empty rail widget. SetBorder is enabled so
 // OnFocusChanged's SetBorderColor still drives the focus-color paint.
@@ -470,6 +521,17 @@ func (rl *railList) ToggleCollapse() {
 		rl.maybeFireSelectionChanged()
 		return
 	case railRowRole:
+		// A sub-coordinator row (a worker that is also another orchestrator's
+		// coord) folds ITS OWN nested children, keyed on its childOrch.
+		if r.role != nil && r.role.childOrch != nil {
+			id := r.role.childOrch.ID
+			rl.collapsed[id] = !rl.collapsed[id]
+			prev := rl.currentRef()
+			rl.buildRows()
+			rl.restoreCursor(prev)
+			rl.maybeFireSelectionChanged()
+			return
+		}
 		// A freelance task row (OrchestratorID 0) collapses its repo group;
 		// a worker row collapses its orchestrator.
 		if r.role != nil && r.role.OrchestratorID == 0 {
@@ -586,45 +648,25 @@ func (rl *railList) buildRows() {
 		}
 	}
 
-	// appendOrch renders a coordinator (orchestrator root) and, when expanded,
-	// its active children folders-first followed by a per-coordinator Archive
-	// (N) expando holding its archived children (collapsed by default, D14).
-	appendOrch := func(o *orchEntry) {
-		rl.rows = append(rl.rows, railRow{kind: railRowOrch, orch: o})
+	// appendOrch renders a coordinator (orchestrator root or, recursively, a
+	// sub-coordinator) at the given depth and, when expanded, its active
+	// children folders-first followed by a per-coordinator Archive (N) expando
+	// holding its archived children (collapsed by default, D14). Children that
+	// are themselves coordinators (a roleEntry carrying childOrch — a
+	// multi-binding) recurse one level deeper, so the rail is a true tree.
+	//
+	// seen guards against cycles (a malformed multi-binding chain): an
+	// orchestrator already on the current ancestry path is not re-expanded.
+	appendOrch := func(o *orchEntry, depth int) {
+		rl.rows = append(rl.rows, railRow{kind: railRowOrch, orch: o, depth: depth})
 		if rl.collapsed[o.ID] {
 			return
 		}
-		// Folders-first: sub-coordinator children sort before leaf workers.
-		// Stable so same-kind rows keep their input order.
-		var activeRoles, archivedRoles []*roleEntry
-		for _, role := range o.Roles {
-			if roleArchived(role) {
-				archivedRoles = append(archivedRoles, role)
-			} else {
-				activeRoles = append(activeRoles, role)
-			}
-		}
-		for _, role := range sortFoldersFirst(activeRoles) {
-			rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role})
-		}
-		// Per-coordinator Archive expando: present whenever this coordinator
-		// has archived direct children, always reachable, collapsed by default.
-		if len(archivedRoles) > 0 {
-			rl.rows = append(rl.rows, railRow{
-				kind:         railRowArchiveExpando,
-				archiveOwner: o.ID,
-				archiveCount: len(archivedRoles),
-			})
-			if rl.archiveOpen(o.ID) {
-				for _, role := range sortFoldersFirst(archivedRoles) {
-					rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role})
-				}
-			}
-		}
+		appendOrchChildren(rl, o, depth+1, map[int64]bool{o.ID: true})
 	}
 
 	for _, o := range active {
-		appendOrch(o)
+		appendOrch(o, 0)
 	}
 
 	// Freelance section: unmanaged argus tasks grouped by repo, rendered
@@ -658,12 +700,58 @@ func (rl *railList) buildRows() {
 		})
 		if rl.archiveOpen(archiveTopLevelOwner) {
 			for _, o := range archived {
-				appendOrch(o)
+				appendOrch(o, 0)
 			}
 		}
 	}
 	if len(rl.rows) == 0 {
 		rl.rows = append(rl.rows, railRow{kind: railRowEmpty})
+	}
+}
+
+// appendOrchChildren emits a coordinator's children at childDepth: its active
+// children folders-first (a sub-coordinator child recurses one level deeper via
+// recurse), then a per-coordinator Archive (N) expando (collapsed by default,
+// D14) whose archived children sit one level DEEPER than the expando header.
+// seen carries the current ancestry path so a cyclic multi-binding chain never
+// loops; the expando header is keyed by the owning orchestrator's ID.
+func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int64]bool) {
+	var activeRoles, archivedRoles []*roleEntry
+	for _, role := range o.Roles {
+		if roleArchived(role) {
+			archivedRoles = append(archivedRoles, role)
+		} else {
+			activeRoles = append(activeRoles, role)
+		}
+	}
+	for _, role := range sortFoldersFirst(activeRoles) {
+		rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role, depth: childDepth})
+		// A sub-coordinator (multi-binding) is a foldable coord row: nest its
+		// child orchestrator's roles one level deeper, recursively, unless it
+		// is collapsed or would form a cycle (its child already on the ancestry
+		// path). The role row itself is drawn coord-style by drawRoleRow.
+		if role.childOrch != nil && !seen[role.childOrch.ID] && !rl.collapsed[role.childOrch.ID] {
+			seen[role.childOrch.ID] = true
+			appendOrchChildren(rl, role.childOrch, childDepth+1, seen)
+			delete(seen, role.childOrch.ID)
+		}
+	}
+	// Per-coordinator Archive expando: present whenever this coordinator has
+	// archived direct children, always reachable, collapsed by default. The
+	// expando header sits at the children's depth; its archived children indent
+	// one level deeper.
+	if len(archivedRoles) > 0 {
+		rl.rows = append(rl.rows, railRow{
+			kind:         railRowArchiveExpando,
+			archiveOwner: o.ID,
+			archiveCount: len(archivedRoles),
+			depth:        childDepth,
+		})
+		if rl.archiveOpen(o.ID) {
+			for _, role := range sortFoldersFirst(archivedRoles) {
+				rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role, depth: childDepth + 1})
+			}
+		}
 	}
 }
 
@@ -729,6 +817,12 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		rl.offset = 0
 	}
 
+	// Row content renders right of the selection-marker gutter; the gutter
+	// itself is painted per row below.
+	cx, cw := x+markerGutter, w-markerGutter
+	if cw < 0 {
+		cw = 0
+	}
 	for i := 0; i < h; i++ {
 		idx := rl.offset + i
 		if idx >= len(rl.rows) {
@@ -736,19 +830,27 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		}
 		row := rl.rows[idx]
 		cursor := idx == rl.cursor && rl.selectable(idx)
+		// Selection-marker gutter: `›` on the cursor row, a space everywhere
+		// else, so the selection survives a colorless capture and nothing
+		// shifts on cursor moves.
+		marker := ' '
+		if cursor {
+			marker = selectionMarker
+		}
+		screen.SetContent(x, y+i, marker, nil, theme.StyleSelected)
 		switch row.kind {
 		case railRowOrch:
-			rl.drawOrchRow(screen, x, y+i, w, row.orch, cursor)
+			rl.drawOrchRow(screen, cx, y+i, cw, row.orch, row.depth, cursor)
 		case railRowRole:
-			rl.drawRoleRow(screen, x, y+i, w, row.role, cursor)
+			rl.drawRoleRow(screen, cx, y+i, cw, row.role, row.depth, cursor)
 		case railRowFreelanceSep:
-			rl.drawSeparator(screen, x, y+i, w, " Freelance ")
+			rl.drawSeparator(screen, cx, y+i, cw, " Freelance ")
 		case railRowFreelanceProj:
-			rl.drawFreelanceProjRow(screen, x, y+i, w, row.fproj, cursor)
+			rl.drawFreelanceProjRow(screen, cx, y+i, cw, row.fproj, cursor)
 		case railRowArchiveExpando:
-			rl.drawArchiveExpando(screen, x, y+i, w, row.archiveOwner, row.archiveCount, cursor)
+			rl.drawArchiveExpando(screen, cx, y+i, cw, row.archiveOwner, row.archiveCount, row.depth, cursor)
 		case railRowEmpty:
-			widget.DrawText(screen, x, y+i, w, "(no projects)", theme.StyleDimmed)
+			widget.DrawText(screen, cx, y+i, cw, "(no projects)", theme.StyleDimmed)
 		}
 	}
 }
@@ -762,25 +864,40 @@ func (rl *railList) clampOffset() {
 	}
 }
 
-func (rl *railList) drawOrchRow(screen tcell.Screen, x, y, w int, o *orchEntry, cursor bool) {
+func (rl *railList) drawOrchRow(screen tcell.Screen, x, y, w int, o *orchEntry, depth int, cursor bool) {
 	if o == nil {
 		return
 	}
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
-	}
+
+	col := x + depth*indentStep
+	// Status icon first (argus task-panel order: <icon> <chevron> <name>), so a
+	// coordinator header reads with the same ☾/○/✓/? vocabulary as its workers.
+	icon, iconStyle := rl.orchIcon(o)
+	screen.SetContent(col, y, icon, nil, iconStyle)
+	col += 2
 
 	chevron := '▾'
 	if rl.collapsed[o.ID] {
 		chevron = '▸'
 	}
-	col := x
 	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+	col += 2
+
+	// Coordinator marker (󰹻), drawn between the chevron and the name to flag the
+	// row as a coordinator independent of its transient status icon.
+	markerStyle := tcell.StyleDefault.Foreground(theme.ColorProject)
+	if o.Archived {
+		markerStyle = theme.StyleDimmed
+	}
+	screen.SetContent(col, y, iconCoord, nil, markerStyle)
 	col += 2
 
 	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
 	if o.Archived {
 		nameStyle = tcell.StyleDefault.Foreground(theme.ColorDimmed).Bold(true)
+	}
+	if cursor {
+		nameStyle = theme.StyleSelected
 	}
 	name := o.Name
 	count := fmt.Sprintf(" (%d)", rl.visibleRoleCount(o))
@@ -814,17 +931,21 @@ func (rl *railList) visibleRoleCount(o *orchEntry) int {
 	return n
 }
 
-func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, cursor bool) {
+func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, depth int, cursor bool) {
 	if r == nil {
 		return
 	}
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
+	// A sub-coordinator (a worker role that is also another orchestrator's
+	// coord) renders as a foldable coordinator row — chevron + 󰹻 marker + count
+	// + status icon — just like a root coordinator header, only nested.
+	if r.childOrch != nil {
+		rl.drawSubCoordRow(screen, x, y, w, r, depth, cursor)
+		return
 	}
 
 	// Layout: " <icon> name           10m"
 	prefix := " "
-	col := x
+	col := x + depth*indentStep
 	widget.DrawText(screen, col, y, runeLen(prefix), prefix, theme.StyleDefault)
 	col += runeLen(prefix)
 
@@ -858,15 +979,60 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	}
 }
 
+// drawSubCoordRow renders a sub-coordinator (a worker role that is also another
+// orchestrator's coord) as a NESTED foldable coordinator row, mirroring
+// drawOrchRow's layout — status icon, chevron (keyed on childOrch.ID), 󰹻 coord
+// marker, name, live-child (N) count — at the given depth. The status icon
+// comes from the role's own argus state (roleIcon), so the row reads with the
+// same ☾/○/✓/? vocabulary as any coordinator.
+func (rl *railList) drawSubCoordRow(screen tcell.Screen, x, y, w int, r *roleEntry, depth int, cursor bool) {
+	col := x + depth*indentStep
+
+	icon, iconStyle := rl.roleIcon(r)
+	screen.SetContent(col, y, icon, nil, iconStyle)
+	col += 2
+
+	chevron := '▾'
+	if rl.collapsed[r.childOrch.ID] {
+		chevron = '▸'
+	}
+	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+	col += 2
+
+	markerStyle := tcell.StyleDefault.Foreground(theme.ColorProject)
+	if r.Archived || r.Dead || r.ArgusArchived {
+		markerStyle = theme.StyleDimmed
+	}
+	screen.SetContent(col, y, iconCoord, nil, markerStyle)
+	col += 2
+
+	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
+	if r.Archived || r.Dead || r.ArgusArchived {
+		nameStyle = tcell.StyleDefault.Foreground(theme.ColorDimmed).Bold(true)
+	}
+	if cursor {
+		nameStyle = theme.StyleSelected
+	}
+	name := r.Name
+	count := fmt.Sprintf(" (%d)", rl.visibleRoleCount(r.childOrch))
+	maxName := w - (col - x) - runeLen(count)
+	if maxName < 0 {
+		maxName = 0
+	}
+	name = truncRunes(name, maxName)
+	widget.DrawText(screen, col, y, maxName, name, nameStyle)
+	col += runeLen(name)
+	if col-x+runeLen(count) <= w {
+		widget.DrawText(screen, col, y, runeLen(count), count, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+	}
+}
+
 // drawFreelanceProjRow renders a Freelance repo-group header: a collapse
 // chevron, the project name, and the right-aligned live count. Mirrors the
 // orchestrator header so the operator reads the rail uniformly.
 func (rl *railList) drawFreelanceProjRow(screen tcell.Screen, x, y, w int, fp *freelanceProject, cursor bool) {
 	if fp == nil {
 		return
-	}
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
 	}
 	chevron := '▾'
 	if rl.freelanceCollapsed[fp.Project] {
@@ -877,6 +1043,9 @@ func (rl *railList) drawFreelanceProjRow(screen tcell.Screen, x, y, w int, fp *f
 	col += 2
 
 	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
+	if cursor {
+		nameStyle = theme.StyleSelected
+	}
 	name := fp.Project
 	count := fmt.Sprintf(" (%d)", rl.visibleFreelanceCount(fp))
 	maxName := w - (col - x) - runeLen(count)
@@ -930,21 +1099,20 @@ func (rl *railList) drawSeparator(screen tcell.Screen, x, y, w int, label string
 }
 
 // drawArchiveExpando renders an "Archive (N)" fold header: a chevron
-// (▾ open / ▸ collapsed) + the label + a trailing rule. Per-coordinator
-// expandos (owner > 0) indent one level under their coordinator; the
-// top-level Archive (owner 0) sits flush left. The expando is selectable so
-// space/Enter toggles its fold.
-func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner int64, count int, cursor bool) {
-	if cursor {
-		rl.fillBackground(screen, x, y, w)
-	}
+// (▾ open / ▸ collapsed) + the label + a trailing rule, indented by its tree
+// depth — a per-coordinator expando sits one level under its coordinator (a
+// nested sub-coord's deeper still); the top-level Archive sits flush left. The
+// expando is selectable so space/Enter toggles its fold.
+func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner int64, count, depth int, cursor bool) {
 	style := tcell.StyleDefault.Foreground(theme.ColorDimmed)
-	col := x
-	if owner != archiveTopLevelOwner {
-		// Indent per-coordinator Archive expandos one level so they read as a
-		// child of their coordinator, matching the prototype's nesting.
-		col += 2
+	labelStyle := style.Bold(true)
+	if cursor {
+		labelStyle = theme.StyleSelected
 	}
+	// Indent by tree depth so a per-coordinator Archive expando sits one level
+	// under its coordinator (and a nested sub-coord's deeper still), matching
+	// the prototype's nesting. The top-level Archive (depth 0) sits flush left.
+	col := x + depth*indentStep
 	chevron := '▸'
 	if rl.archiveOpen(owner) {
 		chevron = '▾'
@@ -952,7 +1120,7 @@ func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner i
 	screen.SetContent(col, y, chevron, nil, style)
 	col += 2
 	label := fmt.Sprintf("Archive (%d)", count)
-	widget.DrawText(screen, col, y, w-(col-x), label, style.Bold(true))
+	widget.DrawText(screen, col, y, w-(col-x), label, labelStyle)
 	col += runeLen(label)
 	// Trailing rule to mirror the separator rows.
 	for col < x+w {
@@ -961,45 +1129,51 @@ func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner i
 	}
 }
 
-func (rl *railList) fillBackground(screen tcell.Screen, x, y, w int) {
-	bg := tcell.StyleDefault.Background(theme.ColorHighlight)
-	for i := 0; i < w; i++ {
-		screen.SetContent(x+i, y, ' ', nil, bg)
-	}
-}
-
-// roleIcon picks the moon-style icon for a role based on its live
-// binding state. Live → IconMoonStars (active / needs attention). Idle
-// (no live binding) → IconMoonOutline. Archived or dead (binding open
-// in DB but argus task is gone) → dimmed circle.
-func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
-	if r.Archived || r.Dead || r.ArgusArchived {
+// statusIcon picks the moon-style status icon from argus-reported task state,
+// shared by worker rows (roleIcon) and coordinator headers (orchIcon) so both
+// mirror argus's vocabulary identically. Preference order mirrors argus:
+// archived/gone → dimmed circle; then needs-input, done (complete/in_review),
+// in-progress idle/working, pending; then a binding-presence fallback when
+// argus has no state for the task.
+func statusIcon(archived, hasState, needsInput bool, status string, idle, live bool) (rune, tcell.Style) {
+	if archived {
 		return '○', theme.StyleDimmed
 	}
-	// Prefer argus-reported state so the rail mirrors argus reality:
-	// needs-input, then done (complete/in_review), then in-progress
-	// idle/working, then pending.
-	if r.HasState {
+	if hasState {
 		switch {
-		case r.NeedsInput:
+		case needsInput:
 			return theme.IconNeedsInput, theme.StyleNeedsInput
-		case r.Status == "complete":
+		case status == "complete":
 			return '✓', theme.StyleComplete
-		case r.Status == "in_review":
+		case status == "in_review":
 			return '✓', theme.StyleInReview
-		case r.Status == "in_progress" && r.ArgusIdle:
+		case status == "in_progress" && idle:
 			return theme.IconMoonOutline, theme.StyleDimmed
-		case r.Status == "in_progress":
+		case status == "in_progress":
 			return theme.IconMoonStars, theme.StyleInProgress
-		case r.Status == "pending":
+		case status == "pending":
 			return theme.IconMoonOutline, theme.StylePending
 		}
 	}
-	// Fallback when argus state is unknown: hera binding presence.
-	if r.Live {
+	if live {
 		return theme.IconMoonStars, theme.StyleInReview
 	}
 	return theme.IconMoonOutline, tcell.StyleDefault.Foreground(theme.ColorInReview)
+}
+
+// roleIcon picks the moon-style icon for a role based on its argus-reported
+// (or, as a fallback, binding) state. Archived or dead (binding open in DB but
+// argus task is gone) → dimmed circle.
+func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
+	return statusIcon(r.Archived || r.Dead || r.ArgusArchived, r.HasState, r.NeedsInput, r.Status, r.ArgusIdle, r.Live)
+}
+
+// orchIcon picks the status icon for a coordinator header from the coord task's
+// argus state, so a coordinator row carries the same ☾/○/✓/? vocabulary as a
+// worker row (an archived root coordinator → dimmed circle). live falls back to
+// "has a live coord binding" (CoordTaskID set) when argus state is unknown.
+func (rl *railList) orchIcon(o *orchEntry) (rune, tcell.Style) {
+	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, o.CoordStatus, o.CoordIdle, o.CoordTaskID != "")
 }
 
 // elapsed formats the time since r.StartedAt using argus's "10s/10m/10h/10d"

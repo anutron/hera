@@ -20,6 +20,11 @@ type DB interface {
 
 	GetRoleByID(ctx context.Context, id int64) (*Role, error)
 	ListRolesByOrchestrator(ctx context.Context, orchID int64) ([]*Role, error)
+
+	// ListRolesByOrchestratorInclusive returns every role under an
+	// orchestrator INCLUDING archived rows. Backs the unarchive branch
+	// of the `a` toggle, which must locate the archived coord role.
+	ListRolesByOrchestratorInclusive(ctx context.Context, orchID int64) ([]*Role, error)
 	ArchiveRole(ctx context.Context, id int64) error
 	UnarchiveRole(ctx context.Context, id int64) error
 	RenameRole(ctx context.Context, id int64, newName string) error
@@ -27,6 +32,14 @@ type DB interface {
 	// GetLiveBindingByRole returns the live binding for a role or
 	// ErrNotFound if the role currently has no live binding.
 	GetLiveBindingByRole(ctx context.Context, roleID int64) (*Binding, error)
+
+	// GetLatestBindingByRole returns the role's most recent binding (by
+	// started_at) regardless of whether it has ended, or ErrNotFound if
+	// the role has never had a binding. Backs the archived-row fallback:
+	// archiving a task ENDS its binding (end_reason='argus_archived')
+	// while preserving the argus_task_id, so live-only lookups miss
+	// exactly the rows whose status/unarchive ops still need the task.
+	GetLatestBindingByRole(ctx context.Context, roleID int64) (*Binding, error)
 
 	// EndBinding marks a binding as ended with the given reason.
 	EndBinding(ctx context.Context, bindingID int64, reason string) error

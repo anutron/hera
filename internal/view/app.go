@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
+	"github.com/anutron/argus-sdk/theme"
 	"github.com/rivo/tview"
 
 	"github.com/anutron/hera/internal/db"
@@ -44,6 +45,13 @@ type App struct {
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool
 
+	// redraw coalesces pane repaints. Each pane's terminalpane.OnNeedRedraw
+	// hook calls redraw.Schedule (marking the surface dirty); a single ticker
+	// goroutine flushes at most one QueueUpdateDraw per frame so a chatty PTY
+	// burst paints settled frames instead of one partial frame per chunk.
+	// Started in BuildApp, stopped in Close. Shared by both panes.
+	redraw *redrawCoalescer
+
 	// coordPresent / agentPresent track which panes the body currently
 	// composes — the three-mode layout (D13), driven by the rail selection:
 	//
@@ -64,6 +72,14 @@ type App struct {
 	// nil in tests that build the App without a router.
 	focus *FocusMachine
 
+	// focusState is a thread-safe mirror of the focus machine's current state,
+	// updated in OnFocusChanged (the single chokepoint for focus changes). The
+	// raw-input transport layer (rawInputConn) reads it from pluginview's read
+	// goroutine to route inbound bytes, where touching the single-threaded
+	// FocusMachine directly would race. Zero value = FocusRAIL (the start
+	// state), so it reads correctly even before the first OnFocusChanged.
+	focusState atomic.Int32
+
 	// control sends the argus key-surrender control frames (D12). On every
 	// OnFocusChanged the App pushes a focus-aware hotkeys frame so argus's
 	// plugin-mode bottom bar + help overlay reflect the current focus. nil
@@ -76,11 +92,12 @@ type App struct {
 	// Set by BuildApp; nil-safe at the use sites.
 	database *db.DB
 
-	// showArchived is flipped by the `l` rail key. When true,
-	// populateRail walks ListInclusive variants so archived
-	// orchestrators and roles render in the rail; when false,
-	// archived rows are filtered out (the default at session start
-	// per design.md D5).
+	// showArchived is flipped by the `l` rail key (the mutation bridge
+	// syncs the ops.ListAllState toggle here via SetShowArchived, from its
+	// background goroutine — hence guarded by mu). When true, populateRail
+	// walks ListInclusive variants so archived orchestrators and roles
+	// render in the rail; when false, archived rows are filtered out (the
+	// default at session start per design.md D5).
 	showArchived bool
 
 	// selectDebounce is the rail j/k selection-change debounce
@@ -94,6 +111,17 @@ type App struct {
 	selectTimer   *time.Timer
 	selectPending any
 	selectHasRef  bool
+
+	// modalSync (tests only) makes queueModal run its body synchronously
+	// instead of bouncing through QueueUpdateDraw — which blocks forever
+	// when the tview event loop is not running, as in unit tests.
+	modalSync bool
+
+	// modalPrevFocus is the primitive that held tview focus when the
+	// current modal opened; closeModal restores it (falling back to the
+	// rail). Only touched on the tview event loop (queueModal bodies and
+	// modal button callbacks), so it needs no lock.
+	modalPrevFocus tview.Primitive
 }
 
 // BuildApp constructs the hera-view tview Application. It reads the
@@ -115,12 +143,25 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 
 	coordTask, agentTask := findInitialSelection(database, src)
 
-	coordPane, coordBridge, coordUnsub := newBoundPane("HERA", "(no coord selected)", coordTask, src)
-	agentPane, agentBridge, agentUnsub := newBoundPane("Agent", "(no agent selected)", agentTask, src)
+	// tApp is constructed before the panes so each pane's OnNeedRedraw hook can
+	// bounce a repaint through its event loop the moment PTY output arrives
+	// (live repaint, independent of keystroke input).
+	tApp := tview.NewApplication()
+
+	// Route every pane's OnNeedRedraw through a coalescer instead of calling
+	// QueueUpdateDraw per chunk. A burst of PTY chunks (the settled-snapshot
+	// blob, a SIGWINCH whole-screen re-render, or fast autonomous output) then
+	// drains into the emulator between flushes, so each painted frame is
+	// settled — no scroll-through of history, no partial-frame garble — while
+	// the latest output is still painted within one frame interval.
+	redrawCoalescer := newRedrawCoalescer(func() { tApp.QueueUpdateDraw(func() {}) }, DefaultRedrawInterval)
+	redraw := redrawCoalescer.Schedule
+
+	coordPane, coordBridge, coordUnsub := newBoundPane("HERA", "(no coord selected)", coordTask, src, redraw)
+	agentPane, agentBridge, agentUnsub := newBoundPane("Agent", "(no agent selected)", agentTask, src, redraw)
 
 	pieces := buildLayout(coordPane, agentPane)
 
-	tApp := tview.NewApplication()
 	tApp.SetRoot(pieces.pages, true)
 	tApp.EnableMouse(false)
 
@@ -138,7 +179,13 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		selectDebounce: DefaultRailSelectDebounce,
 		coordPresent:   true,
 		agentPresent:   true,
+		redraw:         redrawCoalescer,
 	}
+
+	// Start the coalescing flush loop. Pane bytes ingested during BuildApp
+	// (the initial snapshot) have already armed the dirty flag via Schedule;
+	// the first tick paints that settled frame once the event loop runs.
+	redrawCoalescer.start()
 
 	if err := a.populateRail(database); err != nil {
 		return nil, fmt.Errorf("view.BuildApp: populate rail: %w", err)
@@ -240,6 +287,10 @@ func (a *App) Close() {
 	if agentBridge != nil {
 		agentBridge.stop()
 	}
+	// Stop the coalescer's ticker goroutine. redraw is set once in BuildApp and
+	// never reassigned, so reading it outside a.mu is safe. Stop is idempotent
+	// and nil-safe.
+	a.redraw.Stop()
 	a.pieces.coord.Close()
 	a.pieces.agent.Close()
 }
@@ -281,20 +332,27 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 // task has gone away (per the optional TaskAliveChecker on a.src) are
 // marked Dead so the rail can hide or dim them.
 //
-// When a.showArchived is true, archived orchestrators and roles render
-// below the Archive separator and dead bindings are kept (dimmed);
-// otherwise both are filtered out (default per design.md D5).
+// Roles are ALWAYS loaded inclusively (active + archived): buildRows
+// partitions each coordinator's archived/dead children into its Archive (N)
+// expando (collapsed by default, design.md D14), so archiving a row moves
+// it into the expando instead of dropping it from the rail. Archived
+// orchestrators load only when a.showArchived is set (`l` listall), which
+// also force-expands the expandos and reveals dimmed dead rows.
 func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
 
 	checker, _ := a.src.(TaskAliveChecker)
 	stateProv, _ := a.src.(TaskStateProvider)
+	// Snapshot the archive-visibility flag once: it is written by the
+	// mutation bridge's background goroutine (SetShowArchived) while this
+	// runs on the event loop.
+	showArchived := a.archiveVisible()
 
 	var (
 		orchs []*db.Orchestrator
 		err   error
 	)
-	if a.showArchived {
+	if showArchived {
 		orchs, err = database.Orchestrators.ListInclusive(ctx)
 	} else {
 		orchs, err = database.Orchestrators.List(ctx)
@@ -311,12 +369,15 @@ func (a *App) populateRail(database *db.DB) error {
 			Archived: orch.ArchivedAt != nil,
 		}
 
-		var roles []*db.Role
-		if a.showArchived {
-			roles, err = database.Roles.ListByOrchestratorInclusive(ctx, orch.ID)
-		} else {
-			roles, err = database.Roles.ListByOrchestrator(ctx, orch.ID)
-		}
+		// ALWAYS load roles inclusively: a hera-archived role (archived_at
+		// set, the `a` key) must reach the rail data so buildRows can bucket
+		// it into its coordinator's Archive (N) expando next to dead and
+		// argus-archived children — the exclusive query made archived rows
+		// vanish from the rail entirely instead of moving into the expando.
+		// Downstream consumers stay archived-aware: visibleRoleCount and
+		// countLiveRoles skip archived rows, and the coord-capture branch
+		// below never feeds an archived coord binding to CoordTaskID.
+		roles, err := database.Roles.ListByOrchestratorInclusive(ctx, orch.ID)
 		if err != nil {
 			return fmt.Errorf("list roles for orch %d: %w", orch.ID, err)
 		}
@@ -366,6 +427,17 @@ func (a *App) populateRail(database *db.DB) error {
 					// the coordinator's last output after its task finished —
 					// fixes the "coord pane doesn't follow selection" case.
 					entry.CoordTaskID = argusTaskID
+					// Capture the coord task's argus state so the coordinator
+					// header's status icon mirrors argus (☾/○/✓/?), the same way
+					// applyArgusState drives a worker row's icon.
+					if stateProv != nil {
+						if st, ok := stateProv.TaskState(argusTaskID); ok {
+							entry.CoordHasState = true
+							entry.CoordStatus = st.Status
+							entry.CoordIdle = st.Idle
+							entry.CoordNeedsInput = st.NeedsInput
+						}
+					}
 				}
 				continue
 			}
@@ -393,10 +465,80 @@ func (a *App) populateRail(database *db.DB) error {
 		entries = append(entries, entry)
 	}
 
-	a.pieces.rail.SetShowArchived(a.showArchived)
-	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database))
+	// Resolve sub-coordinators (multi-bindings): hera's data model is flat (a
+	// Role has a single OrchestratorID; orchestrators have no parent link), so a
+	// "sub-coordinator" is the SAME argus task bound twice — a worker role under
+	// a parent orchestrator AND the coord of a separate child orchestrator. The
+	// join key is a worker roleEntry's ArgusTaskID == some orchEntry's
+	// CoordTaskID. Link them so the rail nests the child under the worker (which
+	// is promoted to a coordinator row), and drop the child from the top level
+	// so it isn't double-rendered.
+	entries = resolveSubCoordinators(entries)
+
+	a.pieces.rail.SetShowArchived(showArchived)
+	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database, showArchived))
 	a.pieces.rail.SetOrchestrators(entries)
 	return nil
+}
+
+// resolveSubCoordinators rewrites the flat orchestrator list into a tree by
+// detecting multi-bindings: when a worker roleEntry's ArgusTaskID equals
+// another orchEntry's CoordTaskID, that worker IS that orchestrator's
+// coordinator. The worker is promoted to a coordinator row carrying the child
+// orchestrator (childOrch), and the child is removed from the returned
+// top-level list (it renders nested instead). The relinking is recursive — a
+// sub-coordinator's child may itself contain a further sub-coordinator —
+// because every orchEntry is linked in a single pass and the tree is then
+// walked lazily at render time. A self-binding (a coord's own worker pointing
+// back at the same orchestrator) is skipped so a node never becomes its own
+// child. The buildRows cycle guard (seen set) protects against any remaining
+// pathological cross-links at render time.
+func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
+	// Index orchestrators by their coord task so a worker can find the child
+	// orchestrator it coordinates. Skip empty coord tasks (no binding) and only
+	// keep the first orchestrator per coord task (a coord task is unique to one
+	// orchestrator in practice; first-wins is deterministic).
+	byCoordTask := make(map[string]*orchEntry, len(entries))
+	for _, o := range entries {
+		if o.CoordTaskID == "" {
+			continue
+		}
+		if _, dup := byCoordTask[o.CoordTaskID]; !dup {
+			byCoordTask[o.CoordTaskID] = o
+		}
+	}
+
+	consumed := make(map[int64]bool, len(entries))
+	for _, o := range entries {
+		for _, role := range o.Roles {
+			if role.ArgusTaskID == "" {
+				continue
+			}
+			child, ok := byCoordTask[role.ArgusTaskID]
+			if !ok || child.ID == o.ID {
+				// No child orchestrator for this task, or it would link an
+				// orchestrator to itself — leave the role as a plain worker.
+				continue
+			}
+			// This worker is the child orchestrator's coordinator. Promote it to
+			// a foldable coordinator row nesting the child's roles.
+			role.childOrch = child
+			role.RoleKind = string(db.KindCoordinator)
+			consumed[child.ID] = true
+		}
+	}
+
+	if len(consumed) == 0 {
+		return entries
+	}
+	out := make([]*orchEntry, 0, len(entries))
+	for _, o := range entries {
+		if consumed[o.ID] {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out
 }
 
 // buildFreelance partitions the live argus task list into the Freelance
@@ -405,7 +547,7 @@ func (a *App) populateRail(database *db.DB) error {
 // them". Returns nil when no FreelanceProvider is wired (tests) or no
 // freelancers exist. Archived freelancers are included only when
 // showArchived is set, so the active rail mirrors argus's non-archived set.
-func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceProject {
+func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived bool) []*freelanceProject {
 	prov, ok := a.src.(FreelanceProvider)
 	if !ok {
 		return nil
@@ -427,7 +569,7 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceP
 		if _, managed := bound[t.ID]; managed {
 			continue
 		}
-		if t.State.Archived && !a.showArchived {
+		if t.State.Archived && !showArchived {
 			continue
 		}
 		fp, seen := byProject[t.Project]
@@ -461,9 +603,15 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceP
 	return out
 }
 
-// RepopulateRail re-renders the rail from the current DB state. Safe
-// to call from any goroutine — it bounces through QueueUpdateDraw so
-// the actual node-tree mutation happens on the tview event loop.
+// RepopulateRail re-renders the rail from the current DB state. It bounces
+// through QueueUpdateDraw so the actual node-tree mutation happens on the
+// tview event loop.
+//
+// CONTRACT: callers MUST be off the event loop (tview v0.42's QueueUpdate
+// blocks until the queued func runs — calling this FROM the loop deadlocks
+// it). Production callers honor this: the RailRefresher and argus-state
+// subscriber fire from their own goroutines, and the mutation bridge
+// refreshes from its mutate/goUI goroutines.
 //
 // Satisfies the repopulator contract used by the mutation bridge.
 func (a *App) RepopulateRail() {
@@ -478,6 +626,39 @@ func (a *App) RepopulateRail() {
 		return
 	}
 	a.app.QueueUpdateDraw(body)
+}
+
+// SetShowArchived records whether the rail should render archived rows
+// (orchestrators, roles, freelancers — the Archive sections). Called by the
+// mutation bridge from its background goroutine when `l` toggles the
+// session's archive visibility, immediately before it triggers a
+// RepopulateRail; populateRail snapshots the flag on the event loop.
+//
+// Satisfies the bridge's archiveVisibilitySetter contract.
+func (a *App) SetShowArchived(v bool) {
+	a.mu.Lock()
+	a.showArchived = v
+	a.mu.Unlock()
+}
+
+// archiveVisible reads the archive-visibility flag under the same lock.
+func (a *App) archiveVisible() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.showArchived
+}
+
+// scheduleRedraw marks the pane surface dirty so the redraw coalescer flushes
+// a single repaint on its next tick. It is wired into each pane's
+// terminalpane.OnNeedRedraw (fired once per non-empty PTY chunk) so pane output
+// paints live, independent of keystroke input. nil-coalescer-safe (tests).
+//
+// Unlike a per-chunk QueueUpdateDraw, Schedule is non-blocking: it does NOT
+// back-pressure the consume goroutine on the event loop. That lets a burst of
+// chunks drain fully into the emulator between coalesced flushes, so each
+// painted frame is settled rather than a partial mid-stream frame.
+func (a *App) scheduleRedraw() {
+	a.redraw.Schedule()
 }
 
 // CurrentRailSelection returns the bridge's view of the currently-
@@ -510,7 +691,15 @@ func (a *App) CurrentRailSelection() railSelection {
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
 			ArgusTaskID:    ref.ArgusTaskID,
-			WorktreePath:   ref.WorktreePath,
+			// Argus-side archived + binding-dead state: with the hera flag
+			// these let `a` compute the EFFECTIVE archived state the rail
+			// displays (roleArchived) and pick the explicit verb — a
+			// mixed-flag row (hera-active + argus-archived) must unarchive,
+			// and a freelance row (no hera role row, Archived always false)
+			// toggles purely on the argus side.
+			ArgusArchived: ref.ArgusArchived,
+			Dead:          ref.Dead,
+			WorktreePath:  ref.WorktreePath,
 		}
 	}
 	return railSelection{}
@@ -614,6 +803,14 @@ func (a *App) AgentTaskID() string {
 	return a.agentTask
 }
 
+// CurrentFocus returns the current focus state from the thread-safe mirror.
+// Satisfies focusReader so the raw-input transport layer can route inbound
+// bytes by focus from pluginview's read goroutine. Reads RAIL until the first
+// OnFocusChanged (atomic zero value), matching the focus machine's start state.
+func (a *App) CurrentFocus() FocusState {
+	return FocusState(a.focusState.Load())
+}
+
 // OnFocusChanged repaints the colored focus border so the operator sees
 // which of the three elements is active and routes tview's primitive
 // focus to the matching widget so propagated keys (the rail's j/k/↑/↓)
@@ -621,13 +818,21 @@ func (a *App) AgentTaskID() string {
 // Called from the tview input pump (so direct tview state mutation is
 // safe here — single-threaded by contract).
 //
-// The terminalpane widget paints its own border via the SDK's theme
-// styles based on its HasFocus() state, so SetBorderColor on the coord
-// and agent panes is mostly cosmetic on top of that. The rail (a plain
-// TreeView) still relies on Box.SetBorderColor for focus feedback.
+// Focus feedback mirrors argus: the focused element's border is painted in
+// argus's title/focus cyan (theme.ColorTitle), unfocused borders in argus's
+// dim border gray (theme.ColorBorder), so Ctrl-H into hera feels like the same
+// app. The SDK terminalpane hardcodes a white (StyleDefault) border on focus,
+// so pinnedTerminalPane.Draw repaints the pane border in the same cyan; the
+// rail (a plain Box) honors SetBorderColor directly here.
 func (a *App) OnFocusChanged(state FocusState) {
-	const focused = tcell.ColorYellow
-	const unfocused = tcell.ColorWhite
+	// Mirror the new state for the raw-input transport layer (read off the
+	// tview goroutine). This is the single chokepoint for every focus change
+	// (explicit transitions, the Enter/nav jumps, and present-pane rebalance),
+	// so the mirror stays in lockstep with the focus machine.
+	a.focusState.Store(int32(state))
+
+	focused := theme.ColorTitle
+	unfocused := theme.ColorBorder
 
 	// Advertise the focus-aware hotkey dictionary to argus so its plugin-mode
 	// bottom bar + help overlay reflect the current focus (D12). Hera renders
@@ -645,20 +850,29 @@ func (a *App) OnFocusChanged(state FocusState) {
 	a.pieces.coord.SetBorderColor(unfocused)
 	a.pieces.agent.SetBorderColor(unfocused)
 
+	// While a modal overlay is up, the modal owns tview focus and NOTHING
+	// may steal it: this path also fires from background rail repopulates
+	// (argus state refresh → applyRailSelection → setBodyMode), and an
+	// unconditional SetFocus here yanked focus back to the rail behind the
+	// overlay — leaving the operator trapped with a modal that no longer
+	// received Enter (live acceptance T3). Borders still repaint; only the
+	// focus move is withheld. closeModal restores focus when the modal goes.
+	moveFocus := a.app != nil && !a.IsModalActive()
+
 	switch state {
 	case FocusRAIL:
 		a.pieces.rail.SetBorderColor(focused)
-		if a.app != nil {
+		if moveFocus {
 			a.app.SetFocus(a.pieces.rail)
 		}
 	case FocusCOORD:
 		a.pieces.coord.SetBorderColor(focused)
-		if a.app != nil {
+		if moveFocus {
 			a.app.SetFocus(a.pieces.coord)
 		}
 	case FocusAGENT:
 		a.pieces.agent.SetBorderColor(focused)
-		if a.app != nil {
+		if moveFocus {
 			a.app.SetFocus(a.pieces.agent)
 		}
 	}
@@ -824,7 +1038,7 @@ func (a *App) rebindCoord(taskID string) {
 	oldUnsub := a.coordUnsub
 	oldBridge := a.coordBridge
 	oldPane := a.pieces.coord
-	pane, bridge, unsub := newBoundPane("HERA", "(no coord selected)", taskID, a.src)
+	pane, bridge, unsub := newBoundPane("HERA", "(no coord selected)", taskID, a.src, a.scheduleRedraw)
 	a.coordTask = taskID
 	a.coordBridge = bridge
 	a.coordUnsub = unsub
@@ -855,7 +1069,7 @@ func (a *App) rebindAgent(taskID string) {
 	oldUnsub := a.agentUnsub
 	oldBridge := a.agentBridge
 	oldPane := a.pieces.agent
-	pane, bridge, unsub := newBoundPane("Agent", "(no agent selected)", taskID, a.src)
+	pane, bridge, unsub := newBoundPane("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw)
 	a.agentTask = taskID
 	a.agentBridge = bridge
 	a.agentUnsub = unsub
@@ -979,6 +1193,20 @@ func (a *App) applyRailSelection(ref any) {
 				a.rebindAgent(r.ArgusTaskID)
 			}
 			a.setBodyMode(false, true)
+			return
+		}
+		if r.childOrch != nil {
+			// A sub-coordinator IS a coordinator: full-width HERA bound to the
+			// sub-coord's OWN argus task (its own coordinator PTY), NOT the
+			// parent orchestrator's coord. The child orchestrator's CoordTaskID
+			// is, by construction, this role's ArgusTaskID (the multi-binding
+			// join key); prefer it and fall back to the role's task.
+			coordTask := r.childOrch.CoordTaskID
+			if coordTask == "" {
+				coordTask = r.ArgusTaskID
+			}
+			a.rebindCoord(coordTask)
+			a.setBodyMode(true, false)
 			return
 		}
 		// Locate the orchestrator so we can rebind COORD to its coord task.

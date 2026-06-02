@@ -5,8 +5,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anutron/argus-sdk/theme"
 	"github.com/gdamore/tcell/v2"
 )
+
+// runeColOf returns a finder that reports the RUNE column (not byte offset) at
+// which needle first appears across the given lines, or -1 if absent. Rune
+// columns are what indentation depth maps to on screen; byte offsets are
+// distorted by the multi-byte box-border and icon glyphs.
+func runeColOf(lines []string) func(needle string) int {
+	return func(needle string) int {
+		for _, ln := range lines {
+			b := strings.Index(ln, needle)
+			if b < 0 {
+				continue
+			}
+			return len([]rune(ln[:b]))
+		}
+		return -1
+	}
+}
 
 func renderRail(t *testing.T, rl *railList, w, h int) string {
 	t.Helper()
@@ -19,6 +37,67 @@ func renderRail(t *testing.T, rl *railList, w, h int) string {
 	rl.Draw(sim)
 	sim.Show()
 	return readScreen(sim)
+}
+
+// renderRailSim draws the rail onto a SimulationScreen and returns both the
+// text dump (for substring assertions) and the raw screen so per-cell styles
+// can be decomposed. Mirrors renderRail's setup.
+func renderRailSim(t *testing.T, rl *railList, w, h int) (string, tcell.SimulationScreen) {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(w, h)
+	rl.SetRect(0, 0, w, h)
+	rl.Draw(sim)
+	sim.Show()
+	return readScreen(sim), sim
+}
+
+// rowOf returns the screen row index (y) of the first line containing needle,
+// or -1. Used to locate a rendered row before inspecting its cell styles.
+func rowOf(dump, needle string) int {
+	for i, ln := range strings.Split(dump, "\n") {
+		if strings.Contains(ln, needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+// rowHasBackground reports whether ANY cell on screen-row y carries the given
+// (non-default) background color. Used to assert the rail never paints a row
+// background to indicate selection.
+func rowHasBackground(sim tcell.SimulationScreen, y int, bg tcell.Color) bool {
+	cells, w, h := sim.GetContents()
+	if y < 0 || y >= h {
+		return false
+	}
+	for x := 0; x < w; x++ {
+		_, cellBg, _ := cells[y*w+x].Style.Decompose()
+		if cellBg == bg {
+			return true
+		}
+	}
+	return false
+}
+
+// rowHasForeground reports whether ANY cell on screen-row y carries the given
+// foreground color — used to assert the selected row's name renders in
+// theme.ColorSelected.
+func rowHasForeground(sim tcell.SimulationScreen, y int, fg tcell.Color) bool {
+	cells, w, h := sim.GetContents()
+	if y < 0 || y >= h {
+		return false
+	}
+	for x := 0; x < w; x++ {
+		cellFg, _, _ := cells[y*w+x].Style.Decompose()
+		if cellFg == fg {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRailList_HeaderShowsChevronAndCount(t *testing.T) {
@@ -36,8 +115,8 @@ func TestRailList_HeaderShowsChevronAndCount(t *testing.T) {
 	})
 
 	got := renderRail(t, rl, 22, 6)
-	if !strings.Contains(got, "▾ proj1 (2)") {
-		t.Fatalf("expected expanded chevron + name + count; got:\n%s", got)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" proj1 (2)") {
+		t.Fatalf("expected expanded chevron + coord marker + name + count; got:\n%s", got)
 	}
 	if !strings.Contains(got, "w1") || !strings.Contains(got, "w2") {
 		t.Fatalf("expected both role names rendered; got:\n%s", got)
@@ -60,8 +139,8 @@ func TestRailList_CollapseHidesRoles(t *testing.T) {
 	rl.ToggleCollapse()
 
 	got := renderRail(t, rl, 22, 5)
-	if !strings.Contains(got, "▸ p (1)") {
-		t.Fatalf("expected collapsed chevron; got:\n%s", got)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" p (1)") {
+		t.Fatalf("expected collapsed chevron + coord marker; got:\n%s", got)
 	}
 	if strings.Contains(got, "w1") {
 		t.Fatalf("expected w1 hidden when collapsed; got:\n%s", got)
@@ -388,6 +467,35 @@ func TestRailList_NoKindPills(t *testing.T) {
 
 // Scenario: Coordinator row is foldable with a count, and `space` (ToggleCollapse)
 // toggles whether its children are shown.
+// A coordinator header's status icon mirrors argus's vocabulary from the coord
+// task's argus state (set via CoordHasState + Coord*), the same way a worker
+// row's icon does — needs-input → ?, complete → ✓ — and the 󰹻 coord marker is
+// always drawn before the name.
+func TestRailList_CoordHeaderStatusIconAndMarker(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{
+			ID: 1, Name: "blocked", CoordTaskID: "t-1",
+			CoordHasState: true, CoordStatus: "in_progress", CoordNeedsInput: true,
+			Roles: []*roleEntry{{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true}},
+		},
+		{
+			ID: 2, Name: "shipped", CoordTaskID: "t-2",
+			CoordHasState: true, CoordStatus: "complete",
+		},
+	})
+
+	got := renderRail(t, rl, 30, 6)
+	// needs-input coordinator: ? icon, then chevron, then marker, then name.
+	if !strings.Contains(got, string(theme.IconNeedsInput)+" ▾ "+string(iconCoord)+" blocked") {
+		t.Fatalf("expected needs-input icon + chevron + marker on coord header; got:\n%s", got)
+	}
+	// complete coordinator: ✓ icon before its (coord-less) header.
+	if !strings.Contains(got, "✓ ▾ "+string(iconCoord)+" shipped") {
+		t.Fatalf("expected ✓ status icon on completed coord header; got:\n%s", got)
+	}
+}
+
 func TestRailList_CoordinatorFoldableSpaceToggle(t *testing.T) {
 	rl := newRailList()
 	rl.SetOrchestrators([]*orchEntry{
@@ -397,15 +505,15 @@ func TestRailList_CoordinatorFoldableSpaceToggle(t *testing.T) {
 		}},
 	})
 	got := renderRail(t, rl, 28, 8)
-	if !strings.Contains(got, "▾ proj (2)") {
-		t.Fatalf("expected expanded chevron + (2) count; got:\n%s", got)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" proj (2)") {
+		t.Fatalf("expected expanded chevron + coord marker + (2) count; got:\n%s", got)
 	}
 	// space on the coordinator header collapses.
 	rl.SelectByOrchID(1)
 	rl.ToggleCollapse()
 	got = renderRail(t, rl, 28, 8)
-	if !strings.Contains(got, "▸ proj (2)") {
-		t.Fatalf("expected collapsed chevron after space; got:\n%s", got)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" proj (2)") {
+		t.Fatalf("expected collapsed chevron + coord marker after space; got:\n%s", got)
 	}
 	if strings.Contains(got, "w1") || strings.Contains(got, "w2") {
 		t.Fatalf("children must be hidden when collapsed; got:\n%s", got)
@@ -491,12 +599,12 @@ func TestRailList_StepToBindable(t *testing.T) {
 	newRail := func() *railList {
 		rl := newRailList()
 		rl.rows = []railRow{
-			{kind: railRowOrch, orch: orch},        // 0 bindable
-			{kind: railRowRole, role: w1},          // 1 bindable
-			{kind: railRowFreelanceSep},            // 2 non-bindable
-			{kind: railRowFreelanceProj, fproj: fproj}, // 3 non-bindable (selectable, not bindable)
+			{kind: railRowOrch, orch: orch},                                 // 0 bindable
+			{kind: railRowRole, role: w1},                                   // 1 bindable
+			{kind: railRowFreelanceSep},                                     // 2 non-bindable
+			{kind: railRowFreelanceProj, fproj: fproj},                      // 3 non-bindable (selectable, not bindable)
 			{kind: railRowArchiveExpando, archiveOwner: 1, archiveCount: 1}, // 4 non-bindable
-			{kind: railRowRole, role: w2},          // 5 bindable
+			{kind: railRowRole, role: w2},                                   // 5 bindable
 		}
 		return rl
 	}
@@ -572,6 +680,86 @@ func TestRailList_StepToBindable(t *testing.T) {
 	})
 }
 
+// Scenario: A sub-coordinator (a worker roleEntry that is itself another
+// orchestrator's coord) renders as a NESTED foldable coordinator row — chevron
+// + 󰹻 marker + (N) count — with its own children indented one level deeper, and
+// the child orchestrator does NOT also render at top level.
+func TestRailList_SubCoordinatorNestsAsFoldableCoordRow(t *testing.T) {
+	rl := newRailList()
+	// Build the multi-binding by hand: the parent's "sub" worker carries a
+	// childOrch pointer to a second orchestrator whose own leaf is nested.
+	// childOrch is wired by buildRows from the role's childOrch pointer; the
+	// child orchestrator nests under the sub-coord row and is NOT passed as a
+	// top-level orchestrator (populateRail's resolveSubCoordinators handles the
+	// flat→tree promotion + de-dup; here we hand-wire the resolved tree).
+	child := &orchEntry{ID: 2, Name: "sub", CoordTaskID: "t-sub", Roles: []*roleEntry{
+		{OrchestratorID: 2, RoleID: 20, Name: "leaf-worker", RoleKind: "worker", Live: true},
+	}}
+	sub := &roleEntry{OrchestratorID: 1, RoleID: 11, Name: "sub", RoleKind: "coordinator", ArgusTaskID: "t-sub", childOrch: child}
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "parent", CoordTaskID: "t-parent", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "plain-worker", RoleKind: "worker", Live: true},
+			sub,
+		}},
+	})
+
+	got := renderRail(t, rl, 36, 12)
+	// The sub-coordinator must render as a coord row (chevron + 󰹻 marker).
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" sub") {
+		t.Fatalf("sub-coordinator must render as a foldable coord row (chevron + marker); got:\n%s", got)
+	}
+	// Its child leaf must render, nested.
+	if !strings.Contains(got, "leaf-worker") {
+		t.Fatalf("sub-coordinator's nested child must render; got:\n%s", got)
+	}
+	// "sub" must appear exactly once (not as a leaf AND a top-level orch).
+	if n := strings.Count(got, "▾ "+string(iconCoord)+" sub"); n != 1 {
+		t.Fatalf("sub-coordinator coord row must render exactly once; got %d in:\n%s", n, got)
+	}
+
+	// Depth check: the nested leaf must be indented MORE than its sub-coord row,
+	// which in turn is indented more than the parent coord. Find the column of
+	// the needle within each line (the rail border occupies column 0).
+	lines := strings.Split(got, "\n")
+	indent := runeColOf(lines)
+	parentIndent := indent(string(iconCoord) + " parent")
+	subIndent := indent(string(iconCoord) + " sub")
+	leafIndent := indent("leaf-worker")
+	if !(parentIndent < subIndent && subIndent < leafIndent) {
+		t.Fatalf("expected increasing indentation parent(%d) < sub(%d) < leaf(%d); got:\n%s", parentIndent, subIndent, leafIndent, got)
+	}
+}
+
+// Scenario: Archived children indent one level DEEPER than their Archive (N)
+// expando header (depth-aware indentation). The Archive expando sits one level
+// under its coordinator; its archived children sit one level under the expando.
+func TestRailList_ArchivedChildIndentsDeeperThanExpando(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w-active", RoleKind: "worker", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w-archived", RoleKind: "worker", Archived: true},
+		}},
+	})
+	// Open the per-coordinator Archive expando so its child renders.
+	if !rl.SelectByArchiveOwner(1) {
+		t.Fatalf("could not select per-coordinator Archive expando")
+	}
+	rl.ToggleCollapse()
+
+	got := renderRail(t, rl, 36, 10)
+	lines := strings.Split(got, "\n")
+	indent := runeColOf(lines)
+	expandoIndent := indent("Archive (1)")
+	archivedIndent := indent("w-archived")
+	if expandoIndent < 0 || archivedIndent < 0 {
+		t.Fatalf("expected both the Archive expando and the archived child to render; got:\n%s", got)
+	}
+	if archivedIndent <= expandoIndent {
+		t.Fatalf("archived child (%d) must indent deeper than its Archive expando header (%d); got:\n%s", archivedIndent, expandoIndent, got)
+	}
+}
+
 // The top-level Archive sorts to the very bottom of the rail, below the
 // Freelance section.
 func TestRailList_TopLevelArchiveBelowFreelance(t *testing.T) {
@@ -593,5 +781,190 @@ func TestRailList_TopLevelArchiveBelowFreelance(t *testing.T) {
 	}
 	if archIdx < freeIdx {
 		t.Fatalf("top-level Archive must render below the Freelance section; got:\n%s", got)
+	}
+}
+
+// Scenario: the selected row is indicated by selected-text styling, NOT a grey
+// background fill — for BOTH a coordinator header and a worker row. The rail
+// must paint no theme.ColorHighlight background on any row.
+func TestRailList_SelectionUsesSelectedTextNotBackground(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2", Live: true},
+		}},
+	})
+
+	// Cursor on the coordinator header.
+	rl.SelectByOrchID(1)
+	dump, sim := renderRailSim(t, rl, 28, 8)
+	headerRow := rowOf(dump, "proj1")
+	if headerRow < 0 {
+		t.Fatalf("coordinator header not rendered; got:\n%s", dump)
+	}
+	if rowHasBackground(sim, headerRow, theme.ColorHighlight) {
+		t.Fatalf("selected coordinator header must NOT paint a ColorHighlight background; got:\n%s", dump)
+	}
+	if !rowHasForeground(sim, headerRow, theme.ColorSelected) {
+		t.Fatalf("selected coordinator header name must render in theme.ColorSelected; got:\n%s", dump)
+	}
+
+	// Cursor on a worker row.
+	rl.SelectByRoleID(10)
+	dump, sim = renderRailSim(t, rl, 28, 8)
+	workerRow := rowOf(dump, "w1")
+	if workerRow < 0 {
+		t.Fatalf("worker row not rendered; got:\n%s", dump)
+	}
+	if rowHasBackground(sim, workerRow, theme.ColorHighlight) {
+		t.Fatalf("selected worker row must NOT paint a ColorHighlight background; got:\n%s", dump)
+	}
+	if !rowHasForeground(sim, workerRow, theme.ColorSelected) {
+		t.Fatalf("selected worker name must render in theme.ColorSelected; got:\n%s", dump)
+	}
+}
+
+// Scenario: a NON-selected row carries no lingering highlight background. With
+// the cursor on the header, the (unselected) worker rows must be default-bg.
+func TestRailList_NonSelectedRowHasNoBackground(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2", Live: true},
+		}},
+	})
+	rl.SelectByOrchID(1) // cursor on header; workers are NOT selected
+
+	dump, sim := renderRailSim(t, rl, 28, 8)
+	for _, name := range []string{"w1", "w2"} {
+		y := rowOf(dump, name)
+		if y < 0 {
+			t.Fatalf("row %q not rendered; got:\n%s", name, dump)
+		}
+		if rowHasBackground(sim, y, theme.ColorHighlight) {
+			t.Fatalf("non-selected row %q must have default background (no ColorHighlight); got:\n%s", name, dump)
+		}
+	}
+}
+
+// markerLines returns the indexes of dump lines containing the selection
+// marker glyph. readScreen strips all styling, so these assertions prove the
+// selection is identifiable from a colorless text capture alone (the
+// live-probe grid renderer, screen readers, reduced-color terminals).
+func markerLines(dump string) []int {
+	var out []int
+	for i, ln := range strings.Split(dump, "\n") {
+		if strings.ContainsRune(ln, selectionMarker) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// assertMarkerOnRow asserts the marker glyph renders exactly once across the
+// dump, on the line containing needle.
+func assertMarkerOnRow(t *testing.T, dump, needle string) {
+	t.Helper()
+	rows := markerLines(dump)
+	if len(rows) != 1 {
+		t.Fatalf("selection marker must render exactly once; found on lines %v in:\n%s", rows, dump)
+	}
+	want := rowOf(dump, needle)
+	if want < 0 {
+		t.Fatalf("row %q not rendered; got:\n%s", needle, dump)
+	}
+	if rows[0] != want {
+		t.Fatalf("selection marker on line %d, want line %d (%q); got:\n%s", rows[0], want, needle, dump)
+	}
+}
+
+// Scenario: Selected row is identifiable without color via the marker glyph —
+// for EVERY selectable row kind (coordinator header, worker row, archive
+// expando, freelance repo header, freelance task row).
+func TestRailList_SelectionMarkerOnEverySelectableRowKind(t *testing.T) {
+	mk := func() *railList {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w-active", RoleKind: "worker", Live: true},
+				{OrchestratorID: 1, RoleID: 11, Name: "w-old", RoleKind: "worker", Archived: true},
+			}},
+		})
+		rl.SetFreelance([]*freelanceProject{
+			{Project: "repoX", Tasks: []*roleEntry{
+				{RoleKind: "freelance", Name: "free-1", ArgusTaskID: "f1", HasState: true, Status: "in_progress"},
+			}},
+		})
+		return rl
+	}
+
+	t.Run("coordinator header", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByOrchID(1) {
+			t.Fatal("SelectByOrchID failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "proj1")
+	})
+	t.Run("worker row", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByRoleID(10) {
+			t.Fatal("SelectByRoleID failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "w-active")
+	})
+	t.Run("archive expando", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByArchiveOwner(1) {
+			t.Fatal("SelectByArchiveOwner failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "Archive (1)")
+	})
+	t.Run("freelance repo header", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByProject("repoX") {
+			t.Fatal("SelectByProject failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "repoX")
+	})
+	t.Run("freelance task row", func(t *testing.T) {
+		rl := mk()
+		if !rl.SelectByArgusTaskID("f1") {
+			t.Fatal("SelectByArgusTaskID failed")
+		}
+		assertMarkerOnRow(t, renderRail(t, rl, 32, 12), "free-1")
+	})
+}
+
+// Scenario: Marker gutter keeps columns stable across selection moves — the
+// marker follows the cursor and vacated rows render a space in the gutter, so
+// no row content shifts when the selection moves.
+func TestRailList_SelectionMarkerMovesWithCursorWithoutShift(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", RoleKind: "worker", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "w2", RoleKind: "worker", Live: true},
+		}},
+	})
+	rl.SelectByOrchID(1)
+	before := renderRail(t, rl, 28, 8)
+	assertMarkerOnRow(t, before, "proj1")
+	colBefore := runeColOf(strings.Split(before, "\n"))
+
+	rl.CursorDown() // header → w1
+	after := renderRail(t, rl, 28, 8)
+	assertMarkerOnRow(t, after, "w1")
+	colAfter := runeColOf(strings.Split(after, "\n"))
+
+	for _, needle := range []string{"proj1", "w1", "w2"} {
+		b, a := colBefore(needle), colAfter(needle)
+		if b < 0 || a < 0 {
+			t.Fatalf("%q missing from a render; before:\n%s\nafter:\n%s", needle, before, after)
+		}
+		if b != a {
+			t.Fatalf("%q shifted from col %d to %d on selection move; before:\n%s\nafter:\n%s", needle, b, a, before, after)
+		}
 	}
 }

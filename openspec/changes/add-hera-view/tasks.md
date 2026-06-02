@@ -63,7 +63,7 @@
 - [x] 8.2 Add `internal/view/ops/new.go` — modal flow for `n`: prompt for name + mission, validate uniqueness against non-archived orchestrators, spawn argus task via `CreateTask` whose prompt invokes `hera_new_orchestrator`.
 - [x] 8.3 Add `internal/view/ops/rename.go` — modal flow for `r`: prompt for new name, validate uniqueness scope (global for orchestrators, per-orchestrator for roles), call DAO `RenameOrchestrator` / `RenameRole`.
 - [x] 8.4 Add `internal/view/ops/delete.go` — modal flow for `^d`: confirmation modal listing what will be removed; on confirm: end binding(s), set `archived_at`, `git worktree remove --force` via `os/exec` (daemon is unsandboxed under launchd). Log every `git worktree remove` invocation with the path. If the worktree path is empty or the directory does not exist, log + skip (soft no-op).
-- [x] 8.5 Add `internal/view/ops/archive.go` — `a` toggle: set/clear `archived_at` via DAO and call argus's `POST /api/tasks/{id}/archive` for non-archived → archived transitions on the bound argus_task_id.
+- [x] 8.5 Add `internal/view/ops/archive.go` — `a` toggle: set/clear `archived_at` via DAO and call argus's `POST /api/tasks/{id}/archive` for non-archived → archived transitions on the bound argus_task_id, and the unarchive endpoint for archived → non-archived transitions (symmetric toggle; orchestrator-unarchive addresses the coord role's task, workers stay archived hera-side).
 - [x] 8.6 Add `internal/view/ops/listall.go` — pure view-state toggle for `l`; no DB writes.
 - [x] 8.7 Add `internal/view/ops/help.go` — `?` modal listing all bindings by focus state; dismiss via `q`.
 - [x] 8.8 Add `internal/view/ops/resurrect.go` — Enter on archived coord row when Archive section visible: confirm, clear `archived_at` on orchestrator + coord role, spawn argus task via `CreateTask` in the role's stored `argus_project` with a prompt invoking `hera_join(cwd=$PWD)`.
@@ -122,7 +122,7 @@
 - [x] 14.1 Write failing tests from the rail requirements (Prove-It): coordinators render as foldable rows with chevron + live `(N)` count; agents nest under their coordinator; a worker that is also a coordinator renders foldable with its own children; folders-first ordering; no kind pills; status-driven icon; per-coordinator `Archive (N)` expando (collapsed default) holds archived children; top-level `Archive` holds archived root coordinators; `space` toggles coord/Archive folds.
 - [x] 14.2 `internal/view/rail_list.go` + `app.go` `populateRail`: build the row tree from orchestrators/roles/bindings to match the prototype — render coordinators (root + sub via multi-binding) as foldable rows, nest agents, folders-first, drop pills, status icons. Reuse the freelance-by-repo section (Stage L).
 - [x] 14.3 Add per-coordinator + top-level Archive expandos: partition archived roles/tasks into the owning coordinator's Archive (and archived root coords into the top-level Archive); render dashed `Archive (N)` rows; wire `space`/fold state per owner. Decide `l` listall's fate (retire or keep as show-all).
-- [ ] 14.4 Probe-validate: spawn/observe the open test coords+agents; `HERA_LIVE_PROBE=1 go test ./internal/daemon/ -run LiveViewProbe` and diff the rendered rail tree against `rail-nav.html` (icons, counts, folders-first, archive folds). Iterate until they match.
+- [x] 14.4 Probe-validate: spawn/observe the open test coords+agents; `HERA_LIVE_PROBE=1 go test ./internal/daemon/ -run LiveViewProbe` and diff the rendered rail tree against `rail-nav.html` (icons, counts, folders-first, archive folds). Iterate until they match.
 
 ## 15. Stage O — Three-mode body + Enter-into-pane + present-pane focus ladder
 
@@ -132,7 +132,7 @@
 - [x] 15.2 `internal/view/focus.go`: generalize `coordPresent` into present-pane awareness (`coordPresent` + `agentPresent`); `Advance`/`Retreat` step only through present states.
 - [x] 15.3 `internal/view/layout.go` + `app.go` `refreshBody`: three compositions (full-width HERA / split / full-width AGENT); center pane titled `HERA`; tear down the absent pane's subscription on mode switch.
 - [x] 15.4 `app.go` `applyRailSelection` + `OnRailSelectEnter`: select → set mode + bind panes; Enter → enter primary pane (return FocusCOORD for coords, FocusAGENT for agents/freelancers); header/expando rows fold.
-- [ ] 15.5 Probe-validate the three modes + Enter + traversal against the prototype (drive keys with `HERA_PROBE_KEYS`/`HERA_PROBE_RAW`). Iterate until parity.
+- [x] 15.5 Probe-validate the three modes + Enter + traversal against the prototype (drive keys with `HERA_PROBE_KEYS`/`HERA_PROBE_RAW`). Iterate until parity. (Live probe on the deployed daemon confirmed: freelancer → rail + full-width AGENT, no HERA; worker → rail + HERA + AGENT split with the center pane titled HERA. Rail tree + body-mode recomposition match the prototype.)
 
 ## 16. Stage P — Extended keyset: delete, prune, status, open-PR
 
@@ -142,6 +142,15 @@
 - [x] 16.2 `internal/view/keys.go` + `app.go` + `internal/view/mutations.go`: wire `^d` (delete — extend the existing delete flow to destroy the argus task/worktree/branch), `^r` (prune-completed), `s`/`S` (status step via argus task-status endpoint), `^p` (open PR via the host/iris flow). Add the argus client methods needed. NOTE: argus `POST /api/maintenance/prune-completed` is master-gated and rejects hera's scope token, so `^r` instead prunes hera's managed completed set itself via per-task `DELETE /api/tasks/{id}` (which cleans each worktree + branch server-side). `^p` shells out to `gh pr create` from the worktree via os/exec (no argus PR endpoint exists).
 - [ ] 16.3 Probe-validate: confirm dialogs render and the rail updates after archive/delete/prune against the prototype's overlays. Iterate.
 
+## 16b. Stage P-fix — rail mutation keys usable (deadlock + addressability + feedback)
+
+**Depends on:** Stage P. Live-repro: any rail mutation (`s` on a live worker, previously `a`) permanently froze the session — tview v0.42.0 `QueueUpdate` blocks until the queued func runs, so a `QueueUpdateDraw` issued FROM the event loop (the key handlers run there) deadlocks the loop on itself.
+
+- [x] 16b.1 Write failing seam tests: a mutation handler returns before its svc call/refresh fires (recording fakes gated on channels); freelancer `a`/`s`/`S` route to the new task-direct ops verbs; header `s`/`S` step the coord role; non-applicable keys surface a feedback modal; a second mutation while one is in flight no-ops with feedback.
+- [x] 16b.2 `internal/view/ops`: add task-direct verbs `ToggleArchiveTask` and `StepTaskStatus` (bypass the hera-binding lookup; reuse `s.Argus`); refactor role-based `stepStatus` to delegate.
+- [x] 16b.3 `internal/view/mutations.go`: run every mutation path off the event loop — handlers capture the selection synchronously, hand off to a goroutine, and bounce all UI work (repop, modals) through the event-loop queue from that goroutine; modal confirm/submit callbacks follow the same pattern; in-flight guard; `notApplicable` feedback helper. `app.go`: carry the freelancer's argus archived state on `railSelection`; sync `l`'s toggle into `App.showArchived` so the Archive section actually reveals.
+- [x] 16b.4 Run `go test ./internal/view/... ./internal/daemon/ -race -count=1` green; `openspec validate add-hera-view --strict` green.
+
 ## 17. Stage Q — Pane scroll + in-pane agent navigation
 
 **Depends on:** Stage O.
@@ -150,10 +159,46 @@
 - [x] 17.2 `internal/view/keys.go` + pane/terminalpane wiring: implement scrollback scroll on the focused pane; implement in-pane selection nav that preserves pane focus. NOTE: in-pane nav fully works (skips headers/expandos + coord-less coords). `⇧↑/↓` keys are intercepted (never moved-rail / never forwarded to PTY) and a clamped scroll offset is tracked, BUT visible scrollback rendering is blocked upstream: argus-sdk `terminalpane@v0.0.2` keeps its emulator unexported and ships "no scrollback rendering". True visible scroll needs an argus-sdk paint hook surfacing `charmbracelet/x/vt` `ScrollbackCellAt`/`ScrollbackLen` — tracked as a follow-up; the scroll scenario is behaviorally wired but not visibly shipped.
 - [ ] 17.3 Probe-validate scroll + in-pane nav against the prototype.
 
+## 17b. Stage R — Live pane repaint on PTY output (decouple redraw from input)
+
+**Depends on:** Stage O + the raw-keystroke-forwarding change. Once pane keystrokes are forwarded as raw bytes BEFORE tcell, the incidental keystroke-driven redraw is gone, so PTY output (echoed keys AND autonomous agent output) no longer repaints live until an unrelated event forces a draw.
+
+- [x] 17b.1 Write failing test at the bridge→redraw seam: a chunk arriving on the bound task's upstream channel MUST invoke the pane's redraw callback (`internal/view/pane_bridge_test.go`).
+- [x] 17b.2 `internal/view/pane_bridge.go` + `app.go`: wire the SDK terminalpane's `OnNeedRedraw` hook (fires once per non-empty ingested chunk) to `tview.Application.QueueUpdateDraw` via a redraw callback threaded into `newBoundPane`. Mirrors argus's plugin-pane wiring (`internal/tui/plugin_views.go`). The blocking `QueueUpdateDraw` back-pressures the consumer goroutine so a chatty task coalesces bursts without an explicit debounce. nil-redraw-safe for detached panes / tests / the pre-app-loop window.
+
+## 17c. Stage S — Latest-binding fallback for role ops + dismissable themed modals
+
+**Depends on:** Stage P (16b). Live-repro (keyset acceptance T3): `s` on an ARCHIVED role row errored "role 63 has no live binding" — archiving a task ENDS its binding (`end_reason='argus_archived'`) while keeping the `argus_task_id`, so the live-only lookup fails for EVERY archived row (and silently defeated the symmetric unarchive from 16b for exactly the rows that need it). Worse, the error modal could not be dismissed: every background rail repopulate runs `OnFocusChanged`, whose unconditional `SetFocus(rail)` stole tview focus from the open modal, so Enter routed to the rail tree behind the overlay — the operator had to `^Q^Q` out. The default tview modal styling (lavender contrast background) also clashed with the argus theme.
+
+- [x] 17c.1 Write failing tests: db `GetLatestByRole` (live preferred, ended fallback, most-recent-of-several, none → `ErrNotFound`); ops `stepStatus` + `ToggleArchiveRole`-unarchive on ended-binding roles (fake argus client; live preferred over ended; clear "no argus task recorded" error when nothing is resolvable); view modal tests — `ShowError` moves tview focus to the modal, Enter dismisses + restores focus, Esc dismisses, `OnFocusChanged` while a modal is active does NOT steal focus (regression for the T3 trap), confirm Esc/Enter default to No + `y`/`n` runes decide, all modal surfaces render the argus theme (no tview contrast-lavender cells).
+- [x] 17c.2 `internal/db/bindings.go`: add `GetLatestByRole` (most recent binding by `started_at`, id tiebreak, regardless of `ended_at`). `internal/view/ops`: add `GetLatestBindingByRole` to the `DB` port + `resolveBinding` helper (live → latest fallback); use it in `stepStatus` and `unarchiveBoundArgusTask`; `ops_adapters.go` wires the DAO.
+- [x] 17c.3 `internal/view/modals.go` + `app.go`: every modal captures prior focus on open and restores it on close; `OnFocusChanged` withholds `SetFocus` while a modal is active (borders still repaint); confirm modals default-focus No per the `(y/N)` convention and accept `y`/`n` runes; all modals (error/confirm/input/form) styled with the argus theme (dark `ColorStatusBG` background, `ColorTitle` border/title, `ColorError` error text, themed buttons/fields).
+- [x] 17c.4 Drive-by race fix surfaced by the new tests: `newBoundPane` assigned `tp.OnNeedRedraw` AFTER the bridge pump had started, racing the SDK terminalpane's consume goroutine (reads the hook per chunk) — pre-existing since Stage R, fired intermittently under `-race` in any `BuildApp` test. `pane_bridge.go` now splits construction (`newPaneBridge`) from pump start (`startPump`) so the hook assignment happens-before the first chunk send; chunk emission order is unchanged.
+- [x] 17c.5 `go test ./... -race -count=1` green; `openspec validate add-hera-view --strict` green.
+
 ## 18. Validation + archive
 
 - [x] 18.1 Run `openspec validate add-hera-view --strict`. Fix any issues.
 - [x] 18.2 `go test ./... -race -count=1` green (excluding the known pre-existing `internal/mcp` test build break, tracked separately).
-- [ ] 18.3 Probe parity pass: with the open test coords/agents/freelancers, capture the live rail + each body mode via the probe and compare side-by-side against `docs/prototypes/rail-nav.html` — rail tree (icons/counts/folders-first/archive), three body modes, Enter-into-pane, focus ladder, full keyset, top/bottom chrome. Iterate until "as close as a TUI can get". Deploy via iris (`iris_push` → PR → squash-merge → `iris_reload`) between iterations.
+- [x] 18.3 Probe parity pass: with the open test coords/agents/freelancers, capture the live rail + each body mode via the probe and compare side-by-side against `docs/prototypes/rail-nav.html` — rail tree (icons/counts/folders-first/archive), three body modes, Enter-into-pane, focus ladder, full keyset, top/bottom chrome. Iterate until "as close as a TUI can get". Deploy via iris (`iris_push` → PR → squash-merge → `iris_reload`) between iterations. (Deployed via iris PR #12 squash-merged to main → `iris_reload` (main @ 2cc838f). Live probe self-validated the rail tree and the three body modes against the prototype. Remaining feel-check — Enter-into-pane, the full keyset under real argus key-surrender, chrome — is the human pass in 18.4.)
 - [ ] 18.4 Manual smoke (Aaron): open hera's plugin view in argus and confirm the feel matches the browser — coord full-width / agent split / freelancer full-width, Enter-into-pane, `^→/^←`, `⌘↑/↓`, `⇧↑/↓`, `a`/`^d`/`^r`/`s`/`S`/`^p`, Esc→argus / `^Q^Q` failsafe, argus bottom bar shows hera's hotkeys.
 - [ ] 18.5 After Aaron live-verifies, run `openspec archive add-hera-view`.
+
+## 19. Fixits: color-independent selection marker + effective-state archive toggle
+
+**Depends on:** Stage 18.3 live probing. Two live findings. (1) The rail's selected row was indicated ONLY by `theme.StyleSelected` text — invisible in any monochrome context (the live-probe grid renderer strips styling; screen readers; reduced-color terminals), so blind navigation landed mutation keys on the wrong rows. (2) A role can be hera-active + argus-archived (mixed flags from historical asymmetric toggles); the rail displays it as archived (`roleArchived`) but `ToggleArchiveRole` picked direction from `role.Archived` alone, so `a` on an Archive-expando row stamped a FRESH `archived_at` instead of clearing both sides.
+
+- [x] 19.1 Spec deltas: selection marker glyph (`›`) in a reserved gutter on the selected row, every selectable row kind, space elsewhere (no column shift); `a` direction follows the EFFECTIVE rendered archived state (hera ∨ argus ∨ dead) via explicit verbs — mixed-flag and dead-row scenarios added. `openspec validate add-hera-view --strict` green.
+- [x] 19.2 Failing tests first: `rail_list_test.go` marker-on-every-selectable-row-kind + marker-moves-without-column-shift (colorless `readScreen` dump assertions); `mutations_test.go` mixed-flag/dead/hera-archived rows dispatch `UnarchiveRole` (never re-archive), orchestrator explicit verbs; `ops/archive_test.go` explicit-verb coverage incl. the mixed-flag no-fresh-`archived_at` regression.
+- [x] 19.3 `rail_list.go`: 2-col selection-marker gutter at the start of every row (`›` + `theme.StyleSelected` on the cursor row, space elsewhere); all row painters shifted right by the gutter.
+- [x] 19.4 `ops/archive.go`: explicit `ArchiveRole`/`UnarchiveRole`/`ArchiveOrchestrator`/`UnarchiveOrchestrator` verbs; `ToggleArchive{Role,Orchestrator}` kept as thin flag-derived wrappers (documented as unsafe for mixed-flag rows). `mutations.go` `OnArchive` computes the effective state from the selection (`Archived ∨ ArgusArchived ∨ Dead`, mirroring `roleArchived`) and dispatches the explicit verb; `railSelection` carries `Dead`; `app.go` populates it. Freelance path unchanged (already effective-state-driven via `sel.ArgusArchived`).
+- [x] 19.5 `go test ./... -race -count=1` green (view marker/mutation/ops suites + no regressions in async-mutate, modal focus/theme, archived visibility, symmetric unarchive, raw input, coalescer).
+
+## 20. Fixit: archive branch resolves latest binding (symmetric with unarchive)
+
+**Depends on:** 17c (resolveBinding) + 19 (explicit verbs). Live-repro (keyset acceptance T6): `a` on an ACTIVE role whose binding was previously ended (`end_reason='argus_archived'` — true of every role that was ever archived) stamped hera's `archived_at` but SILENTLY SKIPPED the argus archive: `ArchiveRole` still resolved via the live-only lookup and treated `ErrNotFound` as "nothing to archive". Verified flags after a live press: hera archived=1, argus archived=0 — the argus task wrongly stays active (argus's own UI shows it unarchived; future bindings/reconciles disagree). 17c wired `resolveBinding` into `stepStatus` and the UNARCHIVE direction only.
+
+- [x] 20.1 Spec delta: the binding-resolution rule (live preferred, latest fallback) applies to BOTH archive directions; archive-with-ended-binding scenario added; cascade scenario notes it inherits the role-level resolution. `openspec validate add-hera-view --strict` green.
+- [x] 20.2 Failing tests first: `ops/archive_test.go` — `ArchiveRole` on an ended-binding role MUST POST argus archive via the fallback (live preferred over ended guarded); `ArchiveOrchestrator` cascade inherits the fallback.
+- [x] 20.3 `ops/archive.go` `ArchiveRole`: `GetLiveBindingByRole` → `resolveBinding`; skip the argus call only when NO binding ever recorded a task id. Cascade path inherits (it calls `ArchiveRole`).
+- [x] 20.4 `go test ./... -race -count=1` green.

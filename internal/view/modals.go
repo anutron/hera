@@ -3,7 +3,10 @@ package view
 import (
 	"strings"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/anutron/argus-sdk/theme"
 )
 
 // Modal page names used inside *App.pieces.pages. A separate name per
@@ -17,10 +20,65 @@ const (
 	pageError   = "modal-error"
 )
 
+// Modal focus contract (spec: "Modal overlays take keyboard focus,
+// dismiss via Enter and Esc, restore prior focus, and use the argus
+// theme"):
+//
+//   - every Show* moves tview focus to the modal on open (captureFocus
+//     records what held it);
+//   - while a modal is up, OnFocusChanged withholds its SetFocus so
+//     background rail repopulates can't steal focus back (the T3 trap);
+//   - closeModal restores the captured primitive (falling back to the
+//     rail) so dismissal lands the operator where they were.
+
+// themeModalStyle paints a tview.Modal with the argus theme — dark
+// overlay background, cyan border/title, themed buttons — replacing
+// tview's default contrast (lavender) styling so overlays read as part
+// of the same application. textColor styles the message body (normal
+// for confirms, error red for error modals).
+func themeModalStyle(m *tview.Modal, title string, textColor tcell.Color) {
+	m.SetBackgroundColor(theme.ColorStatusBG). // form + frame
+							SetTextColor(textColor).
+							SetButtonBackgroundColor(theme.ColorHighlight).
+							SetButtonTextColor(theme.ColorNormal).
+							SetButtonActivatedStyle(tcell.StyleDefault.Background(theme.ColorTitle).Foreground(tcell.ColorBlack).Bold(true))
+	m.Box.SetBackgroundColor(theme.ColorStatusBG)
+	m.Box.SetBorderColor(theme.ColorTitle)
+	m.Box.SetTitleColor(theme.ColorTitle)
+	if title != "" {
+		m.Box.SetTitle(title).SetTitleAlign(tview.AlignCenter)
+	}
+}
+
+// themeFormStyle paints an input/form modal with the same argus brush as
+// themeModalStyle so all modal flows are visually consistent.
+func themeFormStyle(form *tview.Form, title string) {
+	form.SetLabelColor(theme.ColorNormal).
+		SetFieldBackgroundColor(theme.ColorHighlight).
+		SetFieldTextColor(theme.ColorNormal).
+		SetButtonBackgroundColor(theme.ColorHighlight).
+		SetButtonTextColor(theme.ColorNormal).
+		SetButtonActivatedStyle(tcell.StyleDefault.Background(theme.ColorTitle).Foreground(tcell.ColorBlack).Bold(true))
+	form.SetBackgroundColor(theme.ColorStatusBG) // Box-level background
+	form.SetBorder(true)
+	form.SetBorderColor(theme.ColorTitle)
+	form.SetTitleColor(theme.ColorTitle)
+	form.SetTitle(title).SetTitleAlign(tview.AlignCenter)
+}
+
+// captureFocus records the primitive currently holding tview focus so
+// closeModal can restore it after the modal goes. Runs on the event loop
+// (queueModal body), immediately before focus moves to the modal.
+func (a *App) captureFocus() {
+	if a.app != nil {
+		a.modalPrevFocus = a.app.GetFocus()
+	}
+}
+
 // ShowInput opens a single-line input modal centered over the base
 // layout. onSubmit fires with the trimmed value when the operator hits
 // OK; onCancel fires on Cancel or Esc. Both callbacks run after the
-// modal page is removed and focus has been returned to the rail.
+// modal page is removed and focus has been restored.
 //
 // Safe to call from any goroutine — the body runs through
 // app.QueueUpdateDraw so it lands on the tview event loop.
@@ -51,10 +109,13 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 		form.AddButton("Cancel", func() { dismiss(false) })
 		form.SetCancelFunc(func() { dismiss(false) })
 
-		form.SetBorder(true).SetTitle(title).SetTitleAlign(tview.AlignCenter)
+		themeFormStyle(form, title)
 
+		a.captureFocus()
 		a.pieces.pages.AddPage(pageInput, centeredModal(form, 60, 7), true, true)
-		a.app.SetFocus(input)
+		if a.app != nil {
+			a.app.SetFocus(input)
+		}
 	})
 }
 
@@ -99,56 +160,86 @@ func (a *App) ShowForm2(title, label1, initial1, label2, initial2 string, onSubm
 		form.AddButton("Cancel", func() { dismiss(false) })
 		form.SetCancelFunc(func() { dismiss(false) })
 
-		form.SetBorder(true).SetTitle(title).SetTitleAlign(tview.AlignCenter)
+		themeFormStyle(form, title)
 
+		a.captureFocus()
 		a.pieces.pages.AddPage(pageForm2, centeredModal(form, 60, 9), true, true)
-		a.app.SetFocus(field1)
+		if a.app != nil {
+			a.app.SetFocus(field1)
+		}
 	})
 }
 
-// ShowConfirm opens a y/N confirmation modal. onYes runs on Yes;
-// onNo runs on No / Cancel / Esc.
+// ShowConfirm opens a y/N confirmation modal. onYes runs on Yes; onNo runs
+// on No / Cancel / Esc. Honoring the "(y/N)" convention in every confirm
+// message, No is the default-focused button (a bare Enter declines) and the
+// bare `y` / `n` runes decide directly.
 func (a *App) ShowConfirm(title, message string, onYes func(), onNo func()) {
 	a.queueModal(func() {
+		decide := func(yes bool) {
+			a.closeModal(pageConfirm)
+			if yes {
+				if onYes != nil {
+					onYes()
+				}
+			} else if onNo != nil {
+				onNo()
+			}
+		}
+
 		modal := tview.NewModal().
 			SetText(message).
 			AddButtons([]string{"Yes", "No"}).
-			SetDoneFunc(func(_ int, label string) {
-				a.closeModal(pageConfirm)
-				if label == "Yes" {
-					if onYes != nil {
-						onYes()
-					}
-				} else if onNo != nil {
-					onNo()
+			SetDoneFunc(func(_ int, label string) { decide(label == "Yes") })
+		themeModalStyle(modal, title, theme.ColorNormal)
+		// Default to No per the (y/N) convention — Enter must not fire the
+		// destructive path.
+		modal.SetFocus(1)
+		modal.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+			if ev.Key() == tcell.KeyRune {
+				switch ev.Rune() {
+				case 'y', 'Y':
+					decide(true)
+					return nil
+				case 'n', 'N':
+					decide(false)
+					return nil
 				}
-			})
-		if title != "" {
-			modal.Box.SetTitle(title).SetTitleAlign(tview.AlignCenter)
-		}
+			}
+			return ev
+		})
 
+		a.captureFocus()
 		a.pieces.pages.AddPage(pageConfirm, modal, true, true)
-		a.app.SetFocus(modal)
+		if a.app != nil {
+			a.app.SetFocus(modal)
+		}
 	})
 }
 
-// ShowError surfaces an error string in a modal dismissed by any key.
+// ShowError surfaces an error string in a modal dismissed by Enter (OK)
+// or Esc.
 func (a *App) ShowError(message string) {
 	a.queueModal(func() {
 		modal := tview.NewModal().
 			SetText(message).
 			AddButtons([]string{"OK"}).
 			SetDoneFunc(func(_ int, _ string) { a.closeModal(pageError) })
-		modal.Box.SetTitle("Error").SetTitleAlign(tview.AlignCenter)
+		themeModalStyle(modal, "Error", theme.ColorError)
 
+		a.captureFocus()
 		a.pieces.pages.AddPage(pageError, modal, true, true)
-		a.app.SetFocus(modal)
+		if a.app != nil {
+			a.app.SetFocus(modal)
+		}
 	})
 }
 
 // IsModalActive reports whether any modal page is currently visible.
 // The KeyRouter consults this so global focus-traversal and mutation
-// keys yield to modal forms instead of swallowing keystrokes.
+// keys yield to modal forms instead of swallowing keystrokes; the
+// OnFocusChanged border repaint consults it so background refreshes
+// never steal tview focus from an open modal.
 func (a *App) IsModalActive() bool {
 	if a.pieces.pages == nil {
 		return false
@@ -157,19 +248,34 @@ func (a *App) IsModalActive() bool {
 	return name != "" && name != pageBase
 }
 
-// closeModal removes a single modal page and restores focus to the
-// rail. Idempotent — removing an absent page is a no-op.
+// closeModal removes a single modal page and restores tview focus to the
+// primitive that held it when the modal opened (falling back to the
+// rail). Idempotent — removing an absent page is a no-op.
 func (a *App) closeModal(name string) {
 	a.pieces.pages.RemovePage(name)
-	a.app.SetFocus(a.pieces.rail)
+	target := a.modalPrevFocus
+	a.modalPrevFocus = nil
+	if target == nil {
+		target = tview.Primitive(a.pieces.rail)
+	}
+	if a.app != nil {
+		a.app.SetFocus(target)
+	}
 }
 
-// queueModal runs fn on the tview event loop. Called paths come both
-// from the input pump (already on the loop) and from background
-// goroutines completing background ops; QueueUpdateDraw is safe in
-// both cases.
+// queueModal runs fn on the tview event loop via QueueUpdateDraw.
+//
+// CONTRACT: callers MUST be off the event loop. tview v0.42's QueueUpdate
+// BLOCKS until the queued func has executed, so a call from the loop itself
+// (e.g. a key handler or a modal button callback) deadlocks the application
+// permanently. The mutation bridge guarantees this by opening every modal
+// from a background goroutine (goUI / mutate); from such a goroutine the
+// call merely blocks that goroutine until the loop services it.
+//
+// modalSync (tests only) skips the bounce: the event loop is not running
+// in unit tests, so QueueUpdate would block forever.
 func (a *App) queueModal(fn func()) {
-	if a.app == nil {
+	if a.app == nil || a.modalSync {
 		fn()
 		return
 	}
@@ -189,4 +295,3 @@ func centeredModal(p tview.Primitive, width, height int) tview.Primitive {
 		AddItem(inner, width, 1, true).
 		AddItem(nil, 0, 1, false)
 }
-

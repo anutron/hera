@@ -5,8 +5,10 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/anutron/argus-sdk/terminalpane"
+	"github.com/anutron/argus-sdk/theme"
 )
 
 // fakePaneResizer records every ResizeTask call so tests can assert
@@ -354,5 +356,61 @@ func TestPinnedTerminalPane_ClipsBeyondAllocatedRect(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestPinnedTerminalPane_RepaintsCyanBorderOnFocus pins the focus-feedback
+// contract for the panes (D12): the embedded SDK terminalpane hardcodes a
+// white (tcell.StyleDefault) border when focused, but hera mirrors argus's
+// cyan focus border everywhere, so pinnedTerminalPane.Draw repaints the border
+// in theme.ColorTitle once HasFocus() is true. We focus the pane through a
+// tview Application (the only thing that flips Box.hasFocus, as in production),
+// draw it onto a SimulationScreen, and assert the bordered corner cell carries
+// the cyan style — not the SDK's default white.
+//
+// HasFocus() is only true after an Application focuses the primitive; this is
+// the same seam OnFocusChanged uses (a.app.SetFocus(pane)). No event loop needs
+// to run — SetFocus calls pane.Focus synchronously.
+func TestPinnedTerminalPane_RepaintsCyanBorderOnFocus(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	// Construction size == allocation inner rect (78x22 inner of an 80x24
+	// alloc) so the pinned surface lines up with the allocated border cells —
+	// the production-shape state for a bound pane after the resize handshake.
+	p := newPinnedTerminalPane(tp, 78, 22)
+	const allocW, allocH = 80, 24
+	p.SetRect(0, 0, allocW, allocH)
+
+	// Focus the pane via a real Application — the production path that sets
+	// Box.hasFocus (OnFocusChanged calls a.app.SetFocus on the focused pane).
+	app := tview.NewApplication()
+	app.SetFocus(p)
+	if !p.HasFocus() {
+		t.Fatal("pane should report HasFocus() after Application.SetFocus")
+	}
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(allocW, allocH)
+	p.Draw(sim)
+	sim.Show() // commit the back buffer so GetContents reflects the paint
+
+	// DrawBorder paints the rounded corner '╭' at the pane's top-left cell.
+	// Read it back and assert both the rune and the cyan (theme.ColorTitle)
+	// foreground that StyleFocusedBorder applies — a regression to the SDK's
+	// default-white focus border would fail the color check.
+	cells, cw, _ := sim.GetContents()
+	corner := cells[0*cw+0]
+	if len(corner.Runes) == 0 || corner.Runes[0] != '╭' {
+		t.Fatalf("top-left cell rune = %q, want '╭' (focused border repaint missing)", corner.Runes)
+	}
+	fg, _, _ := corner.Style.Decompose()
+	if fg != theme.ColorTitle {
+		t.Fatalf("focused border color = %v, want theme.ColorTitle (argus cyan); SDK white leaked through", fg)
 	}
 }
