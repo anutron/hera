@@ -4,12 +4,12 @@
 
 ## 1. argus-sdk scroll engine (worker task in ARGUS-SDK project)
 
-- [ ] 1.1 Spawn the ARGUS-SDK worker with the design's D3 spec (worker MUST `iris_fetch` + `git reset --hard origin/main` first — local clone is stale)
-- [ ] 1.2 Worker: scroll state on `TerminalPane` — `ScrollBy`/`ScrollOffset`/`ResetScroll`, clamped to `[0, ScrollbackLen]`, with tests
-- [ ] 1.3 Worker: paint-at-offset rendering (scrollback window above live screen) + `[SCROLL]` top-row badge, with paint tests
-- [ ] 1.4 Worker: anchor-lock — effective offset grows with newly retained scrollback lines; re-clamps on buffer trim, with tests
-- [ ] 1.5 Worker: SGR mouse decoder helper (frame → wheel-up/down + 1-based x,y, or not-mouse), with table tests
-- [ ] 1.6 Merge to main, tag `v0.0.3`, confirm `go list -m github.com/anutron/argus-sdk@v0.0.3` resolves
+- [x] 1.1 Spawn the ARGUS-SDK worker with the design's D3 spec (worker MUST `iris_fetch` + `git reset --hard origin/main` first — local clone is stale)
+- [x] 1.2 Worker: scroll state on `TerminalPane` — `ScrollBy`/`ScrollOffset`/`ResetScroll`, clamped to `[0, ScrollbackLen]`, with tests (commit 7025b33)
+- [x] 1.3 Worker: paint-at-offset rendering (scrollback window above live screen) + `[SCROLL]` top-row badge, with paint tests (commit d52a70c)
+- [x] 1.4 Worker: anchor-lock — effective offset grows with newly retained scrollback lines; re-clamps on buffer trim, with tests (commit 9dab935)
+- [x] 1.5 Worker: SGR mouse decoder helper (frame → wheel-up/down + 1-based x,y, or not-mouse), with table tests (commit 4f2a3e6)
+- [x] 1.6 Merge to main, tag `v0.0.3`, confirm `go list -m github.com/anutron/argus-sdk@v0.0.3` resolves (main @ 89f635c, tag verified, SDK tests green)
 
 ## 2. argus wheel forwarding (worker task in ARGUS project — gated on user confirmation)
 
@@ -21,7 +21,7 @@
 
 **Depends on:** Stage 1
 
-- [ ] 3.1 Bump `go.mod` to argus-sdk `v0.0.3`
+- [x] 3.1 Bump `go.mod` to argus-sdk `v0.0.3`
 - [ ] 3.2 Write failing tests for every delta scenario: mouse-frame interception (pane focus → no PTY forward; RAIL focus → no parser dispatch; non-wheel swallowed), wheel hit-test routing (pane under cursor, position-beats-focus, dead zones), scroll-mode rendering through `pinnedTerminalPane` (visible history, badge, anchor-lock, clamps, ⇧↑/⇧↓ parity, reset-on-rebind), rail viewport panning (pan without selection change, no-op when fits, persists across refresh, j/k re-snap)
 - [ ] 3.3 Confirm each test fails (Prove-It)
 
