@@ -164,10 +164,14 @@ func (a *App) closeModal(name string) {
 	a.app.SetFocus(a.pieces.rail)
 }
 
-// queueModal runs fn on the tview event loop. Called paths come both
-// from the input pump (already on the loop) and from background
-// goroutines completing background ops; QueueUpdateDraw is safe in
-// both cases.
+// queueModal runs fn on the tview event loop via QueueUpdateDraw.
+//
+// CONTRACT: callers MUST be off the event loop. tview v0.42's QueueUpdate
+// BLOCKS until the queued func has executed, so a call from the loop itself
+// (e.g. a key handler or a modal button callback) deadlocks the application
+// permanently. The mutation bridge guarantees this by opening every modal
+// from a background goroutine (goUI / mutate); from such a goroutine the
+// call merely blocks that goroutine until the loop services it.
 func (a *App) queueModal(fn func()) {
 	if a.app == nil {
 		fn()

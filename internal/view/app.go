@@ -92,11 +92,12 @@ type App struct {
 	// Set by BuildApp; nil-safe at the use sites.
 	database *db.DB
 
-	// showArchived is flipped by the `l` rail key. When true,
-	// populateRail walks ListInclusive variants so archived
-	// orchestrators and roles render in the rail; when false,
-	// archived rows are filtered out (the default at session start
-	// per design.md D5).
+	// showArchived is flipped by the `l` rail key (the mutation bridge
+	// syncs the ops.ListAllState toggle here via SetShowArchived, from its
+	// background goroutine — hence guarded by mu). When true, populateRail
+	// walks ListInclusive variants so archived orchestrators and roles
+	// render in the rail; when false, archived rows are filtered out (the
+	// default at session start per design.md D5).
 	showArchived bool
 
 	// selectDebounce is the rail j/k selection-change debounce
@@ -328,12 +329,16 @@ func (a *App) populateRail(database *db.DB) error {
 
 	checker, _ := a.src.(TaskAliveChecker)
 	stateProv, _ := a.src.(TaskStateProvider)
+	// Snapshot the archive-visibility flag once: it is written by the
+	// mutation bridge's background goroutine (SetShowArchived) while this
+	// runs on the event loop.
+	showArchived := a.archiveVisible()
 
 	var (
 		orchs []*db.Orchestrator
 		err   error
 	)
-	if a.showArchived {
+	if showArchived {
 		orchs, err = database.Orchestrators.ListInclusive(ctx)
 	} else {
 		orchs, err = database.Orchestrators.List(ctx)
@@ -351,7 +356,7 @@ func (a *App) populateRail(database *db.DB) error {
 		}
 
 		var roles []*db.Role
-		if a.showArchived {
+		if showArchived {
 			roles, err = database.Roles.ListByOrchestratorInclusive(ctx, orch.ID)
 		} else {
 			roles, err = database.Roles.ListByOrchestrator(ctx, orch.ID)
@@ -453,8 +458,8 @@ func (a *App) populateRail(database *db.DB) error {
 	// so it isn't double-rendered.
 	entries = resolveSubCoordinators(entries)
 
-	a.pieces.rail.SetShowArchived(a.showArchived)
-	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database))
+	a.pieces.rail.SetShowArchived(showArchived)
+	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database, showArchived))
 	a.pieces.rail.SetOrchestrators(entries)
 	return nil
 }
@@ -525,7 +530,7 @@ func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
 // them". Returns nil when no FreelanceProvider is wired (tests) or no
 // freelancers exist. Archived freelancers are included only when
 // showArchived is set, so the active rail mirrors argus's non-archived set.
-func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceProject {
+func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived bool) []*freelanceProject {
 	prov, ok := a.src.(FreelanceProvider)
 	if !ok {
 		return nil
@@ -547,7 +552,7 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceP
 		if _, managed := bound[t.ID]; managed {
 			continue
 		}
-		if t.State.Archived && !a.showArchived {
+		if t.State.Archived && !showArchived {
 			continue
 		}
 		fp, seen := byProject[t.Project]
@@ -581,9 +586,15 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB) []*freelanceP
 	return out
 }
 
-// RepopulateRail re-renders the rail from the current DB state. Safe
-// to call from any goroutine — it bounces through QueueUpdateDraw so
-// the actual node-tree mutation happens on the tview event loop.
+// RepopulateRail re-renders the rail from the current DB state. It bounces
+// through QueueUpdateDraw so the actual node-tree mutation happens on the
+// tview event loop.
+//
+// CONTRACT: callers MUST be off the event loop (tview v0.42's QueueUpdate
+// blocks until the queued func runs — calling this FROM the loop deadlocks
+// it). Production callers honor this: the RailRefresher and argus-state
+// subscriber fire from their own goroutines, and the mutation bridge
+// refreshes from its mutate/goUI goroutines.
 //
 // Satisfies the repopulator contract used by the mutation bridge.
 func (a *App) RepopulateRail() {
@@ -598,6 +609,26 @@ func (a *App) RepopulateRail() {
 		return
 	}
 	a.app.QueueUpdateDraw(body)
+}
+
+// SetShowArchived records whether the rail should render archived rows
+// (orchestrators, roles, freelancers — the Archive sections). Called by the
+// mutation bridge from its background goroutine when `l` toggles the
+// session's archive visibility, immediately before it triggers a
+// RepopulateRail; populateRail snapshots the flag on the event loop.
+//
+// Satisfies the bridge's archiveVisibilitySetter contract.
+func (a *App) SetShowArchived(v bool) {
+	a.mu.Lock()
+	a.showArchived = v
+	a.mu.Unlock()
+}
+
+// archiveVisible reads the archive-visibility flag under the same lock.
+func (a *App) archiveVisible() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.showArchived
 }
 
 // scheduleRedraw marks the pane surface dirty so the redraw coalescer flushes
@@ -643,7 +674,11 @@ func (a *App) CurrentRailSelection() railSelection {
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
 			ArgusTaskID:    ref.ArgusTaskID,
-			WorktreePath:   ref.WorktreePath,
+			// Argus-side archived state: lets `a` on a freelance row (which
+			// has no hera role row, so Archived stays false) pick archive vs
+			// unarchive for the task-direct toggle.
+			ArgusArchived: ref.ArgusArchived,
+			WorktreePath:  ref.WorktreePath,
 		}
 	}
 	return railSelection{}

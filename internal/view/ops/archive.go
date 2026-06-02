@@ -45,6 +45,28 @@ func (s *Service) ToggleArchiveRole(ctx context.Context, id int64) error {
 	return nil
 }
 
+// ToggleArchiveTask handles `a` against a freelance row — an unmanaged argus
+// task with no hera role or binding — by addressing the argus task directly:
+// POST archive when active, POST unarchive when archived. No hera DB row is
+// touched (there is none). archived is the task's current argus archived
+// state, supplied by the caller from the rail's argus state cache (the ops
+// layer has no task-state getter of its own).
+func (s *Service) ToggleArchiveTask(ctx context.Context, taskID string, archived bool) error {
+	if taskID == "" {
+		return fmt.Errorf("ops.ToggleArchiveTask: empty argus task id")
+	}
+	if archived {
+		if err := s.Argus.UnarchiveTask(ctx, taskID); err != nil {
+			return fmt.Errorf("ops.ToggleArchiveTask: argus unarchive %s: %w", taskID, err)
+		}
+		return nil
+	}
+	if err := s.Argus.ArchiveTask(ctx, taskID); err != nil {
+		return fmt.Errorf("ops.ToggleArchiveTask: argus archive %s: %w", taskID, err)
+	}
+	return nil
+}
+
 // ToggleArchiveOrchestrator handles `a` against an orchestrator:
 //   - If active: archive the orchestrator AND cascade-archive every
 //     active role under it (each archive call also POSTs argus archive

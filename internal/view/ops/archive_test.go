@@ -129,3 +129,58 @@ func TestToggleArchiveOrchestrator_UnarchiveDoesNotCascade(t *testing.T) {
 		}
 	}
 }
+
+// --- ToggleArchiveTask (task-direct, freelancers) ---
+
+func TestToggleArchiveTask_Active_ArchivesByTaskID(t *testing.T) {
+	// A freelancer is an unmanaged argus task: no role, no binding, no hera
+	// DB write — the verb must address the argus task directly.
+	s, db, a, _, _ := newTestService()
+
+	if err := s.ToggleArchiveTask(context.Background(), "T9", false); err != nil {
+		t.Fatalf("ToggleArchiveTask: %v", err)
+	}
+	if len(a.archiveCalls) != 1 || a.archiveCalls[0] != "T9" {
+		t.Fatalf("ArchiveTask calls = %+v, want [T9]", a.archiveCalls)
+	}
+	if len(a.unarchiveCalls) != 0 {
+		t.Fatalf("unexpected UnarchiveTask calls: %+v", a.unarchiveCalls)
+	}
+	if len(db.archiveRoleCalls)+len(db.archiveOrchCalls) != 0 {
+		t.Fatalf("ToggleArchiveTask must not write hera DB rows")
+	}
+}
+
+func TestToggleArchiveTask_Archived_UnarchivesByTaskID(t *testing.T) {
+	s, _, a, _, _ := newTestService()
+
+	if err := s.ToggleArchiveTask(context.Background(), "T9", true); err != nil {
+		t.Fatalf("ToggleArchiveTask: %v", err)
+	}
+	if len(a.unarchiveCalls) != 1 || a.unarchiveCalls[0] != "T9" {
+		t.Fatalf("UnarchiveTask calls = %+v, want [T9]", a.unarchiveCalls)
+	}
+	if len(a.archiveCalls) != 0 {
+		t.Fatalf("unexpected ArchiveTask calls: %+v", a.archiveCalls)
+	}
+}
+
+func TestToggleArchiveTask_EmptyTaskID_Errors(t *testing.T) {
+	s, _, a, _, _ := newTestService()
+
+	if err := s.ToggleArchiveTask(context.Background(), "", false); err == nil {
+		t.Fatalf("ToggleArchiveTask with empty task id must error")
+	}
+	if len(a.archiveCalls)+len(a.unarchiveCalls) != 0 {
+		t.Fatalf("empty task id must not call argus")
+	}
+}
+
+func TestToggleArchiveTask_ArgusErrorPropagates(t *testing.T) {
+	s, _, a, _, _ := newTestService()
+	a.archiveErr = errors.New("argus 500")
+
+	if err := s.ToggleArchiveTask(context.Background(), "T9", false); err == nil {
+		t.Fatalf("ToggleArchiveTask must propagate the argus error")
+	}
+}

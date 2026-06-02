@@ -25,8 +25,13 @@ type PaneTargets interface {
 
 // MutationHandler receives the six rail-only mutation key events. Stage H
 // implements the modal flows behind each; Stage G only fires the trigger.
-// All methods are invoked synchronously from the key pump — the
-// implementation MUST NOT block (open modals via QueueUpdateDraw, etc.).
+// All methods are invoked synchronously from the key pump (the tview event
+// loop) — the implementation MUST NOT block AND MUST NOT call anything that
+// bounces through tview's QueueUpdate from the calling goroutine (QueueUpdate
+// blocks until the queued func runs on this same loop — a self-deadlock).
+// The mutationBridge satisfies this by capturing the selection synchronously
+// and handing every blocking phase (svc calls, modal opens, refresh) to a
+// goroutine; see mutationBridge's concurrency contract.
 type MutationHandler interface {
 	OnNew()
 	OnRename()

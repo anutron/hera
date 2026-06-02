@@ -381,7 +381,7 @@ The system SHALL, on `^d` confirmation against a role, end the role's live bindi
 
 ### Requirement: `a` toggles archived state on an orchestrator or role
 
-The system SHALL, on `a` against a non-archived role, set the role's `archived_at` to the current timestamp AND invoke argus's archive endpoint (`POST /api/tasks/{id}/archive`) on the binding's `argus_task_id`. The worktree MUST be preserved. On `a` against a non-archived orchestrator, the same MUST cascade to every role under that orchestrator. On `a` against an already-archived role or orchestrator, `archived_at` MUST be cleared (the role unarchives); unarchiving an orchestrator MUST NOT cascade to roles (roles unarchive individually).
+The system SHALL, on `a` against a non-archived role, set the role's `archived_at` to the current timestamp AND invoke argus's archive endpoint (`POST /api/tasks/{id}/archive`) on the binding's `argus_task_id`. The worktree MUST be preserved. On `a` against a non-archived orchestrator, the same MUST cascade to every role under that orchestrator. On `a` against an already-archived role or orchestrator, `archived_at` MUST be cleared (the role unarchives); unarchiving an orchestrator MUST NOT cascade to roles (roles unarchive individually). On `a` against a freelance row (an unmanaged argus task with no hera role or binding), hera MUST address the argus task directly — issuing `POST /api/tasks/{id}/archive` (or the unarchive endpoint when the task is already archived per argus state) against the row's argus task id — with no hera DB write (there is no role row to stamp).
 
 #### Scenario: Archive role calls argus and preserves worktree
 
@@ -397,6 +397,16 @@ The system SHALL, on `a` against a non-archived role, set the role's `archived_a
 
 - **WHEN** the operator presses `a` against an archived orchestrator `foo` whose roles `coord`, `w1` are also archived
 - **THEN** hera MUST clear `archived_at` on `foo` AND MUST leave `archived_at` on `coord` and `w1` set
+
+#### Scenario: Archive freelancer addresses the argus task directly
+
+- **WHEN** the operator presses `a` against a non-archived freelance row whose argus task is `T9`
+- **THEN** hera MUST issue `POST /api/tasks/T9/archive` to argus AND MUST NOT write any hera DB row
+
+#### Scenario: Unarchive freelancer addresses the argus task directly
+
+- **WHEN** the operator presses `a` against a freelance row whose argus task `T9` is archived per argus state
+- **THEN** hera MUST issue the argus unarchive endpoint for `T9` AND MUST NOT write any hera DB row
 
 ### Requirement: `l` toggles visibility of archived items in the rail
 
@@ -642,12 +652,22 @@ The system SHALL provide three distinct removal actions on the rail: `a` toggles
 
 ### Requirement: Status, open-PR, scroll, and in-pane navigation keys
 
-The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected agent's argus task status (pending → in_progress → in_review → complete); `^p` opens a pull request for the selected agent's, coordinator's, OR freelancer's task via the host git flow — an agent/worker row resolves to that role's bound task, a coordinator selection (root orchestrator header or a sub-coordinator role) resolves to the coordinator's bound argus task, and a freelance row (an unmanaged argus task with no hera role/binding) resolves to the argus task's own worktree (the same way argus opens a PR for that task); `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
+The system SHALL support, mirroring argus's keymap now that argus surrenders the full keyboard: `s` / `S` advance / revert the selected row's argus task status (pending → in_progress → in_review → complete) — an agent/worker row steps its bound task; an orchestrator header steps the orchestrator's coord role's bound task (mirroring how `a` on a header addresses the orchestrator); a freelance row (an unmanaged argus task with no hera role/binding) steps the argus task directly by task id, bypassing the hera binding lookup; `^p` opens a pull request for the selected agent's, coordinator's, OR freelancer's task via the host git flow — an agent/worker row resolves to that role's bound task, a coordinator selection (root orchestrator header or a sub-coordinator role) resolves to the coordinator's bound argus task, and a freelance row (an unmanaged argus task with no hera role/binding) resolves to the argus task's own worktree (the same way argus opens a PR for that task); `⇧↑` / `⇧↓` scroll the focused pane's scrollback; `⌘↑` / `⌘↓` (or `^↑`/`^↓`) move the rail selection to the next/previous agent while focus remains inside a pane (re-entering the new selection's primary pane), so the operator can flip through agents without returning to the rail.
 
 #### Scenario: s/S step the selected agent's status
 
 - **WHEN** focus is `RAIL` on an agent and the operator presses `s`
 - **THEN** the agent's argus task status MUST advance one step (and `S` MUST revert one step)
+
+#### Scenario: s/S on a freelancer step the argus task directly
+
+- **WHEN** focus is `RAIL` on a freelance row whose argus task is `T9` and the operator presses `s`
+- **THEN** `T9`'s argus status MUST advance one step, resolved by task id with no hera binding lookup (and `S` MUST revert one step)
+
+#### Scenario: s/S on an orchestrator header step the coord task
+
+- **WHEN** focus is `RAIL` on an orchestrator header whose coord role is bound to argus task `C1` and the operator presses `s`
+- **THEN** `C1`'s argus status MUST advance one step, resolved via the coord role's live binding (and `S` MUST revert one step)
 
 #### Scenario: `^p` on a coordinator opens a PR for the coord's task
 
@@ -668,3 +688,46 @@ The system SHALL support, mirroring argus's keymap now that argus surrenders the
 
 - **WHEN** focus is inside a pane and the operator presses `⇧↑` / `⇧↓`
 - **THEN** the focused pane's terminal scrollback MUST scroll up / down without moving the rail selection
+
+### Requirement: Rail mutations never block the tview event loop
+
+The system SHALL execute every rail mutation's blocking work (argus HTTP calls, DB-cascade operations, worktree removal, PR creation) OFF the tview event loop. A mutation key handler MUST return to the event loop before the mutation's blocking work executes: the handler captures the current rail selection synchronously, hands the operation to a background goroutine, and that goroutine bounces ALL subsequent UI work (rail repopulation, error modals, confirm-result handling) back through the event-loop queue. Modal button callbacks (confirm/submit handlers) run on the event loop and MUST follow the same hand-off pattern for their own blocking work. The UI MUST remain responsive (keys processed, panes repainting) while a mutation is in flight, and the rail MUST repaint after the mutation completes. While a mutation's blocking work is in flight, a second mutation key MUST NOT fire a concurrent conflicting operation — it MUST no-op with visible feedback instead.
+
+#### Scenario: Mutation key returns before the argus call completes
+
+- **WHEN** the operator presses `s` (or `a`, `S`, or confirms a `^d`/`^r` modal) against a row whose argus call is slow to respond
+- **THEN** the key handler MUST return to the event loop before the argus call completes AND the UI MUST continue to process keys and repaint while the call is in flight
+
+#### Scenario: Rail repaints after an in-flight mutation completes
+
+- **WHEN** a rail mutation's background work completes successfully
+- **THEN** the rail MUST repopulate via the event-loop queue, reflecting the mutation's result, without the operator pressing another key
+
+#### Scenario: Mutation failure surfaces without freezing
+
+- **WHEN** a rail mutation's background work returns an error
+- **THEN** an error modal MUST appear via the event-loop queue AND the UI MUST NOT have been blocked at any point
+
+#### Scenario: Second mutation while one is in flight no-ops with feedback
+
+- **WHEN** a mutation's blocking work is in flight and the operator presses another mutation key whose operation would execute blocking work
+- **THEN** the second operation MUST NOT fire AND the operator MUST receive visible feedback that an operation is already in flight
+
+### Requirement: Non-applicable mutation keys give visible feedback
+
+The system SHALL give visible feedback (a dismissible message naming the key and why it does not apply) whenever a RAIL-focus mutation key is pressed on a selection it cannot act on — e.g. `s`/`S` or `a` on a separator/expando row, `s`/`S` on an orchestrator header with no coord role, `^p` on a selection with no resolvable worktree, or `r`/`^d` on a freelance row (freelancers are argus tasks with no hera role to rename or delete). A RAIL-focus mutation key MUST NOT be a silent no-op.
+
+#### Scenario: s on a non-addressable row gives feedback
+
+- **WHEN** focus is `RAIL` on a non-addressable row (e.g. the Archive separator) and the operator presses `s`
+- **THEN** a dismissible message MUST appear indicating the key does not apply to that row AND no argus or DB call MUST be issued
+
+#### Scenario: a on a non-addressable row gives feedback
+
+- **WHEN** focus is `RAIL` on a non-addressable row and the operator presses `a`
+- **THEN** a dismissible message MUST appear indicating the key does not apply to that row AND no argus or DB call MUST be issued
+
+#### Scenario: ^d on a freelancer gives feedback instead of a dead-end error
+
+- **WHEN** focus is `RAIL` on a freelance row and the operator presses `^d`
+- **THEN** a dismissible message MUST explain that delete does not apply to a freelance row AND no destructive operation MUST be issued

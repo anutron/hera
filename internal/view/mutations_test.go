@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/anutron/hera/internal/view/ops"
 )
@@ -37,6 +38,10 @@ type fakeModals struct {
 	stubForm2Second  string
 	stubForm2Cancel  bool
 	stubForm2NotOpen bool
+
+	// confirmGate, when non-nil, blocks ShowConfirm at entry until the test
+	// closes it. Set before driving the bridge; never mutate afterwards.
+	confirmGate chan struct{}
 }
 
 type fakeInputCall struct {
@@ -96,7 +101,25 @@ func (f *fakeModals) ShowForm2(title, label1, initial1, label2, initial2 string,
 	}
 }
 
+func (f *fakeModals) ConfirmCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.confirms)
+}
+
+func (f *fakeModals) ErrorCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.errors)
+}
+
 func (f *fakeModals) ShowConfirm(title, message string, onYes func(), onNo func()) {
+	// confirmGate, when non-nil, blocks the modal open until the test
+	// releases it — proving the bridge opened the modal OFF the caller's
+	// goroutine (the handler must already have returned).
+	if f.confirmGate != nil {
+		<-f.confirmGate
+	}
 	f.mu.Lock()
 	f.confirms = append(f.confirms, fakeConfirmCall{Title: title, Message: message})
 	yes := f.stubConfirmYes
@@ -130,9 +153,21 @@ func (f *fakeSelector) CurrentRailSelection() railSelection { return f.sel }
 type fakeRepopulator struct {
 	mu    sync.Mutex
 	count int
+
+	// gate, when non-nil, blocks RepopulateRail at entry (before counting)
+	// until the test closes it — proving the bridge refreshed OFF the
+	// caller's goroutine. Set before driving the bridge.
+	gate chan struct{}
+
+	// showArchived records every SetShowArchived call so the `l` visibility-
+	// sync test can assert the toggle value reached the repopulator.
+	showArchived []bool
 }
 
 func (r *fakeRepopulator) RepopulateRail() {
+	if r.gate != nil {
+		<-r.gate
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.count++
@@ -142,6 +177,22 @@ func (r *fakeRepopulator) Count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.count
+}
+
+// SetShowArchived satisfies the bridge's optional archive-visibility sync
+// (the production *App implements the same method).
+func (r *fakeRepopulator) SetShowArchived(v bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.showArchived = append(r.showArchived, v)
+}
+
+func (r *fakeRepopulator) ShowArchivedValues() []bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]bool, len(r.showArchived))
+	copy(out, r.showArchived)
+	return out
 }
 
 type fakeListAll struct {
@@ -196,6 +247,32 @@ type fakeMutationService struct {
 	openPRWtErr      error
 	resurrectCalls   []int64
 	resurrectErr     error
+
+	// Task-direct verbs (freelance rows).
+	toggleArchiveTaskCalls []toggleTaskCall
+	toggleArchiveTaskErr   error
+	stepTaskCalls          []stepTaskCall
+	stepTaskErr            error
+
+	// Seam-test plumbing. *Started, when non-nil, is closed when the
+	// corresponding method is entered (after recording the call). *Gate,
+	// when non-nil, blocks the method until the test closes it — both let
+	// tests prove a handler returned to its caller while the svc call was
+	// still executing. Set before driving the bridge; never mutate after.
+	archiveRoleStarted chan struct{}
+	archiveRoleGate    chan struct{}
+	advanceGate        chan struct{}
+	listCompletedGate  chan struct{}
+}
+
+type toggleTaskCall struct {
+	TaskID   string
+	Archived bool
+}
+
+type stepTaskCall struct {
+	TaskID  string
+	Advance bool
 }
 
 type renameOrchCall struct {
@@ -255,15 +332,49 @@ func (s *fakeMutationService) ToggleArchiveOrchestrator(_ context.Context, id in
 
 func (s *fakeMutationService) ToggleArchiveRole(_ context.Context, id int64) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.toggleArchiveRoleCalls = append(s.toggleArchiveRoleCalls, id)
-	return s.toggleArchiveRoleErr
+	err := s.toggleArchiveRoleErr
+	started := s.archiveRoleStarted
+	gate := s.archiveRoleGate
+	s.mu.Unlock()
+	// Signal entry, then block on the gate OUTSIDE the mutex so seam tests
+	// can read the fake's state while the "argus call" is in flight.
+	if started != nil {
+		close(started)
+	}
+	if gate != nil {
+		<-gate
+	}
+	return err
+}
+
+func (s *fakeMutationService) ToggleArchiveTask(_ context.Context, taskID string, archived bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toggleArchiveTaskCalls = append(s.toggleArchiveTaskCalls, toggleTaskCall{TaskID: taskID, Archived: archived})
+	return s.toggleArchiveTaskErr
+}
+
+func (s *fakeMutationService) StepTaskStatus(_ context.Context, taskID string, advance bool) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stepTaskCalls = append(s.stepTaskCalls, stepTaskCall{TaskID: taskID, Advance: advance})
+	if s.stepTaskErr != nil {
+		return "", s.stepTaskErr
+	}
+	return "in_progress", nil
 }
 
 func (s *fakeMutationService) ListCompletedAgents(_ context.Context) ([]ops.CompletedAgent, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.completedAgents, s.listCompletedErr
+	agents := s.completedAgents
+	err := s.listCompletedErr
+	gate := s.listCompletedGate
+	s.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	return agents, err
 }
 
 func (s *fakeMutationService) PruneCompleted(_ context.Context, agents []ops.CompletedAgent) (int, error) {
@@ -278,9 +389,14 @@ func (s *fakeMutationService) PruneCompleted(_ context.Context, agents []ops.Com
 
 func (s *fakeMutationService) AdvanceStatus(_ context.Context, id int64) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.advanceCalls = append(s.advanceCalls, id)
-	return "in_progress", s.advanceErr
+	err := s.advanceErr
+	gate := s.advanceGate
+	s.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	return "in_progress", err
 }
 
 func (s *fakeMutationService) RevertStatus(_ context.Context, id int64) (string, error) {
@@ -346,6 +462,7 @@ func TestBridge_OnNew_ValidName_CallsNewOrchestrator(t *testing.T) {
 	m.stubForm2Name = "foo"
 
 	b.OnNew()
+	b.waitIdle()
 
 	if len(svc.newCalls) != 1 {
 		t.Fatalf("want 1 NewOrchestrator call, got %d", len(svc.newCalls))
@@ -366,6 +483,7 @@ func TestBridge_OnNew_EmptyName_NoServiceCall(t *testing.T) {
 	m.stubForm2Name = ""
 
 	b.OnNew()
+	b.waitIdle()
 
 	if len(svc.newCalls) != 0 {
 		t.Fatalf("empty name must NOT call NewOrchestrator; got %d", len(svc.newCalls))
@@ -381,6 +499,7 @@ func TestBridge_OnNew_ServiceError_ShowsErrorModal(t *testing.T) {
 	svc.newErr = errors.New("argus down")
 
 	b.OnNew()
+	b.waitIdle()
 
 	if len(m.errors) != 1 || m.errors[0] != "argus down" {
 		t.Fatalf("want error modal with %q; got %v", "argus down", m.errors)
@@ -395,6 +514,7 @@ func TestBridge_OnNew_Cancel_NoServiceCall(t *testing.T) {
 	m.stubForm2Cancel = true
 
 	b.OnNew()
+	b.waitIdle()
 
 	if len(svc.newCalls) != 0 {
 		t.Fatalf("cancel must NOT call NewOrchestrator; got %d", len(svc.newCalls))
@@ -409,6 +529,7 @@ func TestBridge_OnRename_Orchestrator_CallsRenameOrchestrator(t *testing.T) {
 	m.stubInputAnswer = "new"
 
 	b.OnRename()
+	b.waitIdle()
 
 	if len(svc.renameOrchCalls) != 1 {
 		t.Fatalf("want 1 RenameOrchestrator call, got %d", len(svc.renameOrchCalls))
@@ -431,6 +552,7 @@ func TestBridge_OnRename_Role_CallsRenameRole(t *testing.T) {
 	m.stubInputAnswer = "renamed"
 
 	b.OnRename()
+	b.waitIdle()
 
 	if len(svc.renameRoleCalls) != 1 {
 		t.Fatalf("want 1 RenameRole call, got %d", len(svc.renameRoleCalls))
@@ -453,6 +575,7 @@ func TestBridge_OnRename_EmptyName_NoServiceCall(t *testing.T) {
 	m.stubInputAnswer = ""
 
 	b.OnRename()
+	b.waitIdle()
 
 	if len(svc.renameOrchCalls) != 0 {
 		t.Fatalf("empty name must NOT call RenameOrchestrator; got %d", len(svc.renameOrchCalls))
@@ -465,23 +588,28 @@ func TestBridge_OnRename_UnchangedName_NoServiceCall(t *testing.T) {
 	m.stubInputAnswer = "same"
 
 	b.OnRename()
+	b.waitIdle()
 
 	if len(svc.renameRoleCalls) != 0 {
 		t.Fatalf("unchanged name must NOT call RenameRole; got %d", len(svc.renameRoleCalls))
 	}
 }
 
-func TestBridge_OnRename_NoSelection_NoServiceCall_NoModal(t *testing.T) {
+func TestBridge_OnRename_NoSelection_NoServiceCall_Feedback(t *testing.T) {
 	b, m, _, svc, _, _ := newBridgeUnderTest()
 	// sel.sel is zero-value (Kind == selNone)
 
 	b.OnRename()
+	b.waitIdle()
 
 	if len(m.inputs) != 0 {
 		t.Fatalf("no selection must not open input modal; got %d", len(m.inputs))
 	}
 	if len(svc.renameOrchCalls)+len(svc.renameRoleCalls) != 0 {
 		t.Fatalf("no selection must not call any rename")
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "not applicable") {
+		t.Fatalf("r on a non-addressable row must give feedback; errors=%v", m.errors)
 	}
 }
 
@@ -493,6 +621,7 @@ func TestBridge_OnDelete_ConfirmYes_Orchestrator_CallsDeleteOrchestrator(t *test
 	m.stubConfirmYes = true
 
 	b.OnDelete()
+	b.waitIdle()
 
 	if len(m.confirms) != 1 {
 		t.Fatalf("delete must open confirm modal; got %d", len(m.confirms))
@@ -511,6 +640,7 @@ func TestBridge_OnDelete_ConfirmYes_Role_CallsDeleteRole(t *testing.T) {
 	m.stubConfirmYes = true
 
 	b.OnDelete()
+	b.waitIdle()
 
 	if len(svc.deleteRoleCalls) != 1 || svc.deleteRoleCalls[0] != 13 {
 		t.Fatalf("want DeleteRole(13); got %v", svc.deleteRoleCalls)
@@ -526,6 +656,7 @@ func TestBridge_OnDelete_ConfirmNo_NoServiceCall(t *testing.T) {
 	m.stubConfirmYes = false
 
 	b.OnDelete()
+	b.waitIdle()
 
 	if len(svc.deleteOrchCalls) != 0 {
 		t.Fatalf("confirm=No must NOT call Delete; got %d", len(svc.deleteOrchCalls))
@@ -535,16 +666,20 @@ func TestBridge_OnDelete_ConfirmNo_NoServiceCall(t *testing.T) {
 	}
 }
 
-func TestBridge_OnDelete_NoSelection_NoModal(t *testing.T) {
+func TestBridge_OnDelete_NoSelection_NoConfirm_Feedback(t *testing.T) {
 	b, m, _, svc, _, _ := newBridgeUnderTest()
 
 	b.OnDelete()
+	b.waitIdle()
 
 	if len(m.confirms) != 0 {
 		t.Fatalf("no selection must NOT open confirm modal; got %d", len(m.confirms))
 	}
 	if len(svc.deleteOrchCalls)+len(svc.deleteRoleCalls) != 0 {
 		t.Fatalf("no selection must not call any delete")
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "not applicable") {
+		t.Fatalf("^d on a non-addressable row must give feedback; errors=%v", m.errors)
 	}
 }
 
@@ -555,6 +690,7 @@ func TestBridge_OnDelete_ServiceError_ShowsErrorModal(t *testing.T) {
 	svc.deleteRoleErr = errors.New("worktree busy")
 
 	b.OnDelete()
+	b.waitIdle()
 
 	if len(m.errors) != 1 || m.errors[0] != "worktree busy" {
 		t.Fatalf("want error modal; got %v", m.errors)
@@ -571,6 +707,7 @@ func TestBridge_OnArchive_Orchestrator_TogglesArchive(t *testing.T) {
 	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "foo"}
 
 	b.OnArchive()
+	b.waitIdle()
 
 	if len(svc.toggleArchiveOrchCalls) != 1 || svc.toggleArchiveOrchCalls[0] != 5 {
 		t.Fatalf("want ToggleArchiveOrchestrator(5); got %v", svc.toggleArchiveOrchCalls)
@@ -585,6 +722,7 @@ func TestBridge_OnArchive_Role_TogglesArchive(t *testing.T) {
 	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
 
 	b.OnArchive()
+	b.waitIdle()
 
 	if len(svc.toggleArchiveRoleCalls) != 1 || svc.toggleArchiveRoleCalls[0] != 9 {
 		t.Fatalf("want ToggleArchiveRole(9); got %v", svc.toggleArchiveRoleCalls)
@@ -594,25 +732,13 @@ func TestBridge_OnArchive_Role_TogglesArchive(t *testing.T) {
 	}
 }
 
-func TestBridge_OnArchive_NoSelection_NoServiceCall(t *testing.T) {
-	b, _, _, svc, _, rp := newBridgeUnderTest()
-
-	b.OnArchive()
-
-	if len(svc.toggleArchiveOrchCalls)+len(svc.toggleArchiveRoleCalls) != 0 {
-		t.Fatalf("no selection must not call ToggleArchive*")
-	}
-	if rp.Count() != 0 {
-		t.Fatalf("no selection must not refresh; got %d", rp.Count())
-	}
-}
-
 func TestBridge_OnArchive_ServiceError_ShowsErrorModal(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
 	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
 	svc.toggleArchiveRoleErr = errors.New("argus 500")
 
 	b.OnArchive()
+	b.waitIdle()
 
 	if len(m.errors) != 1 || m.errors[0] != "argus 500" {
 		t.Fatalf("want error modal; got %v", m.errors)
@@ -628,6 +754,7 @@ func TestBridge_OnListAll_TogglesState_AndRefreshes(t *testing.T) {
 	}
 
 	b.OnListAll()
+	b.waitIdle()
 
 	if la.toggles != 1 {
 		t.Fatalf("want 1 toggle, got %d", la.toggles)
@@ -640,6 +767,7 @@ func TestBridge_OnListAll_TogglesState_AndRefreshes(t *testing.T) {
 	}
 
 	b.OnListAll()
+	b.waitIdle()
 	if la.toggles != 2 {
 		t.Fatalf("want 2 toggles, got %d", la.toggles)
 	}
@@ -681,6 +809,7 @@ func TestBridge_OnDelete_Orchestrator_ConfirmNamesAndWarnsChildren(t *testing.T)
 	m.stubConfirmNotOpen = true // open the modal but do not auto-confirm
 
 	b.OnDelete()
+	b.waitIdle()
 
 	if len(m.confirms) != 1 {
 		t.Fatalf("delete must open a confirm modal; got %d", len(m.confirms))
@@ -700,6 +829,7 @@ func TestBridge_OnDelete_Role_WithChildren_WarnsChildren(t *testing.T) {
 	m.stubConfirmNotOpen = true
 
 	b.OnDelete()
+	b.waitIdle()
 
 	if len(m.confirms) != 1 {
 		t.Fatalf("delete must open a confirm modal; got %d", len(m.confirms))
@@ -720,6 +850,7 @@ func TestBridge_OnPrune_ConfirmYes_PrunesListed(t *testing.T) {
 	m.stubConfirmYes = true
 
 	b.OnPrune()
+	b.waitIdle()
 
 	if len(m.confirms) != 1 {
 		t.Fatalf("prune must open a confirm modal; got %d", len(m.confirms))
@@ -741,6 +872,7 @@ func TestBridge_OnPrune_ConfirmNo_NoPrune(t *testing.T) {
 	m.stubConfirmYes = false
 
 	b.OnPrune()
+	b.waitIdle()
 
 	if len(svc.pruneCalls) != 0 {
 		t.Fatalf("confirm=No must NOT prune; got %+v", svc.pruneCalls)
@@ -752,6 +884,7 @@ func TestBridge_OnPrune_NoCompleted_NoConfirmNoPrune(t *testing.T) {
 	svc.completedAgents = nil
 
 	b.OnPrune()
+	b.waitIdle()
 
 	if len(m.confirms) != 0 {
 		t.Fatalf("no completed agents must NOT open a destructive confirm; got %d", len(m.confirms))
@@ -768,6 +901,7 @@ func TestBridge_OnStatusAdvance_Role_Steps(t *testing.T) {
 	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
 
 	b.OnStatusAdvance()
+	b.waitIdle()
 
 	if len(svc.advanceCalls) != 1 || svc.advanceCalls[0] != 9 {
 		t.Fatalf("want AdvanceStatus(9); got %v", svc.advanceCalls)
@@ -782,21 +916,10 @@ func TestBridge_OnStatusRevert_Role_Steps(t *testing.T) {
 	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w"}
 
 	b.OnStatusRevert()
+	b.waitIdle()
 
 	if len(svc.revertCalls) != 1 || svc.revertCalls[0] != 9 {
 		t.Fatalf("want RevertStatus(9); got %v", svc.revertCalls)
-	}
-}
-
-func TestBridge_OnStatus_NonRole_NoCall(t *testing.T) {
-	b, _, sel, svc, _, _ := newBridgeUnderTest()
-	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, Name: "foo"}
-
-	b.OnStatusAdvance()
-	b.OnStatusRevert()
-
-	if len(svc.advanceCalls)+len(svc.revertCalls) != 0 {
-		t.Fatalf("status keys must no-op on non-role selection")
 	}
 }
 
@@ -808,6 +931,7 @@ func TestBridge_OnOpenPR_ConfirmYes_OpensPR(t *testing.T) {
 	m.stubConfirmYes = true
 
 	b.OnOpenPR()
+	b.waitIdle()
 
 	if len(m.confirms) != 1 {
 		t.Fatalf("open-PR must confirm first; got %d", len(m.confirms))
@@ -823,6 +947,7 @@ func TestBridge_OnOpenPR_ConfirmNo_NoPR(t *testing.T) {
 	m.stubConfirmYes = false
 
 	b.OnOpenPR()
+	b.waitIdle()
 
 	if len(svc.openPRCalls) != 0 {
 		t.Fatalf("confirm=No must NOT open a PR; got %v", svc.openPRCalls)
@@ -839,6 +964,7 @@ func TestBridge_OnOpenPR_Coordinator_OpensPRForCoordRole(t *testing.T) {
 	m.stubConfirmYes = true
 
 	b.OnOpenPR()
+	b.waitIdle()
 
 	if len(m.confirms) != 1 {
 		t.Fatalf("open-PR on a coordinator must confirm first; got %d", len(m.confirms))
@@ -856,22 +982,10 @@ func TestBridge_OnOpenPR_SubCoordinatorRole_OpensPR(t *testing.T) {
 	m.stubConfirmYes = true
 
 	b.OnOpenPR()
+	b.waitIdle()
 
 	if len(svc.openPRCalls) != 1 || svc.openPRCalls[0] != 77 {
 		t.Fatalf("want OpenPR(77) for the sub-coordinator role; got %v", svc.openPRCalls)
-	}
-}
-
-// An orchestrator selection with no coord role (CoordRoleID 0) still no-ops —
-// there is no coordinator task to open a PR from.
-func TestBridge_OnOpenPR_OrchestratorNoCoord_NoConfirm(t *testing.T) {
-	b, m, sel, svc, _, _ := newBridgeUnderTest()
-	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, Name: "foo"}
-
-	b.OnOpenPR()
-
-	if len(m.confirms) != 0 || len(svc.openPRCalls) != 0 {
-		t.Fatalf("open-PR on a coord-less orchestrator must no-op; confirms=%d prCalls=%v", len(m.confirms), svc.openPRCalls)
 	}
 }
 
@@ -892,6 +1006,7 @@ func TestBridge_OnOpenPR_Freelancer_OpensPRFromWorktree(t *testing.T) {
 	m.stubConfirmYes = true
 
 	b.OnOpenPR()
+	b.waitIdle()
 
 	if len(m.confirms) != 1 {
 		t.Fatalf("open-PR on a freelancer must confirm first; got %d", len(m.confirms))
@@ -919,15 +1034,17 @@ func TestBridge_OnOpenPR_Freelancer_ConfirmNo_NoPR(t *testing.T) {
 	m.stubConfirmYes = false
 
 	b.OnOpenPR()
+	b.waitIdle()
 
 	if len(svc.openPRWtCalls) != 0 {
 		t.Fatalf("confirm=No must NOT open a PR; got %v", svc.openPRWtCalls)
 	}
 }
 
-// A freelancer with no resolvable worktree path (argus reported none) no-ops:
-// there is nothing to open a PR from, so no confirm and no service call.
-func TestBridge_OnOpenPR_Freelancer_NoWorktree_NoConfirm(t *testing.T) {
+// A freelancer with no resolvable worktree path (argus reported none) opens
+// no confirm and calls no service — but gives visible feedback rather than
+// a silent nothing.
+func TestBridge_OnOpenPR_Freelancer_NoWorktree_NoConfirm_Feedback(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
 	sel.sel = railSelection{
 		Kind:        selRole,
@@ -938,9 +1055,13 @@ func TestBridge_OnOpenPR_Freelancer_NoWorktree_NoConfirm(t *testing.T) {
 	}
 
 	b.OnOpenPR()
+	b.waitIdle()
 
 	if len(m.confirms) != 0 || len(svc.openPRWtCalls) != 0 {
-		t.Fatalf("freelancer with no worktree must no-op; confirms=%d wtCalls=%v", len(m.confirms), svc.openPRWtCalls)
+		t.Fatalf("freelancer with no worktree must not confirm or call; confirms=%d wtCalls=%v", len(m.confirms), svc.openPRWtCalls)
+	}
+	if m.ErrorCount() != 1 {
+		t.Fatalf("freelancer ^p with no worktree must give visible feedback; errors=%v", m.errors)
 	}
 }
 
@@ -955,6 +1076,7 @@ func TestBridge_OnNew_NameAndMission_PassesBothThrough(t *testing.T) {
 	m.stubForm2Second = "ship F"
 
 	b.OnNew()
+	b.waitIdle()
 
 	if len(svc.newCalls) != 1 {
 		t.Fatalf("want 1 NewOrchestrator call, got %d", len(svc.newCalls))
@@ -981,6 +1103,7 @@ func TestBridge_OnResurrect_ArchivedCoordRole_ArchiveVisible_Confirms(t *testing
 	m.stubConfirmYes = true
 
 	handled := b.OnResurrect()
+	b.waitIdle()
 
 	if !handled {
 		t.Fatalf("OnResurrect must report it handled the archived-coord Enter")
@@ -1008,6 +1131,7 @@ func TestBridge_OnResurrect_ArchivedOrchestrator_UsesCoordRoleID(t *testing.T) {
 	m.stubConfirmYes = true
 
 	handled := b.OnResurrect()
+	b.waitIdle()
 
 	if !handled {
 		t.Fatalf("OnResurrect must handle an archived root orchestrator")
@@ -1062,3 +1186,369 @@ func TestBridge_OnResurrect_ArchivedWorker_NotHandled(t *testing.T) {
 }
 
 func stringsContains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// --- Deadlock fix: every mutation path hands its blocking work off the
+// caller's goroutine. The caller is the tview event loop in production, where
+// a blocking svc call + QueueUpdateDraw bounce self-deadlocks the loop
+// (tview's QueueUpdate blocks until the queued func runs). Each seam test
+// gates the first blocking touch (svc call, modal open, repop) and proves the
+// handler returned while the gate was still closed. ---
+
+// returnsWithin runs fn on its own goroutine and fails the test if it does
+// not return promptly — the signature of a handler executing its blocking
+// work synchronously on the caller.
+func returnsWithin(t *testing.T, name string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s did not return while its blocking work was gated — it runs on the caller (event-loop) goroutine", name)
+	}
+}
+
+func TestBridge_OnArchive_ReturnsBeforeSvcCompletes(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", RoleKind: "worker"}
+	gate := make(chan struct{})
+	svc.archiveRoleGate = gate
+
+	returnsWithin(t, "OnArchive", b.OnArchive)
+
+	if rp.Count() != 0 {
+		t.Fatalf("refresh fired before the mutation completed; got %d", rp.Count())
+	}
+	close(gate)
+	b.waitIdle()
+	if len(svc.toggleArchiveRoleCalls) != 1 {
+		t.Fatalf("want 1 ToggleArchiveRole call after release; got %d", len(svc.toggleArchiveRoleCalls))
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("want exactly 1 refresh after the mutation completed; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnStatusAdvance_ReturnsBeforeSvcCompletes(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", RoleKind: "worker"}
+	gate := make(chan struct{})
+	svc.advanceGate = gate
+
+	returnsWithin(t, "OnStatusAdvance", b.OnStatusAdvance)
+
+	if rp.Count() != 0 {
+		t.Fatalf("refresh fired before the status step completed; got %d", rp.Count())
+	}
+	close(gate)
+	b.waitIdle()
+	if len(svc.advanceCalls) != 1 || rp.Count() != 1 {
+		t.Fatalf("after release: advanceCalls=%d refresh=%d, want 1/1", len(svc.advanceCalls), rp.Count())
+	}
+}
+
+func TestBridge_OnDelete_ReturnsBeforeConfirmShown(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 13, Name: "w1", RoleKind: "worker"}
+	m.stubConfirmYes = true
+	gate := make(chan struct{})
+	m.confirmGate = gate
+
+	returnsWithin(t, "OnDelete", b.OnDelete)
+
+	if m.ConfirmCount() != 0 {
+		t.Fatalf("confirm modal opened before the handler returned to the event loop")
+	}
+	close(gate)
+	b.waitIdle()
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want 1 confirm after release; got %d", m.ConfirmCount())
+	}
+	if len(svc.deleteRoleCalls) != 1 || svc.deleteRoleCalls[0] != 13 {
+		t.Fatalf("want DeleteRole(13) after confirm; got %v", svc.deleteRoleCalls)
+	}
+}
+
+func TestBridge_OnPrune_ReturnsBeforeListCompletes(t *testing.T) {
+	b, m, _, svc, _, _ := newBridgeUnderTest()
+	svc.completedAgents = []ops.CompletedAgent{{RoleID: 1, Name: "done-a", ArgusTaskID: "Ta"}}
+	m.stubConfirmYes = true
+	gate := make(chan struct{})
+	svc.listCompletedGate = gate
+
+	returnsWithin(t, "OnPrune", b.OnPrune)
+
+	if m.ConfirmCount() != 0 {
+		t.Fatalf("confirm opened before the completed-agents list resolved")
+	}
+	close(gate)
+	b.waitIdle()
+	if m.ConfirmCount() != 1 || len(svc.pruneCalls) != 1 {
+		t.Fatalf("after release: confirms=%d pruneCalls=%d, want 1/1", m.ConfirmCount(), len(svc.pruneCalls))
+	}
+}
+
+func TestBridge_OnListAll_ReturnsBeforeRefresh(t *testing.T) {
+	b, _, _, _, la, rp := newBridgeUnderTest()
+	gate := make(chan struct{})
+	rp.gate = gate
+
+	returnsWithin(t, "OnListAll", b.OnListAll)
+
+	if la.toggles != 1 {
+		t.Fatalf("toggle must fire synchronously (cheap, in-memory); got %d", la.toggles)
+	}
+	close(gate)
+	b.waitIdle()
+	if rp.Count() != 1 {
+		t.Fatalf("want 1 refresh after release; got %d", rp.Count())
+	}
+}
+
+// While one mutation's blocking work is in flight, a second mutation key must
+// not fire a concurrent conflicting op — and must NOT be silent about it.
+func TestBridge_SecondMutationWhileInFlight_NoOpsWithFeedback(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", RoleKind: "worker"}
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	svc.archiveRoleStarted = started
+	svc.archiveRoleGate = gate
+
+	b.OnArchive()
+	<-started // the archive svc call is now executing on the bridge's goroutine
+
+	b.OnStatusAdvance() // second mutation while the first is in flight
+
+	close(gate)
+	b.waitIdle()
+
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("second mutation must not fire while one is in flight; got %v", svc.advanceCalls)
+	}
+	if len(svc.toggleArchiveRoleCalls) != 1 {
+		t.Fatalf("first mutation must still complete; got %d calls", len(svc.toggleArchiveRoleCalls))
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "in flight") {
+		t.Fatalf("dropped second mutation must give visible feedback; errors=%v", m.errors)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("want exactly the first mutation's refresh; got %d", rp.Count())
+	}
+}
+
+// --- Freelancer addressability: a/s/S address the argus task directly ---
+
+func freelancerSel() railSelection {
+	return railSelection{
+		Kind:         selRole,
+		RoleKind:     "freelance",
+		RoleID:       0, // freelancers have no hera role
+		Name:         "feat-x",
+		ArgusTaskID:  "T9",
+		WorktreePath: "/tmp/wt/freelance/feat-x",
+	}
+}
+
+func TestBridge_OnArchive_Freelancer_TogglesArgusTaskDirectly(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = freelancerSel()
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.toggleArchiveTaskCalls) != 1 ||
+		svc.toggleArchiveTaskCalls[0] != (toggleTaskCall{TaskID: "T9", Archived: false}) {
+		t.Fatalf("want ToggleArchiveTask(T9, archived=false); got %+v", svc.toggleArchiveTaskCalls)
+	}
+	if len(svc.toggleArchiveRoleCalls)+len(svc.toggleArchiveOrchCalls) != 0 {
+		t.Fatalf("freelancer `a` must not touch role/orchestrator archive paths")
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("freelancer archive must refresh the rail; got %d", rp.Count())
+	}
+	if m.ErrorCount() != 0 {
+		t.Fatalf("unexpected error modal: %v", m.errors)
+	}
+}
+
+func TestBridge_OnArchive_ArchivedFreelancer_Unarchives(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	s := freelancerSel()
+	s.ArgusArchived = true
+	sel.sel = s
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.toggleArchiveTaskCalls) != 1 ||
+		svc.toggleArchiveTaskCalls[0] != (toggleTaskCall{TaskID: "T9", Archived: true}) {
+		t.Fatalf("want ToggleArchiveTask(T9, archived=true); got %+v", svc.toggleArchiveTaskCalls)
+	}
+}
+
+func TestBridge_OnStatus_Freelancer_StepsTaskDirectly(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = freelancerSel()
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+	b.OnStatusRevert()
+	b.waitIdle()
+
+	want := []stepTaskCall{{TaskID: "T9", Advance: true}, {TaskID: "T9", Advance: false}}
+	if len(svc.stepTaskCalls) != 2 || svc.stepTaskCalls[0] != want[0] || svc.stepTaskCalls[1] != want[1] {
+		t.Fatalf("want %+v; got %+v", want, svc.stepTaskCalls)
+	}
+	if len(svc.advanceCalls)+len(svc.revertCalls) != 0 {
+		t.Fatalf("freelancer s/S must not use the role-binding path")
+	}
+	if rp.Count() != 2 {
+		t.Fatalf("each freelancer status step must refresh; got %d", rp.Count())
+	}
+}
+
+// --- Header addressability: s/S on an orchestrator header step the coord task ---
+
+func TestBridge_OnStatus_OrchestratorHeader_StepsCoordRole(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, CoordRoleID: 42, Name: "foo"}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+	b.OnStatusRevert()
+	b.waitIdle()
+
+	if len(svc.advanceCalls) != 1 || svc.advanceCalls[0] != 42 {
+		t.Fatalf("want AdvanceStatus(42) for the coord role; got %v", svc.advanceCalls)
+	}
+	if len(svc.revertCalls) != 1 || svc.revertCalls[0] != 42 {
+		t.Fatalf("want RevertStatus(42) for the coord role; got %v", svc.revertCalls)
+	}
+	if rp.Count() != 2 {
+		t.Fatalf("header status steps must refresh; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnStatus_OrchestratorNoCoord_Feedback(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, Name: "foo"} // CoordRoleID 0
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.advanceCalls)+len(svc.stepTaskCalls) != 0 {
+		t.Fatalf("coord-less header must not step anything")
+	}
+	if m.ErrorCount() != 1 {
+		t.Fatalf("coord-less header s must give visible feedback; errors=%v", m.errors)
+	}
+}
+
+// --- Never silent: non-applicable keys give visible feedback ---
+
+func TestBridge_OnStatus_NoSelection_Feedback(t *testing.T) {
+	b, m, _, svc, _, _ := newBridgeUnderTest()
+	// sel.sel zero-value: Kind selNone (e.g. the Archive separator row)
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.advanceCalls)+len(svc.stepTaskCalls) != 0 {
+		t.Fatalf("selNone must not step anything")
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "not applicable") {
+		t.Fatalf("s on a non-addressable row must give feedback; errors=%v", m.errors)
+	}
+}
+
+func TestBridge_OnArchive_NoSelection_Feedback(t *testing.T) {
+	b, m, _, svc, _, rp := newBridgeUnderTest()
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.toggleArchiveOrchCalls)+len(svc.toggleArchiveRoleCalls)+len(svc.toggleArchiveTaskCalls) != 0 {
+		t.Fatalf("selNone must not call ToggleArchive*")
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "not applicable") {
+		t.Fatalf("a on a non-addressable row must give feedback; errors=%v", m.errors)
+	}
+	if rp.Count() != 0 {
+		t.Fatalf("no mutation, no refresh; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnDelete_Freelancer_Feedback(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = freelancerSel()
+
+	b.OnDelete()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 0 {
+		t.Fatalf("freelancer ^d must not open a destructive confirm")
+	}
+	if len(svc.deleteRoleCalls)+len(svc.deleteOrchCalls) != 0 {
+		t.Fatalf("freelancer ^d must not delete anything; got %v / %v", svc.deleteRoleCalls, svc.deleteOrchCalls)
+	}
+	if m.ErrorCount() != 1 {
+		t.Fatalf("freelancer ^d must give visible feedback; errors=%v", m.errors)
+	}
+}
+
+func TestBridge_OnRename_Freelancer_Feedback(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = freelancerSel()
+
+	b.OnRename()
+	b.waitIdle()
+
+	if len(m.inputs) != 0 {
+		t.Fatalf("freelancer r must not open the rename input")
+	}
+	if len(svc.renameRoleCalls)+len(svc.renameOrchCalls) != 0 {
+		t.Fatalf("freelancer r must not rename anything")
+	}
+	if m.ErrorCount() != 1 {
+		t.Fatalf("freelancer r must give visible feedback; errors=%v", m.errors)
+	}
+}
+
+func TestBridge_OnOpenPR_NoTarget_Feedback(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, Name: "foo"} // no coord role
+
+	b.OnOpenPR()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 0 || len(svc.openPRCalls)+len(svc.openPRWtCalls) != 0 {
+		t.Fatalf("coord-less ^p must not confirm or open a PR")
+	}
+	if m.ErrorCount() != 1 {
+		t.Fatalf("coord-less ^p must give visible feedback; errors=%v", m.errors)
+	}
+}
+
+// --- `l` syncs the session's archive visibility into the repopulator so the
+// Archive section actually reveals (the toggle previously flipped ops state
+// the rail never read). ---
+
+func TestBridge_OnListAll_SyncsArchiveVisibilityToRepopulator(t *testing.T) {
+	b, _, _, _, _, rp := newBridgeUnderTest()
+
+	b.OnListAll()
+	b.waitIdle()
+	if got := rp.ShowArchivedValues(); len(got) != 1 || got[0] != true {
+		t.Fatalf("first toggle must sync SetShowArchived(true); got %v", got)
+	}
+
+	b.OnListAll()
+	b.waitIdle()
+	if got := rp.ShowArchivedValues(); len(got) != 2 || got[1] != false {
+		t.Fatalf("second toggle must sync SetShowArchived(false); got %v", got)
+	}
+}

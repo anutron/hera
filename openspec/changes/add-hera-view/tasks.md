@@ -142,6 +142,15 @@
 - [x] 16.2 `internal/view/keys.go` + `app.go` + `internal/view/mutations.go`: wire `^d` (delete — extend the existing delete flow to destroy the argus task/worktree/branch), `^r` (prune-completed), `s`/`S` (status step via argus task-status endpoint), `^p` (open PR via the host/iris flow). Add the argus client methods needed. NOTE: argus `POST /api/maintenance/prune-completed` is master-gated and rejects hera's scope token, so `^r` instead prunes hera's managed completed set itself via per-task `DELETE /api/tasks/{id}` (which cleans each worktree + branch server-side). `^p` shells out to `gh pr create` from the worktree via os/exec (no argus PR endpoint exists).
 - [ ] 16.3 Probe-validate: confirm dialogs render and the rail updates after archive/delete/prune against the prototype's overlays. Iterate.
 
+## 16b. Stage P-fix — rail mutation keys usable (deadlock + addressability + feedback)
+
+**Depends on:** Stage P. Live-repro: any rail mutation (`s` on a live worker, previously `a`) permanently froze the session — tview v0.42.0 `QueueUpdate` blocks until the queued func runs, so a `QueueUpdateDraw` issued FROM the event loop (the key handlers run there) deadlocks the loop on itself.
+
+- [x] 16b.1 Write failing seam tests: a mutation handler returns before its svc call/refresh fires (recording fakes gated on channels); freelancer `a`/`s`/`S` route to the new task-direct ops verbs; header `s`/`S` step the coord role; non-applicable keys surface a feedback modal; a second mutation while one is in flight no-ops with feedback.
+- [x] 16b.2 `internal/view/ops`: add task-direct verbs `ToggleArchiveTask` and `StepTaskStatus` (bypass the hera-binding lookup; reuse `s.Argus`); refactor role-based `stepStatus` to delegate.
+- [x] 16b.3 `internal/view/mutations.go`: run every mutation path off the event loop — handlers capture the selection synchronously, hand off to a goroutine, and bounce all UI work (repop, modals) through the event-loop queue from that goroutine; modal confirm/submit callbacks follow the same pattern; in-flight guard; `notApplicable` feedback helper. `app.go`: carry the freelancer's argus archived state on `railSelection`; sync `l`'s toggle into `App.showArchived` so the Archive section actually reveals.
+- [x] 16b.4 Run `go test ./internal/view/... ./internal/daemon/ -race -count=1` green; `openspec validate add-hera-view --strict` green.
+
 ## 17. Stage Q — Pane scroll + in-pane agent navigation
 
 **Depends on:** Stage O.

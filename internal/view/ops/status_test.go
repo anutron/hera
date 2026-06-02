@@ -102,6 +102,68 @@ func TestStepStatus_NoBinding_Errors(t *testing.T) {
 	}
 }
 
+// --- StepTaskStatus (task-direct, freelancers) ---
+
+func TestStepTaskStatus_Advance_StepsForwardByTaskID(t *testing.T) {
+	// No role, no binding — a freelancer is an unmanaged argus task, and
+	// StepTaskStatus must bypass the hera-binding lookup entirely.
+	db := newFakeDB()
+	a := &fakeArgus{statuses: map[string]string{"T9": "pending"}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	got, err := s.StepTaskStatus(context.Background(), "T9", true)
+	if err != nil {
+		t.Fatalf("StepTaskStatus: %v", err)
+	}
+	if got != "in_progress" {
+		t.Fatalf("status = %q, want in_progress", got)
+	}
+	if len(a.setStatusCalls) != 1 || a.setStatusCalls[0].TaskID != "T9" || a.setStatusCalls[0].Status != "in_progress" {
+		t.Fatalf("SetTaskStatus calls = %+v", a.setStatusCalls)
+	}
+}
+
+func TestStepTaskStatus_Revert_StepsBackwardByTaskID(t *testing.T) {
+	db := newFakeDB()
+	a := &fakeArgus{statuses: map[string]string{"T9": "in_review"}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	got, err := s.StepTaskStatus(context.Background(), "T9", false)
+	if err != nil {
+		t.Fatalf("StepTaskStatus: %v", err)
+	}
+	if got != "in_progress" {
+		t.Fatalf("status = %q, want in_progress", got)
+	}
+}
+
+func TestStepTaskStatus_ClampsAtComplete_NoWrite(t *testing.T) {
+	db := newFakeDB()
+	a := &fakeArgus{statuses: map[string]string{"T9": "complete"}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	got, err := s.StepTaskStatus(context.Background(), "T9", true)
+	if err != nil {
+		t.Fatalf("StepTaskStatus: %v", err)
+	}
+	if got != "complete" || len(a.setStatusCalls) != 0 {
+		t.Fatalf("clamp at complete: status=%q calls=%+v", got, a.setStatusCalls)
+	}
+}
+
+func TestStepTaskStatus_EmptyTaskID_Errors(t *testing.T) {
+	db := newFakeDB()
+	a := &fakeArgus{}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	if _, err := s.StepTaskStatus(context.Background(), "", true); err == nil {
+		t.Fatalf("StepTaskStatus with empty task id must error")
+	}
+	if len(a.setStatusCalls) != 0 {
+		t.Fatalf("empty task id must not POST status; got %+v", a.setStatusCalls)
+	}
+}
+
 func TestStepStatus_SetError_Propagates(t *testing.T) {
 	db := newFakeDB()
 	orch := db.seedOrchestrator("foo", false)
