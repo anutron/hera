@@ -127,3 +127,21 @@ Operator hit these in real argus; fixed via serial fixit subagents (full nesting
 **Open risks (flagged, accepted):** startup auto-selection of a sub-coord still picks its worker side, not coord; multi-binding resolution is first-wins per coord task.
 
 **Still unwalked:** B (nav/folding), C2–C4 (body modes), D (Enter/focus ladder), E2–E4, F (control-frame chrome), G (keyset actions); M1–M4 (manual). Resume top-to-bottom when ready.
+
+#### 2026-06-01 — worker-independent visual/nav pass (probe, fresh `uxtest` fixtures, daemon on trace build ≡ 6fb18bd render)
+
+Walked the items that do NOT depend on the in-flight `raw-key-forwarding` input fix (rune keys, selection, folding, control frames). Fresh fixtures: `uxtest` coord + `agent-a` worker + `uxtest-free` freelancer. The functional/keystroke items (E2–E4, control-byte G `^d`/`^r`/`^p`, D5–D7 arrow escapes, F2/F4) are **deferred** until that worker lands — they exercise the exact input transport being rewritten.
+
+- **B1 — j/k movement + clamp: PASS.** `j×50` clamped at the bottom row (`uxtest-free`, confirmed via agent-pane `PWD:`); `k` moves up. Selection clamps at both ends.
+- **B2 — space folds a coordinator: PASS.** Space flipped `▾ argus-needs-input` → `▸` and collapsed its `Archive(1)` child away. (B3 Archive-row / B4 Freelance-section folds are the same toggle on different row types — fold machinery confirmed; not separately re-probed.)
+- **C2 — agent selection → HERA+AGENT split: PASS.** An agent-under-a-coordinator selection renders both a `HERA` pane and an `Agent` pane.
+- **C3 — freelancer → full-width AGENT: PASS.** `uxtest-free` selection renders `╔Rail╗╭Agent` directly — no Coord/HERA pane.
+- **C4 — recompose on switch: PASS (by construction).** Coord→HERA-only (C1), agent→HERA+AGENT (C2), freelancer→AGENT-only (C3) each yield a distinct pane composition.
+- **A7 — Freelance grouped by repo: PASS.** Freelance section shows repo group headers (`ARGUS(1)` → `merge-open-prs`, `Hera(1)` → `uxtest-free`).
+- **F1 — hotkeys envelope on connect: PASS.** CONTROL FRAMES carry a `hotkeys` envelope with all RAIL bindings (`j/k`,`Enter`,`^→`,`n`,`r`,`^d`,`a`,`l`,`^r`,`^p`,`s`,`S`,`?`,`Esc`), each `key/label/bar`.
+- **F3 — `?` emits a `help` control frame: PASS.** Help is a control frame, not an in-surface modal.
+- **F5 — top bar `HERA`: PASS (visual).** Present top-left in the surface.
+
+**Observed (known risk, reconfirmed):** initial startup selection binds the first worker (`raw-key-forwarding` under `hera-view-finish`), i.e. picks the worker side rather than a coord — matches the prior "startup auto-selection picks the worker side" risk.
+
+**Deferred to the functional pass (post-`raw-key-forwarding`):** D1–D7 (Enter/focus ladder + arrow traversal), E2–E4 (keystroke→PTY), G1–G7 (keyset actions), F2/F4 (focus-change hotkeys push, Esc `release`). **Manual:** M1–M4 (+ A8 cyan border eyeball).
