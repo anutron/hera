@@ -24,6 +24,11 @@ type fakeFetcher struct {
 	resizeCalls []resizeCall
 	resizeErr   error
 
+	// onResize, when set, fires after each ResizeTask call is recorded
+	// (outside the fake's mutex, so it may call back into the manager).
+	// Lets tests mutate desired dims WHILE a dispatch is in flight.
+	onResize func(resizeCall)
+
 	// taskStatusByID maps argus task id → Status string returned from
 	// GetTask. An unset id falls back to "in_progress" (alive).
 	taskStatusByID map[string]string
@@ -50,10 +55,15 @@ func (f *fakeFetcher) GetTaskSize(_ context.Context, _ string) (int, int, error)
 }
 
 func (f *fakeFetcher) ResizeTask(_ context.Context, taskID string, cols, rows int) error {
+	call := resizeCall{TaskID: taskID, Cols: cols, Rows: rows}
 	f.mu.Lock()
-	f.resizeCalls = append(f.resizeCalls, resizeCall{TaskID: taskID, Cols: cols, Rows: rows})
+	f.resizeCalls = append(f.resizeCalls, call)
 	err := f.resizeErr
+	hook := f.onResize
 	f.mu.Unlock()
+	if hook != nil {
+		hook(call)
+	}
 	return err
 }
 
@@ -373,6 +383,42 @@ func TestProxyManager_ResizeTaskGivesUpAfterMaxAttempts(t *testing.T) {
 	m.ResizeTask(context.Background(), "task-A", 83, 45)
 	if got := waitForResizeCalls(t, ff, 4, time.Second); len(got) < 4 {
 		t.Fatalf("resize calls = %d, want >= 4 (give-up must not dedupe forever)", len(got))
+	}
+}
+
+// TestProxyManager_ResizeTaskGiveUpRechecksDesired pins the exit-race
+// hardening: when the desired size changes WHILE the final failing
+// attempt is in flight (ResizeTask sees running=true and only updates
+// desired), the dispatcher must not exit on the spent budget — it must
+// notice the changed desired at the give-up check, grant a fresh attempt
+// budget, and dispatch the new size. Without the re-check the new size
+// is orphaned until some later layout change.
+func TestProxyManager_ResizeTaskGiveUpRechecksDesired(t *testing.T) {
+	ff := &fakeFetcher{}
+	ff.setResizeErr(errNoActiveSession)
+	m := newResizeTestManager(ff)
+	m.resizeMaxAttempts = 1
+	defer m.Close()
+
+	ctx := context.Background()
+	var once sync.Once
+	ff.mu.Lock()
+	ff.onResize = func(c resizeCall) {
+		// During the first (and, with maxAttempts=1, final) failing
+		// attempt, a new allocation arrives. The dispatcher is mid-POST
+		// with running=true, so this call only updates desired.
+		once.Do(func() { m.ResizeTask(ctx, "task-A", 83, 45) })
+	}
+	ff.mu.Unlock()
+
+	m.ResizeTask(ctx, "task-A", 20, 21)
+
+	calls := waitForResizeCalls(t, ff, 2, time.Second)
+	if len(calls) < 2 {
+		t.Fatalf("resize calls = %d, want >= 2 (give-up orphaned the changed desired): %+v", len(calls), calls)
+	}
+	if calls[1] != (resizeCall{TaskID: "task-A", Cols: 83, Rows: 45}) {
+		t.Fatalf("second call = %+v, want the changed {task-A, 83, 45}", calls[1])
 	}
 }
 

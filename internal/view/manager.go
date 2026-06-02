@@ -241,6 +241,10 @@ func (m *ProxyManager) runResizeDispatch(ctx context.Context, taskID string, st 
 
 	wait := m.resizeDebounce
 	attempts := 0
+	// triedCols/triedRows start at zero on purpose: valid dims are always
+	// >= 1, so the first pass through the loop always differs and seeds a
+	// fresh attempt budget. The zero value is the "nothing tried yet"
+	// sentinel.
 	var triedCols, triedRows int
 	for {
 		select {
@@ -283,8 +287,21 @@ func (m *ProxyManager) runResizeDispatch(ctx context.Context, taskID string, st 
 		attempts++
 		m.log.Debug("argus resize task failed", "task_id", taskID, "cols", cols, "rows", rows, "attempt", attempts, "err", err)
 		if attempts >= m.resizeMaxAttempts {
+			// Before giving up, re-check desired ATOMICALLY with the
+			// running-flag clear: a ResizeTask call that landed while this
+			// attempt was in flight saw running=true and only updated
+			// desired — exiting now would orphan that size until some
+			// later layout change. A changed desired instead gets a fresh
+			// attempt budget on the next iteration.
+			m.resizeMu.Lock()
+			if st.desiredCols != cols || st.desiredRows != rows {
+				m.resizeMu.Unlock()
+				wait = m.resizeRetryDelay
+				continue
+			}
+			st.running = false
+			m.resizeMu.Unlock()
 			m.log.Debug("argus resize task gave up", "task_id", taskID, "cols", cols, "rows", rows, "attempts", attempts)
-			stop()
 			return
 		}
 		wait = m.resizeRetryDelay
