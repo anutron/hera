@@ -153,9 +153,11 @@ type orchEntry struct {
 // roleEntry is one role under an orchestrator. Live indicates an open
 // binding; StartedAt is the binding's StartedAt when live, else the
 // role's CreatedAt — used to render the right-aligned elapsed time.
-// Dead means the DB binding is still open but argus reports the
-// underlying task as gone (archived / completed / 404). Dead rows are
-// hidden by default and rendered dimmed when showArchived is true.
+// Dead means the argus task RECORD no longer exists (404 / pruned —
+// absent from the warm state cache). Task STATUS never sets Dead: a
+// completed task whose record exists renders active with its ✓ glyph.
+// Dead rows are hidden by default and rendered dimmed when showArchived
+// is true.
 type roleEntry struct {
 	OrchestratorID int64
 	RoleID         int64
@@ -673,10 +675,11 @@ func (rl *railList) restoreCursor(prev any) bool {
 }
 
 // roleArchived reports whether a role belongs in an Archive expando rather
-// than the coordinator's active list: hera-archived, argus-archived, or a
-// dead binding (DB-live but the argus task is gone). This is the partition
-// the prototype draws between active children and the per-coordinator
-// Archive fold.
+// than the coordinator's active list: hera-archived, argus-archived, or dead
+// (the argus task RECORD no longer exists). These three — and ONLY these —
+// bucket a row; task STATUS never does (a completed row stays in the active
+// list with its ✓). This is the partition the prototype draws between active
+// children and the per-coordinator Archive fold.
 func roleArchived(r *roleEntry) bool {
 	return r.Archived || r.ArgusArchived || r.Dead
 }

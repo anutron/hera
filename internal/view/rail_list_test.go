@@ -1227,9 +1227,9 @@ func TestRoleIcon_ArchiveRoundTripNeverMutatesGlyph(t *testing.T) {
 	}
 }
 
-// Spec (rail-truthfulness): a row classified Dead by the aliveness checker
-// (IsTaskAlive treats status=complete as dead) with the state cache still
-// holding that status renders '✓' dimmed, not '○'.
+// Spec (rail-truthfulness): even if a row is classified Dead (record gone)
+// while it still carries a known complete status, the glyph never lies — it
+// renders '✓' dimmed, not '○'.
 func TestRoleIcon_DeadCompleteShowsCheckDimmed(t *testing.T) {
 	rl := newRailList()
 	r := &roleEntry{Name: "done-agent", Dead: true, Live: true, HasState: true, Status: "complete"}
@@ -1446,5 +1446,27 @@ func TestRailList_HasRunningRows(t *testing.T) {
 	}}})
 	if !rl.HasRunningRows() {
 		t.Fatal("rail with a running freelancer must report running rows")
+	}
+}
+
+// Spec (complete-not-archived): the spinner driver goes quiet when the LAST
+// running row leaves the rail — the running → complete transition on the same
+// rail data clears hasRunning on the rebuild, so the 150ms tick stops
+// scheduling repaints (no tick-forever leak once everything settles).
+func TestRailList_HasRunningRowsClearsWhenLastRunnerCompletes(t *testing.T) {
+	rl := newRailList()
+	runner := &roleEntry{OrchestratorID: 1, RoleID: 10, Name: "runner", ArgusTaskID: "t", HasState: true, Status: "in_progress"}
+	rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "team", Roles: []*roleEntry{runner}}})
+	if !rl.HasRunningRows() {
+		t.Fatal("running row must arm the spinner driver")
+	}
+
+	// The same row steps to complete; the next rebuild must disarm the driver.
+	// The completed row stays in the ACTIVE tree (status never buckets) — it
+	// simply no longer renders the animated spinner.
+	runner.Status = "complete"
+	rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "team", Roles: []*roleEntry{runner}}})
+	if rl.HasRunningRows() {
+		t.Fatal("after the last running row completes, the spinner driver must go quiet")
 	}
 }
