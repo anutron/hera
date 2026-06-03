@@ -1168,14 +1168,14 @@ func TestStatusIcon_ArchivedRowsKeepTrueStatusGlyph(t *testing.T) {
 		want       rune
 	}{
 		{"complete", "complete", false, false, '✓'},
-		{"in_review", "in_review", false, false, '✓'},
-		{"working", "in_progress", false, false, theme.IconMoonStars},
+		{"in_review", "in_review", false, false, theme.IconMoonStars},
+		{"working", "in_progress", false, false, spinnerFrames[0]},
 		{"idle", "in_progress", false, true, theme.IconMoonOutline},
-		{"pending", "pending", false, false, theme.IconMoonOutline},
+		{"pending", "pending", false, false, '○'},
 		{"needs-input", "in_progress", true, false, theme.IconNeedsInput},
 	}
 	for _, tc := range cases {
-		glyph, style := statusIcon(true, true, tc.needsInput, tc.status, tc.idle, false)
+		glyph, style := statusIcon(true, true, tc.needsInput, tc.status, tc.idle, false, 0)
 		if glyph != tc.want {
 			t.Errorf("%s: archived row with known state: glyph = %q, want %q (true status, dimmed)", tc.name, glyph, tc.want)
 		}
@@ -1188,7 +1188,7 @@ func TestStatusIcon_ArchivedRowsKeepTrueStatusGlyph(t *testing.T) {
 // Spec (rail-truthfulness): unknown-state archived/dead rows keep the dimmed
 // circle fallback — '○' is the fallback ONLY when argus state is unknown.
 func TestStatusIcon_UnknownStateArchivedFallsBackToCircle(t *testing.T) {
-	glyph, style := statusIcon(true, false, false, "", false, false)
+	glyph, style := statusIcon(true, false, false, "", false, false, 0)
 	if glyph != '○' {
 		t.Fatalf("archived row with UNKNOWN state: glyph = %q, want '○' fallback", glyph)
 	}
@@ -1257,5 +1257,194 @@ func TestOrchIcon_ArchivedHeaderKeepsTrueStatusGlyph(t *testing.T) {
 	}
 	if style != theme.StyleDimmed {
 		t.Fatalf("archived coord header must render dimmed; got %v", style)
+	}
+}
+
+// Spec (icon-alignment): the glyph + color for every KNOWN argus state mirrors
+// argus's task-panel table exactly (argus theme.go:29-34 + tasklist.go:1095-1132).
+func TestStateGlyph_MirrorsArgusTable(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		needsInput bool
+		idle       bool
+		wantGlyph  rune
+		wantStyle  tcell.Style
+	}{
+		{"pending", "pending", false, false, '○', theme.StylePending},
+		{"complete", "complete", false, false, '✓', theme.StyleComplete},
+		{"in_review", "in_review", false, false, theme.IconMoonStars, theme.StyleInReview},
+		{"needs-input", "in_progress", true, false, theme.IconNeedsInput, theme.StyleNeedsInput},
+		{"needs-input outranks idle", "in_progress", true, true, theme.IconNeedsInput, theme.StyleNeedsInput},
+		{"idle moon is blue", "in_progress", false, true, theme.IconMoonOutline, theme.StyleInReview},
+		{"running spinner is orange", "in_progress", false, false, spinnerFrames[0], theme.StyleInProgress},
+	}
+	for _, tc := range cases {
+		glyph, style, ok := stateGlyph(tc.needsInput, tc.status, tc.idle, 0)
+		if !ok {
+			t.Errorf("%s: stateGlyph not ok for known state", tc.name)
+			continue
+		}
+		if glyph != tc.wantGlyph {
+			t.Errorf("%s: glyph = %q (U+%04X), want %q (U+%04X)", tc.name, glyph, glyph, tc.wantGlyph, tc.wantGlyph)
+		}
+		if style != tc.wantStyle {
+			t.Errorf("%s: style = %v, want %v", tc.name, style, tc.wantStyle)
+		}
+	}
+}
+
+// Spec (icon-alignment): in_review MUST be visually distinct from complete by
+// GLYPH — the checkmark renders for complete and ONLY complete. Argus never
+// renders a blue check (the operator QA R3 "blue check" confusion).
+func TestStateGlyph_NoCheckmarkForNonCompleteStates(t *testing.T) {
+	type combo struct {
+		status string
+		idle   bool
+		ni     bool
+	}
+	nonComplete := []combo{
+		{"pending", false, false},
+		{"in_review", false, false},
+		{"in_progress", false, false},
+		{"in_progress", true, false},
+		{"in_progress", false, true},
+		{"in_progress", true, true},
+	}
+	for _, c := range nonComplete {
+		for frame := 0; frame < len(spinnerFrames); frame++ {
+			glyph, _, ok := stateGlyph(c.ni, c.status, c.idle, frame)
+			if ok && glyph == '✓' {
+				t.Errorf("non-complete state %q (idle=%v needsInput=%v frame=%d) rendered the checkmark", c.status, c.idle, c.ni, frame)
+			}
+		}
+	}
+}
+
+// Spec (icon-alignment): needs-input applies within in_progress only,
+// mirroring argus's switch nesting — a needs_input flag arriving with any
+// other status (a shape argus's API never serves) defers to the status glyph.
+func TestStateGlyph_NeedsInputScopedToInProgress(t *testing.T) {
+	glyph, style, ok := stateGlyph(true, "complete", false, 0)
+	if !ok || glyph != '✓' || style != theme.StyleComplete {
+		t.Fatalf("complete+needsInput: glyph=%q style=%v ok=%v, want '✓' StyleComplete (status wins)", glyph, style, ok)
+	}
+	glyph, _, ok = stateGlyph(true, "in_review", false, 0)
+	if !ok || glyph != theme.IconMoonStars {
+		t.Fatalf("in_review+needsInput: glyph=%q ok=%v, want moon-stars (status wins)", glyph, ok)
+	}
+}
+
+// Spec (icon-alignment): the running spinner cycles argus's Nerd Font
+// progress frames U+EE06..U+EE0B, advancing one frame per tick and wrapping.
+func TestStateGlyph_SpinnerCyclesArgusProgressFrames(t *testing.T) {
+	want := []rune{0xEE06, 0xEE07, 0xEE08, 0xEE09, 0xEE0A, 0xEE0B}
+	for i := 0; i < 2*len(want); i++ {
+		glyph, _, ok := stateGlyph(false, "in_progress", false, i)
+		if !ok {
+			t.Fatalf("frame %d: stateGlyph not ok", i)
+		}
+		if glyph != want[i%len(want)] {
+			t.Errorf("frame %d: glyph = U+%04X, want U+%04X", i, glyph, want[i%len(want)])
+		}
+	}
+}
+
+// Spec (icon-alignment): running rows animate by wall clock at argus's 150 ms
+// cadence — the frame derives from the rail's (test-overridable) now source.
+func TestRailList_AnimFrameAdvancesByWallClock(t *testing.T) {
+	rl := newRailList()
+	// Frame-aligned base (1,500,000 ms is an exact multiple of the 150 ms
+	// cadence) so the +149ms probe stays inside the same frame.
+	base := time.UnixMilli(1_500_000)
+	rl.now = func() time.Time { return base }
+	f0 := rl.animFrame()
+	rl.now = func() time.Time { return base.Add(149 * time.Millisecond) }
+	if got := rl.animFrame(); got != f0 {
+		t.Fatalf("149ms later: frame = %d, want unchanged %d", got, f0)
+	}
+	rl.now = func() time.Time { return base.Add(150 * time.Millisecond) }
+	if got := rl.animFrame(); got != f0+1 {
+		t.Fatalf("150ms later: frame = %d, want %d", got, f0+1)
+	}
+}
+
+// Spec (icon-alignment): a running role row renders the wall-clock spinner
+// frame as its status icon, and the frame advances across a tick boundary.
+func TestDrawRoleRow_RunningRowRendersAdvancingSpinner(t *testing.T) {
+	rl := newRailList()
+	base := time.UnixMilli(2_000_000)
+	rl.now = func() time.Time { return base }
+	rl.SetOrchestrators([]*orchEntry{{
+		ID: 1, Name: "team", CoordTaskID: "coord-1",
+		Roles: []*roleEntry{{
+			OrchestratorID: 1, RoleID: 10, Name: "runner",
+			Live: true, ArgusTaskID: "t-run",
+			HasState: true, Status: "in_progress",
+		}},
+	}})
+
+	out := renderRail(t, rl, 36, 6)
+	frame0 := spinnerFrames[rl.animFrame()%len(spinnerFrames)]
+	if !strings.Contains(out, string(frame0)+" runner") {
+		t.Fatalf("running row must render spinner frame %q before its name; got:\n%s", frame0, out)
+	}
+
+	rl.now = func() time.Time { return base.Add(150 * time.Millisecond) }
+	out = renderRail(t, rl, 36, 6)
+	frame1 := spinnerFrames[rl.animFrame()%len(spinnerFrames)]
+	if frame1 == frame0 {
+		t.Fatal("expected the wall-clock frame to advance across a 150ms boundary")
+	}
+	if !strings.Contains(out, string(frame1)+" runner") {
+		t.Fatalf("after one tick the row must render the next frame %q; got:\n%s", frame1, out)
+	}
+}
+
+// Spec (icon-alignment): the spinner driver schedules repaints only while a
+// running row exists — HasRunningRows reports whether any visible row (role,
+// sub-coord, freelance, or coord header) is in_progress, not idle, and not
+// blocked on input.
+func TestRailList_HasRunningRows(t *testing.T) {
+	rl := newRailList()
+	if rl.HasRunningRows() {
+		t.Fatal("empty rail must not report running rows")
+	}
+
+	running := &roleEntry{OrchestratorID: 1, RoleID: 10, Name: "runner", ArgusTaskID: "t", HasState: true, Status: "in_progress"}
+	rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "team", Roles: []*roleEntry{running}}})
+	if !rl.HasRunningRows() {
+		t.Fatal("rail with a running role must report running rows")
+	}
+
+	// Idle, needs-input, and terminal states are NOT running.
+	for _, quiet := range []*roleEntry{
+		{OrchestratorID: 1, RoleID: 11, Name: "idle", ArgusTaskID: "t1", HasState: true, Status: "in_progress", ArgusIdle: true},
+		{OrchestratorID: 1, RoleID: 12, Name: "blocked", ArgusTaskID: "t2", HasState: true, Status: "in_progress", NeedsInput: true},
+		{OrchestratorID: 1, RoleID: 13, Name: "done", ArgusTaskID: "t3", HasState: true, Status: "complete"},
+		{OrchestratorID: 1, RoleID: 14, Name: "review", ArgusTaskID: "t4", HasState: true, Status: "in_review"},
+		{OrchestratorID: 1, RoleID: 15, Name: "unknown", ArgusTaskID: "t5", Live: true},
+	} {
+		rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "team", Roles: []*roleEntry{quiet}}})
+		if rl.HasRunningRows() {
+			t.Errorf("row %q must not count as running", quiet.Name)
+		}
+	}
+
+	// A running coord task on the header counts even with no child rows.
+	rl.SetOrchestrators([]*orchEntry{{
+		ID: 2, Name: "solo", CoordTaskID: "c", CoordHasState: true, CoordStatus: "in_progress",
+	}})
+	if !rl.HasRunningRows() {
+		t.Fatal("rail with a running coord header must report running rows")
+	}
+
+	// A running freelance row counts too.
+	rl.SetOrchestrators(nil)
+	rl.SetFreelance([]*freelanceProject{{Project: "Hera", Tasks: []*roleEntry{
+		{Name: "free", ArgusTaskID: "f", RoleKind: "freelance", HasState: true, Status: "in_progress"},
+	}}})
+	if !rl.HasRunningRows() {
+		t.Fatal("rail with a running freelancer must report running rows")
 	}
 }

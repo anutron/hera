@@ -2,6 +2,7 @@ package view
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/anutron/argus-sdk/theme"
@@ -88,6 +89,36 @@ type railList struct {
 	// now is overridable for deterministic elapsed-time rendering in
 	// tests. nil means use time.Now.
 	now func() time.Time
+
+	// hasRunning reports whether any visible row renders the animated
+	// spinner (a known in_progress state, not idle, not blocked on input).
+	// Recomputed by buildRows on the event loop; read atomically by the
+	// App's spinner driver goroutine to decide whether to schedule spinner
+	// repaints (mirroring argus's spinnerLoop: tick only when live work).
+	hasRunning atomic.Bool
+}
+
+// HasRunningRows reports whether the rail currently contains a row in the
+// running state (animated spinner). Safe to call from any goroutine.
+func (rl *railList) HasRunningRows() bool {
+	return rl.hasRunning.Load()
+}
+
+// rowRunning reports whether a rail row renders the animated spinner: a KNOWN
+// in_progress state that is neither idle nor blocked on input. Archived rows
+// count too — they render the spinner dimmed (the glyph never lies).
+func rowRunning(r railRow) bool {
+	switch r.kind {
+	case railRowRole:
+		if r.role != nil {
+			return r.role.HasState && r.role.Status == "in_progress" && !r.role.ArgusIdle && !r.role.NeedsInput
+		}
+	case railRowOrch:
+		if r.orch != nil {
+			return r.orch.CoordHasState && r.orch.CoordStatus == "in_progress" && !r.orch.CoordIdle && !r.orch.CoordNeedsInput
+		}
+	}
+	return false
 }
 
 // orchEntry is one orchestrator and its agent roles, in render order.
@@ -746,6 +777,17 @@ func (rl *railList) buildRows() {
 	if len(rl.rows) == 0 {
 		rl.rows = append(rl.rows, railRow{kind: railRowEmpty})
 	}
+
+	// Recompute the running flag for the spinner driver: any visible row
+	// rendering the animated spinner keeps the 150ms repaint ticking.
+	running := false
+	for _, r := range rl.rows {
+		if rowRunning(r) {
+			running = true
+			break
+		}
+	}
+	rl.hasRunning.Store(running)
 }
 
 // appendOrchChildren emits a coordinator's children at childDepth: its active
@@ -1206,19 +1248,40 @@ func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner i
 	}
 }
 
-// statusIcon picks the moon-style status icon from argus-reported task state,
-// shared by worker rows (roleIcon) and coordinator headers (orchIcon) so both
-// mirror argus's vocabulary identically. The GLYPH always reflects the task's
-// actual argus state when that state is known — needs-input, done
-// (complete/in_review), in-progress idle/working, pending — REGARDLESS of the
-// row's archived/dead bucketing, which modulates only the STYLE (dimmed).
-// An icon that mutated on archive read as "archiving killed/reset my agent"
-// (live QA R1/R2); the glyph must never lie about argus reality. The dimmed
-// circle is the fallback ONLY for an archived/dead row with UNKNOWN state;
-// active rows without state fall back on binding presence.
-func statusIcon(archived, hasState, needsInput bool, status string, idle, live bool) (rune, tcell.Style) {
+// spinnerFrames are argus's Nerd Font progress-spinner frames
+// (U+EE06..U+EE0B, argus internal/spinner StyleProgress), rendered for an
+// actively running in_progress task. The SDK does not export argus's spinner
+// package, so the frames are mirrored here verbatim.
+var spinnerFrames = []rune{'\uEE06', '\uEE07', '\uEE08', '\uEE09', '\uEE0A', '\uEE0B'}
+
+// spinnerInterval is argus's progress-spinner cadence (150 ms/frame). Hera
+// animates by wall clock — the frame derives from the current time — so every
+// repaint shows the frame argus itself would show at that instant.
+const spinnerInterval = 150 * time.Millisecond
+
+// animFrame is the wall-clock spinner frame index, derived from the rail's
+// (test-overridable) now source so draw tests are deterministic.
+func (rl *railList) animFrame() int {
+	now := time.Now
+	if rl.now != nil {
+		now = rl.now
+	}
+	return int(now().UnixMilli() / spinnerInterval.Milliseconds())
+}
+
+// statusIcon picks the status icon from argus-reported task state, shared by
+// worker rows (roleIcon) and coordinator headers (orchIcon) so both mirror
+// argus's task-panel glyph table identically. The GLYPH always reflects the
+// task's actual argus state when that state is known — needs-input, complete,
+// in-review, in-progress idle/running, pending — REGARDLESS of the row's
+// archived/dead bucketing, which modulates only the STYLE (dimmed). An icon
+// that mutated on archive read as "archiving killed/reset my agent" (live QA
+// R1/R2); the glyph must never lie about argus reality. The dimmed circle is
+// the fallback ONLY for an archived/dead row with UNKNOWN state; active rows
+// without state fall back on binding presence.
+func statusIcon(archived, hasState, needsInput bool, status string, idle, live bool, frame int) (rune, tcell.Style) {
 	if hasState {
-		if glyph, style, ok := stateGlyph(needsInput, status, idle); ok {
+		if glyph, style, ok := stateGlyph(needsInput, status, idle, frame); ok {
 			if archived {
 				return glyph, theme.StyleDimmed
 			}
@@ -1235,39 +1298,50 @@ func statusIcon(archived, hasState, needsInput bool, status string, idle, live b
 }
 
 // stateGlyph maps a KNOWN argus task state to its status glyph and active
-// style. ok is false for an unrecognized status so statusIcon can fall back
-// to the binding-presence icons instead of guessing.
-func stateGlyph(needsInput bool, status string, idle bool) (rune, tcell.Style, bool) {
-	switch {
-	case needsInput:
-		return theme.IconNeedsInput, theme.StyleNeedsInput, true
-	case status == "complete":
+// style, mirroring argus's task-panel table EXACTLY (argus theme.go:29-34 +
+// tasklist.go:1095-1132): pending → ○ gray; complete → ✓ green; in_review →
+// 󰖔 moon-with-stars blue (NEVER a check — only complete renders ✓);
+// in_progress → needs-input ? (#faa378) outranking idle moon (blue)
+// outranking the running spinner (orange, animated by frame). needs-input is
+// scoped to in_progress, mirroring argus's switch nesting (the API only
+// serves needs_input for in_progress). Argus's TUI-only idleUnvisited
+// variant (moon-stars for unvisited-idle) is not in the API and is not
+// mirrored. ok is false for an unrecognized status so statusIcon can fall
+// back to the binding-presence icons instead of guessing.
+func stateGlyph(needsInput bool, status string, idle bool, frame int) (rune, tcell.Style, bool) {
+	switch status {
+	case "pending":
+		return '○', theme.StylePending, true
+	case "complete":
 		return '✓', theme.StyleComplete, true
-	case status == "in_review":
-		return '✓', theme.StyleInReview, true
-	case status == "in_progress" && idle:
-		return theme.IconMoonOutline, theme.StyleDimmed, true
-	case status == "in_progress":
-		return theme.IconMoonStars, theme.StyleInProgress, true
-	case status == "pending":
-		return theme.IconMoonOutline, theme.StylePending, true
+	case "in_review":
+		return theme.IconMoonStars, theme.StyleInReview, true
+	case "in_progress":
+		switch {
+		case needsInput:
+			return theme.IconNeedsInput, theme.StyleNeedsInput, true
+		case idle:
+			return theme.IconMoonOutline, theme.StyleInReview, true
+		default:
+			return spinnerFrames[((frame%len(spinnerFrames))+len(spinnerFrames))%len(spinnerFrames)], theme.StyleInProgress, true
+		}
 	}
 	return 0, tcell.Style{}, false
 }
 
-// roleIcon picks the moon-style icon for a role based on its argus-reported
-// (or, as a fallback, binding) state. Archived or dead (binding open in DB but
-// argus task is gone) → dimmed circle.
+// roleIcon picks the status icon for a role based on its argus-reported (or,
+// as a fallback, binding) state. Archived or dead (binding open in DB but
+// argus task is gone) dims the style; the glyph stays truthful.
 func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
-	return statusIcon(r.Archived || r.Dead || r.ArgusArchived, r.HasState, r.NeedsInput, r.Status, r.ArgusIdle, r.Live)
+	return statusIcon(r.Archived || r.Dead || r.ArgusArchived, r.HasState, r.NeedsInput, r.Status, r.ArgusIdle, r.Live, rl.animFrame())
 }
 
 // orchIcon picks the status icon for a coordinator header from the coord task's
-// argus state, so a coordinator row carries the same ☾/○/✓/? vocabulary as a
-// worker row (an archived root coordinator → dimmed circle). live falls back to
+// argus state, so a coordinator row carries the same glyph vocabulary as a
+// worker row (an archived root coordinator → dimmed). live falls back to
 // "has a live coord binding" (CoordTaskID set) when argus state is unknown.
 func (rl *railList) orchIcon(o *orchEntry) (rune, tcell.Style) {
-	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, o.CoordStatus, o.CoordIdle, o.CoordTaskID != "")
+	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, o.CoordStatus, o.CoordIdle, o.CoordTaskID != "", rl.animFrame())
 }
 
 // elapsed formats the time since r.StartedAt using argus's "10s/10m/10h/10d"

@@ -52,6 +52,13 @@ type App struct {
 	// Started in BuildApp, stopped in Close. Shared by both panes.
 	redraw *redrawCoalescer
 
+	// spinnerStop halts the spinner driver goroutine: a spinnerInterval
+	// ticker that schedules a coalesced repaint only while the rail has a
+	// running row, so the running spinner animates by wall clock (argus's
+	// spinnerLoop cadence: tick only when there's live work). Closed in
+	// Close, after the closed guard, so it closes exactly once.
+	spinnerStop chan struct{}
+
 	// coordPresent / agentPresent track which panes the body currently
 	// composes — the three-mode layout (D13), driven by the rail selection:
 	//
@@ -180,12 +187,33 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		coordPresent:   true,
 		agentPresent:   true,
 		redraw:         redrawCoalescer,
+		spinnerStop:    make(chan struct{}),
 	}
 
 	// Start the coalescing flush loop. Pane bytes ingested during BuildApp
 	// (the initial snapshot) have already armed the dirty flag via Schedule;
 	// the first tick paints that settled frame once the event loop runs.
 	redrawCoalescer.start()
+
+	// Spinner driver: while the rail has a running row, schedule a coalesced
+	// repaint once per spinner frame so the wall-clock-derived spinner
+	// advances visibly. Quiet (no Schedule calls) when nothing is running —
+	// the rail's hasRunning flag is read atomically, so this goroutine never
+	// touches rail state owned by the event loop.
+	go func(rail *railList, stop chan struct{}) {
+		t := time.NewTicker(spinnerInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if rail.HasRunningRows() {
+					redrawCoalescer.Schedule()
+				}
+			}
+		}
+	}(pieces.rail, a.spinnerStop)
 
 	if err := a.populateRail(database); err != nil {
 		return nil, fmt.Errorf("view.BuildApp: populate rail: %w", err)
@@ -286,6 +314,12 @@ func (a *App) Close() {
 	}
 	if agentBridge != nil {
 		agentBridge.stop()
+	}
+	// Stop the spinner driver. Guarded by the closed flag above, so the
+	// channel closes exactly once. spinnerStop is set once in BuildApp and
+	// never reassigned.
+	if a.spinnerStop != nil {
+		close(a.spinnerStop)
 	}
 	// Stop the coalescer's ticker goroutine. redraw is set once in BuildApp and
 	// never reassigned, so reading it outside a.mu is safe. Stop is idempotent
