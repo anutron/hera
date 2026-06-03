@@ -345,14 +345,38 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 		r.ArgusArchived = st.Archived
 		return
 	}
-	// Provider present but argus has no such task: it's gone (deleted /
-	// pruned worktree). Argus doesn't show deleted tasks at all, so neither
-	// should hera's active rail — mark it dead (hidden unless `l listall`).
-	// Gated on cache readiness so a cold cache doesn't transiently hide
-	// live rows on first render.
-	if rp, ok := prov.(interface{ StatesReady() bool }); !ok || rp.StatesReady() {
+	// Provider present but argus has no such task: the RECORD is gone
+	// (deleted / pruned worktree). Argus doesn't show deleted tasks at all,
+	// so neither should hera's active rail — mark it dead (hidden unless `l`
+	// listall). taskGone gates on cache readiness so a cold cache doesn't
+	// transiently hide live rows on first render. Status is NOT consulted:
+	// a completed/failed task whose record still exists is never dead.
+	if taskGone(prov, r.ArgusTaskID) {
 		r.Dead = true
 	}
+}
+
+// taskGone reports whether the argus task RECORD no longer exists: the warm
+// state cache (which lists ALL tasks, archived and completed included) has no
+// entry for the id. This — and ONLY this — is the Dead classification: task
+// STATUS never buckets a row (a completed task whose record exists renders
+// active with its ✓, mirroring argus's panel). A provider without a
+// StatesReady method counts as warm (test fakes); a cold cache reports
+// nothing gone so first render never transiently hides live rows. Reading
+// the cache snapshot keeps rail rebuilds free of per-row argus HTTP calls —
+// populateRail runs on the tview event loop, where a synchronous roundtrip
+// per row serializes ahead of input handling.
+func taskGone(prov TaskStateProvider, taskID string) bool {
+	if prov == nil || taskID == "" {
+		return false
+	}
+	if _, ok := prov.TaskState(taskID); ok {
+		return false
+	}
+	if rp, ok := prov.(interface{ StatesReady() bool }); ok && !rp.StatesReady() {
+		return false
+	}
+	return true
 }
 
 // populateRail walks the orchestrators / roles / bindings tables and
@@ -363,8 +387,10 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 //
 // Live bindings (ended_at IS NULL) drive the moon-stars icon on the
 // role row; idle roles get the moon-outline icon. Bindings whose argus
-// task has gone away (per the optional TaskAliveChecker on a.src) are
-// marked Dead so the rail can hide or dim them.
+// task RECORD no longer exists (absent from the warm argus state cache —
+// pruned / 404) are marked Dead so the rail can hide or dim them. Task
+// STATUS never marks a row Dead: a completed task whose record exists
+// renders active with its ✓ glyph, exactly like argus's own panel.
 //
 // Roles are ALWAYS loaded inclusively (active + archived): buildRows
 // partitions each coordinator's archived/dead children into its Archive (N)
@@ -375,7 +401,6 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
 
-	checker, _ := a.src.(TaskAliveChecker)
 	stateProv, _ := a.src.(TaskStateProvider)
 	// Snapshot the archive-visibility flag once: it is written by the
 	// mutation bridge's background goroutine (SetShowArchived) while this
@@ -425,15 +450,11 @@ func (a *App) populateRail(database *db.DB) error {
 		for _, role := range roles {
 			bnd, _ := database.Bindings.GetLiveByRole(ctx, role.ID)
 			live := bnd != nil
-			dead := false
 			var argusTaskID string
 			startedAt := role.CreatedAt
 			if live {
 				argusTaskID = bnd.ArgusTaskID
 				startedAt = bnd.StartedAt
-				if checker != nil && !checker.IsTaskAlive(argusTaskID) {
-					dead = true
-				}
 			} else if hist, _ := database.Bindings.ListByRole(ctx, role.ID); len(hist) > 0 {
 				// No live binding (the agent finished / its task completed).
 				// Fall back to the most-recent binding's argus task so the
@@ -445,13 +466,22 @@ func (a *App) populateRail(database *db.DB) error {
 				argusTaskID = hist[0].ArgusTaskID
 				startedAt = hist[0].StartedAt
 			}
+			// Dead = the argus task RECORD no longer exists (warm-cache miss).
+			// Status never feeds this: a completed task that still exists is
+			// NOT dead — it renders active with its ✓ (status never buckets).
+			// Reading the cache snapshot (instead of a per-row argus HTTP
+			// aliveness probe) keeps this rebuild — which runs on the tview
+			// event loop — free of synchronous network roundtrips.
+			dead := taskGone(stateProv, argusTaskID)
 
-			// Coord roles do not render as their own rail row. The first live +
-			// alive + non-archived coord binding feeds the orchestrator's
+			// Coord roles do not render as their own rail row. The first
+			// existing + non-archived coord binding feeds the orchestrator's
 			// CoordTaskID so the COORD pane (and `^p`/resurrect resolution) can
 			// target the coordinator's task when the header is selected.
-			// Archived or dead coord bindings are skipped so the COORD pane
-			// doesn't get bound to a tombstone. A worker-less orchestrator
+			// Archived or record-gone coord bindings are skipped so the COORD
+			// pane doesn't get bound to a tombstone; a COMPLETED coord that
+			// still exists binds normally (its pane shows the last output
+			// read-only and the header renders ✓). A worker-less orchestrator
 			// therefore renders header-only (the header IS the coordinator).
 			if role.Kind == db.KindCoordinator {
 				archived := role.ArchivedAt != nil

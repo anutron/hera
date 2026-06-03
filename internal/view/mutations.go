@@ -132,9 +132,10 @@ type railSelection struct {
 	// (hera-active + argus-archived) the hera flag alone would miss.
 	ArgusArchived bool
 
-	// Dead reports the binding-dead state (DB binding open but the argus
-	// task is gone). A dead row DISPLAYS as archived (roleArchived), so `a`
-	// must treat it as an unarchive target, never stamp a fresh archive.
+	// Dead reports that the argus task RECORD no longer exists (404 /
+	// pruned); status alone never sets it. A dead row DISPLAYS as archived
+	// (roleArchived), so `a` must treat it as an unarchive target, never
+	// stamp a fresh archive.
 	Dead bool
 
 	// WorktreePath is the argus task's worktree path, carried on freelance
