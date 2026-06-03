@@ -13,9 +13,9 @@
 
 ## 2. argus wheel forwarding (worker task in ARGUS project — gated on user confirmation)
 
-- [ ] 2.1 Confirm with the user that the argus change may proceed (wheel stays dead end-to-end without it; keyboard path unaffected)
-- [ ] 2.2 Spawn the ARGUS worker: `internal/tui/terminalpane` MouseHandler encoding `MouseScrollUp/Down` as `ESC[<64|65;x;yM` (pane-inner-relative, 1-based) onto the existing `inputBack` channel, with tests
-- [ ] 2.3 Worker: PR → merge → rebuild/redeploy the running argus
+- [x] 2.1 Confirm with the user that the argus change may proceed (wheel stays dead end-to-end without it; keyboard path unaffected)
+- [x] 2.2 Spawn the ARGUS worker: `internal/tui/terminalpane` MouseHandler encoding `MouseScrollUp/Down` as `ESC[<64|65;x;yM` (pane-inner-relative, 1-based) onto the existing `inputBack` channel, with tests (commit bd74283; worker's session died post-push in an argus restart — coordinator opened the PR: anutron/argus#5)
+- [ ] 2.3 USER: merge anutron/argus#5 and rebuild the running argus — turns the mouse path on end-to-end
 
 ## 3. hera failing tests
 
@@ -45,6 +45,6 @@
 
 **Depends on:** Stage 4, Stage 5
 
-- [ ] 6.1 Full test suite + `openspec validate --all --strict`
-- [ ] 6.2 hera-view-probe e2e: inject literal SGR wheel frames over the WS; assert pane history renders, badge shows, rail pans, RAIL keys unaffected (keyboard-only e2e if stage 2 not yet confirmed)
-- [ ] 6.3 Commit, push via iris, open PR
+- [x] 6.1 Full test suite + `openspec validate --all --strict`
+- [x] 6.2 hera-view-probe e2e against the deployed daemon: wheel-up frames over the agent pane → `[SCROLL]` badge + history; symmetric wheel-down → live, badge gone; rail wheel = correct no-op at full height (content fits) and real panning at `HERA_PROBE_SIZE=200x18` (top row shifted 9, selection unmoved, pan persisted); Enter + ⇧↑×3 → badge via the keyboard path
+- [x] 6.3 Committed, pushed via iris, PR anutron/hera#16 squash-merged (main @ 3da69d7), daemon redeployed via iris_reload
