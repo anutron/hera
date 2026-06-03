@@ -341,6 +341,12 @@ type fakeArgus struct {
 	unarchiveCalls []string
 	unarchiveErr   error
 
+	// archiveErrByTask / unarchiveErrByTask override archiveErr /
+	// unarchiveErr for specific task ids — backing mixed live/pruned
+	// cascades where only some tasks 404.
+	archiveErrByTask   map[string]error
+	unarchiveErrByTask map[string]error
+
 	deleteCalls []string
 	deleteErr   error
 
@@ -375,6 +381,9 @@ func (a *fakeArgus) ArchiveTask(ctx context.Context, taskID string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.archiveCalls = append(a.archiveCalls, taskID)
+	if err, ok := a.archiveErrByTask[taskID]; ok {
+		return err
+	}
 	return a.archiveErr
 }
 
@@ -382,6 +391,9 @@ func (a *fakeArgus) UnarchiveTask(ctx context.Context, taskID string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.unarchiveCalls = append(a.unarchiveCalls, taskID)
+	if err, ok := a.unarchiveErrByTask[taskID]; ok {
+		return err
+	}
 	return a.unarchiveErr
 }
 

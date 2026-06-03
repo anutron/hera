@@ -33,6 +33,39 @@ The idle circle `○` SHALL render as a status glyph only when the task's argus 
 - **WHEN** an archived or dead row's task has no entry in the argus state cache (and the cache is warm)
 - **THEN** the row renders `○` dimmed as the unknown-state fallback
 
+### Requirement: Archive operations tolerate argus-pruned tasks
+
+Argus prunes tasks outright (deletes them, not archives them), so a role's recorded `argus_task_id` can point at a task that no longer exists. The system SHALL treat an HTTP 404 (task not found) from argus's archive or unarchive endpoint as a successful no-op for the argus side of the operation: there is nothing to (un)archive argus-side, so the hera-side flip MUST proceed, the operation MUST report success, and the skip SHALL be logged for diagnosis. This tolerance applies to role archive, role unarchive, orchestrator-unarchive's coord-task unarchive, and the direct freelance task toggle. The 404 MUST be detected via a typed status-code check on the argus client's error, never by string-matching the formatted message.
+
+An orchestrator archive cascade MUST NOT abort when an individual role's archive fails. Pruned tasks (404) are skips per the above; any OTHER per-role failure (e.g. argus unreachable) SHALL be collected while the cascade continues through the remaining roles. When one or more roles failed, the orchestrator's own `archived_at` MUST be left clear — the row stays active so the operator can retry, and the retry skips roles already archived — and the operation MUST return a single summary error naming the roles that failed.
+
+Status stepping (`s`/`S`) against a pruned task remains an error — a nonexistent task cannot be stepped — but the message MUST state plainly that the task no longer exists in argus rather than surfacing a raw HTTP error.
+
+#### Scenario: Archiving a role whose task argus pruned succeeds
+
+- **WHEN** the operator presses `a` against an active role whose bound argus task argus has pruned (the archive endpoint returns 404)
+- **THEN** the role's hera `archived_at` MUST be set, the argus side MUST be skipped, and the operation MUST report success
+
+#### Scenario: Orchestrator cascade archives through a mix of live and pruned tasks
+
+- **WHEN** the operator presses `a` against an orchestrator whose roles bind a mix of live and pruned argus tasks
+- **THEN** every role MUST be archived hera-side, live tasks MUST be archived argus-side, pruned tasks MUST be skipped, and the orchestrator itself MUST be archived with no error
+
+#### Scenario: Non-404 failure does not abort the cascade and leaves the orchestrator retryable
+
+- **WHEN** one role's argus-side archive fails with a non-404 error (e.g. argus unreachable for that call) during an orchestrator cascade
+- **THEN** the cascade MUST still attempt every remaining role, the orchestrator's `archived_at` MUST be left clear, and the returned error MUST name the role(s) that failed
+
+#### Scenario: Unarchiving a role whose task argus pruned succeeds
+
+- **WHEN** the operator presses `a` against an archived role whose bound argus task argus has pruned (the unarchive endpoint returns 404)
+- **THEN** the role's hera `archived_at` MUST be cleared, the argus side MUST be skipped, and the operation MUST report success
+
+#### Scenario: Stepping status on a pruned task errors with a plain message
+
+- **WHEN** the operator presses `s` or `S` against a row whose argus task argus has pruned
+- **THEN** the operation MUST fail with a message stating the task no longer exists in argus, not a raw HTTP 404 error string
+
 ## MODIFIED Requirements
 
 ### Requirement: Freelance (unmanaged argus) agents render in a Freelance rail section grouped by repo

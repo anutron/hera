@@ -16,3 +16,9 @@
 ## 4. Ship
 
 - [x] 4.1 Commit code + tests + change folder together on argus/fix-rail-truth; report via hera_send; hera_status done
+
+## 5. Archive prune tolerance (argus 404 = skip)
+
+- [x] 5.1 Delta: ADDED requirement "Archive operations tolerate argus-pruned tasks"; `openspec validate rail-truthfulness --strict` green
+- [x] 5.2 Failing ops tests: ArchiveRole/UnarchiveRole/ToggleArchiveTask succeed when argus 404s; ArchiveOrchestrator cascades through live+pruned mixes; non-404 failures aggregate without aborting and leave the orchestrator active; stepStatus message is the friendly one
+- [x] 5.3 Implement: typed `argus.IsNotFound` (HTTPError 404), adapter translation to `ops.ErrArgusTaskGone`, skip-and-log in archive verbs, aggregate-and-continue cascade; full `go test ./... -race -count=1` green

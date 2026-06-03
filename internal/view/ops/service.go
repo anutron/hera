@@ -67,6 +67,14 @@ type CreatedTask struct {
 
 // ArgusClient is the subset of internal/argus.Client the ops layer
 // needs. Tests substitute a fake.
+//
+// Contract: ArchiveTask, UnarchiveTask, GetTaskStatus, and SetTaskStatus
+// return an error wrapping ErrArgusTaskGone when argus reports the task no
+// longer exists (HTTP 404 — argus prunes tasks by deleting them outright).
+// The production adapter translates the typed argus 404 to the sentinel;
+// the ops verbs decide per-operation whether that is a skip (archive /
+// unarchive — nothing left to flip argus-side) or a friendly error
+// (status stepping).
 type ArgusClient interface {
 	CreateTask(ctx context.Context, req CreateTaskRequest) (*CreatedTask, error)
 	ArchiveTask(ctx context.Context, taskID string) error
