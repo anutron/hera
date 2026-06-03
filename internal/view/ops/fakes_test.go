@@ -300,6 +300,20 @@ func (f *fakeDB) GetLatestBindingByRole(ctx context.Context, roleID int64) (*Bin
 	return &cp, nil
 }
 
+func (f *fakeDB) ListLiveBindingsByTask(ctx context.Context, argusTaskID string) ([]*Binding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []*Binding{}
+	for _, b := range f.bindings {
+		if b.ArgusTaskID != argusTaskID {
+			continue
+		}
+		cp := *b
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
 func (f *fakeDB) ListLiveBindings(ctx context.Context) ([]*Binding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

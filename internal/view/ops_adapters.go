@@ -123,6 +123,18 @@ func (a *dbAdapter) EndBinding(ctx context.Context, bindingID int64, reason stri
 	return translateDBErr(a.d.Bindings.End(ctx, bindingID, reason))
 }
 
+func (a *dbAdapter) ListLiveBindingsByTask(ctx context.Context, argusTaskID string) ([]*ops.Binding, error) {
+	rows, err := a.d.Bindings.ListLiveByTaskID(ctx, argusTaskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*ops.Binding, 0, len(rows))
+	for _, b := range rows {
+		out = append(out, adaptBinding(b))
+	}
+	return out, nil
+}
+
 func (a *dbAdapter) ListLiveBindings(ctx context.Context) ([]*ops.Binding, error) {
 	rows, err := a.d.Bindings.ListLive(ctx)
 	if err != nil {

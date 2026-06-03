@@ -24,3 +24,10 @@
 
 - [x] 4.1 `go test ./... -race -count=1` green
 - [x] 4.2 `openspec validate --all --strict` green
+
+## 5. Shared-task guard (cascade collateral fix)
+
+- [x] 5.1 Delta: archive via ended binding skips argus when the task is live-bound to another role (MODIFIED `a` toggle requirement + scenarios)
+- [x] 5.2 Tests (failing first): ended binding to live-bound-elsewhere task skips argus archive + logs both role names; own-live-binding archives even when shared; ended binding with no other live binding archives as today; orchestrator cascade inherits the guard
+- [x] 5.3 `ops.DB.ListLiveBindingsByTask` (wraps `BindingsDAO.ListLiveByTaskID`); guard in `ArchiveRole`'s ended-fallback path; `ToggleArchiveTask` exempt (freelance rows are rail-excluded whenever any live binding exists)
+- [x] 5.4 `go test ./... -race -count=1` green; `openspec validate --all --strict` green

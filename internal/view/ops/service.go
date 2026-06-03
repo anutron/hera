@@ -48,6 +48,14 @@ type DB interface {
 	// orchestrators and roles. Backs `^r` prune-completed, which inspects
 	// each bound task's argus status to find the completed fleet-wide.
 	ListLiveBindings(ctx context.Context) ([]*Binding, error)
+
+	// ListLiveBindingsByTask returns every live (ended_at NULL) binding
+	// for an argus task id, across all roles and orchestrators (empty
+	// slice if none). Backs ArchiveRole's shared-task guard: a task id
+	// resolved via an ENDED binding may ALSO be the live-bound task of a
+	// different role, and the archive cascade must not reach through the
+	// stale binding and archive a task an active role depends on.
+	ListLiveBindingsByTask(ctx context.Context, argusTaskID string) ([]*Binding, error)
 }
 
 // CreateTaskRequest is the ops layer's neutral description of an argus
