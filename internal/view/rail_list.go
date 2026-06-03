@@ -148,6 +148,13 @@ type orchEntry struct {
 	CoordStatus     string // pending | in_progress | in_review | complete
 	CoordIdle       bool
 	CoordNeedsInput bool
+
+	// CoordArgusArchived is the coord task's argus-side archived bit. With the
+	// orchestrator itself displayed ACTIVE (Archived false) this is the
+	// MIXED-COORD state — only external argus-side archiving produces it — and
+	// the header renders the ⊘ repair cue instead of the status glyph, while
+	// `a` repairs (unarchives the coord task) instead of cascade-archiving.
+	CoordArgusArchived bool
 }
 
 // roleEntry is one role under an orchestrator. Live indicates an open
@@ -231,6 +238,16 @@ const archiveTopLevelOwner int64 = 0
 // at a glance (the prototype's ◆ is superseded by argus's moon/✓/? status set
 // for state, so the coordinator identity needs its own glyph). nf-md U+F0E7B.
 const iconCoord = rune(0x0F0E7B) // 󰹻
+
+// iconCoordBroken is the mixed-coord repair cue: rendered at a coordinator
+// header's status-icon cell (in error red) when the orchestrator displays as
+// ACTIVE while its coord-pane binding's argus task is ARCHIVED. Cue choice
+// (documented per the operator ruling): ⊘ — U+2298 CIRCLED DIVISION SLASH —
+// reads "void/blocked"; the error-red styling is distinct from the orange
+// needs-input ?, from the dimmed-archived treatment, and from the cyan 󰹻
+// coord marker that keeps rendering beside it. Plain Unicode (no Nerd Font
+// dependency), one cell wide.
+const iconCoordBroken = '⊘'
 
 type railRow struct {
 	kind  railRowKind
@@ -1343,7 +1360,16 @@ func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
 // argus state, so a coordinator row carries the same glyph vocabulary as a
 // worker row (an archived root coordinator → dimmed). live falls back to
 // "has a live coord binding" (CoordTaskID set) when argus state is unknown.
+//
+// The MIXED-COORD state outranks the status glyph: an orchestrator displayed
+// ACTIVE whose coord task is argus-archived renders the ⊘ repair cue in error
+// red — the operator must SEE "this coord is broken/archived" at a glance.
+// An orchestrator that is itself archived is NOT mixed (both sides agree) and
+// keeps the normal dimmed-archived treatment.
 func (rl *railList) orchIcon(o *orchEntry) (rune, tcell.Style) {
+	if o.CoordArgusArchived && !o.Archived {
+		return iconCoordBroken, theme.StyleError
+	}
 	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, o.CoordStatus, o.CoordIdle, o.CoordTaskID != "", rl.animFrame())
 }
 

@@ -1648,3 +1648,74 @@ func TestBridge_OnListAll_SyncsArchiveVisibilityToRepopulator(t *testing.T) {
 		t.Fatalf("second toggle must sync SetShowArchived(false); got %v", got)
 	}
 }
+
+// Spec (mixed-coord-repair): `a` on a mixed-coord header — a displayed-active
+// orchestrator whose coord task is argus-archived — REPAIRS by unarchiving
+// the coord's argus task directly (task-direct verb, no hera DB write), and
+// must NOT cascade-archive the orchestrator the operator sees as active.
+func TestBridge_OnArchive_MixedCoordHeader_RepairsViaTaskUnarchive(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind: selOrchestrator, OrchestratorID: 5, Name: "foo",
+		CoordTaskID: "T1", CoordArgusArchived: true,
+	}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.toggleArchiveTaskCalls) != 1 ||
+		svc.toggleArchiveTaskCalls[0] != (toggleTaskCall{TaskID: "T1", Archived: true}) {
+		t.Fatalf("want ToggleArchiveTask(T1, archived=true) — the repair unarchive; got %+v", svc.toggleArchiveTaskCalls)
+	}
+	if len(svc.archiveOrchCalls) != 0 {
+		t.Fatalf("mixed-coord header must NOT cascade-archive; got %v", svc.archiveOrchCalls)
+	}
+	if len(svc.unarchiveOrchCalls) != 0 {
+		t.Fatalf("repair is task-direct, not an orchestrator unarchive; got %v", svc.unarchiveOrchCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh after the repair; got %d", rp.Count())
+	}
+}
+
+// Spec (mixed-coord-repair): once repaired (coord task no longer argus-
+// archived), `a` on the header behaves exactly as today — the standard
+// cascade-archive.
+func TestBridge_OnArchive_RepairedHeader_CascadesAsBefore(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind: selOrchestrator, OrchestratorID: 5, Name: "foo",
+		CoordTaskID: "T1", CoordArgusArchived: false,
+	}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.archiveOrchCalls) != 1 || svc.archiveOrchCalls[0] != 5 {
+		t.Fatalf("repaired header must cascade-archive; got %v", svc.archiveOrchCalls)
+	}
+	if len(svc.toggleArchiveTaskCalls) != 0 {
+		t.Fatalf("repaired header must not fire the task-direct repair; got %+v", svc.toggleArchiveTaskCalls)
+	}
+}
+
+// Spec (mixed-coord-repair): an ARCHIVED orchestrator whose coord task is
+// also argus-archived is NOT the mixed state (both sides agree) — `a` keeps
+// the standard unarchive-orchestrator direction.
+func TestBridge_OnArchive_ArchivedHeaderWithArchivedCoordTask_UnarchivesOrch(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind: selOrchestrator, OrchestratorID: 5, Name: "foo", Archived: true,
+		CoordTaskID: "T1", CoordArgusArchived: true,
+	}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.unarchiveOrchCalls) != 1 || svc.unarchiveOrchCalls[0] != 5 {
+		t.Fatalf("archived header must UnarchiveOrchestrator(5); got %v", svc.unarchiveOrchCalls)
+	}
+	if len(svc.toggleArchiveTaskCalls) != 0 {
+		t.Fatalf("archived-both-sides header must not fire the task-direct repair; got %+v", svc.toggleArchiveTaskCalls)
+	}
+}

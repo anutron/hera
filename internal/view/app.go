@@ -421,12 +421,14 @@ func (a *App) populateRail(database *db.DB) error {
 	}
 
 	entries := make([]*orchEntry, 0, len(orchs))
-	// rendered collects the argus task ids carried by role ROWS appended to
-	// the tree (via live bindings or the latest-binding fallback), so
-	// buildFreelance can avoid duplicating them. Coordinator roles are NOT
-	// collected — they render only as the anonymous orchestrator header —
-	// which is exactly why a live task whose coord binding lapsed must fall
-	// back to the Freelance section to stay findable (rail-truthfulness).
+	// rendered collects the argus task ids REACHABLE through the rendered
+	// tree, so buildFreelance can avoid duplicating them: every task carried
+	// by a role ROW (via live bindings or the latest-binding fallback), plus —
+	// collected after the loop — every rendered header's coord-pane binding
+	// (CoordTaskID). A coord task the header binds is findable by selecting
+	// the header, so a freelance row for it would be a duplicate; only a
+	// coord task NO rendered header carries (coord role archived, header not
+	// loaded) still falls back to Freelance (rail-truthfulness).
 	rendered := map[string]struct{}{}
 	for _, orch := range orchs {
 		entry := &orchEntry{
@@ -507,6 +509,12 @@ func (a *App) populateRail(database *db.DB) error {
 							entry.CoordStatus = st.Status
 							entry.CoordIdle = st.Idle
 							entry.CoordNeedsInput = st.NeedsInput
+							// Argus-side archived bit: with the orchestrator
+							// displayed active this is the MIXED-COORD state —
+							// the header renders the ⊘ repair cue and `a`
+							// repairs (unarchives the coord task) instead of
+							// cascade-archiving.
+							entry.CoordArgusArchived = st.Archived
 						}
 					}
 				}
@@ -547,6 +555,18 @@ func (a *App) populateRail(database *db.DB) error {
 	// CoordTaskID. Link them so the rail nests the child under the worker (which
 	// is promoted to a coordinator row), and drop the child from the top level
 	// so it isn't double-rendered.
+	// Every rendered header's coord-pane binding is reachable via that header
+	// (selecting it binds the coord pane), so it must not ALSO fall back into
+	// the Freelance section. Collected from the flat pre-consumption list:
+	// every entry here renders — either as a top-level header or, when
+	// resolveSubCoordinators consumes it, nested under its promoted worker
+	// row (same orchEntry value, same CoordTaskID).
+	for _, e := range entries {
+		if e.CoordTaskID != "" {
+			rendered[e.CoordTaskID] = struct{}{}
+		}
+	}
+
 	entries = resolveSubCoordinators(entries)
 
 	a.pieces.rail.SetShowArchived(showArchived)
@@ -764,6 +784,12 @@ func (a *App) CurrentRailSelection() railSelection {
 			CoordRoleID:    ref.CoordRoleID,
 			Name:           ref.Name,
 			Archived:       ref.Archived,
+			// Coord-pane binding + its argus archived bit: together with
+			// Archived these let `a` detect the MIXED-COORD state (displayed-
+			// active orchestrator, argus-archived coord task) and repair —
+			// unarchive the coord task by id — instead of cascade-archiving.
+			CoordTaskID:        ref.CoordTaskID,
+			CoordArgusArchived: ref.CoordArgusArchived,
 			// Child agents that `^d` will also destroy: the orchestrator's
 			// live (non-archived) child roles.
 			ChildCount: countLiveRoles(ref.Roles),

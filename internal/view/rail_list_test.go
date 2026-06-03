@@ -1470,3 +1470,59 @@ func TestRailList_HasRunningRowsClearsWhenLastRunnerCompletes(t *testing.T) {
 		t.Fatal("after the last running row completes, the spinner driver must go quiet")
 	}
 }
+
+// Spec (mixed-coord-repair): a mixed-coord header — orchestrator displayed
+// active while its coord-pane binding's argus task is ARCHIVED — renders the
+// ⊘ repair cue in error red at the status-icon cell, replacing the coord
+// task's status glyph, so the operator SEES "this coord is broken/archived"
+// at a glance.
+func TestOrchIcon_MixedCoordArchivedRendersRepairCue(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "live-proj", Archived: false, CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "in_review", CoordArgusArchived: true,
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != iconCoordBroken {
+		t.Fatalf("mixed-coord header: glyph = %q, want %q (⊘ repair cue)", glyph, iconCoordBroken)
+	}
+	if style != theme.StyleError {
+		t.Fatalf("mixed-coord header cue must render in error style; got %v", style)
+	}
+}
+
+// Spec (mixed-coord-repair): the cue applies ONLY to the MIXED state. An
+// orchestrator that is itself archived renders the normal dimmed-archived
+// treatment (true status glyph, dimmed) even when its coord task is also
+// argus-archived — both sides agree, nothing is broken.
+func TestOrchIcon_ArchivedOrchestratorSkipsRepairCue(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "shipped", Archived: true, CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "complete", CoordArgusArchived: true,
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != '✓' {
+		t.Fatalf("archived-both-sides header: glyph = %q, want '✓' (no cue)", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("archived-both-sides header must render dimmed; got %v", style)
+	}
+}
+
+// Spec (mixed-coord-repair): a header whose coord task is NOT argus-archived
+// renders its normal status glyph — the cue never fires on a healthy header.
+func TestOrchIcon_HealthyHeaderRendersNormalGlyph(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "healthy", CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "in_review",
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != theme.IconMoonStars {
+		t.Fatalf("healthy in_review header: glyph = %q, want moon-stars", glyph)
+	}
+	if style != theme.StyleInReview {
+		t.Fatalf("healthy in_review header style = %v, want StyleInReview", style)
+	}
+}

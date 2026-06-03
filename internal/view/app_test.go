@@ -2368,13 +2368,13 @@ func TestPopulateRail_ArchivedSubCoordStaysInExpando(t *testing.T) {
 	}
 }
 
-// Spec (rail-truthfulness): a live (non-archived) argus task whose hera
-// bindings have ALL ENDED — and that no rendered role row carries — falls back
-// to the Freelance section. This is the live-QA hera-1.0-ux-qa shape: a
-// coordinator role's only binding ended (resync_missing); coord roles render
-// only as the anonymous orchestrator header, so without the fallback the task
-// is findable nowhere by name.
-func TestBuildApp_EndedBindingCoordTaskFallsBackToFreelance(t *testing.T) {
+// Spec (mixed-coord-repair): a task that is the coord-pane binding
+// (CoordTaskID) of a RENDERED orchestrator header must NOT additionally fall
+// back into the Freelance section — the header preserves findability
+// (selecting it binds the coord pane to the task), so the freelance row was a
+// duplicate (live observation: archive-this-coord rendered both as a
+// collapsed orchestrator header and as a freelance row).
+func TestBuildApp_HeaderReachableCoordTaskDoesNotDuplicateIntoFreelance(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 	orch, err := d.Orchestrators.Create(ctx, "hera-view-finish")
@@ -2409,21 +2409,134 @@ func TestBuildApp_EndedBindingCoordTaskFallsBackToFreelance(t *testing.T) {
 	}
 	defer a.Close()
 
+	// The header carries the task as its coord-pane binding (the latest-
+	// binding fallback), so the task IS reachable through the rendered tree...
+	var entry *orchEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID {
+			entry = o
+		}
+	}
+	if entry == nil || entry.CoordTaskID != "ux-qa" {
+		t.Fatalf("header must carry the lapsed coord task as CoordTaskID; got %+v", entry)
+	}
+	// ...so Freelance must not duplicate it.
+	if fl := a.pieces.rail.freelance; len(fl) != 0 {
+		t.Fatalf("header-reachable coord task must not duplicate into Freelance; got %+v", fl)
+	}
+}
+
+// Spec (mixed-coord-repair): a TRULY orphaned task still falls back to
+// Freelance (rail-truthfulness preserved). Here the coord role is
+// hera-archived, so the rendered header binds no coord task (CoordTaskID
+// empty) — without the fallback the live argus task would be reachable
+// nowhere.
+func TestBuildApp_OrphanedCoordTaskStillFallsBackToFreelance(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "hera-view-finish")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	coord, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	bnd, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coord.ID, ArgusTaskID: "ux-qa", WorktreePath: "/w",
+	})
+	if err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	if err := d.Bindings.End(ctx, bnd.ID, "resync_missing"); err != nil {
+		t.Fatalf("end binding: %v", err)
+	}
+	// Hera-archive the coord role: the header then binds NO coord task, so
+	// the task is not reachable through the rendered tree.
+	if err := d.Roles.Archive(ctx, coord.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{"ux-qa": {Status: "in_review"}},
+		tasks: []ArgusTaskInfo{
+			{ID: "ux-qa", Name: "hera-1.0-ux-qa", Project: "Hera", Elapsed: "2h", State: ArgusTaskState{Status: "in_review"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
 	fl := a.pieces.rail.freelance
-	if len(fl) != 1 || fl[0].Project != "Hera" {
-		t.Fatalf("want 1 freelance project (Hera) carrying the lapsed coord task, got %+v", fl)
-	}
-	if len(fl[0].Tasks) != 1 || fl[0].Tasks[0].ArgusTaskID != "ux-qa" {
-		t.Fatalf("lapsed coord task must appear in Freelance; got %+v", fl[0].Tasks)
-	}
-	if fl[0].Tasks[0].Name != "hera-1.0-ux-qa" {
-		t.Fatalf("freelance fallback row must carry the argus task NAME; got %q", fl[0].Tasks[0].Name)
+	if len(fl) != 1 || len(fl[0].Tasks) != 1 || fl[0].Tasks[0].ArgusTaskID != "ux-qa" {
+		t.Fatalf("orphaned coord task (header binds nothing) must fall back to Freelance; got %+v", fl)
 	}
 
 	// The named row renders in the rail, so the operator can FIND the session.
 	out := renderApp(t, a, 100, 40)
 	if !strings.Contains(out, "hera-1.0-ux-qa") {
-		t.Fatalf("rail render must contain the lapsed coord task by name\n%s", out)
+		t.Fatalf("rail render must contain the orphaned coord task by name\n%s", out)
+	}
+}
+
+// Spec (mixed-coord-repair): populateRail captures the coord task's argus
+// archived bit onto the orchestrator entry, so the header can render the ⊘
+// repair cue and `a` can pick the repair-first direction.
+func TestBuildApp_MixedCoordArchivedLandsOnEntry(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "mixed")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	coord, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coord.ID, ArgusTaskID: "T1", WorktreePath: "/w",
+	}); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{"T1": {Status: "in_progress", Idle: true, Archived: true}},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	var entry *orchEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID {
+			entry = o
+		}
+	}
+	if entry == nil {
+		t.Fatal("orchestrator entry missing from rail")
+	}
+	if entry.CoordTaskID != "T1" {
+		t.Fatalf("mixed-coord header keeps its coord-pane binding; got %q", entry.CoordTaskID)
+	}
+	if !entry.CoordArgusArchived {
+		t.Fatal("coord task's argus archived bit must land on entry.CoordArgusArchived")
+	}
+
+	// The selection bridge carries the repair signal to the `a` handler.
+	if !a.pieces.rail.SelectByOrchID(orch.ID) {
+		t.Fatal("select orchestrator header")
+	}
+	sel := a.CurrentRailSelection()
+	if sel.Kind != selOrchestrator || sel.CoordTaskID != "T1" || !sel.CoordArgusArchived {
+		t.Fatalf("railSelection must carry CoordTaskID+CoordArgusArchived; got %+v", sel)
 	}
 }
 
