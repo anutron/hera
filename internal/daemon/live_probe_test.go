@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -204,8 +205,16 @@ func TestLiveViewProbe(t *testing.T) {
 	}()
 
 	// Size the surface generously so the rail + both panes render.
+	// HERA_PROBE_SIZE=COLSxROWS overrides — e.g. a short surface (200x18)
+	// makes the rail overflow, so wheel-pan behavior is observable live.
+	cols, rows := 200, 55
+	if size := os.Getenv("HERA_PROBE_SIZE"); size != "" {
+		if n, err := fmt.Sscanf(size, "%dx%d", &cols, &rows); n != 2 || err != nil {
+			t.Fatalf("HERA_PROBE_SIZE %q: want COLSxROWS", size)
+		}
+	}
 	_ = conn.Write(context.Background(), websocket.MessageText,
-		[]byte(`{"type":"resize","cols":200,"rows":55}`))
+		[]byte(fmt.Sprintf(`{"type":"resize","cols":%d,"rows":%d}`, cols, rows)))
 
 	time.Sleep(500 * time.Millisecond) // let the first frame render
 
@@ -236,7 +245,7 @@ func TestLiveViewProbe(t *testing.T) {
 	// Force one clean full repaint of the settled surface (tcell clears + redraws
 	// on EventResize); renderANSIToGrid honors the clear so the snapshot is final.
 	_ = conn.Write(context.Background(), websocket.MessageText,
-		[]byte(`{"type":"resize","cols":198,"rows":53}`))
+		[]byte(fmt.Sprintf(`{"type":"resize","cols":%d,"rows":%d}`, cols-2, rows-2)))
 	time.Sleep(1300 * time.Millisecond)
 
 	mu.Lock()
