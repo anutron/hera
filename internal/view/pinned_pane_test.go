@@ -263,27 +263,31 @@ func TestPinnedTerminalPane_DrawSkipsResizeWhenNoTaskID(t *testing.T) {
 }
 
 // TestPinnedTerminalPane_ScrollByTracksAndClamps pins the scroll-offset
-// bookkeeping that backs the ⇧↑/⇧↓ scrollback keys (D15). ScrollBy moves the
-// scrollback offset, clamping at 0 (the live screen — can't scroll past the
-// newest content). A positive delta scrolls UP into history; the offset never
-// goes negative.
-//
-// NOTE (flagged limitation): the SDK terminalpane renders only the live
-// emulator screen via its unexported emulator and does NOT expose scrollback
-// for rendering, so this offset is recorded but not yet painted. See ScrollBy's
-// doc comment. Wiring true scrollback rendering requires an argus-sdk change to
-// expose the emulator (or a ScrollbackCellAt accessor).
+// behavior that backs the ⇧↑/⇧↓ scrollback keys (D15), now delegated to the
+// SDK engine (argus-sdk ≥ v0.0.3): ScrollBy clamps to [0, retained history]
+// at BOTH ends — a fresh pane with no scrollback cannot leave the live
+// screen, scrolling up past the oldest retained line stops there, and
+// scrolling down past the newest content stops at the live screen.
 func TestPinnedTerminalPane_ScrollByTracksAndClamps(t *testing.T) {
 	src := make(chan []byte)
 	defer close(src)
 	tp := terminalpane.New(src)
 	defer tp.Close()
 
-	p := newPinnedTerminalPane(tp, 80, 24)
+	p := newPinnedTerminalPane(tp, 20, 5)
 
 	if got := p.ScrollOffset(); got != 0 {
 		t.Fatalf("fresh pane scroll offset: want 0, got %d", got)
 	}
+
+	// No scrollback yet: scrolling up clamps at the (empty) history.
+	p.ScrollBy(3)
+	if got := p.ScrollOffset(); got != 0 {
+		t.Fatalf("ScrollBy with no history must clamp to 0, got %d", got)
+	}
+
+	// Ten lines on a 5-row emulator push history into scrollback.
+	feedPane(t, tp, src, []byte(tenLines))
 
 	// Scroll up into history.
 	p.ScrollBy(3)
@@ -301,6 +305,18 @@ func TestPinnedTerminalPane_ScrollByTracksAndClamps(t *testing.T) {
 	p.ScrollBy(-100)
 	if got := p.ScrollOffset(); got != 0 {
 		t.Fatalf("after large negative ScrollBy: want clamp to 0, got %d", got)
+	}
+
+	// Scrolling up past the oldest retained line clamps at the history
+	// ceiling: a further ScrollBy(+N) from there must not move the offset.
+	p.ScrollBy(100000)
+	ceiling := p.ScrollOffset()
+	if ceiling <= 0 || ceiling >= 100000 {
+		t.Fatalf("offset must clamp to the retained history; got %d", ceiling)
+	}
+	p.ScrollBy(5)
+	if got := p.ScrollOffset(); got != ceiling {
+		t.Fatalf("offset must stay at the ceiling %d, got %d", ceiling, got)
 	}
 }
 
