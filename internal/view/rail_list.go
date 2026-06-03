@@ -35,6 +35,17 @@ type railList struct {
 	cursor        int
 	offset        int
 
+	// lastSnapCursor is the cursor value observed by the previous Draw. The
+	// viewport snaps to keep the cursor visible ONLY when the cursor has
+	// moved since then — so a wheel pan (PanBy) survives refresh repaints
+	// (DAO ticks redraw the rail constantly) until the next j/k.
+	lastSnapCursor int
+
+	// lastHeight is the inner-rect height observed by the previous Draw.
+	// PanBy uses it to clamp the viewport to the content without waiting
+	// for the next draw; 0 means "never drawn" (clamp loosely, Draw fixes).
+	lastHeight int
+
 	// collapsed tracks the operator's EXPLICIT fold choices, keyed by
 	// orchestrator ID. An entry present means the operator toggled that
 	// coordinator (true=collapsed, false=expanded) and that choice persists
@@ -835,14 +846,27 @@ func (rl *railList) Draw(screen tcell.Screen) {
 	}
 
 	rl.clampOffset()
-	if rl.cursor < rl.offset {
-		rl.offset = rl.cursor
+	// Cursor-follow snap fires only when the cursor MOVED since the last
+	// draw — an unchanged cursor means any viewport displacement came from a
+	// wheel pan (PanBy), which must persist across refresh repaints.
+	if rl.cursor != rl.lastSnapCursor {
+		if rl.cursor < rl.offset {
+			rl.offset = rl.cursor
+		}
+		if rl.cursor >= rl.offset+h {
+			rl.offset = rl.cursor - h + 1
+		}
 	}
-	if rl.cursor >= rl.offset+h {
-		rl.offset = rl.cursor - h + 1
-	}
+	rl.lastSnapCursor = rl.cursor
+	rl.lastHeight = h
 	if rl.offset < 0 {
 		rl.offset = 0
+	}
+	if max := len(rl.rows) - h; rl.offset > max {
+		if max < 0 {
+			max = 0
+		}
+		rl.offset = max
 	}
 
 	// Row content renders right of the selection-marker gutter; the gutter
@@ -880,6 +904,31 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		case railRowEmpty:
 			widget.DrawText(screen, cx, y+i, cw, "(no projects)", theme.StyleDimmed)
 		}
+	}
+}
+
+// PanBy moves the rail viewport by delta rows (positive reveals later rows,
+// negative earlier ones) WITHOUT moving the cursor — wheel panning must never
+// change the selection, because selection changes rebind the panes. The
+// offset clamps to [0, max(0, rows−height)] using the height of the last
+// draw; when the content fits the viewport the call is a no-op. Driven by
+// App.applyWheel on the tview event loop.
+func (rl *railList) PanBy(delta int) {
+	rl.offset += delta
+	max := len(rl.rows) - rl.lastHeight
+	if rl.lastHeight <= 0 {
+		// Never drawn: clamp loosely to the row count; the first Draw
+		// re-clamps against the real height.
+		max = len(rl.rows) - 1
+	}
+	if max < 0 {
+		max = 0
+	}
+	if rl.offset > max {
+		rl.offset = max
+	}
+	if rl.offset < 0 {
+		rl.offset = 0
 	}
 }
 

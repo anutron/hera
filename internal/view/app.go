@@ -966,10 +966,11 @@ func (a *App) OnRailSelectEnter() FocusState {
 //
 // Satisfies the KeyRouter.PaneScroller contract. Runs on the tview input pump.
 //
-// LIMITATION: the SDK terminalpane paints only the live screen (see
-// pinnedTerminalPane.scrollOffset), so the offset is recorded but the visible
-// surface does not yet scroll. The key is intercepted end-to-end so it never
-// leaks to the PTY or the rail.
+// Since argus-sdk v0.0.3 the offset is a real, rendered offset: the SDK pane
+// paints the scrollback window plus a [SCROLL] badge while scrolled and
+// anchor-locks the view under new output. The keyboard path (1 line/press)
+// and the wheel path (wheelStep lines/tick, see applyWheel) drive this same
+// engine.
 func (a *App) ScrollFocusedPane(state FocusState, delta int) {
 	a.mu.Lock()
 	var pane *pinnedTerminalPane
@@ -984,6 +985,52 @@ func (a *App) ScrollFocusedPane(state FocusState, delta int) {
 		return
 	}
 	pane.ScrollBy(delta)
+}
+
+// wheelStep is the number of lines a pane scrolls (and rows the rail pans)
+// per mouse-wheel tick — mirrors argus's task-terminal mouseScrollStep.
+const wheelStep = 3
+
+// RouteWheel satisfies the rawInputConn.WheelRouter contract: it receives a
+// decoded SGR wheel tick on pluginview's read goroutine and bounces it onto
+// the tview event loop, where applyWheel hit-tests the live layout rects.
+func (a *App) RouteWheel(up bool, x, y int) {
+	tApp := a.Application()
+	if tApp == nil {
+		return
+	}
+	tApp.QueueUpdateDraw(func() { a.applyWheel(up, x, y) })
+}
+
+// applyWheel routes one wheel tick by POSITION, not focus: the SGR 1-based
+// viewport cell converts to the 0-based screen cell and is hit-tested against
+// the rail and both panes' current rects. A pane hit scrolls that pane's
+// scrollback wheelStep lines (up = into history); a rail hit pans the rail
+// viewport without moving the selection (so pane bindings never churn from a
+// casual scroll). Panes absent from the current body mode (freelance mode has
+// no coord pane) are skipped — their stale rects must not swallow the tick.
+// Anything else (top bar, gaps) is a dead zone. Runs on the tview event loop.
+func (a *App) applyWheel(up bool, x, y int) {
+	cx, cy := x-1, y-1
+	a.mu.Lock()
+	rail := a.pieces.rail
+	coord, agent := a.pieces.coord, a.pieces.agent
+	coordPresent, agentPresent := a.coordPresent, a.agentPresent
+	a.mu.Unlock()
+
+	delta := wheelStep
+	if !up {
+		delta = -wheelStep
+	}
+	switch {
+	case rail != nil && rail.InRect(cx, cy):
+		// Wheel-up reveals earlier rows (offset shrinks); wheel-down later ones.
+		rail.PanBy(-delta)
+	case coordPresent && coord != nil && coord.InRect(cx, cy):
+		coord.ScrollBy(delta)
+	case agentPresent && agent != nil && agent.InRect(cx, cy):
+		agent.ScrollBy(delta)
+	}
 }
 
 // InPaneNavigate moves the rail selection to the next (dir>0) or previous

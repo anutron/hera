@@ -7,6 +7,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/anutron/argus-sdk/pluginview"
+	"github.com/anutron/argus-sdk/terminalpane"
 )
 
 // rawInputConn wraps the plugin-view WebSocket connection so pane-focus
@@ -35,6 +36,16 @@ import (
 //     ladder, the Ctrl-↑/↓ in-pane nav, the Shift-↑/↓ scroll), which are passed
 //     to tcell so KeyRouter handles them even from inside a pane.
 //
+// SGR mouse frames (argus's plugin-pane wheel forwarding) are view-owned in
+// EVERY focus state and are peeled off BEFORE the focus fork: forwarding one
+// would type escape garbage into the bound agent's PTY, and parsing one would
+// fire garbage rail keys. Wheel ticks route to the WheelRouter (which hops to
+// the tview event loop for positional hit-testing); every other mouse event
+// (click, drag, motion, release) is swallowed. Detection is frame-aligned —
+// argus sends one event per binary frame — so a frame counts as mouse only
+// when it is exactly one well-formed SGR sequence; anything else follows the
+// focus routing unchanged.
+//
 // Only Read is overridden; Write (surface frames) and Close delegate to the
 // embedded conn.
 type rawInputConn struct {
@@ -43,7 +54,16 @@ type rawInputConn struct {
 	focus   focusReader
 	targets PaneTargets
 	fwd     PaneByteForwarder
+	wheel   WheelRouter
 	log     *slog.Logger
+}
+
+// WheelRouter routes a decoded wheel tick to the view's scroll handling. The
+// call arrives on pluginview's read goroutine; implementations must bounce to
+// the tview event loop themselves (*App queues applyWheel via
+// QueueUpdateDraw). Coordinates are the SGR-encoded 1-based viewport cell.
+type WheelRouter interface {
+	RouteWheel(up bool, x, y int)
 }
 
 // focusReader exposes the current focus state in a goroutine-safe way. *App
@@ -54,12 +74,13 @@ type focusReader interface {
 	CurrentFocus() FocusState
 }
 
-// newRawInputConn wraps conn. A nil log falls back to slog.Default().
-func newRawInputConn(conn pluginview.Conn, focus focusReader, targets PaneTargets, fwd PaneByteForwarder, log *slog.Logger) *rawInputConn {
+// newRawInputConn wraps conn. A nil log falls back to slog.Default(); a nil
+// wheel router swallows wheel frames (they are still never forwarded/parsed).
+func newRawInputConn(conn pluginview.Conn, focus focusReader, targets PaneTargets, fwd PaneByteForwarder, wheel WheelRouter, log *slog.Logger) *rawInputConn {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &rawInputConn{Conn: conn, focus: focus, targets: targets, fwd: fwd, log: log}
+	return &rawInputConn{Conn: conn, focus: focus, targets: targets, fwd: fwd, wheel: wheel, log: log}
 }
 
 // Read intercepts inbound frames. Binary frames carry keystroke bytes; text
@@ -68,6 +89,16 @@ func (c *rawInputConn) Read(ctx context.Context) (websocket.MessageType, []byte,
 	mt, data, err := c.Conn.Read(ctx)
 	if err != nil || mt != websocket.MessageBinary || len(data) == 0 {
 		return mt, data, err
+	}
+
+	// Mouse frames are view-owned regardless of focus: never forwarded to a
+	// PTY, never fed to the parser. Wheel ticks route to the scroll handling;
+	// everything else (clicks, drags, motion) is swallowed.
+	if ev, ok := terminalpane.DecodeSGRMouse(data); ok {
+		if c.wheel != nil && (ev.Kind == terminalpane.WheelUp || ev.Kind == terminalpane.WheelDown) {
+			c.wheel.RouteWheel(ev.Kind == terminalpane.WheelUp, ev.X, ev.Y)
+		}
+		return mt, nil, nil
 	}
 
 	state := c.focus.CurrentFocus()
