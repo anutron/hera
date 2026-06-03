@@ -147,3 +147,7 @@ The coordinator agent (argus task id `1779491424986011000`) holds substrate cont
 The last message exchange was the dogfood-kickoff readiness check (acked); the coordinator's next expectation is a check-in when hera's first orchestrator is alive or when we hit a substrate behavior that needs input.
 
 Today's session added one more substrate ask: argus's `Daemon.Ports` RPC (shipped on branch `argus/add-daemon-ports-rpc`, commit `adaf4a1`, awaiting merge into argus master + a daemon restart). The substrate coord task is still the canonical channel for substrate questions.
+
+## Roadmap ideas (queued, unscoped)
+
+- **Coord metadata view (2026-06-02).** Each hera coordinator infers + maintains description/goal/scope metadata from its kickoff, updating as scope shifts. Hera UX: `i` on a rail coord row swaps the agent view for a metadata pane — summary/goal/scope, repos touched / in plan scope, coord creation date, last agent activity, agent list + statuses. Storage seam: the existing role `mission`/`constraints` fields become living metadata. Render seam: C1 full-width body mode precedent. Spec-first via a new OpenSpec change when picked up.

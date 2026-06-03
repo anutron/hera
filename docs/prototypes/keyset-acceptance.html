@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>hera-view keyset acceptance — rail mutations (a / s / S)</title>
+<title>hera-view keyset REGRESSION pass — main @ 2455e7e</title>
 <style>
   :root {
     --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #c9d1d9;
@@ -17,6 +17,7 @@
   }
   h1 { color: var(--cyan); font-size: 18px; margin: 0 0 4px; }
   .meta { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .section { color: var(--pink); font-size: 15px; margin: 26px 0 10px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
   .preamble {
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
     padding: 12px 16px; margin-bottom: 20px; font-size: 13px;
@@ -28,11 +29,16 @@
   }
   .test h2 { font-size: 14px; color: var(--cyan); margin: 0 0 6px; }
   .test h2 .id { color: var(--pink); margin-right: 8px; }
+  .badge {
+    float: right; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+    border: 1px solid var(--green); color: var(--green);
+  }
+  .badge.watch { border-color: var(--yellow); color: var(--yellow); }
+  .badge.human { border-color: var(--pink); color: var(--pink); }
   .steps { color: var(--text); margin: 6px 0; }
   .steps b { color: var(--pink); }
   .expected { color: var(--dim); margin: 6px 0 10px; }
   .expected b { color: var(--text); }
-  .criteriaQ { color: var(--yellow); font-size: 13px; margin: 6px 0 10px; }
   .controls { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
   .controls fieldset { border: none; padding: 0; margin: 0; display: flex; gap: 10px; align-items: center; }
   .controls legend { float: left; color: var(--dim); font-size: 12px; margin-right: 8px; padding: 0; }
@@ -54,25 +60,23 @@
   }
   button:hover { filter: brightness(1.15); }
   #copied { color: var(--green); margin-left: 12px; visibility: hidden; }
-  .general { margin-top: 20px; }
-  .general h2 { color: var(--cyan); font-size: 14px; }
 </style>
 </head>
 <body>
-<h1>hera-view keyset acceptance — rail mutations (a / s / S)</h1>
-<div class="meta">build <code>ecd4e89</code> · fixtures: kbtest (+2 agents), archive-this-coord, 3 freelancers · state saves locally as you type</div>
+<h1>hera-view keyset REGRESSION pass</h1>
+<div class="meta">build: <code>main @ 2455e7e</code> (stack merged in #14, change archived in #15) · daemon runs clean main · autosaves locally (fresh form — v2)</div>
 
 <div class="preamble">
-  <b>Before you start:</b> focus must be <b>ON THE RAIL</b> (cyan border on the rail) — in a pane these keys type into the agent.
-  Work top to bottom: <b>T1/T2 double as the state reset</b> (the kbtest agents start inside the Archive expando on purpose).
-  For each item: mark whether you <b>agree with the criteria</b> (is this the <i>right</i> behavior?), whether it <b>passed</b> (did it <i>do</i> the behavior?), and note anything odd.
+  <b>What this pass is:</b> the overnight probe run already verified R1–R10 mechanically (flags checked per press) — badges show its verdicts. Your job: <b>confirm by hand</b>, judge the <b>J-items</b> (human-only), and run <b>M1–M4</b>.
+  <b>Focus on the RAIL</b> (cyan border) — in a pane these keys type into the agent.
+  Steps below match the <b>current live fixture state</b> exactly (what the overnight run left behind): <code>archive-this-agent</code> sits archived in kbtest's expando · <code>hit-s-on-this-agent</code> is active @ complete · <code>kbtest-coord</code> @ in_review · <code>archive-this-coord</code> active · <code>archive-this-freelancer</code> ARCHIVED (under l) · <code>unarchive-this-freelancer</code> ACTIVE in the Hera group · <code>hit-s-on-this-freelancer</code> active @ complete. Yes — two fixtures are now on the "wrong side" of their names; the steps account for it.
 </div>
 
 <div id="tests"></div>
 
-<div class="general test">
+<div class="test">
   <h2>General notes</h2>
-  <textarea id="generalNotes" placeholder="anything that doesn't fit an item above — feel, ordering, surprises…"></textarea>
+  <textarea id="generalNotes" placeholder="anything that doesn't fit an item — feel, surprises, regressions…"></textarea>
 </div>
 
 <div class="copybar">
@@ -80,85 +84,122 @@
 </div>
 
 <script>
-const TESTS = [
-  { id: "T1", title: "Unarchive an agent row (doubles as reset)",
-    steps: "Select <b>kbtest</b> → space-open its <b>Archive (N)</b> expando → select <b>archive-this-agent</b> → press <b>a</b>.",
-    expected: "Row leaves the expando and returns to kbtest's active children; expando count decrements; rail refreshes itself (no nav-away needed); UI stays responsive." },
-  { id: "T2", title: "Unarchive the second agent (reset)",
-    steps: "Same expando → select <b>hit-s-on-this-agent</b> → press <b>a</b>.",
-    expected: "Same as T1 — returns to active children, count decrements, responsive." },
-  { id: "T3", title: "Status step BACK on an agent row",
-    steps: "Select <b>hit-s-on-this-agent</b> (status starts at <b>complete</b>) → press <b>S</b>.",
-    expected: "argus status steps back one rung (complete → in_review); the row's status icon updates within ~1s; no freeze." },
-  { id: "T4", title: "Status step FORWARD on an agent row",
-    steps: "Same row → press <b>S</b> again (→ in_progress), then <b>s</b> (→ back to in_review).",
-    expected: "Each press moves exactly one rung in the right direction; icon tracks each step." },
-  { id: "T5", title: "Clamp at the ends",
-    steps: "Press <b>s</b> until the row reaches <b>complete</b>, then press <b>s</b> once more.",
-    expected: "No change, no freeze — it clamps silently at complete (and S clamps at pending).",
-    criteriaQ: "Criteria question: is a SILENT clamp right, or should it say \"already at complete\"?" },
-  { id: "T6", title: "Archive an agent row",
-    steps: "Select <b>archive-this-agent</b> (active) → press <b>a</b>.",
-    expected: "Row leaves the active children and appears under kbtest's Archive (N) expando (count increments); argus task archived too; worktree untouched; responsive." },
-  { id: "T7", title: "Status step on a coordinator HEADER (new)",
-    steps: "Select the <b>kbtest</b> header row → press <b>S</b>, then <b>s</b>.",
-    expected: "Steps the COORD task's status back/forward; the header's status icon updates; responsive." },
-  { id: "T8", title: "Archive a coordinator (cascade)",
-    steps: "Select the <b>archive-this-coord</b> header → press <b>a</b>.",
-    expected: "Header (and its coord role/task) archives and leaves the active rail; findable under the top-level Archive after pressing <b>l</b>; responsive." },
-  { id: "T9", title: "Unarchive a coordinator",
-    steps: "Press <b>l</b> to reveal Archive → select <b>archive-this-coord</b> → press <b>a</b>.",
-    expected: "The orchestrator unarchives and returns to the active rail. Per current spec its ROLES stay archived (they don't auto-unarchive).",
-    criteriaQ: "Criteria question: roles staying archived on coord-unarchive — agree, or should unarchive cascade too?" },
-  { id: "T10", title: "Archive a FREELANCER (new)",
-    steps: "Select <b>archive-this-freelancer</b> in the Freelance section → press <b>a</b>.",
-    expected: "The argus task archives directly (no hera binding involved); the row leaves the Freelance section; responsive.",
-    criteriaQ: "Criteria question: where should an archived freelancer be findable afterwards — top-level Archive via l?" },
-  { id: "T11", title: "Status step on a FREELANCER (new)",
-    steps: "Select <b>hit-s-on-this-freelancer</b> → press <b>S</b>, then <b>s</b>.",
-    expected: "The argus task's status steps back/forward; the row icon updates; responsive." },
-  { id: "T12", title: "Unarchive a FREELANCER (new)",
-    steps: "Press <b>l</b> → find <b>unarchive-this-freelancer</b> in Archive → press <b>a</b>.",
-    expected: "The argus task unarchives and the row returns to the Freelance section." },
-  { id: "T13", title: "Non-applicable rows give feedback (never silent)",
-    steps: "Select a non-actionable row (the Freelance divider, a repo group header like <b>Hera (N)</b>, or an Archive separator) → press <b>s</b>, then <b>a</b>.",
-    expected: "A short visible message (e.g. \"not applicable to this row\") — NEVER a silent nothing." },
-  { id: "T14", title: "Double-press guard",
-    steps: "On any actionable row press <b>a</b> twice rapidly.",
-    expected: "First press fires; the rapid second gets an \"another operation is in flight\" notice. (If the first already finished, the second may legitimately toggle it back — note which you saw.)" },
-  { id: "T15", title: "Global: zero freezes, self-refreshing rail",
-    steps: "Judged across the whole pass.",
-    expected: "The UI never froze; j/k stayed responsive immediately after every action; every mutation's effect appeared without navigating away and back." },
+const SECTIONS = [
+  { title: "R — regression sweep (probe says PASS; confirm by hand)", items: [
+    { id: "R1", probe: "PASS", title: "Unarchive an agent (both sides, visible)",
+      steps: "<b>kbtest</b> → space-open <b>Archive (1)</b> → select <b>archive-this-agent</b> → <b>a</b>.",
+      expected: "Row returns to kbtest's active children; expando disappears (it's now empty); kbtest count bumps; rail refreshes itself ≤1s; no freeze." },
+    { id: "R2", probe: "PASS", title: "Archive it back (round-trip toggle)",
+      steps: "Select the now-active <b>archive-this-agent</b> → <b>a</b>. Then once more if you want it active for later.",
+      expected: "Moves into a fresh Archive (1); a again brings it back. Direction always matches what the row DISPLAYS." },
+    { id: "R3", probe: "PASS", title: "s/S stepping + clamp on an agent row",
+      steps: "<b>hit-s-on-this-agent</b> (active, @ complete): <b>S</b> (→in_review), <b>S</b> (→in_progress), <b>s</b>, <b>s</b> (→complete), <b>s</b> once more.",
+      expected: "Each press moves exactly one rung; icon tracks each step; the final s clamps silently at complete (see J1)." },
+    { id: "R4", probe: "PASS", title: "Header s/S steps the coord task",
+      steps: "Select the <b>kbtest</b> header (coord @ in_review): <b>s</b> (→complete), then <b>S</b> back if you like.",
+      expected: "Header status icon tracks the coord task. WATCH: if the icon ever looks wrong for the status (☾ at complete was sighted once), note it." },
+    { id: "R5", probe: "PASS", title: "Coord cascade archive + l-mode unarchive",
+      steps: "<b>a</b> on the <b>archive-this-coord</b> header → it disappears. <b>l</b> → find it in the bottom Archive → <b>a</b> → it returns. <b>l</b> to hide again.",
+      expected: "Cascade archives both sides; unarchive returns the header to the active rail (its roles would stay archived per spec — see J2)." },
+    { id: "R6", probe: "PASS", title: "Freelancer archive + unarchive (direct argus verbs)",
+      steps: "(a) <b>l</b> → in the Hera group find the dimmed <b>archive-this-freelancer</b> → <b>a</b> → it rejoins the active group; <b>l</b> to hide. (b) <b>a</b> on the active <b>unarchive-this-freelancer</b> → it leaves the group (lives under l now).",
+      expected: "Both directions work on freelancers; group count tracks; archived freelancers are findable under l in their repo group (see J3)." },
+    { id: "R7", probe: "PASS*", watch: true, title: "Freelancer s/S — WATCH the first press",
+      steps: "<b>hit-s-on-this-freelancer</b> (@ complete): <b>S</b>, then <b>s</b>.",
+      expected: "S→in_review, s→complete. *Overnight the very FIRST S advanced instead of reverting, once, unreproduced — if your first press misbehaves, that's the anomaly: note exactly what happened." },
+    { id: "R8", probe: "PASS", title: "Not-applicable feedback + modal dismissal",
+      steps: "Select the <b>Hera (N)</b> group header → <b>s</b>. Then dismiss with <b>Enter</b>. Trigger again → dismiss with <b>Esc</b>.",
+      expected: "Themed Error modal ('s: not applicable to this row') appears — never silence. Enter AND Esc dismiss it; focus returns to the rail (j/k works immediately). The dismissal is the bit the probe could NOT test — this is the real verification." },
+    { id: "R9", probe: "—", title: "Double-press guard (needs human timing)",
+      steps: "On any agent row press <b>a</b> twice as fast as you can.",
+      expected: "Either a clean toggle-and-back, or the second press gets an 'operation in flight' notice. Never a freeze, never a corrupted double-fire." },
+    { id: "R10", probe: "PASS", title: "Global: zero freezes, self-refreshing rail",
+      steps: "Judged across the whole pass.",
+      expected: "UI never freezes; every mutation's effect appears without navigating away; j/k always responsive. (Overnight: ~25 presses, zero freezes.)" },
+  ]},
+  { title: "N — new since the overnight run (untested by probe where noted)", items: [
+    { id: "N1", probe: "PASS", title: "Nested chain renders + folds",
+      steps: "Find <b>nested-parent → 󰹻 nested-sub (1) → nested-leaf</b>. <b>space</b> on nested-sub (leaf hides), space again (returns). Fold nested-parent (whole chain tucks).",
+      expected: "Sub-coordinator is a real foldable coord row (chevron + 󰹻 + count) nested under its parent — the demo's checkout-rebuild → wave-1 shape." },
+    { id: "N2", probe: "—", human: true, title: "Nested selection binding",
+      steps: "<b>Enter</b> on <b>nested-sub</b>, then back to rail (^Q) and <b>Enter</b> on <b>nested-leaf</b>.",
+      expected: "nested-sub → full-width HERA bound to nested-sub's OWN task (not the parent's). nested-leaf → HERA+AGENT split where HERA shows nested-sub. Type into each (Shift+Enter too) — it lands in the right pane." },
+    { id: "N3", probe: "PASS", title: "Collapse-by-default rule (your new rule)",
+      steps: "Observe the default rail: every (0) coord is a single ▸ line. <b>space</b> one open (its Archive expando appears), navigate away and back — your toggle persists. Press <b>l</b> — everything reveals; <b>l</b> again restores.",
+      expected: "Zero-active coords default collapsed; ≥1-active default expanded; manual toggles win for the session; l force-reveals." },
+  ]},
+  { title: "J — judgment calls (yours alone)", items: [
+    { id: "J1", probe: "⚖", human: true, title: "Clamp feedback ruling",
+      steps: "From R3: pressing s at complete (or S at pending) silently stays put.",
+      expected: "RULING: is silent clamping right, or should it flash 'already at complete'? (agree = silent is fine)" },
+    { id: "J2", probe: "⚖", human: true, title: "Coord-unarchive cascade ruling",
+      steps: "From R5: unarchiving a coordinator returns the header but its ROLES stay archived (per spec; resurrect-on-Enter is the full-revival flow).",
+      expected: "RULING: keep roles archived on coord-unarchive, or cascade-unarchive them too? (agree = keep current)" },
+    { id: "J3", probe: "⚖", human: true, title: "Archived-freelancer home ruling",
+      steps: "From R6: archived freelancers live dimmed in their repo group, visible only under l.",
+      expected: "RULING: right home? Alternatives: top-level Archive section, or a per-group Archive expando. (agree = current home)" },
+    { id: "J4", probe: "—", human: true, title: "Modal styling approval",
+      steps: "Look at the R8 modal (and a ^d confirm if you're feeling brave — it defaults to No / y-n keys work).",
+      expected: "Argus-dark theme, cyan border, error-red text — replaced tview's lavender. Approve or note what's off." },
+    { id: "J5", probe: "—", human: true, title: "Selection marker ›",
+      steps: "Move around the rail; the selected row carries a › in the gutter (every row type).",
+      expected: "New, color-independent selection cue (it's also how the probe sees the cursor). Like it / tweak it?" },
+    { id: "J6", probe: "WATCH", watch: true, title: "Known race: l as the very first key",
+      steps: "Leave hera, re-enter, and press <b>l</b> as your literal FIRST keypress.",
+      expected: "Known open item: the first key can race the initial repopulate and get dropped. Does it reproduce for you? (fail = it dropped)" },
+  ]},
+  { title: "M — manual-in-argus (from the original plan)", items: [
+    { id: "M1", probe: "—", human: true, title: "Bottom bar hotkeys",
+      steps: "In real argus, check the bottom bar while focus moves rail → pane.",
+      expected: "Shows hera's focus-aware hotkeys + reserved ^Q^Q argus; updates on focus change." },
+    { id: "M2", probe: "—", human: true, title: "? help overlay",
+      steps: "Press <b>?</b> from the rail.",
+      expected: "Argus's help overlay pops with hera's key dictionary (not an in-surface modal)." },
+    { id: "M3", probe: "—", human: true, title: "Esc / ^Q^Q escape ladder",
+      steps: "Esc from RAIL; then from inside a pane try <b>^Q</b> (to rail) and <b>^Q^Q</b> (to argus).",
+      expected: "Esc-from-rail returns to argus; Esc-in-pane goes to the PTY instead; ^Q^Q always escapes." },
+    { id: "M4", probe: "—", human: true, title: "Overall parity with the browser prototype",
+      steps: "Free-roam: coord/agent/freelancer selections, folding, typing into live panes (Shift+Enter, Option+Delete!), the whole keyset.",
+      expected: "Feels like rail-nav.html. Note any place it doesn't." },
+  ]},
 ];
 
 const $tests = document.getElementById("tests");
-for (const t of TESTS) {
-  const el = document.createElement("div");
-  el.className = "test";
-  el.innerHTML = `
-    <h2><span class="id">${t.id}</span>${t.title}</h2>
-    <div class="steps">${t.steps}</div>
-    <div class="expected"><b>Expected:</b> ${t.expected}</div>
-    ${t.criteriaQ ? `<div class="criteriaQ">⚖ ${t.criteriaQ}</div>` : ""}
-    <div class="controls">
-      <fieldset><legend>criteria</legend>
-        <label class="lbl-agree"><input type="radio" name="${t.id}-crit" value="agree"> agree</label>
-        <label class="lbl-disagree"><input type="radio" name="${t.id}-crit" value="disagree"> disagree</label>
-      </fieldset>
-      <fieldset><legend>result</legend>
-        <label class="lbl-pass"><input type="radio" name="${t.id}-res" value="pass"> pass</label>
-        <label class="lbl-fail"><input type="radio" name="${t.id}-res" value="fail"> fail</label>
-      </fieldset>
-    </div>
-    <textarea id="${t.id}-notes" placeholder="observed behavior / notes…"></textarea>`;
-  $tests.appendChild(el);
+const ALL = [];
+for (const sec of SECTIONS) {
+  const h = document.createElement("div");
+  h.className = "section"; h.textContent = sec.title;
+  $tests.appendChild(h);
+  for (const t of sec.items) {
+    ALL.push(t);
+    const badgeCls = t.human ? "badge human" : (t.watch ? "badge watch" : "badge");
+    const badgeTxt = t.probe === "—" ? "human" : "probe: " + t.probe;
+    const el = document.createElement("div");
+    el.className = "test";
+    el.innerHTML = `
+      <h2><span class="${badgeCls}">${badgeTxt}</span><span class="id">${t.id}</span>${t.title}</h2>
+      <div class="steps">${t.steps}</div>
+      <div class="expected"><b>Expected:</b> ${t.expected}</div>
+      <div class="controls">
+        <fieldset><legend>criteria</legend>
+          <label class="lbl-agree"><input type="radio" name="${t.id}-crit" value="agree"> agree</label>
+          <label class="lbl-disagree"><input type="radio" name="${t.id}-crit" value="disagree"> disagree</label>
+        </fieldset>
+        <fieldset><legend>result</legend>
+          <label class="lbl-pass"><input type="radio" name="${t.id}-res" value="pass"> pass</label>
+          <label class="lbl-fail"><input type="radio" name="${t.id}-res" value="fail"> fail</label>
+        </fieldset>
+      </div>
+      <textarea id="${t.id}-notes" placeholder="observed behavior / notes…"></textarea>`;
+    $tests.appendChild(el);
+  }
 }
 
-// --- persistence (localStorage) ---
-const KEY = "hera-keyset-acceptance-v1";
+// --- persistence ---
+const KEY = "hera-keyset-regression-v2";
 function saveState() {
   const s = { general: document.getElementById("generalNotes").value, items: {} };
-  for (const t of TESTS) {
+  for (const t of ALL) {
     s.items[t.id] = {
       crit: (document.querySelector(`input[name="${t.id}-crit"]:checked`) || {}).value || "",
       res:  (document.querySelector(`input[name="${t.id}-res"]:checked`) || {}).value || "",
@@ -171,7 +212,7 @@ function loadState() {
   let s; try { s = JSON.parse(localStorage.getItem(KEY)); } catch { return; }
   if (!s) return;
   document.getElementById("generalNotes").value = s.general || "";
-  for (const t of TESTS) {
+  for (const t of ALL) {
     const it = (s.items || {})[t.id]; if (!it) continue;
     if (it.crit) { const r = document.querySelector(`input[name="${t.id}-crit"][value="${it.crit}"]`); if (r) r.checked = true; }
     if (it.res)  { const r = document.querySelector(`input[name="${t.id}-res"][value="${it.res}"]`);  if (r) r.checked = true; }
@@ -183,12 +224,12 @@ loadState();
 
 // --- copy as markdown ---
 function toMarkdown() {
-  const lines = ["# keyset acceptance results — " + new Date().toISOString().slice(0, 16).replace("T", " "), ""];
-  for (const t of TESTS) {
+  const lines = ["# keyset regression results — main@2455e7e — " + new Date().toISOString().slice(0, 16).replace("T", " "), ""];
+  for (const t of ALL) {
     const crit = (document.querySelector(`input[name="${t.id}-crit"]:checked`) || {}).value || "—";
     const res  = (document.querySelector(`input[name="${t.id}-res"]:checked`)  || {}).value || "—";
     const notes = document.getElementById(`${t.id}-notes`).value.trim();
-    lines.push(`- **${t.id} ${t.title}**: criteria=${crit.toUpperCase()} result=${res.toUpperCase()}${notes ? " — " + notes.replace(/\n/g, " / ") : ""}`);
+    lines.push(`- **${t.id} ${t.title}** (probe: ${t.probe}): criteria=${crit.toUpperCase()} result=${res.toUpperCase()}${notes ? " — " + notes.replace(/\n/g, " / ") : ""}`);
   }
   const gen = document.getElementById("generalNotes").value.trim();
   if (gen) { lines.push("", "**General:** " + gen.replace(/\n/g, " / ")); }

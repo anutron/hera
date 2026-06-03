@@ -87,6 +87,12 @@ func (s *Service) StepTaskStatus(ctx context.Context, taskID string, advance boo
 
 	cur, err := s.Argus.GetTaskStatus(ctx, taskID)
 	if err != nil {
+		// A pruned task stays an error — you cannot step a task that
+		// does not exist — but the operator gets the plain story, not
+		// a raw HTTP 404 dump.
+		if errors.Is(err, ErrArgusTaskGone) {
+			return "", fmt.Errorf("ops.StepTaskStatus: task %s no longer exists in argus (pruned) — nothing to step", taskID)
+		}
 		return "", fmt.Errorf("ops.StepTaskStatus: get status %s: %w", taskID, err)
 	}
 
@@ -105,6 +111,9 @@ func (s *Service) StepTaskStatus(ctx context.Context, taskID string, advance boo
 
 	resolved, err := s.Argus.SetTaskStatus(ctx, taskID, target)
 	if err != nil {
+		if errors.Is(err, ErrArgusTaskGone) {
+			return "", fmt.Errorf("ops.StepTaskStatus: task %s no longer exists in argus (pruned) — nothing to step", taskID)
+		}
 		return "", fmt.Errorf("ops.StepTaskStatus: set status %s -> %s: %w", taskID, target, err)
 	}
 	return resolved, nil

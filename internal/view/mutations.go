@@ -119,6 +119,15 @@ type railSelection struct {
 	// selections or when the orchestrator has no coord role.
 	CoordRoleID int64
 
+	// CoordTaskID / CoordArgusArchived carry the orchestrator header's
+	// coord-pane binding and its argus-side archived bit. A displayed-active
+	// header (Archived false) whose coord task is argus-archived is the
+	// MIXED-COORD state: `a` then REPAIRS — unarchives the coord task directly
+	// by id — instead of cascade-archiving the orchestrator the operator sees
+	// as active. Empty/false for non-orchestrator selections.
+	CoordTaskID        string
+	CoordArgusArchived bool
+
 	// ArgusTaskID is the selected role's bound argus task id (empty for
 	// orchestrator rows or roles with no live binding). Carried so the
 	// extended keyset can act on the selection's task.
@@ -132,9 +141,10 @@ type railSelection struct {
 	// (hera-active + argus-archived) the hera flag alone would miss.
 	ArgusArchived bool
 
-	// Dead reports the binding-dead state (DB binding open but the argus
-	// task is gone). A dead row DISPLAYS as archived (roleArchived), so `a`
-	// must treat it as an unarchive target, never stamp a fresh archive.
+	// Dead reports that the argus task RECORD no longer exists (404 /
+	// pruned); status alone never sets it. A dead row DISPLAYS as archived
+	// (roleArchived), so `a` must treat it as an unarchive target, never
+	// stamp a fresh archive.
 	Dead bool
 
 	// WorktreePath is the argus task's worktree path, carried on freelance
@@ -445,6 +455,21 @@ func (b *mutationBridge) OnArchive() {
 	sel := b.sel.CurrentRailSelection()
 	switch sel.Kind {
 	case selOrchestrator:
+		// REPAIR-FIRST: a displayed-active header whose coord task is
+		// argus-archived (the mixed-coord state — only external argus-side
+		// archiving produces it) gets its coord task UNARCHIVED, aligning
+		// argus reality to the displayed active orchestrator. Cascade-
+		// archiving here would tear down the whole live orchestrator the
+		// operator sees as active. ToggleArchiveTask(…, archived=true)
+		// unarchives and tolerates a 404 as a skip. Once repaired (or when
+		// not mixed), `a` behaves exactly as below.
+		if !sel.Archived && sel.CoordArgusArchived && sel.CoordTaskID != "" {
+			taskID := sel.CoordTaskID
+			b.mutate("archive", true, func() error {
+				return b.svc.ToggleArchiveTask(b.ctx, taskID, true)
+			})
+			return
+		}
 		// An orchestrator header displays archived from its own flag.
 		if sel.Archived {
 			b.mutate("archive", true, func() error {

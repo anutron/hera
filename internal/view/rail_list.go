@@ -2,6 +2,7 @@ package view
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/anutron/argus-sdk/theme"
@@ -46,9 +47,13 @@ type railList struct {
 	// for the next draw; 0 means "never drawn" (clamp loosely, Draw fixes).
 	lastHeight int
 
-	// collapsed tracks which orchestrators are collapsed. Default is
-	// expanded; an entry is created the first time the operator hides
-	// a section so the (zero-value) default behavior is "expanded".
+	// collapsed tracks the operator's EXPLICIT fold choices, keyed by
+	// orchestrator ID. An entry present means the operator toggled that
+	// coordinator (true=collapsed, false=expanded) and that choice persists
+	// for the session; an absent key means "never touched" and the DEFAULT
+	// applies — expanded, except a coordinator with zero non-archived
+	// children defaults collapsed (orchCollapsed resolves the effective
+	// state). Reads go through orchCollapsed, never this map directly.
 	collapsed map[int64]bool
 
 	// freelanceCollapsed tracks which Freelance repo groups are collapsed,
@@ -84,6 +89,36 @@ type railList struct {
 	// now is overridable for deterministic elapsed-time rendering in
 	// tests. nil means use time.Now.
 	now func() time.Time
+
+	// hasRunning reports whether any visible row renders the animated
+	// spinner (a known in_progress state, not idle, not blocked on input).
+	// Recomputed by buildRows on the event loop; read atomically by the
+	// App's spinner driver goroutine to decide whether to schedule spinner
+	// repaints (mirroring argus's spinnerLoop: tick only when live work).
+	hasRunning atomic.Bool
+}
+
+// HasRunningRows reports whether the rail currently contains a row in the
+// running state (animated spinner). Safe to call from any goroutine.
+func (rl *railList) HasRunningRows() bool {
+	return rl.hasRunning.Load()
+}
+
+// rowRunning reports whether a rail row renders the animated spinner: a KNOWN
+// in_progress state that is neither idle nor blocked on input. Archived rows
+// count too — they render the spinner dimmed (the glyph never lies).
+func rowRunning(r railRow) bool {
+	switch r.kind {
+	case railRowRole:
+		if r.role != nil {
+			return r.role.HasState && r.role.Status == "in_progress" && !r.role.ArgusIdle && !r.role.NeedsInput
+		}
+	case railRowOrch:
+		if r.orch != nil {
+			return r.orch.CoordHasState && r.orch.CoordStatus == "in_progress" && !r.orch.CoordIdle && !r.orch.CoordNeedsInput
+		}
+	}
+	return false
 }
 
 // orchEntry is one orchestrator and its agent roles, in render order.
@@ -113,14 +148,23 @@ type orchEntry struct {
 	CoordStatus     string // pending | in_progress | in_review | complete
 	CoordIdle       bool
 	CoordNeedsInput bool
+
+	// CoordArgusArchived is the coord task's argus-side archived bit. With the
+	// orchestrator itself displayed ACTIVE (Archived false) this is the
+	// MIXED-COORD state — only external argus-side archiving produces it — and
+	// the header renders the ⊘ repair cue instead of the status glyph, while
+	// `a` repairs (unarchives the coord task) instead of cascade-archiving.
+	CoordArgusArchived bool
 }
 
 // roleEntry is one role under an orchestrator. Live indicates an open
 // binding; StartedAt is the binding's StartedAt when live, else the
 // role's CreatedAt — used to render the right-aligned elapsed time.
-// Dead means the DB binding is still open but argus reports the
-// underlying task as gone (archived / completed / 404). Dead rows are
-// hidden by default and rendered dimmed when showArchived is true.
+// Dead means the argus task RECORD no longer exists (404 / pruned —
+// absent from the warm state cache). Task STATUS never sets Dead: a
+// completed task whose record exists renders active with its ✓ glyph.
+// Dead rows are hidden by default and rendered dimmed when showArchived
+// is true.
 type roleEntry struct {
 	OrchestratorID int64
 	RoleID         int64
@@ -194,6 +238,16 @@ const archiveTopLevelOwner int64 = 0
 // at a glance (the prototype's ◆ is superseded by argus's moon/✓/? status set
 // for state, so the coordinator identity needs its own glyph). nf-md U+F0E7B.
 const iconCoord = rune(0x0F0E7B) // 󰹻
+
+// iconCoordBroken is the mixed-coord repair cue: rendered at a coordinator
+// header's status-icon cell (in error red) when the orchestrator displays as
+// ACTIVE while its coord-pane binding's argus task is ARCHIVED. Cue choice
+// (documented per the operator ruling): ⊘ — U+2298 CIRCLED DIVISION SLASH —
+// reads "void/blocked"; the error-red styling is distinct from the orange
+// needs-input ?, from the dimmed-archived treatment, and from the cyan 󰹻
+// coord marker that keeps rendering beside it. Plain Unicode (no Nerd Font
+// dependency), one cell wide.
+const iconCoordBroken = '⊘'
 
 type railRow struct {
 	kind  railRowKind
@@ -533,10 +587,13 @@ func (rl *railList) ToggleCollapse() {
 		return
 	case railRowRole:
 		// A sub-coordinator row (a worker that is also another orchestrator's
-		// coord) folds ITS OWN nested children, keyed on its childOrch.
+		// coord) folds ITS OWN nested children, keyed on its childOrch. The
+		// toggle flips the EFFECTIVE state (orchCollapsed), pinning an explicit
+		// choice — a raw map flip would mis-toggle a default-collapsed empty
+		// coordinator (zero-value false → "collapse" an already-folded row).
 		if r.role != nil && r.role.childOrch != nil {
-			id := r.role.childOrch.ID
-			rl.collapsed[id] = !rl.collapsed[id]
+			child := r.role.childOrch
+			rl.collapsed[child.ID] = !rl.orchCollapsed(child)
 			prev := rl.currentRef()
 			rl.buildRows()
 			rl.restoreCursor(prev)
@@ -565,7 +622,9 @@ func (rl *railList) ToggleCollapse() {
 	}
 	switch {
 	case orch != nil:
-		rl.collapsed[orch.ID] = !rl.collapsed[orch.ID]
+		// Flip the EFFECTIVE state so the first toggle on a default-collapsed
+		// empty coordinator expands it; the explicit entry persists thereafter.
+		rl.collapsed[orch.ID] = !rl.orchCollapsed(orch)
 	case fproj != nil:
 		rl.freelanceCollapsed[fproj.Project] = !rl.freelanceCollapsed[fproj.Project]
 	default:
@@ -633,10 +692,11 @@ func (rl *railList) restoreCursor(prev any) bool {
 }
 
 // roleArchived reports whether a role belongs in an Archive expando rather
-// than the coordinator's active list: hera-archived, argus-archived, or a
-// dead binding (DB-live but the argus task is gone). This is the partition
-// the prototype draws between active children and the per-coordinator
-// Archive fold.
+// than the coordinator's active list: hera-archived, argus-archived, or dead
+// (the argus task RECORD no longer exists). These three — and ONLY these —
+// bucket a row; task STATUS never does (a completed row stays in the active
+// list with its ✓). This is the partition the prototype draws between active
+// children and the per-coordinator Archive fold.
 func roleArchived(r *roleEntry) bool {
 	return r.Archived || r.ArgusArchived || r.Dead
 }
@@ -646,6 +706,25 @@ func roleArchived(r *roleEntry) bool {
 // otherwise the per-owner toggle decides (default collapsed, D14).
 func (rl *railList) archiveOpen(owner int64) bool {
 	return rl.showArchived || rl.archiveExpanded[owner]
+}
+
+// orchCollapsed resolves a coordinator's EFFECTIVE fold state. An explicit
+// operator toggle (an entry in collapsed) always wins; otherwise the default
+// applies: a coordinator with zero non-archived children collapses so dead and
+// finished orchestrators fold away instead of burning rail rows, while a
+// coordinator with at least one active child stays expanded. showArchived
+// (`l`) overrides the collapsed DEFAULT — an untouched empty coordinator
+// expands so its archived children are reachable — but never an explicit
+// collapse. Applies to root coordinators and nested sub-coordinators alike;
+// all fold reads route through here rather than the collapsed map.
+func (rl *railList) orchCollapsed(o *orchEntry) bool {
+	if v, ok := rl.collapsed[o.ID]; ok {
+		return v
+	}
+	if rl.showArchived {
+		return false
+	}
+	return rl.visibleRoleCount(o) == 0
 }
 
 func (rl *railList) buildRows() {
@@ -670,7 +749,7 @@ func (rl *railList) buildRows() {
 	// orchestrator already on the current ancestry path is not re-expanded.
 	appendOrch := func(o *orchEntry, depth int) {
 		rl.rows = append(rl.rows, railRow{kind: railRowOrch, orch: o, depth: depth})
-		if rl.collapsed[o.ID] {
+		if rl.orchCollapsed(o) {
 			return
 		}
 		appendOrchChildren(rl, o, depth+1, map[int64]bool{o.ID: true})
@@ -718,6 +797,17 @@ func (rl *railList) buildRows() {
 	if len(rl.rows) == 0 {
 		rl.rows = append(rl.rows, railRow{kind: railRowEmpty})
 	}
+
+	// Recompute the running flag for the spinner driver: any visible row
+	// rendering the animated spinner keeps the 150ms repaint ticking.
+	running := false
+	for _, r := range rl.rows {
+		if rowRunning(r) {
+			running = true
+			break
+		}
+	}
+	rl.hasRunning.Store(running)
 }
 
 // appendOrchChildren emits a coordinator's children at childDepth: its active
@@ -741,7 +831,7 @@ func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int
 		// child orchestrator's roles one level deeper, recursively, unless it
 		// is collapsed or would form a cycle (its child already on the ancestry
 		// path). The role row itself is drawn coord-style by drawRoleRow.
-		if role.childOrch != nil && !seen[role.childOrch.ID] && !rl.collapsed[role.childOrch.ID] {
+		if role.childOrch != nil && !seen[role.childOrch.ID] && !rl.orchCollapsed(role.childOrch) {
 			seen[role.childOrch.ID] = true
 			appendOrchChildren(rl, role.childOrch, childDepth+1, seen)
 			delete(seen, role.childOrch.ID)
@@ -926,7 +1016,7 @@ func (rl *railList) drawOrchRow(screen tcell.Screen, x, y, w int, o *orchEntry, 
 	col += 2
 
 	chevron := '▾'
-	if rl.collapsed[o.ID] {
+	if rl.orchCollapsed(o) {
 		chevron = '▸'
 	}
 	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
@@ -1042,7 +1132,7 @@ func (rl *railList) drawSubCoordRow(screen tcell.Screen, x, y, w int, r *roleEnt
 	col += 2
 
 	chevron := '▾'
-	if rl.collapsed[r.childOrch.ID] {
+	if rl.orchCollapsed(r.childOrch) {
 		chevron = '▸'
 	}
 	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
@@ -1178,31 +1268,48 @@ func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner i
 	}
 }
 
-// statusIcon picks the moon-style status icon from argus-reported task state,
-// shared by worker rows (roleIcon) and coordinator headers (orchIcon) so both
-// mirror argus's vocabulary identically. Preference order mirrors argus:
-// archived/gone → dimmed circle; then needs-input, done (complete/in_review),
-// in-progress idle/working, pending; then a binding-presence fallback when
-// argus has no state for the task.
-func statusIcon(archived, hasState, needsInput bool, status string, idle, live bool) (rune, tcell.Style) {
+// spinnerFrames are argus's Nerd Font progress-spinner frames
+// (U+EE06..U+EE0B, argus internal/spinner StyleProgress), rendered for an
+// actively running in_progress task. The SDK does not export argus's spinner
+// package, so the frames are mirrored here verbatim.
+var spinnerFrames = []rune{'\uEE06', '\uEE07', '\uEE08', '\uEE09', '\uEE0A', '\uEE0B'}
+
+// spinnerInterval is argus's progress-spinner cadence (150 ms/frame). Hera
+// animates by wall clock — the frame derives from the current time — so every
+// repaint shows the frame argus itself would show at that instant.
+const spinnerInterval = 150 * time.Millisecond
+
+// animFrame is the wall-clock spinner frame index, derived from the rail's
+// (test-overridable) now source so draw tests are deterministic.
+func (rl *railList) animFrame() int {
+	now := time.Now
+	if rl.now != nil {
+		now = rl.now
+	}
+	return int(now().UnixMilli() / spinnerInterval.Milliseconds())
+}
+
+// statusIcon picks the status icon from argus-reported task state, shared by
+// worker rows (roleIcon) and coordinator headers (orchIcon) so both mirror
+// argus's task-panel glyph table identically. The GLYPH always reflects the
+// task's actual argus state when that state is known — needs-input, complete,
+// in-review, in-progress idle/running, pending — REGARDLESS of the row's
+// archived/dead bucketing, which modulates only the STYLE (dimmed). An icon
+// that mutated on archive read as "archiving killed/reset my agent" (live QA
+// R1/R2); the glyph must never lie about argus reality. The dimmed circle is
+// the fallback ONLY for an archived/dead row with UNKNOWN state; active rows
+// without state fall back on binding presence.
+func statusIcon(archived, hasState, needsInput bool, status string, idle, live bool, frame int) (rune, tcell.Style) {
+	if hasState {
+		if glyph, style, ok := stateGlyph(needsInput, status, idle, frame); ok {
+			if archived {
+				return glyph, theme.StyleDimmed
+			}
+			return glyph, style
+		}
+	}
 	if archived {
 		return '○', theme.StyleDimmed
-	}
-	if hasState {
-		switch {
-		case needsInput:
-			return theme.IconNeedsInput, theme.StyleNeedsInput
-		case status == "complete":
-			return '✓', theme.StyleComplete
-		case status == "in_review":
-			return '✓', theme.StyleInReview
-		case status == "in_progress" && idle:
-			return theme.IconMoonOutline, theme.StyleDimmed
-		case status == "in_progress":
-			return theme.IconMoonStars, theme.StyleInProgress
-		case status == "pending":
-			return theme.IconMoonOutline, theme.StylePending
-		}
 	}
 	if live {
 		return theme.IconMoonStars, theme.StyleInReview
@@ -1210,19 +1317,60 @@ func statusIcon(archived, hasState, needsInput bool, status string, idle, live b
 	return theme.IconMoonOutline, tcell.StyleDefault.Foreground(theme.ColorInReview)
 }
 
-// roleIcon picks the moon-style icon for a role based on its argus-reported
-// (or, as a fallback, binding) state. Archived or dead (binding open in DB but
-// argus task is gone) → dimmed circle.
+// stateGlyph maps a KNOWN argus task state to its status glyph and active
+// style, mirroring argus's task-panel table EXACTLY (argus theme.go:29-34 +
+// tasklist.go:1095-1132): pending → ○ gray; complete → ✓ green; in_review →
+// 󰖔 moon-with-stars blue (NEVER a check — only complete renders ✓);
+// in_progress → needs-input ? (#faa378) outranking idle moon (blue)
+// outranking the running spinner (orange, animated by frame). needs-input is
+// scoped to in_progress, mirroring argus's switch nesting (the API only
+// serves needs_input for in_progress). Argus's TUI-only idleUnvisited
+// variant (moon-stars for unvisited-idle) is not in the API and is not
+// mirrored. ok is false for an unrecognized status so statusIcon can fall
+// back to the binding-presence icons instead of guessing.
+func stateGlyph(needsInput bool, status string, idle bool, frame int) (rune, tcell.Style, bool) {
+	switch status {
+	case "pending":
+		return '○', theme.StylePending, true
+	case "complete":
+		return '✓', theme.StyleComplete, true
+	case "in_review":
+		return theme.IconMoonStars, theme.StyleInReview, true
+	case "in_progress":
+		switch {
+		case needsInput:
+			return theme.IconNeedsInput, theme.StyleNeedsInput, true
+		case idle:
+			return theme.IconMoonOutline, theme.StyleInReview, true
+		default:
+			return spinnerFrames[((frame%len(spinnerFrames))+len(spinnerFrames))%len(spinnerFrames)], theme.StyleInProgress, true
+		}
+	}
+	return 0, tcell.Style{}, false
+}
+
+// roleIcon picks the status icon for a role based on its argus-reported (or,
+// as a fallback, binding) state. Archived or dead (binding open in DB but
+// argus task is gone) dims the style; the glyph stays truthful.
 func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
-	return statusIcon(r.Archived || r.Dead || r.ArgusArchived, r.HasState, r.NeedsInput, r.Status, r.ArgusIdle, r.Live)
+	return statusIcon(r.Archived || r.Dead || r.ArgusArchived, r.HasState, r.NeedsInput, r.Status, r.ArgusIdle, r.Live, rl.animFrame())
 }
 
 // orchIcon picks the status icon for a coordinator header from the coord task's
-// argus state, so a coordinator row carries the same ☾/○/✓/? vocabulary as a
-// worker row (an archived root coordinator → dimmed circle). live falls back to
+// argus state, so a coordinator row carries the same glyph vocabulary as a
+// worker row (an archived root coordinator → dimmed). live falls back to
 // "has a live coord binding" (CoordTaskID set) when argus state is unknown.
+//
+// The MIXED-COORD state outranks the status glyph: an orchestrator displayed
+// ACTIVE whose coord task is argus-archived renders the ⊘ repair cue in error
+// red — the operator must SEE "this coord is broken/archived" at a glance.
+// An orchestrator that is itself archived is NOT mixed (both sides agree) and
+// keeps the normal dimmed-archived treatment.
 func (rl *railList) orchIcon(o *orchEntry) (rune, tcell.Style) {
-	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, o.CoordStatus, o.CoordIdle, o.CoordTaskID != "")
+	if o.CoordArgusArchived && !o.Archived {
+		return iconCoordBroken, theme.StyleError
+	}
+	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, o.CoordStatus, o.CoordIdle, o.CoordTaskID != "", rl.animFrame())
 }
 
 // elapsed formats the time since r.StartedAt using argus's "10s/10m/10h/10d"

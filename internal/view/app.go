@@ -52,6 +52,13 @@ type App struct {
 	// Started in BuildApp, stopped in Close. Shared by both panes.
 	redraw *redrawCoalescer
 
+	// spinnerStop halts the spinner driver goroutine: a spinnerInterval
+	// ticker that schedules a coalesced repaint only while the rail has a
+	// running row, so the running spinner animates by wall clock (argus's
+	// spinnerLoop cadence: tick only when there's live work). Closed in
+	// Close, after the closed guard, so it closes exactly once.
+	spinnerStop chan struct{}
+
 	// coordPresent / agentPresent track which panes the body currently
 	// composes — the three-mode layout (D13), driven by the rail selection:
 	//
@@ -180,12 +187,33 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		coordPresent:   true,
 		agentPresent:   true,
 		redraw:         redrawCoalescer,
+		spinnerStop:    make(chan struct{}),
 	}
 
 	// Start the coalescing flush loop. Pane bytes ingested during BuildApp
 	// (the initial snapshot) have already armed the dirty flag via Schedule;
 	// the first tick paints that settled frame once the event loop runs.
 	redrawCoalescer.start()
+
+	// Spinner driver: while the rail has a running row, schedule a coalesced
+	// repaint once per spinner frame so the wall-clock-derived spinner
+	// advances visibly. Quiet (no Schedule calls) when nothing is running —
+	// the rail's hasRunning flag is read atomically, so this goroutine never
+	// touches rail state owned by the event loop.
+	go func(rail *railList, stop chan struct{}) {
+		t := time.NewTicker(spinnerInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if rail.HasRunningRows() {
+					redrawCoalescer.Schedule()
+				}
+			}
+		}
+	}(pieces.rail, a.spinnerStop)
 
 	if err := a.populateRail(database); err != nil {
 		return nil, fmt.Errorf("view.BuildApp: populate rail: %w", err)
@@ -287,6 +315,12 @@ func (a *App) Close() {
 	if agentBridge != nil {
 		agentBridge.stop()
 	}
+	// Stop the spinner driver. Guarded by the closed flag above, so the
+	// channel closes exactly once. spinnerStop is set once in BuildApp and
+	// never reassigned.
+	if a.spinnerStop != nil {
+		close(a.spinnerStop)
+	}
 	// Stop the coalescer's ticker goroutine. redraw is set once in BuildApp and
 	// never reassigned, so reading it outside a.mu is safe. Stop is idempotent
 	// and nil-safe.
@@ -311,14 +345,38 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 		r.ArgusArchived = st.Archived
 		return
 	}
-	// Provider present but argus has no such task: it's gone (deleted /
-	// pruned worktree). Argus doesn't show deleted tasks at all, so neither
-	// should hera's active rail — mark it dead (hidden unless `l listall`).
-	// Gated on cache readiness so a cold cache doesn't transiently hide
-	// live rows on first render.
-	if rp, ok := prov.(interface{ StatesReady() bool }); !ok || rp.StatesReady() {
+	// Provider present but argus has no such task: the RECORD is gone
+	// (deleted / pruned worktree). Argus doesn't show deleted tasks at all,
+	// so neither should hera's active rail — mark it dead (hidden unless `l`
+	// listall). taskGone gates on cache readiness so a cold cache doesn't
+	// transiently hide live rows on first render. Status is NOT consulted:
+	// a completed/failed task whose record still exists is never dead.
+	if taskGone(prov, r.ArgusTaskID) {
 		r.Dead = true
 	}
+}
+
+// taskGone reports whether the argus task RECORD no longer exists: the warm
+// state cache (which lists ALL tasks, archived and completed included) has no
+// entry for the id. This — and ONLY this — is the Dead classification: task
+// STATUS never buckets a row (a completed task whose record exists renders
+// active with its ✓, mirroring argus's panel). A provider without a
+// StatesReady method counts as warm (test fakes); a cold cache reports
+// nothing gone so first render never transiently hides live rows. Reading
+// the cache snapshot keeps rail rebuilds free of per-row argus HTTP calls —
+// populateRail runs on the tview event loop, where a synchronous roundtrip
+// per row serializes ahead of input handling.
+func taskGone(prov TaskStateProvider, taskID string) bool {
+	if prov == nil || taskID == "" {
+		return false
+	}
+	if _, ok := prov.TaskState(taskID); ok {
+		return false
+	}
+	if rp, ok := prov.(interface{ StatesReady() bool }); ok && !rp.StatesReady() {
+		return false
+	}
+	return true
 }
 
 // populateRail walks the orchestrators / roles / bindings tables and
@@ -329,8 +387,10 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 //
 // Live bindings (ended_at IS NULL) drive the moon-stars icon on the
 // role row; idle roles get the moon-outline icon. Bindings whose argus
-// task has gone away (per the optional TaskAliveChecker on a.src) are
-// marked Dead so the rail can hide or dim them.
+// task RECORD no longer exists (absent from the warm argus state cache —
+// pruned / 404) are marked Dead so the rail can hide or dim them. Task
+// STATUS never marks a row Dead: a completed task whose record exists
+// renders active with its ✓ glyph, exactly like argus's own panel.
 //
 // Roles are ALWAYS loaded inclusively (active + archived): buildRows
 // partitions each coordinator's archived/dead children into its Archive (N)
@@ -341,7 +401,6 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
 
-	checker, _ := a.src.(TaskAliveChecker)
 	stateProv, _ := a.src.(TaskStateProvider)
 	// Snapshot the archive-visibility flag once: it is written by the
 	// mutation bridge's background goroutine (SetShowArchived) while this
@@ -362,6 +421,15 @@ func (a *App) populateRail(database *db.DB) error {
 	}
 
 	entries := make([]*orchEntry, 0, len(orchs))
+	// rendered collects the argus task ids REACHABLE through the rendered
+	// tree, so buildFreelance can avoid duplicating them: every task carried
+	// by a role ROW (via live bindings or the latest-binding fallback), plus —
+	// collected after the loop — every rendered header's coord-pane binding
+	// (CoordTaskID). A coord task the header binds is findable by selecting
+	// the header, so a freelance row for it would be a duplicate; only a
+	// coord task NO rendered header carries (coord role archived, header not
+	// loaded) still falls back to Freelance (rail-truthfulness).
+	rendered := map[string]struct{}{}
 	for _, orch := range orchs {
 		entry := &orchEntry{
 			ID:       orch.ID,
@@ -384,15 +452,11 @@ func (a *App) populateRail(database *db.DB) error {
 		for _, role := range roles {
 			bnd, _ := database.Bindings.GetLiveByRole(ctx, role.ID)
 			live := bnd != nil
-			dead := false
 			var argusTaskID string
 			startedAt := role.CreatedAt
 			if live {
 				argusTaskID = bnd.ArgusTaskID
 				startedAt = bnd.StartedAt
-				if checker != nil && !checker.IsTaskAlive(argusTaskID) {
-					dead = true
-				}
 			} else if hist, _ := database.Bindings.ListByRole(ctx, role.ID); len(hist) > 0 {
 				// No live binding (the agent finished / its task completed).
 				// Fall back to the most-recent binding's argus task so the
@@ -404,13 +468,22 @@ func (a *App) populateRail(database *db.DB) error {
 				argusTaskID = hist[0].ArgusTaskID
 				startedAt = hist[0].StartedAt
 			}
+			// Dead = the argus task RECORD no longer exists (warm-cache miss).
+			// Status never feeds this: a completed task that still exists is
+			// NOT dead — it renders active with its ✓ (status never buckets).
+			// Reading the cache snapshot (instead of a per-row argus HTTP
+			// aliveness probe) keeps this rebuild — which runs on the tview
+			// event loop — free of synchronous network roundtrips.
+			dead := taskGone(stateProv, argusTaskID)
 
-			// Coord roles do not render as their own rail row. The first live +
-			// alive + non-archived coord binding feeds the orchestrator's
+			// Coord roles do not render as their own rail row. The first
+			// existing + non-archived coord binding feeds the orchestrator's
 			// CoordTaskID so the COORD pane (and `^p`/resurrect resolution) can
 			// target the coordinator's task when the header is selected.
-			// Archived or dead coord bindings are skipped so the COORD pane
-			// doesn't get bound to a tombstone. A worker-less orchestrator
+			// Archived or record-gone coord bindings are skipped so the COORD
+			// pane doesn't get bound to a tombstone; a COMPLETED coord that
+			// still exists binds normally (its pane shows the last output
+			// read-only and the header renders ✓). A worker-less orchestrator
 			// therefore renders header-only (the header IS the coordinator).
 			if role.Kind == db.KindCoordinator {
 				archived := role.ArchivedAt != nil
@@ -436,6 +509,12 @@ func (a *App) populateRail(database *db.DB) error {
 							entry.CoordStatus = st.Status
 							entry.CoordIdle = st.Idle
 							entry.CoordNeedsInput = st.NeedsInput
+							// Argus-side archived bit: with the orchestrator
+							// displayed active this is the MIXED-COORD state —
+							// the header renders the ⊘ repair cue and `a`
+							// repairs (unarchives the coord task) instead of
+							// cascade-archiving.
+							entry.CoordArgusArchived = st.Archived
 						}
 					}
 				}
@@ -455,6 +534,9 @@ func (a *App) populateRail(database *db.DB) error {
 			}
 			applyArgusState(r, stateProv)
 			entry.Roles = append(entry.Roles, r)
+			if argusTaskID != "" {
+				rendered[argusTaskID] = struct{}{}
+			}
 		}
 
 		// Coord-only (worker-less) orchestrators render HEADER-ONLY: the
@@ -473,10 +555,22 @@ func (a *App) populateRail(database *db.DB) error {
 	// CoordTaskID. Link them so the rail nests the child under the worker (which
 	// is promoted to a coordinator row), and drop the child from the top level
 	// so it isn't double-rendered.
+	// Every rendered header's coord-pane binding is reachable via that header
+	// (selecting it binds the coord pane), so it must not ALSO fall back into
+	// the Freelance section. Collected from the flat pre-consumption list:
+	// every entry here renders — either as a top-level header or, when
+	// resolveSubCoordinators consumes it, nested under its promoted worker
+	// row (same orchEntry value, same CoordTaskID).
+	for _, e := range entries {
+		if e.CoordTaskID != "" {
+			rendered[e.CoordTaskID] = struct{}{}
+		}
+	}
+
 	entries = resolveSubCoordinators(entries)
 
 	a.pieces.rail.SetShowArchived(showArchived)
-	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database, showArchived))
+	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database, showArchived, rendered))
 	a.pieces.rail.SetOrchestrators(entries)
 	return nil
 }
@@ -542,12 +636,17 @@ func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
 }
 
 // buildFreelance partitions the live argus task list into the Freelance
-// section: every non-archived argus task that hera has never bound (a
-// "freelancer") grouped by argus project/repo, "the same way Argus shows
-// them". Returns nil when no FreelanceProvider is wired (tests) or no
-// freelancers exist. Archived freelancers are included only when
-// showArchived is set, so the active rail mirrors argus's non-archived set.
-func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived bool) []*freelanceProject {
+// section, grouped by argus project/repo "the same way Argus shows them". A
+// freelancer is a live argus task hera does not CURRENTLY manage: no LIVE
+// binding claims it AND no role row already renders it (rendered — workers
+// carry ended bindings' tasks via the latest-binding fallback). A task whose
+// bindings have ALL ENDED and that no row carries (a coord binding reconciled
+// away — the live-QA lost-session shape) falls back here so every non-archived
+// argus task stays findable in the rail. Returns nil when no FreelanceProvider
+// is wired (tests) or no freelancers exist. Archived freelancers are included
+// only when showArchived is set, so the active rail mirrors argus's
+// non-archived set.
+func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived bool, rendered map[string]struct{}) []*freelanceProject {
 	prov, ok := a.src.(FreelanceProvider)
 	if !ok {
 		return nil
@@ -556,17 +655,24 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived 
 	if len(tasks) == 0 {
 		return nil
 	}
-	bound, err := database.Bindings.AllArgusTaskIDs(ctx)
+	liveBindings, err := database.Bindings.ListLive(ctx)
 	if err != nil {
 		// On a query failure, fail safe to "everything looks managed" so we
 		// never mislabel a hera-managed task as a freelancer.
 		return nil
 	}
+	liveBound := make(map[string]struct{}, len(liveBindings))
+	for _, b := range liveBindings {
+		liveBound[b.ArgusTaskID] = struct{}{}
+	}
 
 	byProject := map[string]*freelanceProject{}
 	var order []string
 	for _, t := range tasks {
-		if _, managed := bound[t.ID]; managed {
+		if _, managed := liveBound[t.ID]; managed {
+			continue
+		}
+		if _, shown := rendered[t.ID]; shown {
 			continue
 		}
 		if t.State.Archived && !showArchived {
@@ -678,6 +784,12 @@ func (a *App) CurrentRailSelection() railSelection {
 			CoordRoleID:    ref.CoordRoleID,
 			Name:           ref.Name,
 			Archived:       ref.Archived,
+			// Coord-pane binding + its argus archived bit: together with
+			// Archived these let `a` detect the MIXED-COORD state (displayed-
+			// active orchestrator, argus-archived coord task) and repair —
+			// unarchive the coord task by id — instead of cascade-archiving.
+			CoordTaskID:        ref.CoordTaskID,
+			CoordArgusArchived: ref.CoordArgusArchived,
 			// Child agents that `^d` will also destroy: the orchestrator's
 			// live (non-archived) child roles.
 			ChildCount: countLiveRoles(ref.Roles),

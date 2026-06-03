@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ArchiveRole handles the explicit ARCHIVE verb against a role: set the
@@ -24,21 +25,72 @@ import (
 // archived_at while silently leaving the argus task active — recreating
 // the mixed state. The argus call is skipped only when NO binding ever
 // recorded a task id (nothing to archive on the argus side).
+//
+// The fallback carries a SHARED-TASK GUARD (archive direction only): a
+// task id resolved via an ENDED binding may ALSO be the live-bound task
+// of a DIFFERENT role (multi-binding history, reused sessions), and
+// archiving through the stale binding would yank the task out from under
+// the active role — the cascade-collateral hazard that archived an
+// operator's live coord. When any OTHER role holds a live binding to the
+// resolved task, the argus-side archive is skipped (logged with both
+// role names); the hera-side role archive above stands. A task resolved
+// via the role's OWN live binding archives unconditionally — that live
+// binding IS the ownership claim.
 func (s *Service) ArchiveRole(ctx context.Context, id int64) error {
 	if err := s.DB.ArchiveRole(ctx, id); err != nil {
 		return fmt.Errorf("ops.ArchiveRole: archive: %w", err)
 	}
 
-	bnd, err := s.resolveBinding(ctx, id)
+	// Resolve live-first, tracking WHICH lookup hit: the guard applies
+	// only to the ended fallback, so the resolution can't go through
+	// resolveBinding (which erases that distinction).
+	bnd, err := s.DB.GetLiveBindingByRole(ctx, id)
+	ownLive := err == nil
+	if errors.Is(err, ErrNotFound) {
+		bnd, err = s.DB.GetLatestBindingByRole(ctx, id)
+	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("ops.ArchiveRole: binding lookup: %w", err)
 	}
-	if bnd != nil && bnd.ArgusTaskID != "" {
-		if err := s.Argus.ArchiveTask(ctx, bnd.ArgusTaskID); err != nil {
-			return fmt.Errorf("ops.ArchiveRole: argus archive %s: %w", bnd.ArgusTaskID, err)
+	if bnd == nil || bnd.ArgusTaskID == "" {
+		return nil
+	}
+	if !ownLive {
+		live, err := s.DB.ListLiveBindingsByTask(ctx, bnd.ArgusTaskID)
+		if err != nil {
+			return fmt.Errorf("ops.ArchiveRole: shared-task guard lookup %s: %w", bnd.ArgusTaskID, err)
+		}
+		for _, other := range live {
+			if other.RoleID == id {
+				continue
+			}
+			s.logf("archive: argus task %q (resolved via ended binding of role %q) is live-bound to role %q — skipping argus-side archive",
+				bnd.ArgusTaskID, s.roleName(ctx, id), s.roleName(ctx, other.RoleID))
+			return nil
 		}
 	}
+	if err := s.Argus.ArchiveTask(ctx, bnd.ArgusTaskID); err != nil {
+		if !errors.Is(err, ErrArgusTaskGone) {
+			return fmt.Errorf("ops.ArchiveRole: argus archive %s: %w", bnd.ArgusTaskID, err)
+		}
+		// Pruned task: argus deleted it outright, so there is
+		// nothing to archive argus-side. The hera flip above
+		// stands and the operation succeeds — aborting here is
+		// what used to strand orchestrator cascades on exactly
+		// the old rows that most need cleaning.
+		s.logf("archive: argus task %q pruned — skipping argus side: %v", bnd.ArgusTaskID, err)
+	}
 	return nil
+}
+
+// roleName resolves a role's display name for log lines, degrading to
+// "role <id>" when the lookup fails — logging must never abort an op.
+func (s *Service) roleName(ctx context.Context, id int64) string {
+	r, err := s.DB.GetRoleByID(ctx, id)
+	if err != nil || r == nil {
+		return fmt.Sprintf("role %d", id)
+	}
+	return r.Name
 }
 
 // UnarchiveRole handles the explicit UNARCHIVE verb against a role: clear
@@ -88,7 +140,13 @@ func (s *Service) unarchiveBoundArgusTask(ctx context.Context, roleID int64, op 
 	}
 	if bnd != nil && bnd.ArgusTaskID != "" {
 		if err := s.Argus.UnarchiveTask(ctx, bnd.ArgusTaskID); err != nil {
-			return fmt.Errorf("ops.%s: argus unarchive %s: %w", op, bnd.ArgusTaskID, err)
+			if !errors.Is(err, ErrArgusTaskGone) {
+				return fmt.Errorf("ops.%s: argus unarchive %s: %w", op, bnd.ArgusTaskID, err)
+			}
+			// Pruned task: nothing to unarchive argus-side; the
+			// hera-side clear has already happened, so the row still
+			// visibly leaves the Archive expando.
+			s.logf("%s: argus task %q pruned — skipping argus side: %v", op, bnd.ArgusTaskID, err)
 		}
 	}
 	return nil
@@ -101,18 +159,30 @@ func (s *Service) unarchiveBoundArgusTask(ctx context.Context, roleID int64, op 
 // state, supplied by the caller from the rail's argus state cache (the ops
 // layer has no task-state getter of its own) — so this toggle's direction
 // already follows the effective rendered state.
+//
+// No shared-task guard here: a freelance row only renders when NO live
+// binding exists for its task (the rail's freelancer exclusion (a)), so
+// this path cannot address a task that a role is live-bound to — the
+// guard belongs to ArchiveRole's ended-binding fallback, where a stale
+// binding CAN point at another role's live task.
 func (s *Service) ToggleArchiveTask(ctx context.Context, taskID string, archived bool) error {
 	if taskID == "" {
 		return fmt.Errorf("ops.ToggleArchiveTask: empty argus task id")
 	}
 	if archived {
 		if err := s.Argus.UnarchiveTask(ctx, taskID); err != nil {
-			return fmt.Errorf("ops.ToggleArchiveTask: argus unarchive %s: %w", taskID, err)
+			if !errors.Is(err, ErrArgusTaskGone) {
+				return fmt.Errorf("ops.ToggleArchiveTask: argus unarchive %s: %w", taskID, err)
+			}
+			s.logf("toggle-archive: argus task %q pruned — nothing to unarchive: %v", taskID, err)
 		}
 		return nil
 	}
 	if err := s.Argus.ArchiveTask(ctx, taskID); err != nil {
-		return fmt.Errorf("ops.ToggleArchiveTask: argus archive %s: %w", taskID, err)
+		if !errors.Is(err, ErrArgusTaskGone) {
+			return fmt.Errorf("ops.ToggleArchiveTask: argus archive %s: %w", taskID, err)
+		}
+		s.logf("toggle-archive: argus task %q pruned — nothing to archive: %v", taskID, err)
 	}
 	return nil
 }
@@ -122,23 +192,38 @@ func (s *Service) ToggleArchiveTask(ctx context.Context, taskID string, archived
 // role under it (each role archive also POSTs argus archive on the role's
 // resolved binding's argus task — live preferred, latest fallback, via
 // the role-level ArchiveRole).
+//
+// The cascade is failure-tolerant: a per-role failure (argus flaky for one
+// call) does NOT abort it — the remaining roles are still attempted and the
+// failures are aggregated into one summary error naming the roles that
+// remain. The orchestrator itself is archived ONLY when every role
+// succeeded; on partial failure it stays active so the operator's retry
+// reaches the remainder (already-archived roles are skipped, making the
+// retry idempotent). Pruned tasks never count as failures — ArchiveRole
+// treats an argus 404 as a skip — so old orchestrators full of pruned
+// tasks archive cleanly.
 func (s *Service) ArchiveOrchestrator(ctx context.Context, id int64) error {
 	// Cascade archive: every active role first, then the orchestrator.
-	// Ordering doesn't matter for correctness — the DB rows are
-	// independent — but we archive roles first so that if argus is
-	// flaky the orchestrator row stays active and the operator can
-	// retry cleanly.
+	// Roles go first so that if argus is flaky the orchestrator row
+	// stays active and the operator can retry cleanly.
 	roles, err := s.DB.ListRolesByOrchestrator(ctx, id)
 	if err != nil {
 		return fmt.Errorf("ops.ArchiveOrchestrator: list roles: %w", err)
 	}
+	var failed []string
+	var errs []error
 	for _, role := range roles {
 		if role.Archived {
 			continue
 		}
 		if err := s.ArchiveRole(ctx, role.ID); err != nil {
-			return fmt.Errorf("ops.ArchiveOrchestrator: cascade role %d: %w", role.ID, err)
+			failed = append(failed, fmt.Sprintf("%s (role %d)", role.Name, role.ID))
+			errs = append(errs, err)
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("ops.ArchiveOrchestrator: %d of %d role(s) failed to archive — orchestrator left active, retry `a` to archive the remainder: %s: %w",
+			len(errs), len(roles), strings.Join(failed, ", "), errors.Join(errs...))
 	}
 
 	if err := s.DB.ArchiveOrchestrator(ctx, id); err != nil {

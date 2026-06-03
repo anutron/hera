@@ -229,29 +229,6 @@ func (b *BindingsDAO) ListLive(ctx context.Context) ([]*Binding, error) {
 	return out, rows.Err()
 }
 
-// AllArgusTaskIDs returns the distinct set of argus task ids referenced by
-// ANY binding — live or ended. A task that hera has ever bound is "managed"
-// and must be excluded from the Freelance rail section; a freelancer is an
-// argus task hera has never touched, so the absence of its id here is the
-// freelancer test. Returned as a set for O(1) membership lookups.
-func (b *BindingsDAO) AllArgusTaskIDs(ctx context.Context) (map[string]struct{}, error) {
-	rows, err := b.db.QueryContext(ctx,
-		`SELECT DISTINCT argus_task_id FROM bindings`)
-	if err != nil {
-		return nil, fmt.Errorf("bindings.AllArgusTaskIDs: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]struct{}{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out[id] = struct{}{}
-	}
-	return out, rows.Err()
-}
-
 // ListByRole returns every binding for a role ordered by started_at desc.
 // The first row is the live binding (if any).
 func (b *BindingsDAO) ListByRole(ctx context.Context, roleID int64) ([]*Binding, error) {

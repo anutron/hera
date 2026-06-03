@@ -1252,9 +1252,9 @@ func TestPopulateRail_WorkerLessOrchestratorRendersHeaderOnly(t *testing.T) {
 	}
 }
 
-// TestPopulateRail_DeadBindingsHiddenByDefault confirms that when the
-// PaneSource exposes TaskAliveChecker and reports a worker binding's
-// task as gone, the role row is filtered out of the rail. With
+// TestPopulateRail_DeadBindingsHiddenByDefault confirms that when the argus
+// state cache (warm) has NO RECORD of a worker binding's task — the task was
+// pruned / 404s — the role row is filtered out of the rail. With
 // showArchived=true the row reappears (marked Dead) so the operator
 // can still see the tombstone.
 func TestPopulateRail_DeadBindingsHiddenByDefault(t *testing.T) {
@@ -1271,9 +1271,10 @@ func TestPopulateRail_DeadBindingsHiddenByDefault(t *testing.T) {
 	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: liveWorker.ID, ArgusTaskID: "t-alive", WorktreePath: "/a"})
 	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: deadWorker.ID, ArgusTaskID: "t-dead", WorktreePath: "/d"})
 
-	src := &alivePaneSource{alive: map[string]bool{
-		"t-alive": true,
-		"t-dead":  false,
+	// t-dead is absent from the (warm) state cache: the record is gone.
+	// statePaneSource has no StatesReady method, so the cache counts as warm.
+	src := &statePaneSource{states: map[string]ArgusTaskState{
+		"t-alive": {Status: "in_progress"},
 	}}
 	a, err := BuildApp(d, src)
 	if err != nil {
@@ -1319,9 +1320,10 @@ func TestPopulateRail_DeadBindingsHiddenByDefault(t *testing.T) {
 }
 
 // TestPopulateRail_DeadCoordSkippedFromCoordTaskID confirms that a
-// coord binding whose argus task is gone does NOT populate the
-// orchestrator's CoordTaskID — otherwise the COORD pane would bind to
-// a tombstone and render placeholder forever.
+// coord binding whose argus task RECORD is gone (absent from the warm
+// state cache — pruned / 404) does NOT populate the orchestrator's
+// CoordTaskID — otherwise the COORD pane would bind to a tombstone and
+// render placeholder forever.
 func TestPopulateRail_DeadCoordSkippedFromCoordTaskID(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
@@ -1332,7 +1334,8 @@ func TestPopulateRail_DeadCoordSkippedFromCoordTaskID(t *testing.T) {
 	})
 	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "t-dead-coord", WorktreePath: "/c"})
 
-	src := &alivePaneSource{alive: map[string]bool{"t-dead-coord": false}}
+	// Warm cache, no record of t-dead-coord: the task is gone.
+	src := &statePaneSource{states: map[string]ArgusTaskState{}}
 	a, err := BuildApp(d, src)
 	if err != nil {
 		t.Fatalf("BuildApp: %v", err)
@@ -1343,6 +1346,117 @@ func TestPopulateRail_DeadCoordSkippedFromCoordTaskID(t *testing.T) {
 		if o.ID == orch.ID && o.CoordTaskID != "" {
 			t.Fatalf("dead coord must not populate CoordTaskID; got %q", o.CoordTaskID)
 		}
+	}
+}
+
+// aliveStatePaneSource mirrors the daemon's managerPaneSource capability set
+// for bucketing tests: BOTH a status-based TaskAliveChecker (argus maps
+// complete/failed/stopped to not-alive) AND a TaskStateProvider whose cache
+// still holds the task record. The pair is what the completed-not-archived
+// regression needs — the checker says "not alive" while the record exists.
+type aliveStatePaneSource struct {
+	fakePaneSource
+	alive  map[string]bool
+	states map[string]ArgusTaskState
+}
+
+func (s *aliveStatePaneSource) IsTaskAlive(taskID string) bool { return s.alive[taskID] }
+func (s *aliveStatePaneSource) TaskState(taskID string) (ArgusTaskState, bool) {
+	st, ok := s.states[taskID]
+	return st, ok
+}
+
+// Spec (complete-not-archived): stepping a task to complete must NOT bucket it
+// as archived. A completed task whose argus record still exists (cache hit,
+// archived=false, hera archived_at NULL) renders among its coordinator's
+// ACTIVE children with Dead=false — status never buckets; only archive flags
+// and record-nonexistence do.
+func TestPopulateRail_CompletedTaskStaysActive(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "stepped-done", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "t-done", WorktreePath: "/w"})
+
+	src := &aliveStatePaneSource{
+		alive:  map[string]bool{"t-done": false}, // status-based checker: complete => "not alive"
+		states: map[string]ArgusTaskState{"t-done": {Status: "complete"}},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	var entry *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == w.ID {
+				entry = r
+			}
+		}
+	}
+	if entry == nil {
+		t.Fatalf("completed worker role missing from rail data")
+	}
+	if entry.Dead {
+		t.Fatalf("completed task with an existing argus record must not be Dead; got %+v", entry)
+	}
+	if roleArchived(entry) {
+		t.Fatalf("completed task must not bucket as archived (no archive flag set); got %+v", entry)
+	}
+	if !entry.HasState || entry.Status != "complete" {
+		t.Fatalf("row must carry the complete status for the ✓ glyph; got HasState=%v Status=%q", entry.HasState, entry.Status)
+	}
+
+	// Render: the row stays visible in the default (no `l`) view.
+	got := renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "stepped-done") {
+		t.Fatalf("completed row must render among active children; got:\n%s", got)
+	}
+}
+
+// Spec (complete-not-archived): a coordinator whose task is completed but
+// still exists keeps feeding the orchestrator header — CoordTaskID binds the
+// pane and CoordStatus drives the ✓ glyph. Only archived or record-gone coord
+// bindings are skipped as tombstones.
+func TestPopulateRail_CompletedCoordStillFeedsCoordTaskID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "t-coord-done", WorktreePath: "/c"})
+
+	src := &aliveStatePaneSource{
+		alive:  map[string]bool{"t-coord-done": false},
+		states: map[string]ArgusTaskState{"t-coord-done": {Status: "complete"}},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	var entry *orchEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID {
+			entry = o
+		}
+	}
+	if entry == nil {
+		t.Fatalf("orchestrator missing from rail data")
+	}
+	if entry.CoordTaskID != "t-coord-done" {
+		t.Fatalf("completed-but-existing coord must feed CoordTaskID; got %q", entry.CoordTaskID)
+	}
+	if !entry.CoordHasState || entry.CoordStatus != "complete" {
+		t.Fatalf("header must carry the coord's complete state; got CoordHasState=%v CoordStatus=%q", entry.CoordHasState, entry.CoordStatus)
 	}
 }
 
@@ -2233,6 +2347,11 @@ func TestPopulateRail_ArchivedSubCoordStaysInExpando(t *testing.T) {
 			t.Fatalf("child orchestrator must be consumed by the sub-coordinator lift, not rendered top-level")
 		}
 	}
+	// The parent has zero non-archived children, so it defaults collapsed;
+	// expand it explicitly (the operator's toggle) to reach its Archive expando.
+	a.pieces.rail.collapsed[parent.ID] = false
+	a.pieces.rail.buildRows()
+
 	// The archived sub-coord renders only behind the parent's Archive expando.
 	got := renderApp(t, a, 80, 24)
 	if !strings.Contains(got, "Archive (1)") {
@@ -2246,5 +2365,233 @@ func TestPopulateRail_ArchivedSubCoordStaysInExpando(t *testing.T) {
 	got = renderApp(t, a, 80, 24)
 	if !strings.Contains(got, "subcoord") {
 		t.Fatalf("opening the parent's Archive expando must reveal the archived sub-coordinator; got:\n%s", got)
+	}
+}
+
+// Spec (mixed-coord-repair): a task that is the coord-pane binding
+// (CoordTaskID) of a RENDERED orchestrator header must NOT additionally fall
+// back into the Freelance section — the header preserves findability
+// (selecting it binds the coord pane to the task), so the freelance row was a
+// duplicate (live observation: archive-this-coord rendered both as a
+// collapsed orchestrator header and as a freelance row).
+func TestBuildApp_HeaderReachableCoordTaskDoesNotDuplicateIntoFreelance(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "hera-view-finish")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	coord, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	bnd, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coord.ID, ArgusTaskID: "ux-qa", WorktreePath: "/w",
+	})
+	if err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	if err := d.Bindings.End(ctx, bnd.ID, "resync_missing"); err != nil {
+		t.Fatalf("end binding: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{"ux-qa": {Status: "in_review"}},
+		tasks: []ArgusTaskInfo{
+			{ID: "ux-qa", Name: "hera-1.0-ux-qa", Project: "Hera", Elapsed: "2h", State: ArgusTaskState{Status: "in_review"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// The header carries the task as its coord-pane binding (the latest-
+	// binding fallback), so the task IS reachable through the rendered tree...
+	var entry *orchEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID {
+			entry = o
+		}
+	}
+	if entry == nil || entry.CoordTaskID != "ux-qa" {
+		t.Fatalf("header must carry the lapsed coord task as CoordTaskID; got %+v", entry)
+	}
+	// ...so Freelance must not duplicate it.
+	if fl := a.pieces.rail.freelance; len(fl) != 0 {
+		t.Fatalf("header-reachable coord task must not duplicate into Freelance; got %+v", fl)
+	}
+}
+
+// Spec (mixed-coord-repair): a TRULY orphaned task still falls back to
+// Freelance (rail-truthfulness preserved). Here the coord role is
+// hera-archived, so the rendered header binds no coord task (CoordTaskID
+// empty) — without the fallback the live argus task would be reachable
+// nowhere.
+func TestBuildApp_OrphanedCoordTaskStillFallsBackToFreelance(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "hera-view-finish")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	coord, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	bnd, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coord.ID, ArgusTaskID: "ux-qa", WorktreePath: "/w",
+	})
+	if err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	if err := d.Bindings.End(ctx, bnd.ID, "resync_missing"); err != nil {
+		t.Fatalf("end binding: %v", err)
+	}
+	// Hera-archive the coord role: the header then binds NO coord task, so
+	// the task is not reachable through the rendered tree.
+	if err := d.Roles.Archive(ctx, coord.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{"ux-qa": {Status: "in_review"}},
+		tasks: []ArgusTaskInfo{
+			{ID: "ux-qa", Name: "hera-1.0-ux-qa", Project: "Hera", Elapsed: "2h", State: ArgusTaskState{Status: "in_review"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	fl := a.pieces.rail.freelance
+	if len(fl) != 1 || len(fl[0].Tasks) != 1 || fl[0].Tasks[0].ArgusTaskID != "ux-qa" {
+		t.Fatalf("orphaned coord task (header binds nothing) must fall back to Freelance; got %+v", fl)
+	}
+
+	// The named row renders in the rail, so the operator can FIND the session.
+	out := renderApp(t, a, 100, 40)
+	if !strings.Contains(out, "hera-1.0-ux-qa") {
+		t.Fatalf("rail render must contain the orphaned coord task by name\n%s", out)
+	}
+}
+
+// Spec (mixed-coord-repair): populateRail captures the coord task's argus
+// archived bit onto the orchestrator entry, so the header can render the ⊘
+// repair cue and `a` can pick the repair-first direction.
+func TestBuildApp_MixedCoordArchivedLandsOnEntry(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "mixed")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	coord, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coord.ID, ArgusTaskID: "T1", WorktreePath: "/w",
+	}); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{"T1": {Status: "in_progress", Idle: true, Archived: true}},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	var entry *orchEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		if o.ID == orch.ID {
+			entry = o
+		}
+	}
+	if entry == nil {
+		t.Fatal("orchestrator entry missing from rail")
+	}
+	if entry.CoordTaskID != "T1" {
+		t.Fatalf("mixed-coord header keeps its coord-pane binding; got %q", entry.CoordTaskID)
+	}
+	if !entry.CoordArgusArchived {
+		t.Fatal("coord task's argus archived bit must land on entry.CoordArgusArchived")
+	}
+
+	// The selection bridge carries the repair signal to the `a` handler.
+	if !a.pieces.rail.SelectByOrchID(orch.ID) {
+		t.Fatal("select orchestrator header")
+	}
+	sel := a.CurrentRailSelection()
+	if sel.Kind != selOrchestrator || sel.CoordTaskID != "T1" || !sel.CoordArgusArchived {
+		t.Fatalf("railSelection must carry CoordTaskID+CoordArgusArchived; got %+v", sel)
+	}
+}
+
+// Spec (rail-truthfulness): a worker role whose only binding ended still
+// renders as a role ROW via the latest-binding fallback — it must NOT
+// additionally appear in the Freelance section.
+func TestBuildApp_EndedBindingWorkerRowDoesNotDuplicateIntoFreelance(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "kbtest")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	w, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "hit-s-on-this-agent", Kind: db.KindWorker, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	bnd, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: w.ID, ArgusTaskID: "hit-s", WorktreePath: "/w",
+	})
+	if err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	if err := d.Bindings.End(ctx, bnd.ID, "argus_archived"); err != nil {
+		t.Fatalf("end binding: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{"hit-s": {Status: "in_review"}},
+		tasks: []ArgusTaskInfo{
+			{ID: "hit-s", Name: "hit-s-on-this-agent", Project: "Hera", State: ArgusTaskState{Status: "in_review"}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// The worker renders as a tree row carrying the task id...
+	var rowTask string
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == w.ID {
+				rowTask = r.ArgusTaskID
+			}
+		}
+	}
+	if rowTask != "hit-s" {
+		t.Fatalf("worker row must carry the ended binding's task id via the latest-binding fallback; got %q", rowTask)
+	}
+	// ...so Freelance must not duplicate it.
+	if fl := a.pieces.rail.freelance; len(fl) != 0 {
+		t.Fatalf("task rendered as a role row must not duplicate into Freelance; got %+v", fl)
 	}
 }

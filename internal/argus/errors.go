@@ -24,3 +24,14 @@ type HTTPError struct {
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("argus: %s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
+
+// IsNotFound reports whether err is (or wraps) an argus HTTP 404 — the
+// addressed resource no longer exists on the argus side. Callers use this
+// to treat operations against pruned tasks as no-ops instead of failures
+// (argus prunes tasks by deleting them outright, so any recorded task id
+// can dangle). Typed check via errors.As — never string-match the
+// formatted message.
+func IsNotFound(err error) bool {
+	var httpErr *HTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == 404
+}

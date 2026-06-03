@@ -490,9 +490,10 @@ func TestRailList_CoordHeaderStatusIconAndMarker(t *testing.T) {
 	if !strings.Contains(got, string(theme.IconNeedsInput)+" ▾ "+string(iconCoord)+" blocked") {
 		t.Fatalf("expected needs-input icon + chevron + marker on coord header; got:\n%s", got)
 	}
-	// complete coordinator: ✓ icon before its (coord-less) header.
-	if !strings.Contains(got, "✓ ▾ "+string(iconCoord)+" shipped") {
-		t.Fatalf("expected ✓ status icon on completed coord header; got:\n%s", got)
+	// complete coordinator: ✓ icon before its (worker-less) header. Zero
+	// non-archived children → the row defaults collapsed (▸).
+	if !strings.Contains(got, "✓ ▸ "+string(iconCoord)+" shipped") {
+		t.Fatalf("expected ✓ status icon on completed (default-collapsed) coord header; got:\n%s", got)
 	}
 }
 
@@ -966,5 +967,562 @@ func TestRailList_SelectionMarkerMovesWithCursorWithoutShift(t *testing.T) {
 		if b != a {
 			t.Fatalf("%q shifted from col %d to %d on selection move; before:\n%s\nafter:\n%s", needle, b, a, before, after)
 		}
+	}
+}
+
+// Scenario: Empty coordinator defaults collapsed. A coordinator with zero
+// non-archived children — none at all, or only archived/dead ones — renders
+// header-only with the ▸ chevron; its children (including the Archive (N)
+// expando) stay hidden until the operator expands it. A coordinator with at
+// least one active child keeps the expanded (▾) default.
+func TestRailList_EmptyCoordinatorDefaultsCollapsed(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "bare", Roles: nil},
+		{ID: 2, Name: "spent", Roles: []*roleEntry{
+			{OrchestratorID: 2, RoleID: 20, Name: "w-arch", Archived: true},
+			{OrchestratorID: 2, RoleID: 21, Name: "w-dead", Dead: true},
+		}},
+		{ID: 3, Name: "busy", Roles: []*roleEntry{
+			{OrchestratorID: 3, RoleID: 30, Name: "w-live", Live: true},
+		}},
+	})
+
+	got := renderRail(t, rl, 30, 10)
+	// No children at all → collapsed header only.
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" bare (0)") {
+		t.Fatalf("coordinator with no children must default collapsed; got:\n%s", got)
+	}
+	// Only archived/dead children → still zero non-archived → collapsed, and
+	// its Archive expando must NOT render while the coordinator is folded.
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("coordinator with only archived children must default collapsed; got:\n%s", got)
+	}
+	if strings.Contains(got, "Archive (2)") {
+		t.Fatalf("a default-collapsed coordinator must hide its Archive expando; got:\n%s", got)
+	}
+	// ≥1 active child → expanded default unchanged.
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" busy (1)") {
+		t.Fatalf("coordinator with an active child must default expanded; got:\n%s", got)
+	}
+	if !strings.Contains(got, "w-live") {
+		t.Fatalf("active child of an expanded coordinator must render; got:\n%s", got)
+	}
+}
+
+// Scenario: Manual toggle overrides the default and persists. Expanding a
+// default-collapsed empty coordinator reveals its Archive expando and the
+// choice survives rebuilds; collapsing a busy coordinator also persists.
+func TestRailList_ManualToggleOverridesCollapsedDefault(t *testing.T) {
+	mk := func() []*orchEntry {
+		return []*orchEntry{
+			{ID: 1, Name: "spent", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w-arch", Archived: true},
+			}},
+			{ID: 2, Name: "busy", Roles: []*roleEntry{
+				{OrchestratorID: 2, RoleID: 20, Name: "w-live", Live: true},
+			}},
+		}
+	}
+	rl := newRailList()
+	rl.SetOrchestrators(mk())
+
+	// space on the default-collapsed empty coordinator expands it: the
+	// Archive (1) expando appears (collapsed itself, per D14).
+	if !rl.SelectByOrchID(1) {
+		t.Fatal("could not select empty coordinator")
+	}
+	rl.ToggleCollapse()
+	got := renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("toggling a default-collapsed coordinator must expand it; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("expanding an empty coordinator must reveal its Archive expando; got:\n%s", got)
+	}
+
+	// The explicit expand persists across a data rebuild (fresh pointers).
+	rl.SetOrchestrators(mk())
+	got = renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("explicit expand must persist across rebuilds; got:\n%s", got)
+	}
+
+	// Toggling again re-collapses (explicit collapsed, not back to default).
+	if !rl.SelectByOrchID(1) {
+		t.Fatal("could not re-select empty coordinator")
+	}
+	rl.ToggleCollapse()
+	got = renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("second toggle must re-collapse the coordinator; got:\n%s", got)
+	}
+
+	// Manually collapsing the busy coordinator persists across rebuilds too.
+	if !rl.SelectByOrchID(2) {
+		t.Fatal("could not select busy coordinator")
+	}
+	rl.ToggleCollapse()
+	rl.SetOrchestrators(mk())
+	got = renderRail(t, rl, 30, 10)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" busy (1)") {
+		t.Fatalf("manual collapse of a busy coordinator must persist; got:\n%s", got)
+	}
+	if strings.Contains(got, "w-live") {
+		t.Fatalf("children of a manually-collapsed coordinator must stay hidden; got:\n%s", got)
+	}
+}
+
+// Scenario: `l` force-reveal overrides the collapsed default while active —
+// an untouched empty coordinator expands (its archived children visible via
+// the force-expanded Archive expando), but an explicit manual collapse still
+// wins over `l`.
+func TestRailList_ShowArchivedOverridesCollapsedDefault(t *testing.T) {
+	mk := func() []*orchEntry {
+		return []*orchEntry{
+			{ID: 1, Name: "spent", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w-arch", Archived: true},
+			}},
+			{ID: 2, Name: "pinned", Roles: []*roleEntry{
+				{OrchestratorID: 2, RoleID: 20, Name: "w-hidden", Archived: true},
+			}},
+		}
+	}
+	rl := newRailList()
+	rl.SetOrchestrators(mk())
+	// Explicitly collapse "pinned" (it is already default-collapsed; the
+	// operator's toggle-expand + toggle-collapse pins the explicit state).
+	if !rl.SelectByOrchID(2) {
+		t.Fatal("could not select pinned coordinator")
+	}
+	rl.ToggleCollapse() // explicit expand
+	rl.ToggleCollapse() // explicit collapse — pinned
+	rl.SetShowArchived(true)
+
+	got := renderRail(t, rl, 32, 12)
+	// Untouched empty coordinator: default overridden → expanded, archived
+	// child reachable through the force-expanded expando.
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" spent (0)") {
+		t.Fatalf("`l` must override the collapsed default on an untouched empty coordinator; got:\n%s", got)
+	}
+	if !strings.Contains(got, "w-arch") {
+		t.Fatalf("`l` must reveal the archived child of an untouched empty coordinator; got:\n%s", got)
+	}
+	// Explicitly collapsed coordinator stays collapsed even under `l`.
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" pinned (0)") {
+		t.Fatalf("explicit collapse must win over `l`; got:\n%s", got)
+	}
+	if strings.Contains(got, "w-hidden") {
+		t.Fatalf("children of an explicitly collapsed coordinator must stay hidden under `l`; got:\n%s", got)
+	}
+}
+
+// Scenario: the collapsed-empty default applies to nested sub-coordinators
+// too — a sub-coordinator whose child orchestrator has zero non-archived
+// children renders with the ▸ chevron and no nested rows.
+func TestRailList_EmptySubCoordinatorDefaultsCollapsed(t *testing.T) {
+	rl := newRailList()
+	child := &orchEntry{ID: 2, Name: "sub", CoordTaskID: "t-sub", Roles: []*roleEntry{
+		{OrchestratorID: 2, RoleID: 20, Name: "leaf-arch", RoleKind: "worker", Archived: true},
+	}}
+	sub := &roleEntry{OrchestratorID: 1, RoleID: 11, Name: "sub", RoleKind: "coordinator", ArgusTaskID: "t-sub", childOrch: child}
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "parent", CoordTaskID: "t-parent", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "plain-worker", RoleKind: "worker", Live: true},
+			sub,
+		}},
+	})
+
+	got := renderRail(t, rl, 36, 12)
+	if !strings.Contains(got, "▸ "+string(iconCoord)+" sub (0)") {
+		t.Fatalf("empty sub-coordinator must default collapsed; got:\n%s", got)
+	}
+	if strings.Contains(got, "leaf-arch") || strings.Contains(got, "Archive (1)") {
+		t.Fatalf("collapsed empty sub-coordinator must hide its children and Archive expando; got:\n%s", got)
+	}
+
+	// Toggling the sub-coordinator row expands it and reveals its expando.
+	if !rl.SelectByRoleID(11) {
+		t.Fatal("could not select sub-coordinator row")
+	}
+	rl.ToggleCollapse()
+	got = renderRail(t, rl, 36, 12)
+	if !strings.Contains(got, "▾ "+string(iconCoord)+" sub (0)") {
+		t.Fatalf("toggled empty sub-coordinator must expand; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("expanded empty sub-coordinator must reveal its Archive expando; got:\n%s", got)
+	}
+}
+
+// Spec (rail-truthfulness): Rail status icons reflect the bound task's actual
+// argus state — archive state and binding liveness modulate only STYLE
+// (dimmed), never the GLYPH. An archived/dead row with known state renders its
+// true status glyph dimmed.
+func TestStatusIcon_ArchivedRowsKeepTrueStatusGlyph(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		needsInput bool
+		idle       bool
+		want       rune
+	}{
+		{"complete", "complete", false, false, '✓'},
+		{"in_review", "in_review", false, false, theme.IconMoonStars},
+		{"working", "in_progress", false, false, spinnerFrames[0]},
+		{"idle", "in_progress", false, true, theme.IconMoonOutline},
+		{"pending", "pending", false, false, '○'},
+		{"needs-input", "in_progress", true, false, theme.IconNeedsInput},
+	}
+	for _, tc := range cases {
+		glyph, style := statusIcon(true, true, tc.needsInput, tc.status, tc.idle, false, 0)
+		if glyph != tc.want {
+			t.Errorf("%s: archived row with known state: glyph = %q, want %q (true status, dimmed)", tc.name, glyph, tc.want)
+		}
+		if style != theme.StyleDimmed {
+			t.Errorf("%s: archived row with known state must render dimmed; got %v", tc.name, style)
+		}
+	}
+}
+
+// Spec (rail-truthfulness): unknown-state archived/dead rows keep the dimmed
+// circle fallback — '○' is the fallback ONLY when argus state is unknown.
+func TestStatusIcon_UnknownStateArchivedFallsBackToCircle(t *testing.T) {
+	glyph, style := statusIcon(true, false, false, "", false, false, 0)
+	if glyph != '○' {
+		t.Fatalf("archived row with UNKNOWN state: glyph = %q, want '○' fallback", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("archived unknown-state fallback must be dimmed; got %v", style)
+	}
+}
+
+// Spec (rail-truthfulness): the R1/R2 QA shape — a complete agent archived
+// then unarchived must render '✓' at every step of the round trip; the glyph
+// never mutates while the argus status is unchanged.
+func TestRoleIcon_ArchiveRoundTripNeverMutatesGlyph(t *testing.T) {
+	rl := newRailList()
+	r := &roleEntry{Name: "archive-this-agent", HasState: true, Status: "complete"}
+
+	active, _ := rl.roleIcon(r)
+	if active != '✓' {
+		t.Fatalf("active complete row: glyph = %q, want '✓'", active)
+	}
+
+	// Archive (both sides, the `a` verb): glyph must hold, style dims.
+	r.Archived, r.ArgusArchived = true, true
+	archived, archivedStyle := rl.roleIcon(r)
+	if archived != active {
+		t.Fatalf("archiving mutated the status glyph: %q -> %q (argus status unchanged)", active, archived)
+	}
+	if archivedStyle != theme.StyleDimmed {
+		t.Fatalf("archived row must render dimmed; got %v", archivedStyle)
+	}
+
+	// Unarchive: back to the active rendering.
+	r.Archived, r.ArgusArchived = false, false
+	back, _ := rl.roleIcon(r)
+	if back != active {
+		t.Fatalf("unarchiving mutated the status glyph: %q -> %q", active, back)
+	}
+}
+
+// Spec (rail-truthfulness): even if a row is classified Dead (record gone)
+// while it still carries a known complete status, the glyph never lies — it
+// renders '✓' dimmed, not '○'.
+func TestRoleIcon_DeadCompleteShowsCheckDimmed(t *testing.T) {
+	rl := newRailList()
+	r := &roleEntry{Name: "done-agent", Dead: true, Live: true, HasState: true, Status: "complete"}
+	glyph, style := rl.roleIcon(r)
+	if glyph != '✓' {
+		t.Fatalf("dead-classified complete row: glyph = %q, want '✓'", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("dead-classified row must render dimmed; got %v", style)
+	}
+}
+
+// Spec (rail-truthfulness): coordinator headers obey the same rule — an
+// archived orchestrator whose coord task state is known renders the true
+// status glyph dimmed, not '○'.
+func TestOrchIcon_ArchivedHeaderKeepsTrueStatusGlyph(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "shipped", Archived: true, CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "complete",
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != '✓' {
+		t.Fatalf("archived coord header with known complete state: glyph = %q, want '✓'", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("archived coord header must render dimmed; got %v", style)
+	}
+}
+
+// Spec (icon-alignment): the glyph + color for every KNOWN argus state mirrors
+// argus's task-panel table exactly (argus theme.go:29-34 + tasklist.go:1095-1132).
+func TestStateGlyph_MirrorsArgusTable(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		needsInput bool
+		idle       bool
+		wantGlyph  rune
+		wantStyle  tcell.Style
+	}{
+		{"pending", "pending", false, false, '○', theme.StylePending},
+		{"complete", "complete", false, false, '✓', theme.StyleComplete},
+		{"in_review", "in_review", false, false, theme.IconMoonStars, theme.StyleInReview},
+		{"needs-input", "in_progress", true, false, theme.IconNeedsInput, theme.StyleNeedsInput},
+		{"needs-input outranks idle", "in_progress", true, true, theme.IconNeedsInput, theme.StyleNeedsInput},
+		{"idle moon is blue", "in_progress", false, true, theme.IconMoonOutline, theme.StyleInReview},
+		{"running spinner is orange", "in_progress", false, false, spinnerFrames[0], theme.StyleInProgress},
+	}
+	for _, tc := range cases {
+		glyph, style, ok := stateGlyph(tc.needsInput, tc.status, tc.idle, 0)
+		if !ok {
+			t.Errorf("%s: stateGlyph not ok for known state", tc.name)
+			continue
+		}
+		if glyph != tc.wantGlyph {
+			t.Errorf("%s: glyph = %q (U+%04X), want %q (U+%04X)", tc.name, glyph, glyph, tc.wantGlyph, tc.wantGlyph)
+		}
+		if style != tc.wantStyle {
+			t.Errorf("%s: style = %v, want %v", tc.name, style, tc.wantStyle)
+		}
+	}
+}
+
+// Spec (icon-alignment): in_review MUST be visually distinct from complete by
+// GLYPH — the checkmark renders for complete and ONLY complete. Argus never
+// renders a blue check (the operator QA R3 "blue check" confusion).
+func TestStateGlyph_NoCheckmarkForNonCompleteStates(t *testing.T) {
+	type combo struct {
+		status string
+		idle   bool
+		ni     bool
+	}
+	nonComplete := []combo{
+		{"pending", false, false},
+		{"in_review", false, false},
+		{"in_progress", false, false},
+		{"in_progress", true, false},
+		{"in_progress", false, true},
+		{"in_progress", true, true},
+	}
+	for _, c := range nonComplete {
+		for frame := 0; frame < len(spinnerFrames); frame++ {
+			glyph, _, ok := stateGlyph(c.ni, c.status, c.idle, frame)
+			if ok && glyph == '✓' {
+				t.Errorf("non-complete state %q (idle=%v needsInput=%v frame=%d) rendered the checkmark", c.status, c.idle, c.ni, frame)
+			}
+		}
+	}
+}
+
+// Spec (icon-alignment): needs-input applies within in_progress only,
+// mirroring argus's switch nesting — a needs_input flag arriving with any
+// other status (a shape argus's API never serves) defers to the status glyph.
+func TestStateGlyph_NeedsInputScopedToInProgress(t *testing.T) {
+	glyph, style, ok := stateGlyph(true, "complete", false, 0)
+	if !ok || glyph != '✓' || style != theme.StyleComplete {
+		t.Fatalf("complete+needsInput: glyph=%q style=%v ok=%v, want '✓' StyleComplete (status wins)", glyph, style, ok)
+	}
+	glyph, _, ok = stateGlyph(true, "in_review", false, 0)
+	if !ok || glyph != theme.IconMoonStars {
+		t.Fatalf("in_review+needsInput: glyph=%q ok=%v, want moon-stars (status wins)", glyph, ok)
+	}
+}
+
+// Spec (icon-alignment): the running spinner cycles argus's Nerd Font
+// progress frames U+EE06..U+EE0B, advancing one frame per tick and wrapping.
+func TestStateGlyph_SpinnerCyclesArgusProgressFrames(t *testing.T) {
+	want := []rune{0xEE06, 0xEE07, 0xEE08, 0xEE09, 0xEE0A, 0xEE0B}
+	for i := 0; i < 2*len(want); i++ {
+		glyph, _, ok := stateGlyph(false, "in_progress", false, i)
+		if !ok {
+			t.Fatalf("frame %d: stateGlyph not ok", i)
+		}
+		if glyph != want[i%len(want)] {
+			t.Errorf("frame %d: glyph = U+%04X, want U+%04X", i, glyph, want[i%len(want)])
+		}
+	}
+}
+
+// Spec (icon-alignment): running rows animate by wall clock at argus's 150 ms
+// cadence — the frame derives from the rail's (test-overridable) now source.
+func TestRailList_AnimFrameAdvancesByWallClock(t *testing.T) {
+	rl := newRailList()
+	// Frame-aligned base (1,500,000 ms is an exact multiple of the 150 ms
+	// cadence) so the +149ms probe stays inside the same frame.
+	base := time.UnixMilli(1_500_000)
+	rl.now = func() time.Time { return base }
+	f0 := rl.animFrame()
+	rl.now = func() time.Time { return base.Add(149 * time.Millisecond) }
+	if got := rl.animFrame(); got != f0 {
+		t.Fatalf("149ms later: frame = %d, want unchanged %d", got, f0)
+	}
+	rl.now = func() time.Time { return base.Add(150 * time.Millisecond) }
+	if got := rl.animFrame(); got != f0+1 {
+		t.Fatalf("150ms later: frame = %d, want %d", got, f0+1)
+	}
+}
+
+// Spec (icon-alignment): a running role row renders the wall-clock spinner
+// frame as its status icon, and the frame advances across a tick boundary.
+func TestDrawRoleRow_RunningRowRendersAdvancingSpinner(t *testing.T) {
+	rl := newRailList()
+	base := time.UnixMilli(2_000_000)
+	rl.now = func() time.Time { return base }
+	rl.SetOrchestrators([]*orchEntry{{
+		ID: 1, Name: "team", CoordTaskID: "coord-1",
+		Roles: []*roleEntry{{
+			OrchestratorID: 1, RoleID: 10, Name: "runner",
+			Live: true, ArgusTaskID: "t-run",
+			HasState: true, Status: "in_progress",
+		}},
+	}})
+
+	out := renderRail(t, rl, 36, 6)
+	frame0 := spinnerFrames[rl.animFrame()%len(spinnerFrames)]
+	if !strings.Contains(out, string(frame0)+" runner") {
+		t.Fatalf("running row must render spinner frame %q before its name; got:\n%s", frame0, out)
+	}
+
+	rl.now = func() time.Time { return base.Add(150 * time.Millisecond) }
+	out = renderRail(t, rl, 36, 6)
+	frame1 := spinnerFrames[rl.animFrame()%len(spinnerFrames)]
+	if frame1 == frame0 {
+		t.Fatal("expected the wall-clock frame to advance across a 150ms boundary")
+	}
+	if !strings.Contains(out, string(frame1)+" runner") {
+		t.Fatalf("after one tick the row must render the next frame %q; got:\n%s", frame1, out)
+	}
+}
+
+// Spec (icon-alignment): the spinner driver schedules repaints only while a
+// running row exists — HasRunningRows reports whether any visible row (role,
+// sub-coord, freelance, or coord header) is in_progress, not idle, and not
+// blocked on input.
+func TestRailList_HasRunningRows(t *testing.T) {
+	rl := newRailList()
+	if rl.HasRunningRows() {
+		t.Fatal("empty rail must not report running rows")
+	}
+
+	running := &roleEntry{OrchestratorID: 1, RoleID: 10, Name: "runner", ArgusTaskID: "t", HasState: true, Status: "in_progress"}
+	rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "team", Roles: []*roleEntry{running}}})
+	if !rl.HasRunningRows() {
+		t.Fatal("rail with a running role must report running rows")
+	}
+
+	// Idle, needs-input, and terminal states are NOT running.
+	for _, quiet := range []*roleEntry{
+		{OrchestratorID: 1, RoleID: 11, Name: "idle", ArgusTaskID: "t1", HasState: true, Status: "in_progress", ArgusIdle: true},
+		{OrchestratorID: 1, RoleID: 12, Name: "blocked", ArgusTaskID: "t2", HasState: true, Status: "in_progress", NeedsInput: true},
+		{OrchestratorID: 1, RoleID: 13, Name: "done", ArgusTaskID: "t3", HasState: true, Status: "complete"},
+		{OrchestratorID: 1, RoleID: 14, Name: "review", ArgusTaskID: "t4", HasState: true, Status: "in_review"},
+		{OrchestratorID: 1, RoleID: 15, Name: "unknown", ArgusTaskID: "t5", Live: true},
+	} {
+		rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "team", Roles: []*roleEntry{quiet}}})
+		if rl.HasRunningRows() {
+			t.Errorf("row %q must not count as running", quiet.Name)
+		}
+	}
+
+	// A running coord task on the header counts even with no child rows.
+	rl.SetOrchestrators([]*orchEntry{{
+		ID: 2, Name: "solo", CoordTaskID: "c", CoordHasState: true, CoordStatus: "in_progress",
+	}})
+	if !rl.HasRunningRows() {
+		t.Fatal("rail with a running coord header must report running rows")
+	}
+
+	// A running freelance row counts too.
+	rl.SetOrchestrators(nil)
+	rl.SetFreelance([]*freelanceProject{{Project: "Hera", Tasks: []*roleEntry{
+		{Name: "free", ArgusTaskID: "f", RoleKind: "freelance", HasState: true, Status: "in_progress"},
+	}}})
+	if !rl.HasRunningRows() {
+		t.Fatal("rail with a running freelancer must report running rows")
+	}
+}
+
+// Spec (complete-not-archived): the spinner driver goes quiet when the LAST
+// running row leaves the rail — the running → complete transition on the same
+// rail data clears hasRunning on the rebuild, so the 150ms tick stops
+// scheduling repaints (no tick-forever leak once everything settles).
+func TestRailList_HasRunningRowsClearsWhenLastRunnerCompletes(t *testing.T) {
+	rl := newRailList()
+	runner := &roleEntry{OrchestratorID: 1, RoleID: 10, Name: "runner", ArgusTaskID: "t", HasState: true, Status: "in_progress"}
+	rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "team", Roles: []*roleEntry{runner}}})
+	if !rl.HasRunningRows() {
+		t.Fatal("running row must arm the spinner driver")
+	}
+
+	// The same row steps to complete; the next rebuild must disarm the driver.
+	// The completed row stays in the ACTIVE tree (status never buckets) — it
+	// simply no longer renders the animated spinner.
+	runner.Status = "complete"
+	rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "team", Roles: []*roleEntry{runner}}})
+	if rl.HasRunningRows() {
+		t.Fatal("after the last running row completes, the spinner driver must go quiet")
+	}
+}
+
+// Spec (mixed-coord-repair): a mixed-coord header — orchestrator displayed
+// active while its coord-pane binding's argus task is ARCHIVED — renders the
+// ⊘ repair cue in error red at the status-icon cell, replacing the coord
+// task's status glyph, so the operator SEES "this coord is broken/archived"
+// at a glance.
+func TestOrchIcon_MixedCoordArchivedRendersRepairCue(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "live-proj", Archived: false, CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "in_review", CoordArgusArchived: true,
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != iconCoordBroken {
+		t.Fatalf("mixed-coord header: glyph = %q, want %q (⊘ repair cue)", glyph, iconCoordBroken)
+	}
+	if style != theme.StyleError {
+		t.Fatalf("mixed-coord header cue must render in error style; got %v", style)
+	}
+}
+
+// Spec (mixed-coord-repair): the cue applies ONLY to the MIXED state. An
+// orchestrator that is itself archived renders the normal dimmed-archived
+// treatment (true status glyph, dimmed) even when its coord task is also
+// argus-archived — both sides agree, nothing is broken.
+func TestOrchIcon_ArchivedOrchestratorSkipsRepairCue(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "shipped", Archived: true, CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "complete", CoordArgusArchived: true,
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != '✓' {
+		t.Fatalf("archived-both-sides header: glyph = %q, want '✓' (no cue)", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("archived-both-sides header must render dimmed; got %v", style)
+	}
+}
+
+// Spec (mixed-coord-repair): a header whose coord task is NOT argus-archived
+// renders its normal status glyph — the cue never fires on a healthy header.
+func TestOrchIcon_HealthyHeaderRendersNormalGlyph(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "healthy", CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "in_review",
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != theme.IconMoonStars {
+		t.Fatalf("healthy in_review header: glyph = %q, want moon-stars", glyph)
+	}
+	if style != theme.StyleInReview {
+		t.Fatalf("healthy in_review header style = %v, want StyleInReview", style)
 	}
 }

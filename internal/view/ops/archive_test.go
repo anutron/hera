@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -368,6 +369,111 @@ func TestArchiveOrchestrator_CascadeArchivesEndedBindingTask(t *testing.T) {
 	}
 	if len(argus.archiveCalls) != 1 || argus.archiveCalls[0] != "T1" {
 		t.Fatalf("argus archive calls = %v, want [T1] (cascade inherits the fallback)", argus.archiveCalls)
+	}
+}
+
+func TestArchiveRole_SharedTaskGuard_SkipsArgusWhenLiveBoundElsewhere(t *testing.T) {
+	// The cascade-collateral hazard: a role's ENDED binding can record a
+	// task that is ALSO the LIVE-bound task of a different role (reused
+	// sessions / multi-binding history). Archiving the stale role must not
+	// reach through its ended binding and archive a task an ACTIVE role
+	// depends on — the hera-side archive proceeds, the argus side is
+	// skipped, and the skip is logged with both role names.
+	s, db, argus, _, log := newTestService()
+	oldOrch := db.seedOrchestrator("old", false)
+	stale := db.seedRole(oldOrch.ID, "w1", KindWorker, "old", false)
+	db.seedEndedBinding(stale.ID, "T1", "/tmp/wt-old")
+	newOrch := db.seedOrchestrator("new", false)
+	owner := db.seedRole(newOrch.ID, "coord", KindCoordinator, "new", false)
+	db.seedBinding(owner.ID, "T1", "/tmp/wt-new")
+
+	if err := s.ArchiveRole(context.Background(), stale.ID); err != nil {
+		t.Fatalf("ArchiveRole: %v", err)
+	}
+	got, _ := db.GetRoleByID(context.Background(), stale.ID)
+	if !got.Archived {
+		t.Fatalf("role should be archived hera-side")
+	}
+	if len(argus.archiveCalls) != 0 {
+		t.Fatalf("argus archive calls = %v, want none (task live-bound elsewhere)", argus.archiveCalls)
+	}
+	var found bool
+	for _, m := range log.messages {
+		if strings.Contains(m, "w1") && strings.Contains(m, "coord") && strings.Contains(m, "T1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("skip should be logged with both role names; got %v", log.messages)
+	}
+}
+
+func TestArchiveRole_SharedTaskGuard_OtherLiveBindingOnDifferentTaskArchives(t *testing.T) {
+	// The guard keys on the TASK id, not on the mere existence of other
+	// live bindings — a sibling live-bound to a DIFFERENT task must not
+	// suppress the fallback archive.
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("old", false)
+	stale := db.seedRole(orch.ID, "w1", KindWorker, "old", false)
+	db.seedEndedBinding(stale.ID, "T1", "/tmp/wt1")
+	other := db.seedRole(orch.ID, "w2", KindWorker, "old", false)
+	db.seedBinding(other.ID, "T2", "/tmp/wt2")
+
+	if err := s.ArchiveRole(context.Background(), stale.ID); err != nil {
+		t.Fatalf("ArchiveRole: %v", err)
+	}
+	if len(argus.archiveCalls) != 1 || argus.archiveCalls[0] != "T1" {
+		t.Fatalf("argus archive calls = %v, want [T1] (no live binding on T1 itself)", argus.archiveCalls)
+	}
+}
+
+func TestArchiveRole_OwnLiveBindingArchivesEvenWhenShared(t *testing.T) {
+	// A task resolved via the role's OWN live binding archives as today —
+	// the live binding IS the ownership claim — even when another role also
+	// holds a live binding to the same task (multi-binding).
+	s, db, argus, _, _ := newTestService()
+	orchA := db.seedOrchestrator("a", false)
+	role := db.seedRole(orchA.ID, "w1", KindWorker, "a", false)
+	db.seedBinding(role.ID, "T1", "/tmp/wt1")
+	orchB := db.seedOrchestrator("b", false)
+	sibling := db.seedRole(orchB.ID, "w9", KindWorker, "b", false)
+	db.seedBinding(sibling.ID, "T1", "/tmp/wt9")
+
+	if err := s.ArchiveRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("ArchiveRole: %v", err)
+	}
+	if len(argus.archiveCalls) != 1 || argus.archiveCalls[0] != "T1" {
+		t.Fatalf("argus archive calls = %v, want [T1] (own live binding is ownership)", argus.archiveCalls)
+	}
+}
+
+func TestArchiveOrchestrator_CascadeSkipsTaskLiveBoundElsewhere(t *testing.T) {
+	// The operator's live symptom: cascading an OLD orchestrator archived
+	// the task an ACTIVE orchestrator's coord was live-bound to. The cascade
+	// inherits ArchiveRole's shared-task guard — the old orchestrator and
+	// its roles archive hera-side, the shared task's argus archive is
+	// skipped, and the cascade still succeeds.
+	s, db, argus, _, _ := newTestService()
+	oldOrch := db.seedOrchestrator("old", false)
+	w1 := db.seedRole(oldOrch.ID, "w1", KindWorker, "old", false)
+	db.seedEndedBinding(w1.ID, "T1", "/tmp/wt-old")
+	newOrch := db.seedOrchestrator("new", false)
+	owner := db.seedRole(newOrch.ID, "coord", KindCoordinator, "new", false)
+	db.seedBinding(owner.ID, "T1", "/tmp/wt-new")
+
+	if err := s.ArchiveOrchestrator(context.Background(), oldOrch.ID); err != nil {
+		t.Fatalf("ArchiveOrchestrator: %v", err)
+	}
+	if len(argus.archiveCalls) != 0 {
+		t.Fatalf("argus archive calls = %v, want none (T1 live-bound under the active orchestrator)", argus.archiveCalls)
+	}
+	gotOrch, _ := db.GetOrchestratorByID(context.Background(), oldOrch.ID)
+	if !gotOrch.Archived {
+		t.Fatalf("old orchestrator should be archived (skip is not a failure)")
+	}
+	gotRole, _ := db.GetRoleByID(context.Background(), w1.ID)
+	if !gotRole.Archived {
+		t.Fatalf("cascaded role should be archived hera-side")
 	}
 }
 
