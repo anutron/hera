@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ArchiveRole handles the explicit ARCHIVE verb against a role: set the
@@ -35,7 +36,15 @@ func (s *Service) ArchiveRole(ctx context.Context, id int64) error {
 	}
 	if bnd != nil && bnd.ArgusTaskID != "" {
 		if err := s.Argus.ArchiveTask(ctx, bnd.ArgusTaskID); err != nil {
-			return fmt.Errorf("ops.ArchiveRole: argus archive %s: %w", bnd.ArgusTaskID, err)
+			if !errors.Is(err, ErrArgusTaskGone) {
+				return fmt.Errorf("ops.ArchiveRole: argus archive %s: %w", bnd.ArgusTaskID, err)
+			}
+			// Pruned task: argus deleted it outright, so there is
+			// nothing to archive argus-side. The hera flip above
+			// stands and the operation succeeds — aborting here is
+			// what used to strand orchestrator cascades on exactly
+			// the old rows that most need cleaning.
+			s.logf("archive: argus task %q pruned — skipping argus side: %v", bnd.ArgusTaskID, err)
 		}
 	}
 	return nil
@@ -88,7 +97,13 @@ func (s *Service) unarchiveBoundArgusTask(ctx context.Context, roleID int64, op 
 	}
 	if bnd != nil && bnd.ArgusTaskID != "" {
 		if err := s.Argus.UnarchiveTask(ctx, bnd.ArgusTaskID); err != nil {
-			return fmt.Errorf("ops.%s: argus unarchive %s: %w", op, bnd.ArgusTaskID, err)
+			if !errors.Is(err, ErrArgusTaskGone) {
+				return fmt.Errorf("ops.%s: argus unarchive %s: %w", op, bnd.ArgusTaskID, err)
+			}
+			// Pruned task: nothing to unarchive argus-side; the
+			// hera-side clear has already happened, so the row still
+			// visibly leaves the Archive expando.
+			s.logf("%s: argus task %q pruned — skipping argus side: %v", op, bnd.ArgusTaskID, err)
 		}
 	}
 	return nil
@@ -107,12 +122,18 @@ func (s *Service) ToggleArchiveTask(ctx context.Context, taskID string, archived
 	}
 	if archived {
 		if err := s.Argus.UnarchiveTask(ctx, taskID); err != nil {
-			return fmt.Errorf("ops.ToggleArchiveTask: argus unarchive %s: %w", taskID, err)
+			if !errors.Is(err, ErrArgusTaskGone) {
+				return fmt.Errorf("ops.ToggleArchiveTask: argus unarchive %s: %w", taskID, err)
+			}
+			s.logf("toggle-archive: argus task %q pruned — nothing to unarchive: %v", taskID, err)
 		}
 		return nil
 	}
 	if err := s.Argus.ArchiveTask(ctx, taskID); err != nil {
-		return fmt.Errorf("ops.ToggleArchiveTask: argus archive %s: %w", taskID, err)
+		if !errors.Is(err, ErrArgusTaskGone) {
+			return fmt.Errorf("ops.ToggleArchiveTask: argus archive %s: %w", taskID, err)
+		}
+		s.logf("toggle-archive: argus task %q pruned — nothing to archive: %v", taskID, err)
 	}
 	return nil
 }
@@ -122,23 +143,38 @@ func (s *Service) ToggleArchiveTask(ctx context.Context, taskID string, archived
 // role under it (each role archive also POSTs argus archive on the role's
 // resolved binding's argus task — live preferred, latest fallback, via
 // the role-level ArchiveRole).
+//
+// The cascade is failure-tolerant: a per-role failure (argus flaky for one
+// call) does NOT abort it — the remaining roles are still attempted and the
+// failures are aggregated into one summary error naming the roles that
+// remain. The orchestrator itself is archived ONLY when every role
+// succeeded; on partial failure it stays active so the operator's retry
+// reaches the remainder (already-archived roles are skipped, making the
+// retry idempotent). Pruned tasks never count as failures — ArchiveRole
+// treats an argus 404 as a skip — so old orchestrators full of pruned
+// tasks archive cleanly.
 func (s *Service) ArchiveOrchestrator(ctx context.Context, id int64) error {
 	// Cascade archive: every active role first, then the orchestrator.
-	// Ordering doesn't matter for correctness — the DB rows are
-	// independent — but we archive roles first so that if argus is
-	// flaky the orchestrator row stays active and the operator can
-	// retry cleanly.
+	// Roles go first so that if argus is flaky the orchestrator row
+	// stays active and the operator can retry cleanly.
 	roles, err := s.DB.ListRolesByOrchestrator(ctx, id)
 	if err != nil {
 		return fmt.Errorf("ops.ArchiveOrchestrator: list roles: %w", err)
 	}
+	var failed []string
+	var errs []error
 	for _, role := range roles {
 		if role.Archived {
 			continue
 		}
 		if err := s.ArchiveRole(ctx, role.ID); err != nil {
-			return fmt.Errorf("ops.ArchiveOrchestrator: cascade role %d: %w", role.ID, err)
+			failed = append(failed, fmt.Sprintf("%s (role %d)", role.Name, role.ID))
+			errs = append(errs, err)
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("ops.ArchiveOrchestrator: %d of %d role(s) failed to archive — orchestrator left active, retry `a` to archive the remainder: %s: %w",
+			len(errs), len(roles), strings.Join(failed, ", "), errors.Join(errs...))
 	}
 
 	if err := s.DB.ArchiveOrchestrator(ctx, id); err != nil {

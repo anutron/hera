@@ -180,6 +180,21 @@ func translateDBErr(err error) error {
 	return err
 }
 
+// translateArgusTaskErr maps an argus HTTP 404 onto the ops layer's
+// ErrArgusTaskGone sentinel (mirroring translateDBErr) so ops can detect
+// "task pruned" without importing internal/argus. The raw argus detail is
+// preserved in the chain for logs; errors.Is(err, ops.ErrArgusTaskGone)
+// is the contract.
+func translateArgusTaskErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if argus.IsNotFound(err) {
+		return fmt.Errorf("%v: %w", err, ops.ErrArgusTaskGone)
+	}
+	return err
+}
+
 // argusAdapter wraps *argus.Client to satisfy the ops.ArgusClient
 // interface. Translates ops.CreateTaskRequest into the argus REST
 // payload shape.
@@ -209,14 +224,14 @@ func (a *argusAdapter) ArchiveTask(ctx context.Context, taskID string) error {
 	if a.c == nil {
 		return fmt.Errorf("argusAdapter: nil client")
 	}
-	return a.c.ArchiveTask(ctx, taskID)
+	return translateArgusTaskErr(a.c.ArchiveTask(ctx, taskID))
 }
 
 func (a *argusAdapter) UnarchiveTask(ctx context.Context, taskID string) error {
 	if a.c == nil {
 		return fmt.Errorf("argusAdapter: nil client")
 	}
-	return a.c.UnarchiveTask(ctx, taskID)
+	return translateArgusTaskErr(a.c.UnarchiveTask(ctx, taskID))
 }
 
 func (a *argusAdapter) DeleteTask(ctx context.Context, taskID string) error {
@@ -232,7 +247,7 @@ func (a *argusAdapter) GetTaskStatus(ctx context.Context, taskID string) (string
 	}
 	t, err := a.c.GetTask(ctx, taskID)
 	if err != nil {
-		return "", err
+		return "", translateArgusTaskErr(err)
 	}
 	return t.Status, nil
 }
@@ -241,5 +256,6 @@ func (a *argusAdapter) SetTaskStatus(ctx context.Context, taskID, status string)
 	if a.c == nil {
 		return "", fmt.Errorf("argusAdapter: nil client")
 	}
-	return a.c.SetTaskStatus(ctx, taskID, status)
+	resolved, err := a.c.SetTaskStatus(ctx, taskID, status)
+	return resolved, translateArgusTaskErr(err)
 }
