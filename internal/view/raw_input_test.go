@@ -54,7 +54,7 @@ func readOne(t *testing.T, rc *rawInputConn) (websocket.MessageType, []byte) {
 func newRawConn(focus FocusState, coord, agent string, frame scriptedFrame) (*rawInputConn, *recordingForwarder) {
 	fwd := &recordingForwarder{}
 	conn := &scriptedConn{frames: []scriptedFrame{frame}}
-	rc := newRawInputConn(conn, &fakeFocus{s: focus}, &fakeTargets{coord: coord, agent: agent}, fwd, nil)
+	rc := newRawInputConn(conn, &fakeFocus{s: focus}, &fakeTargets{coord: coord, agent: agent}, fwd, nil, nil)
 	return rc, fwd
 }
 
@@ -188,7 +188,7 @@ func TestRawInput_TextEnvelopePassesThrough(t *testing.T) {
 	env := []byte(`{"type":"resize","cols":120,"rows":40}`)
 	fwd := &recordingForwarder{}
 	conn := &scriptedConn{frames: []scriptedFrame{{typ: websocket.MessageText, data: env}}}
-	rc := newRawInputConn(conn, &fakeFocus{s: FocusAGENT}, &fakeTargets{coord: "c", agent: "a"}, fwd, nil)
+	rc := newRawInputConn(conn, &fakeFocus{s: FocusAGENT}, &fakeTargets{coord: "c", agent: "a"}, fwd, nil, nil)
 
 	mt, data, err := rc.Read(context.Background())
 	if err != nil {

@@ -22,24 +22,24 @@
 **Depends on:** Stage 1
 
 - [x] 3.1 Bump `go.mod` to argus-sdk `v0.0.3`
-- [ ] 3.2 Write failing tests for every delta scenario: mouse-frame interception (pane focus → no PTY forward; RAIL focus → no parser dispatch; non-wheel swallowed), wheel hit-test routing (pane under cursor, position-beats-focus, dead zones), scroll-mode rendering through `pinnedTerminalPane` (visible history, badge, anchor-lock, clamps, ⇧↑/⇧↓ parity, reset-on-rebind), rail viewport panning (pan without selection change, no-op when fits, persists across refresh, j/k re-snap)
-- [ ] 3.3 Confirm each test fails (Prove-It)
+- [x] 3.2 Write failing tests for every delta scenario: mouse-frame interception (pane focus → no PTY forward; RAIL focus → no parser dispatch; non-wheel swallowed), wheel hit-test routing (pane under cursor, position-beats-focus, dead zones), scroll-mode rendering through `pinnedTerminalPane` (visible history, badge, anchor-lock, clamps, ⇧↑/⇧↓ parity, reset-on-rebind) — `internal/view/wheel_test.go`
+- [x] 3.3 Confirm each test fails (Prove-It): build-level failures on the missing `WheelRouter` param, `applyWheel`, `wheelStep`, `PanBy` before implementation
 
 ## 4. hera mouse routing + pane delegation
 
 **Depends on:** Stage 3
 
-- [ ] 4.1 `raw_input.go`: detect whole-frame SGR mouse sequences before the focus fork (decoder from the SDK); never forward, never parse; wheel → scroll dispatch, others swallowed
-- [ ] 4.2 `app.go`: event-loop scroll dispatch — `QueueUpdateDraw` closure hit-testing `(x−1, y−1)` against rail/coord/agent `GetRect()`; pane hit → `ScrollBy(±3)`
-- [ ] 4.3 `pinned_pane.go`: delete the tracked-only `scrollOffset`; delegate `ScrollBy`/`ScrollOffset` to the SDK engine; `ResetScroll` on rebind (`bindPane` path)
-- [ ] 4.4 `keys.go` / `ScrollFocusedPane`: ⇧↑/⇧↓ drive the SDK engine (1 line/press); remove the D15 limitation comments
+- [x] 4.1 `raw_input.go`: detect whole-frame SGR mouse sequences before the focus fork (decoder from the SDK); never forward, never parse; wheel → scroll dispatch, others swallowed
+- [x] 4.2 `app.go`: event-loop scroll dispatch — `RouteWheel` queues `applyWheel` via `QueueUpdateDraw`, hit-testing `(x−1, y−1)` against rail/coord/agent `InRect`; pane hit → `ScrollBy(±3)`; absent-pane stale rects skipped
+- [x] 4.3 `pinned_pane.go`: delete the tracked-only `scrollOffset`; `ScrollBy`/`ScrollOffset`/`ResetScroll` now promote from the SDK engine; rebind constructs a fresh pane so a newly bound task starts live (no explicit ResetScroll needed)
+- [x] 4.4 `ScrollFocusedPane`: ⇧↑/⇧↓ drive the SDK engine (1 line/press); D15 limitation comments removed
 
 ## 5. rail viewport panning
 
 **Depends on:** Stage 3
 
-- [ ] 5.1 `rail_list.go`: track `lastCursor`; snap viewport to cursor only when the cursor moved since the last draw
-- [ ] 5.2 `rail_list.go`: `PanBy(±3)` clamped to `[0, max(0, rows−h)]`; wire from the wheel dispatch (rail hit)
+- [x] 5.1 `rail_list.go`: track `lastSnapCursor`; snap viewport to cursor only when the cursor moved since the last draw (wheel pans persist across refresh repaints)
+- [x] 5.2 `rail_list.go`: `PanBy` clamped to `[0, max(0, rows−innerHeight)]` via `lastHeight`; wired from `applyWheel` (rail hit, ±3/tick)
 
 ## 6. validation + ship
 

@@ -72,10 +72,12 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// pluginview's tcell parser sees them. This is what gives special keys
 		// (Shift+Enter, Alt+Backspace, Alt+arrows) full terminal fidelity — a
 		// tcell re-parse + re-encode would mangle or swallow them. RAIL-focus
-		// bytes and the view-owned control chords still flow to the parser. The
-		// App's atomic focus mirror is goroutine-safe; CoordTaskID/AgentTaskID
-		// are mutex-guarded.
-		rawConn := newRawInputConn(conn, app, app, forwarder, log)
+		// bytes and the view-owned control chords still flow to the parser. SGR
+		// mouse frames are peeled off before either path: wheel ticks route to
+		// the App's positional scroll handling (RouteWheel bounces to the event
+		// loop), everything else is swallowed. The App's atomic focus mirror is
+		// goroutine-safe; CoordTaskID/AgentTaskID are mutex-guarded.
+		rawConn := newRawInputConn(conn, app, app, forwarder, app, log)
 		scr, err := pluginview.New(ctx, rawConn)
 		if err != nil {
 			log.Warn("view: pluginview construct", "err", err)
