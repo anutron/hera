@@ -74,8 +74,17 @@ func pumpPaneBridge(ctx context.Context, out chan []byte, snapshot []byte, upstr
 		}
 	}
 
+	// One stateful OSC scrubber for the pane's whole byte stream: the SDK
+	// terminalpane emulator has no OSC handling (and inherits the upstream
+	// 0x9C-terminator parser bug — see oscFilter), so OSC set-title payloads
+	// would paint as ghost input text at the prompt line. Filtering snapshot
+	// and live chunks through the SAME instance strips sequences split across
+	// any chunk boundary, including snapshot→live. send() drops chunks the
+	// filter empties out.
+	var scrub oscFilter
+
 	if len(snapshot) > 0 {
-		if !send(snapshot) {
+		if !send(scrub.filter(snapshot)) {
 			return
 		}
 	} else if upstream == nil && placeholder != "" {
@@ -97,7 +106,7 @@ func pumpPaneBridge(ctx context.Context, out chan []byte, snapshot []byte, upstr
 			if !ok {
 				return
 			}
-			if !send(chunk) {
+			if !send(scrub.filter(chunk)) {
 				return
 			}
 		}

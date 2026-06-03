@@ -1,6 +1,7 @@
 package view
 
 import (
+	"bytes"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +38,40 @@ func TestNewBoundPane_RedrawFiresOnUpstreamChunk(t *testing.T) {
 	}
 	if got := redraws.Load(); got == 0 {
 		t.Fatal("expected redraw callback to fire on upstream PTY chunk; it never fired (output would not repaint live)")
+	}
+}
+
+// TestPumpPaneBridge_ScrubsOSCFromSnapshotAndLiveStream verifies the pump
+// strips OSC sequences from BOTH the bind-time ring snapshot and the live
+// upstream chunks — including a sequence split across the snapshot→live
+// boundary — while ordinary text and SGR escapes pass through untouched.
+//
+// Regression guard for the ghost-title leak: Claude Code's OSC set-title
+// payload painted as phantom input text at the prompt line because the
+// argus-sdk terminalpane emulator has no OSC handling; the pump is hera's
+// chokepoint where the scrub must happen.
+func TestPumpPaneBridge_ScrubsOSCFromSnapshotAndLiveStream(t *testing.T) {
+	// Snapshot carries a complete OSC title AND ends mid-OSC (a second title
+	// whose payload continues in the first live chunk).
+	snapshot := []byte("snap\x1b]0;Snapshot Title\x07\x1b[32mgreen\x1b]2;Split Ti")
+	upstream := make(chan []byte, 4)
+
+	bridge := newPaneBridge()
+	bridge.startPump(snapshot, upstream, "")
+	defer bridge.stop()
+
+	upstream <- []byte("tle\x1b\\live")
+	upstream <- []byte(" tail\x1b]0;Another\x07end")
+	close(upstream)
+
+	var got []byte
+	for chunk := range bridge.out {
+		got = append(got, chunk...)
+	}
+
+	want := []byte("snap\x1b[32mgreenlive tailend")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("pump output:\n got %q\nwant %q", got, want)
 	}
 }
 
