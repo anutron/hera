@@ -150,6 +150,29 @@ type fakeSelector struct{ sel railSelection }
 
 func (f *fakeSelector) CurrentRailSelection() railSelection { return f.sel }
 
+// fakeRowSelector records SelectByRoleID calls so tests can assert
+// that the bridge auto-selects the newly created worker row.
+type fakeRowSelector struct {
+	mu            sync.Mutex
+	selectedRoles []int64
+}
+
+func (f *fakeRowSelector) SelectByRoleID(id int64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.selectedRoles = append(f.selectedRoles, id)
+	return true
+}
+
+func (f *fakeRowSelector) LastSelected() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.selectedRoles) == 0 {
+		return 0
+	}
+	return f.selectedRoles[len(f.selectedRoles)-1]
+}
+
 type fakeRepopulator struct {
 	mu    sync.Mutex
 	count int
@@ -257,6 +280,11 @@ type fakeMutationService struct {
 	toggleArchiveTaskErr   error
 	stepTaskCalls          []stepTaskCall
 	stepTaskErr            error
+
+	// SpawnWorker plumbing.
+	spawnWorkerCalls []ops.SpawnWorkerInput
+	spawnWorkerResp  *ops.SpawnWorkerResult
+	spawnWorkerErr   error
 
 	// Seam-test plumbing. *Started, when non-nil, is closed when the
 	// corresponding method is entered (after recording the call). *Gate,
@@ -446,6 +474,20 @@ func (s *fakeMutationService) ResurrectOrchestrator(_ context.Context, coordRole
 		return nil, s.resurrectErr
 	}
 	return &ops.CreatedTask{ID: "task-resurrect"}, nil
+}
+
+func (s *fakeMutationService) SpawnWorker(_ context.Context, in ops.SpawnWorkerInput) (*ops.SpawnWorkerResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.spawnWorkerCalls = append(s.spawnWorkerCalls, in)
+	if s.spawnWorkerErr != nil {
+		return nil, s.spawnWorkerErr
+	}
+	if s.spawnWorkerResp != nil {
+		cp := *s.spawnWorkerResp
+		return &cp, nil
+	}
+	return &ops.SpawnWorkerResult{RoleID: 42, ArgusTaskID: "task-worker-1"}, nil
 }
 
 // newBridgeUnderTest wires a mutationBridge with all-fake deps. The
@@ -1717,5 +1759,210 @@ func TestBridge_OnArchive_ArchivedHeaderWithArchivedCoordTask_UnarchivesOrch(t *
 	}
 	if len(svc.toggleArchiveTaskCalls) != 0 {
 		t.Fatalf("archived-both-sides header must not fire the task-direct repair; got %+v", svc.toggleArchiveTaskCalls)
+	}
+}
+
+// --- OnNewWorker ---
+
+// newBridgeWithRowSelector constructs a bridge with a fakeRowSelector wired
+// so tests can assert auto-select behavior after SpawnWorker succeeds.
+func newBridgeWithRowSelector() (*mutationBridge, *fakeModals, *fakeSelector, *fakeMutationService, *fakeRepopulator, *fakeRowSelector) {
+	m := &fakeModals{}
+	sel := &fakeSelector{}
+	svc := &fakeMutationService{}
+	la := &fakeListAll{}
+	rp := &fakeRepopulator{}
+	rowSel := &fakeRowSelector{}
+	b := newMutationBridge(context.Background(), m, sel, svc, la, rp, nil, nil)
+	b.rowSel = rowSel
+	return b, m, sel, svc, rp, rowSel
+}
+
+// TestBridge_OnNewWorker_CoordRow_OpensInputModal asserts that when a
+// coordinator row is selected and OnNewWorker is called, an input modal is
+// opened for the prompt.
+func TestBridge_OnNewWorker_CoordRow_OpensInputModal(t *testing.T) {
+	b, m, sel, _, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	m.stubInputNotOpened = true // just record the open, don't submit
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	m.mu.Lock()
+	openCount := len(m.inputs)
+	m.mu.Unlock()
+
+	if openCount != 1 {
+		t.Fatalf("expected 1 input modal open for coordinator row; got %d", openCount)
+	}
+}
+
+// TestBridge_OnNewWorker_AgentRow_ResolvesToCoord asserts that when an agent
+// row is selected, the spawn targets that agent's coordinator (OrchestratorID).
+func TestBridge_OnNewWorker_AgentRow_ResolvesToCoord(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	// Agent row: Kind=selRole, RoleKind=worker, OrchestratorID=7, CoordRoleID=20.
+	sel.sel = railSelection{
+		Kind:           selRole,
+		OrchestratorID: 7,
+		RoleID:         99,
+		CoordRoleID:    20,
+		Name:           "some-agent",
+		RoleKind:       "worker",
+	}
+	m.stubInputAnswer = "implement X"
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SpawnWorker call; got %d", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != 7 {
+		t.Fatalf("TargetOrchestratorID: want 7 (agent's coord), got %d", calls[0].TargetOrchestratorID)
+	}
+	if calls[0].CoordRoleID != 20 {
+		t.Fatalf("CoordRoleID: want 20, got %d", calls[0].CoordRoleID)
+	}
+	if calls[0].Prompt != "implement X" {
+		t.Fatalf("Prompt: want %q, got %q", "implement X", calls[0].Prompt)
+	}
+}
+
+// TestBridge_OnNewWorker_FreelanceRow_NotApplicable asserts that a freelancer
+// row triggers a "not applicable" notice and no SpawnWorker call.
+func TestBridge_OnNewWorker_FreelanceRow_NotApplicable(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:     selRole,
+		RoleID:   5,
+		Name:     "dangling-task",
+		RoleKind: "freelance",
+	}
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	spawnCount := len(svc.spawnWorkerCalls)
+	svc.mu.Unlock()
+
+	m.mu.Lock()
+	errorCount := len(m.errors)
+	m.mu.Unlock()
+
+	if spawnCount != 0 {
+		t.Fatalf("freelance row must not trigger SpawnWorker; got %d calls", spawnCount)
+	}
+	if errorCount == 0 {
+		t.Fatal("freelance row must surface a not-applicable notice")
+	}
+}
+
+// TestBridge_OnNewWorker_NoneSelection_NotApplicable asserts that a selNone
+// selection (e.g. separator/expando) shows not-applicable and no spawn call.
+func TestBridge_OnNewWorker_NoneSelection_NotApplicable(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{Kind: selNone}
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	spawnCount := len(svc.spawnWorkerCalls)
+	svc.mu.Unlock()
+
+	m.mu.Lock()
+	errorCount := len(m.errors)
+	m.mu.Unlock()
+
+	if spawnCount != 0 {
+		t.Fatalf("selNone row must not trigger SpawnWorker; got %d calls", spawnCount)
+	}
+	if errorCount == 0 {
+		t.Fatal("selNone row must surface a not-applicable notice")
+	}
+}
+
+// TestBridge_OnNewWorker_EmptyPrompt_NoSpawn asserts that an empty prompt
+// confirmation does not call SpawnWorker.
+func TestBridge_OnNewWorker_EmptyPrompt_NoSpawn(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:        selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID: 10,
+		Name:        "foo",
+	}
+	m.stubInputAnswer = "" // empty confirmation
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	spawnCount := len(svc.spawnWorkerCalls)
+	svc.mu.Unlock()
+
+	if spawnCount != 0 {
+		t.Fatalf("empty prompt must not trigger SpawnWorker; got %d calls", spawnCount)
+	}
+}
+
+// TestBridge_OnNewWorker_Success_AutoSelectsNewRow asserts that after a
+// successful spawn, the bridge calls SelectByRoleID with the new role id.
+func TestBridge_OnNewWorker_Success_AutoSelectsNewRow(t *testing.T) {
+	b, m, sel, svc, _, rowSel := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	m.stubInputAnswer = "do the thing"
+	svc.spawnWorkerResp = &ops.SpawnWorkerResult{RoleID: 42, ArgusTaskID: "task-1"}
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	if rowSel.LastSelected() != 42 {
+		t.Fatalf("auto-select: want RoleID 42, got %d", rowSel.LastSelected())
+	}
+}
+
+// TestBridge_OnNewWorker_SpawnError_SurfacesErrorModal asserts that a
+// SpawnWorker failure shows an error modal (not a freeze).
+func TestBridge_OnNewWorker_SpawnError_SurfacesErrorModal(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	m.stubInputAnswer = "do the thing"
+	svc.spawnWorkerErr = errors.New("argus exploded")
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	m.mu.Lock()
+	errs := m.errors
+	m.mu.Unlock()
+
+	if len(errs) == 0 {
+		t.Fatal("expected an error modal when SpawnWorker fails")
+	}
+	if !strings.Contains(errs[0], "argus exploded") {
+		t.Fatalf("error modal should contain the error text; got %q", errs[0])
 	}
 }

@@ -817,6 +817,20 @@ func (a *App) CurrentRailSelection() railSelection {
 	return railSelection{}
 }
 
+// SelectByRoleID moves the rail cursor to the row carrying the given role id
+// and returns true when the row was found and selected. It is a no-op (returns
+// false) when the rail has not yet been populated with the row (e.g. the
+// broadcaster repopulate has not fired yet) or when the rail widget is nil.
+//
+// Satisfies the rowSelector contract used by the mutation bridge to auto-select
+// the newly created worker row after OnNewWorker's spawn completes.
+func (a *App) SelectByRoleID(id int64) bool {
+	if a.pieces.rail == nil {
+		return false
+	}
+	return a.pieces.rail.SelectByRoleID(id)
+}
+
 // countLiveRoles returns the number of non-archived roles in the slice —
 // the child-agent count used by the `^d` destructive-delete warning.
 func countLiveRoles(roles []*roleEntry) int {

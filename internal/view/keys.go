@@ -34,6 +34,12 @@ type PaneTargets interface {
 // goroutine; see mutationBridge's concurrency contract.
 type MutationHandler interface {
 	OnNew()
+
+	// OnNewWorker handles the `w` RAIL-focus-only key. It opens a single-field
+	// input modal prompting for the new worker's prompt, then spawns a worker
+	// agent under the coordinator implied by the current rail selection.
+	OnNewWorker()
+
 	OnRename()
 	OnDelete()
 	OnArchive()
@@ -304,6 +310,15 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 		case 'n':
 			if r.Mutations != nil {
 				r.Mutations.OnNew()
+			}
+			return nil
+		case 'w':
+			// Spawn worker under the selected coordinator (D1 RAIL-focus-only).
+			// In COORD/AGENT focus this rune falls through to handlePane and is
+			// forwarded verbatim to the PTY, so the gate is purely positional
+			// (handleRail is only called when focus is RAIL).
+			if r.Mutations != nil {
+				r.Mutations.OnNewWorker()
 			}
 			return nil
 		case 'r':

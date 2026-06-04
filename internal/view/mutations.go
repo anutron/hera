@@ -51,6 +51,13 @@ type mutationService interface {
 	// section visible).
 	ResurrectOrchestrator(ctx context.Context, coordRoleID int64) (*ops.CreatedTask, error)
 
+	// SpawnWorker handles the `w` rail key: creates an argus task in the
+	// coordinator's argus_project, inserts a worker role and binding
+	// programmatically, and returns the created role + task ids so the
+	// bridge can auto-select the new row. Returns ErrValidation on empty
+	// prompt; other errors surface as an error modal.
+	SpawnWorker(ctx context.Context, in ops.SpawnWorkerInput) (*ops.SpawnWorkerResult, error)
+
 	// Task-direct verbs for freelance rows (unmanaged argus tasks with no hera
 	// role or binding): both bypass the hera-binding lookup and address the
 	// argus task by id. ToggleArchiveTask backs `a`; archived is the task's
@@ -192,6 +199,15 @@ type helpFrameSender interface {
 	SendHelp() error
 }
 
+// rowSelector selects a rail row by role id after a mutation creates a new
+// row. Production wires this to *App (which calls rail.SelectByRoleID on the
+// broadcaster-repopulated list); tests inject a fakeRowSelector. nil makes
+// auto-select a no-op (the row is still visible; the operator can navigate to
+// it manually).
+type rowSelector interface {
+	SelectByRoleID(id int64) bool
+}
+
 // mutationBridge implements MutationHandler by routing each rail
 // mutation key to modals + ops.Service. Construction wires it to the
 // surrounding App via the small interfaces above; tests inject
@@ -211,6 +227,7 @@ type mutationBridge struct {
 	listAll listAllState
 	repop   repopulator
 	help    helpFrameSender
+	rowSel  rowSelector
 	log     *slog.Logger
 
 	// inFlight guards the blocking phase of a mutation: while a svc call is
@@ -334,6 +351,82 @@ func (b *mutationBridge) OnNew() {
 			b.mutate("new project", true, func() error {
 				_, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{Name: name, Mission: mission})
 				return err
+			})
+		}, nil)
+	})
+}
+
+// OnNewWorker handles the `w` RAIL-focus-only key (D1). It:
+//  1. Resolves the target coordinator from the current rail selection.
+//  2. Opens a single-field input modal prompting for the worker's prompt.
+//  3. On confirm with a non-empty prompt, runs SpawnWorker off the event loop.
+//  4. On success, auto-selects the new worker row while keeping focus RAIL.
+//
+// Selection resolution (D2):
+//   - Orchestrator header → that orchestrator's coord role (CoordRoleID).
+//   - Agent/worker role row → that agent's orchestrator (OrchestratorID),
+//     using CoordRoleID carried on the selection.
+//   - Freelance row, selNone, or any selection without a coordinator →
+//     a dismissible "not applicable" notice, no spawn.
+func (b *mutationBridge) OnNewWorker() {
+	sel := b.sel.CurrentRailSelection()
+
+	// Resolve target orchestrator ID and coordinator role id.
+	var orchID, coordRoleID int64
+	var coordName string
+
+	switch sel.Kind {
+	case selOrchestrator:
+		// Root coordinator header: use the header's orchestrator + its coord role.
+		if sel.CoordRoleID == 0 {
+			b.notApplicable("w: selected coordinator has no coord role — cannot spawn a worker")
+			return
+		}
+		orchID = sel.OrchestratorID
+		coordRoleID = sel.CoordRoleID
+		coordName = sel.Name
+	case selRole:
+		if sel.RoleKind == string(db.KindFreelance) {
+			b.notApplicable("w: a freelancer is an unmanaged argus task — select a coordinator to spawn a worker under it")
+			return
+		}
+		if sel.OrchestratorID == 0 || sel.CoordRoleID == 0 {
+			b.notApplicable("w: selected row is not attached to a coordinator")
+			return
+		}
+		orchID = sel.OrchestratorID
+		coordRoleID = sel.CoordRoleID
+		coordName = sel.Name
+	default:
+		b.notApplicable("w: not applicable to this row")
+		return
+	}
+
+	capturedOrchID := orchID
+	capturedCoordRoleID := coordRoleID
+	capturedCoordName := coordName
+
+	b.goUI(func() {
+		b.modals.ShowInput("New worker", "Prompt", "", func(prompt string) {
+			if strings.TrimSpace(prompt) == "" {
+				return
+			}
+			b.mutate("spawn worker", true, func() error {
+				res, err := b.svc.SpawnWorker(b.ctx, ops.SpawnWorkerInput{
+					TargetOrchestratorID: capturedOrchID,
+					CoordRoleID:          capturedCoordRoleID,
+					CoordName:            capturedCoordName,
+					Prompt:               prompt,
+				})
+				if err != nil {
+					return err
+				}
+				// Auto-select the new worker row (D3/D7). The broadcaster-driven
+				// rail repopulate already added the row; we select it now.
+				if b.rowSel != nil && res != nil {
+					b.rowSel.SelectByRoleID(res.RoleID)
+				}
+				return nil
 			})
 		}, nil)
 	})

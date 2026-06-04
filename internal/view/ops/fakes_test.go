@@ -325,6 +325,54 @@ func (f *fakeDB) ListLiveBindings(ctx context.Context) ([]*Binding, error) {
 	return out, nil
 }
 
+func (f *fakeDB) CreateRole(ctx context.Context, in CreateRoleInput) (*Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Check for an existing active role with the same (orchestrator_id, name).
+	for _, r := range f.roles {
+		if r.OrchestratorID == in.OrchestratorID && r.Name == in.Name && !r.Archived {
+			if r.Kind != in.Kind {
+				return nil, fmt.Errorf("role %q exists with kind %q, not %q", in.Name, r.Kind, in.Kind)
+			}
+			cp := *r
+			return &cp, nil
+		}
+	}
+	f.nextRoleID++
+	r := &Role{
+		ID:             f.nextRoleID,
+		OrchestratorID: in.OrchestratorID,
+		Name:           in.Name,
+		Kind:           in.Kind,
+		ArgusProject:   in.ArgusProject,
+		Mission:        in.Mission,
+		Constraints:    in.Constraints,
+	}
+	f.roles[r.ID] = r
+	return r, nil
+}
+
+func (f *fakeDB) CreateBinding(ctx context.Context, in CreateBindingInput) (*Binding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextBindingID++
+	orchID := in.OrchestratorID
+	if orchID == 0 {
+		// Derive from the role.
+		if r, ok := f.roles[in.RoleID]; ok {
+			orchID = r.OrchestratorID
+		}
+	}
+	b := &Binding{
+		ID:           f.nextBindingID,
+		RoleID:       in.RoleID,
+		ArgusTaskID:  in.ArgusTaskID,
+		WorktreePath: in.WorktreePath,
+	}
+	f.bindings[b.ID] = b
+	return b, nil
+}
+
 func (f *fakeDB) EndBinding(ctx context.Context, bindingID int64, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -349,6 +397,11 @@ type fakeArgus struct {
 	createCalls []CreateTaskRequest
 	createResp  *CreatedTask
 	createErr   error
+
+	// getTaskResp / getTaskErr back the GetTask implementation used by SpawnWorker.
+	getTaskResp *TaskDetails
+	getTaskErr  error
+	getTaskCalls []string
 
 	archiveCalls   []string
 	archiveErr     error
@@ -389,6 +442,20 @@ func (a *fakeArgus) CreateTask(ctx context.Context, req CreateTaskRequest) (*Cre
 		return &cp, nil
 	}
 	return &CreatedTask{ID: fmt.Sprintf("task-%d", len(a.createCalls)), Name: req.Name}, nil
+}
+
+func (a *fakeArgus) GetTask(ctx context.Context, taskID string) (*TaskDetails, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.getTaskCalls = append(a.getTaskCalls, taskID)
+	if a.getTaskErr != nil {
+		return nil, a.getTaskErr
+	}
+	if a.getTaskResp != nil {
+		cp := *a.getTaskResp
+		return &cp, nil
+	}
+	return &TaskDetails{ID: taskID, WorktreePath: ""}, nil
 }
 
 func (a *fakeArgus) ArchiveTask(ctx context.Context, taskID string) error {

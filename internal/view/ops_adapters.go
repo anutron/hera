@@ -59,6 +59,34 @@ func (a *dbAdapter) RenameOrchestrator(ctx context.Context, id int64, newName st
 	return translateDBErr(a.d.Orchestrators.Rename(ctx, id, newName))
 }
 
+func (a *dbAdapter) CreateRole(ctx context.Context, in ops.CreateRoleInput) (*ops.Role, error) {
+	r, err := a.d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: in.OrchestratorID,
+		Name:           in.Name,
+		Kind:           db.RoleKind(in.Kind),
+		ArgusProject:   in.ArgusProject,
+		Mission:        in.Mission,
+		Constraints:    in.Constraints,
+	})
+	if err != nil {
+		return nil, translateDBErr(err)
+	}
+	return adaptRole(r), nil
+}
+
+func (a *dbAdapter) CreateBinding(ctx context.Context, in ops.CreateBindingInput) (*ops.Binding, error) {
+	b, err := a.d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID:         in.RoleID,
+		OrchestratorID: in.OrchestratorID,
+		ArgusTaskID:    in.ArgusTaskID,
+		WorktreePath:   in.WorktreePath,
+	})
+	if err != nil {
+		return nil, translateDBErr(err)
+	}
+	return adaptBinding(b), nil
+}
+
 func (a *dbAdapter) GetRoleByID(ctx context.Context, id int64) (*ops.Role, error) {
 	r, err := a.d.Roles.GetByID(ctx, id)
 	if err != nil {
@@ -230,6 +258,17 @@ func (a *argusAdapter) CreateTask(ctx context.Context, req ops.CreateTaskRequest
 		return nil, err
 	}
 	return &ops.CreatedTask{ID: out.ID, Name: out.Name}, nil
+}
+
+func (a *argusAdapter) GetTask(ctx context.Context, taskID string) (*ops.TaskDetails, error) {
+	if a.c == nil {
+		return nil, fmt.Errorf("argusAdapter: nil client")
+	}
+	t, err := a.c.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, translateArgusTaskErr(err)
+	}
+	return &ops.TaskDetails{ID: t.ID, WorktreePath: t.WorktreePath}, nil
 }
 
 func (a *argusAdapter) ArchiveTask(ctx context.Context, taskID string) error {

@@ -121,6 +121,7 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			{Key: "Enter", Label: "agent", Bar: true},
 			advance,
 			{Key: "n", Label: "new", Bar: true},
+			{Key: "w", Label: "worker", Bar: false},
 			{Key: "r", Label: "rename", Bar: true},
 			{Key: "^d", Label: "del", Bar: true},
 			{Key: "a", Label: "archive", Bar: true},

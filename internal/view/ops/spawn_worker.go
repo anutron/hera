@@ -1,0 +1,193 @@
+package ops
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"strings"
+	"unicode"
+)
+
+// SpawnWorkerInput is the (validated) input for the `w` rail operation.
+type SpawnWorkerInput struct {
+	// TargetOrchestratorID is the orchestrator the new worker role lands under.
+	// Resolved from the rail selection by the bridge before calling SpawnWorker.
+	TargetOrchestratorID int64
+
+	// CoordRoleID is the coordinator role whose argus_project the worker
+	// inherits. The op fetches this role to resolve the project.
+	CoordRoleID int64
+
+	// CoordName is the human-readable coordinator name used in the
+	// orientation prefix. Optional — when empty the prefix omits the name.
+	CoordName string
+
+	// Prompt is the operator's text. Must be non-empty (after trimming).
+	Prompt string
+}
+
+// SpawnWorker handles the `w` rail operation: validates the prompt,
+// derives a unique worker role name from it, creates an argus task in
+// the coordinator's argus_project with an orientation prefix, reads the
+// task's worktree path, and inserts a worker role + binding so the rail
+// can render the new worker immediately.
+//
+// Design doc D3–D7:
+//   - Attachment is fully programmatic (no LLM MCP call required).
+//   - Role name derived from prompt, uniqued within non-archived siblings (D5).
+//   - Binding worktree path resolved via GetTask set at insert time (D6).
+//   - Partial-failure handling: if GetTask fails, binding is still inserted
+//     (possibly empty path); if DAO inserts fail after argus CreateTask
+//     succeeds, the orphaned argus task is logged but NOT deleted (D7 / Risks).
+//
+// Returns ErrValidation for user-correctable input. Other errors are
+// substrate failures (DB read or argus HTTP).
+func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnWorkerResult, error) {
+	prompt := strings.TrimSpace(in.Prompt)
+	if prompt == "" {
+		return nil, validation("prompt is required")
+	}
+
+	// Resolve the coordinator role to get its argus_project.
+	coordRole, err := s.DB.GetRoleByID(ctx, in.CoordRoleID)
+	if err != nil {
+		return nil, fmt.Errorf("ops.SpawnWorker: load coord role %d: %w", in.CoordRoleID, err)
+	}
+	if coordRole.ArgusProject == "" {
+		return nil, fmt.Errorf("ops.SpawnWorker: coord role %d has empty argus_project", in.CoordRoleID)
+	}
+
+	// Derive a unique role name from the prompt (D5).
+	baseName := deriveWorkerName(prompt)
+	uniqueName, err := s.uniqueWorkerName(ctx, in.TargetOrchestratorID, baseName)
+	if err != nil {
+		return nil, fmt.Errorf("ops.SpawnWorker: derive unique name: %w", err)
+	}
+
+	// Build the orientation-prefixed prompt (D4).
+	taskPrompt := buildWorkerPrompt(in.CoordName, prompt)
+
+	// Create the argus task in the coordinator's project with worker meta (D3).
+	req := CreateTaskRequest{
+		Project: coordRole.ArgusProject,
+		Prompt:  taskPrompt,
+		Meta:    map[string]string{"role": "worker"},
+	}
+	created, err := s.Argus.CreateTask(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("ops.SpawnWorker: argus CreateTask: %w", err)
+	}
+
+	// Read the worktree path via GetTask (D6). Soft-degrade on failure:
+	// the binding is still inserted with whatever path we have (possibly
+	// empty) so the spawn is not lost. The caller logs prominently.
+	worktreePath := ""
+	gt, gtErr := s.Argus.GetTask(ctx, created.ID)
+	if gtErr != nil {
+		s.Logger.Printf("ops.SpawnWorker: GetTask(%s) failed — binding will have empty worktree_path: %v", created.ID, gtErr)
+	} else if gt != nil {
+		worktreePath = gt.WorktreePath
+	}
+
+	// Insert the worker role (D3 step 5). If this fails we log and return —
+	// the argus task is orphaned (visible as a freelancer) but we do NOT
+	// delete it (Risks section).
+	role, err := s.DB.CreateRole(ctx, CreateRoleInput{
+		OrchestratorID: in.TargetOrchestratorID,
+		Name:           uniqueName,
+		Kind:           KindWorker,
+		ArgusProject:   coordRole.ArgusProject,
+		Mission:        prompt, // mission = operator's text verbatim (not the prefixed version)
+	})
+	if err != nil {
+		s.Logger.Printf("ops.SpawnWorker: CreateRole failed for argus task %s — task is orphaned: %v", created.ID, err)
+		return nil, fmt.Errorf("ops.SpawnWorker: insert worker role: %w", err)
+	}
+
+	// Insert the binding (D3 step 5). Same orphan-tolerance as above.
+	if _, err := s.DB.CreateBinding(ctx, CreateBindingInput{
+		RoleID:         role.ID,
+		OrchestratorID: in.TargetOrchestratorID,
+		ArgusTaskID:    created.ID,
+		WorktreePath:   worktreePath,
+	}); err != nil {
+		s.Logger.Printf("ops.SpawnWorker: CreateBinding failed for role %d / argus task %s — partial state: %v", role.ID, created.ID, err)
+		return nil, fmt.Errorf("ops.SpawnWorker: insert binding: %w", err)
+	}
+
+	return &SpawnWorkerResult{
+		RoleID:      role.ID,
+		ArgusTaskID: created.ID,
+	}, nil
+}
+
+// uniqueWorkerName returns baseName if no non-archived role under
+// orchestratorID has that name, or baseName-2, baseName-3, … until a free
+// slot is found. The search is bounded by the number of existing siblings
+// plus a safety cap so a degenerate DB state cannot loop forever.
+func (s *Service) uniqueWorkerName(ctx context.Context, orchID int64, baseName string) (string, error) {
+	roles, err := s.DB.ListRolesByOrchestrator(ctx, orchID)
+	if err != nil {
+		return "", fmt.Errorf("uniqueWorkerName: list roles: %w", err)
+	}
+	used := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		used[r.Name] = true
+	}
+	if !used[baseName] {
+		return baseName, nil
+	}
+	for i := 2; i <= len(roles)+2; i++ {
+		candidate := fmt.Sprintf("%s-%d", baseName, i)
+		if !used[candidate] {
+			return candidate, nil
+		}
+	}
+	// Fallback: append a raw count beyond the loop bound (should never reach
+	// here in practice).
+	return fmt.Sprintf("%s-%d", baseName, len(roles)+3), nil
+}
+
+// workerNameRe matches characters that belong in a slug: ASCII letters,
+// digits, and hyphens. Everything else is treated as a word boundary or
+// dropped.
+var workerNameRe = regexp.MustCompile(`[a-z0-9]+`)
+
+// deriveWorkerName produces a URL-slug-style name from the first ~40 chars
+// of the prompt, mirroring argus's sanitizeName heuristic (D5). The slug
+// is always lowercase. Non-word runs become single hyphens; leading/trailing
+// hyphens are stripped. When the result is empty the fallback stem "worker"
+// is returned so role names are always non-empty.
+func deriveWorkerName(prompt string) string {
+	// Work with the first 40 runes only (prompt head).
+	runes := []rune(prompt)
+	if len(runes) > 40 {
+		runes = runes[:40]
+	}
+	// Lowercase.
+	lower := strings.Map(func(r rune) rune {
+		return unicode.ToLower(r)
+	}, string(runes))
+
+	// Extract word-char tokens and join with hyphens.
+	tokens := workerNameRe.FindAllString(lower, -1)
+	if len(tokens) == 0 {
+		return "worker"
+	}
+	slug := strings.Join(tokens, "-")
+	if slug == "" {
+		return "worker"
+	}
+	return slug
+}
+
+// buildWorkerPrompt assembles the task prompt: a short orientation prefix
+// naming the coordinator and noting the worker may report progress via
+// hera_send, followed by the operator's prompt text verbatim (D4).
+func buildWorkerPrompt(coordName, userPrompt string) string {
+	prefix := "You are a worker agent."
+	if coordName != "" {
+		prefix = fmt.Sprintf("You are a worker agent under coordinator %q.", coordName)
+	}
+	return fmt.Sprintf("%s You may report progress via hera_send.\n\n%s", prefix, userPrompt)
+}

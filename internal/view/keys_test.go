@@ -49,9 +49,9 @@ func (f *fakeTargets) CoordTaskID() string { return f.coord }
 func (f *fakeTargets) AgentTaskID() string { return f.agent }
 
 type fakeMutations struct {
-	new, rename, del, archive, listAll, help   int
-	prune, openPR, statusAdvance, statusRevert int
-	resurrect                                  int
+	new, newWorker, rename, del, archive, listAll, help int
+	prune, openPR, statusAdvance, statusRevert          int
+	resurrect                                           int
 
 	// resurrectHandled is what OnResurrect returns — true means it consumed
 	// the Enter (showed a resurrect confirm) so the router must NOT fall
@@ -60,6 +60,7 @@ type fakeMutations struct {
 }
 
 func (f *fakeMutations) OnNew()           { f.new++ }
+func (f *fakeMutations) OnNewWorker()     { f.newWorker++ }
 func (f *fakeMutations) OnRename()        { f.rename++ }
 func (f *fakeMutations) OnDelete()        { f.del++ }
 func (f *fakeMutations) OnArchive()       { f.archive++ }
@@ -1315,5 +1316,61 @@ func TestHotkeyItems_PaneFocusDropsPruneAndPR(t *testing.T) {
 				t.Errorf("%s hotkeys must NOT advertise %q (RAIL-only); items=%+v", tc.name, key, tc.items)
 			}
 		}
+	}
+}
+
+// TestKeyRouter_MutationKey_w_InRAIL_FiresOnNewWorker proves that `w` in RAIL
+// focus fires OnNewWorker (not forwarded as a byte).
+func TestKeyRouter_MutationKey_w_InRAIL_FiresOnNewWorker(t *testing.T) {
+	r, p, m, _ := newRouter()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone))
+	if m.newWorker != 1 {
+		t.Fatalf("w in RAIL must fire OnNewWorker; got count %d", m.newWorker)
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("w in RAIL must NOT be forwarded as byte; got %d calls", len(p.Calls()))
+	}
+}
+
+// TestKeyRouter_MutationKey_w_InCOORD_ForwardsAsByte proves that `w` in
+// COORD focus is NOT intercepted by the mutation handler — it forwards the
+// byte 'w' to the coord task's PTY.
+func TestKeyRouter_MutationKey_w_InCOORD_ForwardsAsByte(t *testing.T) {
+	r, p, m, _ := newRouter()
+	r.Focus.Advance() // → COORD
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone))
+	if m.newWorker != 0 {
+		t.Fatalf("w in COORD must NOT fire OnNewWorker; got count %d", m.newWorker)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || string(calls[0].Payload) != "w" || calls[0].TaskID != "coord-1" {
+		t.Fatalf("w in COORD must forward 'w' to coord task; got %d calls, payload=%q taskid=%v",
+			len(calls), payloadOf(calls), taskIDsOf(calls))
+	}
+}
+
+// TestKeyRouter_MutationKey_w_InAGENT_ForwardsAsByte proves that `w` in
+// AGENT focus forwards the byte 'w' to the agent task's PTY.
+func TestKeyRouter_MutationKey_w_InAGENT_ForwardsAsByte(t *testing.T) {
+	r, p, m, _ := newRouter()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone))
+	if m.newWorker != 0 {
+		t.Fatalf("w in AGENT must NOT fire OnNewWorker; got count %d", m.newWorker)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || string(calls[0].Payload) != "w" || calls[0].TaskID != "agent-1" {
+		t.Fatalf("w in AGENT must forward 'w' to agent task; got %d calls, payload=%q taskid=%v",
+			len(calls), payloadOf(calls), taskIDsOf(calls))
+	}
+}
+
+// TestHotkeyItems_RailAdvertisesWorkerKey proves that the RAIL hotkey
+// dictionary includes `w` (spawn worker), so it appears in argus's help
+// overlay even if it's not on the bottom bar.
+func TestHotkeyItems_RailAdvertisesWorkerKey(t *testing.T) {
+	items := hotkeyItems(FocusRAIL, true)
+	if !hotkeyContains(items, "w") {
+		t.Errorf("RAIL hotkeys must advertise 'w' (spawn worker); items=%+v", items)
 	}
 }
