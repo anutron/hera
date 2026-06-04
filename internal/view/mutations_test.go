@@ -1894,17 +1894,17 @@ func TestBridge_OnNewWorker_NoneSelection_NotApplicable(t *testing.T) {
 	}
 }
 
-// TestBridge_OnNewWorker_EmptyPrompt_NoSpawn asserts that an empty prompt
-// confirmation does not call SpawnWorker.
-func TestBridge_OnNewWorker_EmptyPrompt_NoSpawn(t *testing.T) {
+// TestBridge_OnNewWorker_OrchHeaderNoCoordRole_NotApplicable asserts D3: an
+// orchestrator header with no coord role (CoordRoleID==0) surfaces a notice and
+// issues no op call.
+func TestBridge_OnNewWorker_OrchHeaderNoCoordRole_NotApplicable(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
 	sel.sel = railSelection{
 		Kind:           selOrchestrator,
 		OrchestratorID: 1,
-		CoordRoleID:    10,
+		CoordRoleID:    0, // no coord role
 		Name:           "foo",
 	}
-	m.stubInputAnswer = "" // empty confirmation
 
 	b.OnNewWorker()
 	b.waitIdle()
@@ -1912,9 +1912,92 @@ func TestBridge_OnNewWorker_EmptyPrompt_NoSpawn(t *testing.T) {
 	svc.mu.Lock()
 	spawnCount := len(svc.spawnWorkerCalls)
 	svc.mu.Unlock()
+	m.mu.Lock()
+	inputs := len(m.inputs)
+	errs := len(m.errors)
+	m.mu.Unlock()
 
 	if spawnCount != 0 {
-		t.Fatalf("empty prompt must not trigger SpawnWorker; got %d calls", spawnCount)
+		t.Fatalf("orch header with no coord role must not trigger SpawnWorker; got %d calls", spawnCount)
+	}
+	if inputs != 0 {
+		t.Fatalf("orch header with no coord role must not open the prompt modal; got %d", inputs)
+	}
+	if errs == 0 {
+		t.Fatal("orch header with no coord role must surface a not-applicable notice")
+	}
+}
+
+// TestBridge_OnNewWorker_SubCoordNoChildOrch_NotApplicable asserts D3: a
+// sub-coordinator row (RoleKind=coordinator) with no child orchestrator
+// (ChildOrchestratorID==0) surfaces a notice and issues no op call.
+func TestBridge_OnNewWorker_SubCoordNoChildOrch_NotApplicable(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:                selRole,
+		OrchestratorID:      1,
+		RoleID:              5,
+		CoordRoleID:         10,
+		Name:                "sub",
+		RoleKind:            "coordinator",
+		ChildOrchestratorID: 0, // promoted coord row with no resolvable child
+	}
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	spawnCount := len(svc.spawnWorkerCalls)
+	svc.mu.Unlock()
+	m.mu.Lock()
+	inputs := len(m.inputs)
+	errs := len(m.errors)
+	m.mu.Unlock()
+
+	if spawnCount != 0 {
+		t.Fatalf("sub-coord row with no child orch must not trigger SpawnWorker; got %d calls", spawnCount)
+	}
+	if inputs != 0 {
+		t.Fatalf("sub-coord row with no child orch must not open the prompt modal; got %d", inputs)
+	}
+	if errs == 0 {
+		t.Fatal("sub-coord row with no child orch must surface a not-applicable notice")
+	}
+}
+
+// TestBridge_OnNewWorker_EmptyPrompt_SurfacesNotice asserts D1: confirming the
+// spawn-worker modal with an empty OR whitespace-only prompt surfaces a
+// dismissible notice (NOT a silent close) and issues no SpawnWorker call.
+func TestBridge_OnNewWorker_EmptyPrompt_SurfacesNotice(t *testing.T) {
+	for _, answer := range []string{"", "   ", "\t\n"} {
+		b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+		sel.sel = railSelection{
+			Kind:           selOrchestrator,
+			OrchestratorID: 1,
+			CoordRoleID:    10,
+			Name:           "foo",
+		}
+		m.stubInputAnswer = answer
+
+		b.OnNewWorker()
+		b.waitIdle()
+
+		svc.mu.Lock()
+		spawnCount := len(svc.spawnWorkerCalls)
+		svc.mu.Unlock()
+		if spawnCount != 0 {
+			t.Fatalf("answer=%q: empty/whitespace prompt must not trigger SpawnWorker; got %d calls", answer, spawnCount)
+		}
+
+		m.mu.Lock()
+		errs := append([]string(nil), m.errors...)
+		m.mu.Unlock()
+		if len(errs) == 0 {
+			t.Fatalf("answer=%q: empty/whitespace prompt must surface a dismissible notice, not a silent close", answer)
+		}
+		if !strings.Contains(errs[len(errs)-1], "prompt is required") {
+			t.Fatalf("answer=%q: notice should say \"prompt is required\"; got %q", answer, errs[len(errs)-1])
+		}
 	}
 }
 

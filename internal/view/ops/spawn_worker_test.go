@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -363,19 +364,24 @@ func TestSpawnWorker_GetTaskFailureSoftDegrades(t *testing.T) {
 		t.Fatal("expected a role to be created even with GetTask failure")
 	}
 
-	// A binding should still exist (with empty worktree path).
+	// A binding should still exist, AND its worktree path MUST be empty
+	// (GetTask could not resolve it).
 	db.mu.Lock()
-	var found bool
+	var bound *Binding
 	for _, bnd := range db.bindings {
 		if bnd.ArgusTaskID == "T9" {
-			found = true
+			cp := *bnd
+			bound = &cp
 			break
 		}
 	}
 	db.mu.Unlock()
 
-	if !found {
+	if bound == nil {
 		t.Fatal("binding should be inserted even when GetTask fails")
+	}
+	if bound.WorktreePath != "" {
+		t.Fatalf("binding inserted on GetTask failure must have an EMPTY worktree_path; got %q", bound.WorktreePath)
 	}
 
 	// A warning must be logged.
@@ -427,6 +433,93 @@ func TestSpawnWorker_ArgusCreateFailure_ReturnsError(t *testing.T) {
 	}
 	if bindCount != 0 {
 		t.Fatalf("no binding should be inserted on argus failure; got %d", bindCount)
+	}
+}
+
+// TestSpawnWorker_RoleInsertFailureAfterCreate_NoRollback asserts D2/Risks:
+// when the role insert fails AFTER the argus task was created, SpawnWorker
+// returns the error, logs the orphaned task id, and does NOT issue a DeleteTask
+// (the orphan is recoverable as a freelancer, never destroyed by a fallible
+// rollback).
+func TestSpawnWorker_RoleInsertFailureAfterCreate_NoRollback(t *testing.T) {
+	s, db, argus, _, l := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "foo-frontend", false)
+	argus.createResp = &CreatedTask{ID: "T9", Name: "worker"}
+	argus.getTaskResp = &TaskDetails{ID: "T9", WorktreePath: "/wt"}
+	db.createRoleErr = errors.New("role insert boom")
+
+	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
+		TargetOrchestratorID: orch.ID,
+		CoordRoleID:          coordRole.ID,
+		Prompt:               "do the thing",
+	})
+	if err == nil {
+		t.Fatal("expected error when role insert fails after CreateTask")
+	}
+
+	argus.mu.Lock()
+	deletes := append([]string(nil), argus.deleteCalls...)
+	argus.mu.Unlock()
+	if len(deletes) != 0 {
+		t.Fatalf("orphaned argus task MUST NOT be deleted on insert failure; got DeleteTask calls %v", deletes)
+	}
+
+	// The orphaned task id must be logged.
+	l.mu.Lock()
+	msgs := append([]string(nil), l.messages...)
+	l.mu.Unlock()
+	loggedOrphan := false
+	for _, m := range msgs {
+		if strings.Contains(m, "T9") {
+			loggedOrphan = true
+			break
+		}
+	}
+	if !loggedOrphan {
+		t.Fatalf("expected the orphaned task id T9 to be logged; got messages: %v", msgs)
+	}
+}
+
+// TestSpawnWorker_BindingInsertFailureAfterCreate_NoRollback is the binding-
+// insert sibling of the role-insert case: the role inserts, the binding fails,
+// SpawnWorker errors, logs the orphan, and issues no DeleteTask.
+func TestSpawnWorker_BindingInsertFailureAfterCreate_NoRollback(t *testing.T) {
+	s, db, argus, _, l := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "foo-frontend", false)
+	argus.createResp = &CreatedTask{ID: "T9", Name: "worker"}
+	argus.getTaskResp = &TaskDetails{ID: "T9", WorktreePath: "/wt"}
+	db.createBindingErr = errors.New("binding insert boom")
+
+	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
+		TargetOrchestratorID: orch.ID,
+		CoordRoleID:          coordRole.ID,
+		Prompt:               "do the thing",
+	})
+	if err == nil {
+		t.Fatal("expected error when binding insert fails after CreateTask")
+	}
+
+	argus.mu.Lock()
+	deletes := append([]string(nil), argus.deleteCalls...)
+	argus.mu.Unlock()
+	if len(deletes) != 0 {
+		t.Fatalf("orphaned argus task MUST NOT be deleted on binding insert failure; got DeleteTask calls %v", deletes)
+	}
+
+	l.mu.Lock()
+	msgs := append([]string(nil), l.messages...)
+	l.mu.Unlock()
+	loggedOrphan := false
+	for _, m := range msgs {
+		if strings.Contains(m, "T9") {
+			loggedOrphan = true
+			break
+		}
+	}
+	if !loggedOrphan {
+		t.Fatalf("expected the orphaned task id T9 to be logged; got messages: %v", msgs)
 	}
 }
 

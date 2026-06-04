@@ -2691,10 +2691,25 @@ func TestApp_QueueSelectRole_AbandonsUnresolvableAfterBound(t *testing.T) {
 
 	a.selectMu.Lock()
 	pending := a.pendingSelectRoleID
+	misses := a.pendingSelectMisses
 	a.selectMu.Unlock()
 	if pending != 0 {
 		t.Fatalf("unresolvable pending select must be abandoned after %d repopulates; still %d",
 			maxPendingSelectMisses, pending)
+	}
+	// No unbounded retry: the miss counter is reset (not climbing) and a
+	// further repopulate touches nothing — the pending id is fully dropped.
+	if misses != 0 {
+		t.Fatalf("after abandonment the miss counter must reset; got %d", misses)
+	}
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail (post-abandon): %v", err)
+	}
+	a.selectMu.Lock()
+	pendingAfter := a.pendingSelectRoleID
+	a.selectMu.Unlock()
+	if pendingAfter != 0 {
+		t.Fatalf("post-abandon repopulate must not resurrect the pending select; got %d", pendingAfter)
 	}
 }
 
@@ -2927,5 +2942,124 @@ func TestApp_OnNewWorker_SubCoordRow_SpawnsUnderChild_RealSelection(t *testing.T
 	}
 	if calls[0].CoordRoleID != subWorker.ID {
 		t.Fatalf("sub-coord spawn must use the sub-coord's OWN role %d as coord; got %d", subWorker.ID, calls[0].CoordRoleID)
+	}
+}
+
+// TestApp_OnNewWorker_ArchivedAgentRow_SpawnsUnderCoord_RealSelection proves a
+// `w` press on an ARCHIVED agent row still resolves to its (valid) coordinator
+// and spawns — the selected row's archived state must not block resolution
+// (spec: "an archived or dead agent row still resolves to its coordinator").
+// Drives the REAL App selection: archive the worker, reveal it via the Archive
+// expando, select it, run the bridge over a recording fake svc.
+func TestApp_OnNewWorker_ArchivedAgentRow_SpawnsUnderCoord_RealSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+	if err := d.Roles.Archive(ctx, worker.ID); err != nil {
+		t.Fatalf("archive worker role: %v", err)
+	}
+
+	a, err := BuildApp(d, &alivePaneSource{alive: map[string]bool{"tc": true, "tw": true}})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Reveal the archived row (it lives behind the per-coordinator Archive
+	// expando) so the cursor can land on it.
+	a.SetShowArchived(true)
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select the archived worker row")
+	}
+	// Sanity: the row really is archived, and still carries its coordinator.
+	sel := a.CurrentRailSelection()
+	if !sel.Archived {
+		t.Fatalf("expected the selected worker row to be archived; got %+v", sel)
+	}
+	if sel.CoordRoleID != coord.ID {
+		t.Fatalf("archived worker row must still carry CoordRoleID %d; got %d", coord.ID, sel.CoordRoleID)
+	}
+
+	m := &fakeModals{stubInputAnswer: "do work"}
+	svc := &fakeMutationService{}
+	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("w on an archived agent row must still spawn; got %d SpawnWorker calls", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != orch.ID || calls[0].CoordRoleID != coord.ID {
+		t.Fatalf("archived agent row spawn must target its coordinator (orch %d, coord %d); got orch %d coord %d",
+			orch.ID, coord.ID, calls[0].TargetOrchestratorID, calls[0].CoordRoleID)
+	}
+}
+
+// TestApp_OnNewWorker_DeadAgentRow_SpawnsUnderCoord_RealSelection proves a `w`
+// press on a DEAD agent row (its argus task record gone — absent from a warm
+// state cache) still resolves to its coordinator and spawns. Drives the REAL
+// App selection.
+func TestApp_OnNewWorker_DeadAgentRow_SpawnsUnderCoord_RealSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+
+	// Warm state cache that knows the coord task but NOT the worker task →
+	// the worker row is DEAD (record gone). statePaneSource has no StatesReady
+	// method, so taskGone treats the cache as warm.
+	src := &statePaneSource{states: map[string]ArgusTaskState{"tc": {Status: "in_progress"}}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Dead rows hide by default; reveal via the Archive expando.
+	a.SetShowArchived(true)
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select the dead worker row")
+	}
+	sel := a.CurrentRailSelection()
+	if !sel.Dead {
+		t.Fatalf("expected the selected worker row to be dead; got %+v", sel)
+	}
+	if sel.CoordRoleID != coord.ID {
+		t.Fatalf("dead worker row must still carry CoordRoleID %d; got %d", coord.ID, sel.CoordRoleID)
+	}
+
+	m := &fakeModals{stubInputAnswer: "do work"}
+	svc := &fakeMutationService{}
+	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("w on a dead agent row must still spawn; got %d SpawnWorker calls", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != orch.ID || calls[0].CoordRoleID != coord.ID {
+		t.Fatalf("dead agent row spawn must target its coordinator (orch %d, coord %d); got orch %d coord %d",
+			orch.ID, coord.ID, calls[0].TargetOrchestratorID, calls[0].CoordRoleID)
 	}
 }

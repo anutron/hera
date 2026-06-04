@@ -440,6 +440,9 @@ func (b *mutationBridge) OnNewWorker() {
 	b.goUI(func() {
 		b.modals.ShowInput("New worker", "Prompt", "", func(prompt string) {
 			if strings.TrimSpace(prompt) == "" {
+				// Empty/whitespace confirm: surface a dismissible notice rather
+				// than closing silently (D1). No argus/DB call on this path.
+				b.notApplicable("w: prompt is required")
 				return
 			}
 			b.mutate("spawn worker", true, func() error {

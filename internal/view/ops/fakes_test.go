@@ -30,6 +30,12 @@ type fakeDB struct {
 	archiveRoleCalls   []int64
 	unarchiveRoleCalls []int64
 	endBindingCalls    []endCall
+
+	// createRoleErr / createBindingErr, when set, make CreateRole /
+	// CreateBinding fail — backing the post-create insert-failure tests
+	// (the orphan must NOT be rolled back).
+	createRoleErr    error
+	createBindingErr error
 }
 
 type renameCall struct {
@@ -328,6 +334,9 @@ func (f *fakeDB) ListLiveBindings(ctx context.Context) ([]*Binding, error) {
 func (f *fakeDB) CreateRole(ctx context.Context, in CreateRoleInput) (*Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createRoleErr != nil {
+		return nil, f.createRoleErr
+	}
 	// Check for an existing active role with the same (orchestrator_id, name).
 	for _, r := range f.roles {
 		if r.OrchestratorID == in.OrchestratorID && r.Name == in.Name && !r.Archived {
@@ -355,6 +364,9 @@ func (f *fakeDB) CreateRole(ctx context.Context, in CreateRoleInput) (*Role, err
 func (f *fakeDB) CreateBinding(ctx context.Context, in CreateBindingInput) (*Binding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createBindingErr != nil {
+		return nil, f.createBindingErr
+	}
 	f.nextBindingID++
 	orchID := in.OrchestratorID
 	if orchID == 0 {
