@@ -30,6 +30,6 @@
 
 **Depends on:** Stage 2, Stage 3
 
-- [ ] 4.1 `go test ./...` green; `go vet ./...` clean.
-- [ ] 4.2 `openspec validate add-spawn-worker-from-rail --strict` passes.
+- [x] 4.1 `go test ./...` green; `go vet ./...` clean.
+- [x] 4.2 `openspec validate add-spawn-worker-from-rail --strict` passes.
 - [ ] 4.3 Manual dogfood in the live rail: select a coordinator, press `w`, enter a prompt, confirm; verify the worker appears nested under the coordinator within ~100 ms, is selected, focus stays in RAIL, and the argus task starts in the coord's project; repeat targeting an agent row (resolves to its coordinator) and a freelance row (not-applicable notice).
