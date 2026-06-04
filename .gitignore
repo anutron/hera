@@ -20,6 +20,7 @@ go.work.sum
 *.sqlite-wal
 *.sqlite-shm
 .hera/
+.iris.local.toml
 
 # Local-only ralph-review reports
 .claude/reviews/
