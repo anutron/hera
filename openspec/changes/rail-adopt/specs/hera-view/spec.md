@@ -2,12 +2,12 @@
 
 ### Requirement: `J` adopts a freelancer into a chosen coordinator
 
-While the RAIL is focused and the selection is a freelancer row (an unmanaged argus task with no hera role or live binding, rendered in the Freelance section), pressing `J` SHALL open a target picker listing the active (non-archived) orchestrators. The picker SHALL be a themed, focusable, dismissable modal in which `Enter` selects the highlighted orchestrator and `Esc` cancels without change.
+While the RAIL is focused and the selection is a freelancer row (an unmanaged argus task with no hera role or live binding, rendered in the Freelance section), pressing `J` SHALL open a target picker listing the active (non-archived) orchestrators. The picker SHALL be a themed, focusable, dismissable modal in which `Enter` selects the highlighted orchestrator and `Esc` cancels without change. The picker SHALL identify each orchestrator by its name and SHALL name the freelancer being adopted in its title. When no active (non-archived) orchestrator exists, pressing `J` SHALL surface visible feedback that a coordinator must be created first and SHALL NOT open the picker or create any role or binding.
 
 Selecting an orchestrator SHALL adopt the freelancer into it by creating, server-side and without any agent action:
 
-- a `worker` role under the chosen orchestrator, whose name defaults to the freelancer's argus task name and is de-collided (a numeric suffix is appended) when an active role of that name already exists under the orchestrator; and
-- a live binding from the freelancer's argus task to that role.
+- a `worker` role under the chosen orchestrator, whose name defaults to the freelancer's argus task name and is de-collided (a numeric suffix is appended) when an active role of that name already exists under the orchestrator. The role SHALL record the freelancer's argus repo as its `argus_project` (write-once, consistent with roles created via the bootstrap flow), carried from the rail selection; and
+- a live binding from the freelancer's argus task to that role. The binding SHALL record the freelancer's argus-task worktree path, so the adopted row's `^p` open-PR and pane operations resolve the same worktree the freelancer used.
 
 This role-and-binding creation SHALL reuse the same creation path that `hera_join`'s attach-mode uses (the shared DAO `Roles.Create` + `Bindings.Create`), not a duplicate implementation. The freelancer's argus task SHALL be best-effort stamped `meta:hera.role=worker` for parity with `hera_join`; a transient failure to stamp the meta SHALL NOT undo or fail the binding.
 
@@ -41,6 +41,11 @@ The binding operation SHALL run off the tview event loop (the async-mutate patte
 
 - **WHEN** the freelancer's argus task already has a live binding to some orchestrator (a race or mislabeled row)
 - **THEN** the adopt MUST be rejected with visible feedback and MUST NOT create a second binding
+
+#### Scenario: No active coordinator to adopt into surfaces feedback
+
+- **WHEN** the operator presses `J` on a valid freelancer but no active (non-archived) orchestrator exists
+- **THEN** the view MUST surface visible feedback that a coordinator must be created first, and MUST NOT open the picker or create any role or binding
 
 #### Scenario: `J` in a pane forwards to the PTY
 
