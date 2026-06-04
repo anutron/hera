@@ -101,6 +101,16 @@ type ModalGate interface {
 	IsModalActive() bool
 }
 
+// RailFilter is consulted while RAIL is focused so the router can yield to the
+// rail's search INPUT mode. When IsFiltering returns true HandleKey passes the
+// event straight to the focused rail widget (like ModalGate) so typed keys —
+// including ones that are otherwise mutation triggers (`n`/`a`/…) or the
+// Esc-release — become filter input handled by the rail's HandleFilterKey
+// instead of firing here. Nil means "never filtering" (the gate is off).
+type RailFilter interface {
+	IsFiltering() bool
+}
+
 // BorderUpdater is invoked every time the focus state changes so the
 // rendered surface can repaint the colored focus border. Stage F provides
 // the concrete implementation against tview Box widgets.
@@ -144,6 +154,10 @@ type KeyRouter struct {
 	Border     BorderUpdater
 	RailSelect RailSelectHandler
 	Modal      ModalGate
+
+	// Filter, when set, lets the router yield keys to the rail while it is in
+	// search input mode (the `/` filter). Nil disables the gate (no yielding).
+	Filter RailFilter
 
 	// Forward, when set, receives pane-focus keystroke bytes for asynchronous
 	// ordered+coalesced delivery — handlePane enqueues and returns immediately
@@ -217,6 +231,14 @@ func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	if r.Focus.State() == FocusRAIL {
+		// While the rail is in search input mode, yield every key to the focused
+		// rail widget (its HandleFilterKey) so runes build the query and Esc /
+		// Enter clear / accept it — instead of firing mutations or the
+		// Esc-release frame here. Focus-traversal keys above still work (they are
+		// handled before this), so the operator can leave the rail mid-search.
+		if r.Filter != nil && r.Filter.IsFiltering() {
+			return event
+		}
 		return r.handleRail(event)
 	}
 	return r.handlePane(event)

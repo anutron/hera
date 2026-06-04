@@ -166,3 +166,11 @@ hera daemon is reachable this way.
   surface is blank, the daemon may be mid-restart — retry after a few seconds.
 - Give the daemon's argus-state cache one poll interval (~2s) after spawning or
   archiving tasks before probing, so the rail reflects the change.
+- The `›` selection-marker glyph that locates the cursor in colorless captures
+  is **probe-gated**: the daemon renders it only when its OWN environment has
+  `HERA_LIVE_PROBE=1` (the operator does not want the marker in normal use). The
+  probe TEST process sets that var, but the marker is drawn server-side, so the
+  DAEMON launchagent must also carry `HERA_LIVE_PROBE=1` (add it to the hera
+  daemon plist's `EnvironmentVariables`) for the glyph to appear in captures.
+  Without it, locate the cursor by the selected row's pink `theme.StyleSelected`
+  text instead. The `/` rail filter (`HERA_PROBE_KEYS='/foo\r'`) needs no env.

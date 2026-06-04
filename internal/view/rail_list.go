@@ -2,6 +2,8 @@ package view
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -89,6 +91,28 @@ type railList struct {
 	// now is overridable for deterministic elapsed-time rendering in
 	// tests. nil means use time.Now.
 	now func() time.Time
+
+	// filtering reports whether the rail is in search INPUT mode (the operator
+	// pressed `/` and is typing). While true the KeyRouter yields keys to the
+	// rail so they become filter input rather than mutation triggers; Enter
+	// accepts (leaves input mode, keeps the query) and Esc clears + exits.
+	filtering bool
+
+	// filter is the active search query. An empty string means "no filter"
+	// (the full rail renders); a non-empty query narrows buildRows to rows
+	// whose name matches (case-insensitive substring, whitespace-separated
+	// terms), ancestry-preserving. Survives leaving input mode (Enter accept)
+	// until Esc / ClearFilter restores the full rail.
+	filter string
+
+	// probeMarker gates the `›` selection-marker glyph. The operator does not
+	// want the marker in normal use (selection is shown by theme.StyleSelected
+	// alone); the live-probe harness relies on it to locate the cursor in
+	// colorless text captures. Set from the probe env (HERA_LIVE_PROBE) at
+	// construction so the daemon renders the glyph only under a probe run;
+	// tests set it directly. The marker GUTTER is reserved regardless, so
+	// toggling it never shifts row content.
+	probeMarker bool
 
 	// hasRunning reports whether any visible row renders the animated
 	// spinner (a known in_progress state, not idle, not blocked on input).
@@ -301,10 +325,186 @@ func newRailList() *railList {
 		freelanceCollapsed: map[string]bool{},
 		archiveExpanded:    map[int64]bool{},
 		lastFiredCursor:    -1,
+		probeMarker:        probeMarkerFromEnv(),
 	}
 	rl.SetBorder(true)
 	rl.SetTitle("Rail")
 	return rl
+}
+
+// probeMarkerFromEnv reports whether the `›` selection marker should render,
+// gated on the same env var that gates the live-probe harness
+// (HERA_LIVE_PROBE). Unset in normal operation (no glyph); set when the daemon
+// is launched for a probe run so text captures can still locate the cursor.
+func probeMarkerFromEnv() bool { return os.Getenv("HERA_LIVE_PROBE") == "1" }
+
+// Filtering reports whether the rail is in search INPUT mode (the operator is
+// typing a query). The KeyRouter consults this (via the RailFilter gate) to
+// yield keys to the rail while filtering. False after Enter accepts the filter,
+// even though the query stays applied — so j/k resume navigating.
+func (rl *railList) Filtering() bool { return rl.filtering }
+
+// Filter returns the active search query ("" when no filter is applied).
+func (rl *railList) Filter() string { return rl.filter }
+
+// filterActive reports whether a query is currently narrowing the rail,
+// independent of input mode (a query accepted with Enter is still active).
+func (rl *railList) filterActive() bool { return rl.filter != "" }
+
+// BeginFilter enters search input mode (the `/` key). The query is unchanged;
+// the bottom-of-rail input line appears on the next draw.
+func (rl *railList) BeginFilter() {
+	rl.filtering = true
+}
+
+// AcceptFilter leaves input mode while KEEPING the query applied (the Enter
+// key) so j/k navigate the filtered set.
+func (rl *railList) AcceptFilter() {
+	rl.filtering = false
+}
+
+// ClearFilter clears the query and leaves input mode (the Esc key), restoring
+// the full unfiltered rail.
+func (rl *railList) ClearFilter() {
+	rl.filter = ""
+	rl.filtering = false
+	rl.applyFilter()
+}
+
+// SetFilter replaces the query and rebuilds. Primarily a test seam; the live
+// path appends/deletes runes via HandleFilterKey.
+func (rl *railList) SetFilter(q string) {
+	rl.filter = q
+	rl.applyFilter()
+}
+
+// applyFilter rebuilds rows under the current query, preserves the cursor where
+// possible (falling to the first selectable row when the selection filtered
+// out), refreshes the title, and fires the selection-changed callback.
+func (rl *railList) applyFilter() {
+	prev := rl.currentRef()
+	rl.buildRows()
+	if !rl.restoreCursor(prev) {
+		rl.cursor = rl.firstSelectableRow()
+	}
+	rl.updateTitle()
+	rl.maybeFireSelectionChanged()
+}
+
+// updateTitle reflects the active query in the rail title so the operator
+// always sees what is filtering the view (e.g. "Rail /scout").
+func (rl *railList) updateTitle() {
+	if rl.filter != "" {
+		rl.SetTitle("Rail /" + rl.filter)
+		return
+	}
+	rl.SetTitle("Rail")
+}
+
+// HandleFilterKey processes one key while in search input mode: Esc clears and
+// exits, Enter accepts (keeps the query, exits input mode), Backspace deletes
+// the last rune, Up/Down navigate the filtered set, and any other rune is
+// appended to the query. Called by the rail InputHandler (the KeyRouter yields
+// to it while filtering).
+func (rl *railList) HandleFilterKey(e *tcell.EventKey) {
+	switch e.Key() {
+	case tcell.KeyEsc:
+		rl.ClearFilter()
+	case tcell.KeyEnter:
+		rl.AcceptFilter()
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if rl.filter != "" {
+			r := []rune(rl.filter)
+			rl.filter = string(r[:len(r)-1])
+			rl.applyFilter()
+		}
+	case tcell.KeyUp:
+		rl.CursorUp()
+	case tcell.KeyDown:
+		rl.CursorDown()
+	case tcell.KeyRune:
+		rl.filter += string(e.Rune())
+		rl.applyFilter()
+	}
+}
+
+// matchesFilter reports whether name satisfies the active query: every
+// whitespace-separated term must be a case-insensitive substring of name. An
+// empty query matches everything.
+func (rl *railList) matchesFilter(name string) bool {
+	return rl.matchesFilterFields(name)
+}
+
+// matchesFilterFields is matchesFilter across MULTIPLE candidate fields: every
+// query term must match at least one field (case-insensitive substring). Used
+// for freelance rows, where a term may match the task name OR its repo —
+// mirroring argus's name-or-project filter.
+func (rl *railList) matchesFilterFields(fields ...string) bool {
+	if rl.filter == "" {
+		return true
+	}
+	terms := strings.Fields(strings.ToLower(rl.filter))
+	lowered := make([]string, len(fields))
+	for i, f := range fields {
+		lowered[i] = strings.ToLower(f)
+	}
+	for _, term := range terms {
+		hit := false
+		for _, f := range lowered {
+			if strings.Contains(f, term) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			return false
+		}
+	}
+	return true
+}
+
+// orchMatches reports whether a coordinator stays visible under the active
+// query: its own name matches, or any descendant role's name matches (walking
+// sub-coordinators), so a matching agent always keeps its ancestry. seen guards
+// cyclic multi-binding chains.
+func (rl *railList) orchMatches(o *orchEntry) bool {
+	return rl.orchMatchesSeen(o, map[int64]bool{})
+}
+
+func (rl *railList) orchMatchesSeen(o *orchEntry, seen map[int64]bool) bool {
+	if o == nil || seen[o.ID] {
+		return false
+	}
+	seen[o.ID] = true
+	if rl.matchesFilter(o.Name) {
+		return true
+	}
+	for _, r := range o.Roles {
+		if rl.matchesFilter(r.Name) {
+			return true
+		}
+		if r.childOrch != nil && rl.orchMatchesSeen(r.childOrch, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// roleVisible reports whether role under coordinator o renders under the active
+// query: the coordinator name matches (show the whole team), the role name
+// matches, or the role is a sub-coordinator with a matching descendant
+// (ancestry to a deeper match). Always true when no filter is active.
+func (rl *railList) roleVisible(o *orchEntry, role *roleEntry) bool {
+	if !rl.filterActive() {
+		return true
+	}
+	if o != nil && rl.matchesFilter(o.Name) {
+		return true
+	}
+	if rl.matchesFilter(role.Name) {
+		return true
+	}
+	return role.childOrch != nil && rl.orchMatches(role.childOrch)
 }
 
 // SetOnSelectionChanged registers a callback fired whenever the cursor
@@ -712,7 +912,9 @@ func roleArchived(r *roleEntry) bool {
 // The `l` listall convenience (showArchived) force-expands every expando;
 // otherwise the per-owner toggle decides (default collapsed, D14).
 func (rl *railList) archiveOpen(owner int64) bool {
-	return rl.showArchived || rl.archiveExpanded[owner]
+	// An active filter force-expands archive expandos so matching archived
+	// rows are reachable without folding.
+	return rl.filterActive() || rl.showArchived || rl.archiveExpanded[owner]
 }
 
 // orchCollapsed resolves a coordinator's EFFECTIVE fold state. An explicit
@@ -725,6 +927,11 @@ func (rl *railList) archiveOpen(owner int64) bool {
 // collapse. Applies to root coordinators and nested sub-coordinators alike;
 // all fold reads route through here rather than the collapsed map.
 func (rl *railList) orchCollapsed(o *orchEntry) bool {
+	// An active filter force-expands every coordinator (over an explicit
+	// collapse too) so matching rows are never hidden behind a fold.
+	if rl.filterActive() {
+		return false
+	}
 	if v, ok := rl.collapsed[o.ID]; ok {
 		return v
 	}
@@ -736,8 +943,16 @@ func (rl *railList) orchCollapsed(o *orchEntry) bool {
 
 func (rl *railList) buildRows() {
 	rl.rows = nil
+	// An active filter pre-drops coordinators with no match anywhere in their
+	// subtree (orchMatches), so a coordinator only reaches the tree when it or
+	// one of its (recursive) roles matches — ancestry-preserving. appendOrch's
+	// per-row gating (roleVisible) then narrows the children shown beneath it.
+	fActive := rl.filterActive()
 	var active, archived []*orchEntry
 	for _, o := range rl.orchestrators {
+		if fActive && !rl.orchMatches(o) {
+			continue
+		}
 		if o.Archived {
 			archived = append(archived, o)
 		} else {
@@ -771,17 +986,54 @@ func (rl *railList) buildRows() {
 	// separator only appears when at least one freelance repo group has live
 	// rows, so the operator never lands on an empty section.
 	if len(rl.freelance) > 0 {
-		rl.rows = append(rl.rows, railRow{kind: railRowFreelanceSep})
-		for _, fp := range rl.freelance {
-			rl.rows = append(rl.rows, railRow{kind: railRowFreelanceProj, fproj: fp})
-			if rl.freelanceCollapsed[fp.Project] {
-				continue
+		if fActive {
+			// Filtered freelance: a task matches on its name OR its repo (argus
+			// parity). Only repo groups with at least one visible task render a
+			// header, and the section auto-expands (collapse ignored) so matches
+			// are never hidden. The "Freelance" separator renders only when at
+			// least one group survives, so the operator never lands on an empty
+			// section.
+			type freeGroup struct {
+				fp    *freelanceProject
+				tasks []*roleEntry
 			}
-			for _, t := range fp.Tasks {
-				if roleArchived(t) && !rl.showArchived {
+			var groups []freeGroup
+			for _, fp := range rl.freelance {
+				var ts []*roleEntry
+				for _, t := range fp.Tasks {
+					if roleArchived(t) && !rl.showArchived {
+						continue
+					}
+					if rl.matchesFilterFields(t.Name, fp.Project) {
+						ts = append(ts, t)
+					}
+				}
+				if len(ts) > 0 {
+					groups = append(groups, freeGroup{fp: fp, tasks: ts})
+				}
+			}
+			if len(groups) > 0 {
+				rl.rows = append(rl.rows, railRow{kind: railRowFreelanceSep})
+				for _, g := range groups {
+					rl.rows = append(rl.rows, railRow{kind: railRowFreelanceProj, fproj: g.fp})
+					for _, t := range g.tasks {
+						rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
+					}
+				}
+			}
+		} else {
+			rl.rows = append(rl.rows, railRow{kind: railRowFreelanceSep})
+			for _, fp := range rl.freelance {
+				rl.rows = append(rl.rows, railRow{kind: railRowFreelanceProj, fproj: fp})
+				if rl.freelanceCollapsed[fp.Project] {
 					continue
 				}
-				rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
+				for _, t := range fp.Tasks {
+					if roleArchived(t) && !rl.showArchived {
+						continue
+					}
+					rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
+				}
 			}
 		}
 	}
@@ -826,6 +1078,13 @@ func (rl *railList) buildRows() {
 func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int64]bool) {
 	var activeRoles, archivedRoles []*roleEntry
 	for _, role := range o.Roles {
+		// Under an active filter, narrow to the children the query keeps
+		// visible (ancestry-preserving via roleVisible): the coordinator name
+		// matches (show the whole team), the role name matches, or the role is
+		// a sub-coordinator with a deeper match.
+		if !rl.roleVisible(o, role) {
+			continue
+		}
 		if roleArchived(role) {
 			archivedRoles = append(archivedRoles, role)
 		} else {
@@ -888,16 +1147,28 @@ func sortFoldersFirst(roles []*roleEntry) []*roleEntry {
 // the collapse toggle. Every other key is left to the KeyRouter (Enter,
 // j/k, rail mutation keys, focus traversal). The router translates j/k
 // to KeyDown/KeyUp before they reach this widget.
+//
+// `/` enters search input mode (the key is unbound in the router, so it
+// propagates here). While in input mode the router yields every key to this
+// handler (via the RailFilter gate), so they route to HandleFilterKey as filter
+// input rather than firing mutations.
 func (rl *railList) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
 	return rl.WrapInputHandler(func(e *tcell.EventKey, _ func(tview.Primitive)) {
+		if rl.filtering {
+			rl.HandleFilterKey(e)
+			return
+		}
 		switch e.Key() {
 		case tcell.KeyDown:
 			rl.CursorDown()
 		case tcell.KeyUp:
 			rl.CursorUp()
 		case tcell.KeyRune:
-			if e.Rune() == ' ' {
+			switch e.Rune() {
+			case ' ':
 				rl.ToggleCollapse()
+			case '/':
+				rl.BeginFilter()
 			}
 		}
 	})
@@ -914,6 +1185,18 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		return
 	}
 
+	// While in search input mode the bottom inner row is reserved for the
+	// `/ <query>` filter input line, so the row viewport is one shorter. The
+	// gutter math and snapping use this effective height so no row hides behind
+	// the input line.
+	listH := h
+	if rl.filtering {
+		listH = h - 1
+		if listH < 0 {
+			listH = 0
+		}
+	}
+
 	rl.clampOffset()
 	// Cursor-follow snap fires only when the cursor MOVED since the last
 	// draw — an unchanged cursor means any viewport displacement came from a
@@ -922,16 +1205,16 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		if rl.cursor < rl.offset {
 			rl.offset = rl.cursor
 		}
-		if rl.cursor >= rl.offset+h {
-			rl.offset = rl.cursor - h + 1
+		if rl.cursor >= rl.offset+listH {
+			rl.offset = rl.cursor - listH + 1
 		}
 	}
 	rl.lastSnapCursor = rl.cursor
-	rl.lastHeight = h
+	rl.lastHeight = listH
 	if rl.offset < 0 {
 		rl.offset = 0
 	}
-	if max := len(rl.rows) - h; rl.offset > max {
+	if max := len(rl.rows) - listH; rl.offset > max {
 		if max < 0 {
 			max = 0
 		}
@@ -944,18 +1227,20 @@ func (rl *railList) Draw(screen tcell.Screen) {
 	if cw < 0 {
 		cw = 0
 	}
-	for i := 0; i < h; i++ {
+	for i := 0; i < listH; i++ {
 		idx := rl.offset + i
 		if idx >= len(rl.rows) {
 			break
 		}
 		row := rl.rows[idx]
 		cursor := idx == rl.cursor && rl.selectable(idx)
-		// Selection-marker gutter: `›` on the cursor row, a space everywhere
-		// else, so the selection survives a colorless capture and nothing
-		// shifts on cursor moves.
+		// Selection-marker gutter: the `›` glyph renders on the cursor row ONLY
+		// when the probe gate is set (the operator does not want it in normal
+		// use; the live-probe harness relies on it). The gutter is reserved in
+		// both states so nothing shifts when the marker toggles or the cursor
+		// moves; selection is otherwise shown by theme.StyleSelected text.
 		marker := ' '
-		if cursor {
+		if cursor && rl.probeMarker {
 			marker = selectionMarker
 		}
 		screen.SetContent(x, y+i, marker, nil, theme.StyleSelected)
@@ -974,6 +1259,20 @@ func (rl *railList) Draw(screen tcell.Screen) {
 			widget.DrawText(screen, cx, y+i, cw, "(no projects)", theme.StyleDimmed)
 		}
 	}
+
+	// Filter input line on the reserved bottom row (input mode only): a
+	// `/`-prefixed prompt with the live query, mirroring argus's filter bar.
+	if rl.filtering && listH < h {
+		rl.drawFilterInput(screen, x, y+listH, w)
+	}
+}
+
+// drawFilterInput renders the `/ <query>` search prompt on the rail's reserved
+// bottom row while in input mode, so the operator always sees the live query.
+func (rl *railList) drawFilterInput(screen tcell.Screen, x, y, w int) {
+	style := tcell.StyleDefault.Foreground(theme.ColorTitle)
+	widget.DrawText(screen, x, y, 2, "/ ", style)
+	widget.DrawText(screen, x+2, y, w-2, rl.filter, theme.StyleNormal)
 }
 
 // PanBy moves the rail viewport by delta rows (positive reveals later rows,
