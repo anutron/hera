@@ -185,14 +185,13 @@ func TestSpawnWorker_OrientationPrefixedPrompt(t *testing.T) {
 	s, db, argus, _, _ := newTestService()
 	orch := db.seedOrchestrator("foo", false)
 	// The coord role's name is what appears in the prefix.
-	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "foo-frontend", false)
+	coordRole := db.seedRole(orch.ID, "foo-coord", KindCoordinator, "foo-frontend", false)
 	argus.createResp = &CreatedTask{ID: "T1", Name: "migrate-the-schema"}
 	argus.getTaskResp = &TaskDetails{ID: "T1", WorktreePath: "/wt/path"}
 
 	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
 		TargetOrchestratorID: orch.ID,
 		CoordRoleID:          coordRole.ID,
-		CoordName:            "foo",
 		Prompt:               "migrate the schema",
 	})
 	if err != nil {
@@ -204,9 +203,9 @@ func TestSpawnWorker_OrientationPrefixedPrompt(t *testing.T) {
 	}
 	prompt := argus.createCalls[0].Prompt
 
-	// Prefix must name the coordinator.
-	if !strings.Contains(prompt, "foo") {
-		t.Fatalf("task prompt must name coordinator \"foo\"; got %q", prompt)
+	// Prefix must name the coordinator (sourced from the coord role).
+	if !strings.Contains(prompt, "foo-coord") {
+		t.Fatalf("task prompt must name coordinator \"foo-coord\"; got %q", prompt)
 	}
 	// Prefix must mention hera_send.
 	if !strings.Contains(prompt, "hera_send") {
@@ -215,6 +214,39 @@ func TestSpawnWorker_OrientationPrefixedPrompt(t *testing.T) {
 	// Operator's text must appear verbatim after the prefix.
 	if !strings.Contains(prompt, "migrate the schema") {
 		t.Fatalf("task prompt must contain operator text; got %q", prompt)
+	}
+}
+
+// TestSpawnWorker_PrefixNamesCoordRoleNotSelectedRow asserts the orientation
+// prefix names the COORDINATOR (resolved from the coord role) regardless of
+// which row was selected. The bug this guards: when an AGENT row is selected,
+// the prefix must NOT say the agent's name. The op sources the name from the
+// coord role it loads, so any caller-supplied name is irrelevant.
+func TestSpawnWorker_PrefixNamesCoordRoleNotSelectedRow(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("acme", false)
+	coordRole := db.seedRole(orch.ID, "acme-coord", KindCoordinator, "acme-api", false)
+	// A sibling agent row whose name would have been (wrongly) used as the
+	// prefix coordinator name under the old caller-supplied path.
+	db.seedRole(orch.ID, "some-agent", KindWorker, "acme-api", false)
+	argus.createResp = &CreatedTask{ID: "T7", Name: "do-thing"}
+	argus.getTaskResp = &TaskDetails{ID: "T7", WorktreePath: "/wt"}
+
+	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
+		TargetOrchestratorID: orch.ID,
+		CoordRoleID:          coordRole.ID,
+		Prompt:               "do the thing",
+	})
+	if err != nil {
+		t.Fatalf("SpawnWorker: %v", err)
+	}
+
+	prompt := argus.createCalls[0].Prompt
+	if !strings.Contains(prompt, "acme-coord") {
+		t.Fatalf("prefix must name the coordinator \"acme-coord\"; got %q", prompt)
+	}
+	if strings.Contains(prompt, "some-agent") {
+		t.Fatalf("prefix must NOT name the selected agent row \"some-agent\"; got %q", prompt)
 	}
 }
 

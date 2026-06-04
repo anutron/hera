@@ -150,27 +150,27 @@ type fakeSelector struct{ sel railSelection }
 
 func (f *fakeSelector) CurrentRailSelection() railSelection { return f.sel }
 
-// fakeRowSelector records SelectByRoleID calls so tests can assert
-// that the bridge auto-selects the newly created worker row.
+// fakeRowSelector records QueueSelectRole calls so tests can assert that the
+// bridge QUEUES the newly created worker row for deferred auto-select (applied
+// on the next rail repopulate, not immediately).
 type fakeRowSelector struct {
-	mu            sync.Mutex
-	selectedRoles []int64
+	mu     sync.Mutex
+	queued []int64
 }
 
-func (f *fakeRowSelector) SelectByRoleID(id int64) bool {
+func (f *fakeRowSelector) QueueSelectRole(id int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.selectedRoles = append(f.selectedRoles, id)
-	return true
+	f.queued = append(f.queued, id)
 }
 
-func (f *fakeRowSelector) LastSelected() int64 {
+func (f *fakeRowSelector) LastQueued() int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.selectedRoles) == 0 {
+	if len(f.queued) == 0 {
 		return 0
 	}
-	return f.selectedRoles[len(f.selectedRoles)-1]
+	return f.queued[len(f.queued)-1]
 }
 
 type fakeRepopulator struct {
@@ -1899,10 +1899,10 @@ func TestBridge_OnNewWorker_NoneSelection_NotApplicable(t *testing.T) {
 func TestBridge_OnNewWorker_EmptyPrompt_NoSpawn(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
 	sel.sel = railSelection{
-		Kind:        selOrchestrator,
+		Kind:           selOrchestrator,
 		OrchestratorID: 1,
-		CoordRoleID: 10,
-		Name:        "foo",
+		CoordRoleID:    10,
+		Name:           "foo",
 	}
 	m.stubInputAnswer = "" // empty confirmation
 
@@ -1918,9 +1918,10 @@ func TestBridge_OnNewWorker_EmptyPrompt_NoSpawn(t *testing.T) {
 	}
 }
 
-// TestBridge_OnNewWorker_Success_AutoSelectsNewRow asserts that after a
-// successful spawn, the bridge calls SelectByRoleID with the new role id.
-func TestBridge_OnNewWorker_Success_AutoSelectsNewRow(t *testing.T) {
+// TestBridge_OnNewWorker_Success_QueuesAutoSelect asserts that after a
+// successful spawn, the bridge QUEUES the new role id for deferred auto-select
+// (applied on the next broadcaster-driven rail repopulate, not immediately).
+func TestBridge_OnNewWorker_Success_QueuesAutoSelect(t *testing.T) {
 	b, m, sel, svc, _, rowSel := newBridgeWithRowSelector()
 	sel.sel = railSelection{
 		Kind:           selOrchestrator,
@@ -1934,8 +1935,8 @@ func TestBridge_OnNewWorker_Success_AutoSelectsNewRow(t *testing.T) {
 	b.OnNewWorker()
 	b.waitIdle()
 
-	if rowSel.LastSelected() != 42 {
-		t.Fatalf("auto-select: want RoleID 42, got %d", rowSel.LastSelected())
+	if rowSel.LastQueued() != 42 {
+		t.Fatalf("auto-select: want queued RoleID 42, got %d", rowSel.LastQueued())
 	}
 }
 

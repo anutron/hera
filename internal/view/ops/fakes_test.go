@@ -399,8 +399,8 @@ type fakeArgus struct {
 	createErr   error
 
 	// getTaskResp / getTaskErr back the GetTask implementation used by SpawnWorker.
-	getTaskResp *TaskDetails
-	getTaskErr  error
+	getTaskResp  *TaskDetails
+	getTaskErr   error
 	getTaskCalls []string
 
 	archiveCalls   []string

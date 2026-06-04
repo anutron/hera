@@ -2595,3 +2595,105 @@ func TestBuildApp_EndedBindingWorkerRowDoesNotDuplicateIntoFreelance(t *testing.
 		t.Fatalf("task rendered as a role row must not duplicate into Freelance; got %+v", fl)
 	}
 }
+
+// TestApp_QueueSelectRole_AppliedOnNextRepopulate proves FIX 2: the worker
+// auto-select is DEFERRED to the next rail repopulate. At QueueSelectRole time
+// the new row does not exist (the broadcaster-driven refresh has not run), so
+// an immediate select would no-op. After the role+binding are inserted and the
+// rail repopulates, the queued row becomes the rail selection — and focus is
+// untouched (stays RAIL).
+func TestApp_QueueSelectRole_AppliedOnNextRepopulate(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "c1", WorktreePath: "/c"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Simulate SpawnWorker inserting the worker AFTER the operator pressed `w`:
+	// first the bridge queues the (not-yet-existent) role id, then the row lands
+	// in the DB, then the broadcaster-driven repopulate runs.
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "new-worker", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "w9", WorktreePath: "/w9"})
+
+	// Queue the select. (Order vs. insert does not matter — the apply happens at
+	// repopulate; queue it now to mirror the bridge's post-spawn call.)
+	a.QueueSelectRole(worker.ID)
+
+	// Repopulate the rail (what the DAO broadcaster triggers ~100ms after the
+	// inserts). Call populateRail directly to avoid QueueUpdateDraw blocking on
+	// a non-running event loop in the unit test.
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+
+	// The queued row must now be the rail selection.
+	ref, ok := a.pieces.rail.CurrentRef().(*roleEntry)
+	if !ok || ref.RoleID != worker.ID {
+		t.Fatalf("auto-select after repopulate: want rail on worker role %d; got %T %+v",
+			worker.ID, a.pieces.rail.CurrentRef(), a.pieces.rail.CurrentRef())
+	}
+
+	// Focus must be untouched (RAIL).
+	if focus.State() != FocusRAIL {
+		t.Fatalf("auto-select must keep focus in RAIL; got %s", focus.State())
+	}
+
+	// The pending id must be consumed — a second repopulate must NOT re-steer
+	// selection (move the cursor elsewhere first, then repopulate, and confirm
+	// it stays where the operator left it).
+	a.pieces.rail.SelectByOrchID(orch.ID) // move cursor off the worker
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail (second): %v", err)
+	}
+	if _, stillWorker := a.pieces.rail.CurrentRef().(*roleEntry); stillWorker {
+		if ref2, _ := a.pieces.rail.CurrentRef().(*roleEntry); ref2 != nil && ref2.RoleID == worker.ID {
+			t.Fatal("pending select must be consumed; a later repopulate re-selected the worker")
+		}
+	}
+}
+
+// TestApp_QueueSelectRole_AbandonsUnresolvableAfterBound proves the pending
+// id does not hijack future repopulates forever: a role id that never appears
+// is dropped after maxPendingSelectMisses repopulates.
+func TestApp_QueueSelectRole_AbandonsUnresolvableAfterBound(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "c1", WorktreePath: "/c"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Queue a role id that will never exist.
+	a.QueueSelectRole(999999)
+
+	for i := 0; i < maxPendingSelectMisses; i++ {
+		if err := a.populateRail(d); err != nil {
+			t.Fatalf("populateRail attempt %d: %v", i, err)
+		}
+	}
+
+	a.selectMu.Lock()
+	pending := a.pendingSelectRoleID
+	a.selectMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("unresolvable pending select must be abandoned after %d repopulates; still %d",
+			maxPendingSelectMisses, pending)
+	}
+}

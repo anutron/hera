@@ -15,12 +15,10 @@ type SpawnWorkerInput struct {
 	TargetOrchestratorID int64
 
 	// CoordRoleID is the coordinator role whose argus_project the worker
-	// inherits. The op fetches this role to resolve the project.
+	// inherits. The op fetches this role to resolve both the project AND the
+	// coordinator name used in the orientation prefix — so the prefix is
+	// correct regardless of which rail row the caller selected.
 	CoordRoleID int64
-
-	// CoordName is the human-readable coordinator name used in the
-	// orientation prefix. Optional — when empty the prefix omits the name.
-	CoordName string
 
 	// Prompt is the operator's text. Must be non-empty (after trimming).
 	Prompt string
@@ -64,8 +62,13 @@ func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnW
 		return nil, fmt.Errorf("ops.SpawnWorker: derive unique name: %w", err)
 	}
 
-	// Build the orientation-prefixed prompt (D4).
-	taskPrompt := buildWorkerPrompt(in.CoordName, prompt)
+	// Build the orientation-prefixed prompt (D4). The coordinator name is
+	// sourced from the coord ROLE we just loaded — never the caller-supplied
+	// CoordName, which on an agent-row selection is the agent's name, not the
+	// coordinator's. The delta scenario "Worker prompt carries an orientation
+	// prefix" requires the prefix to name the COORDINATOR regardless of which
+	// row was selected.
+	taskPrompt := buildWorkerPrompt(coordRole.Name, prompt)
 
 	// Create the argus task in the coordinator's project with worker meta (D3).
 	req := CreateTaskRequest{
