@@ -51,6 +51,13 @@ type mutationService interface {
 	// section visible).
 	ResurrectOrchestrator(ctx context.Context, coordRoleID int64) (*ops.CreatedTask, error)
 
+	// SpawnWorker handles the `w` rail key: creates an argus task in the
+	// coordinator's argus_project, inserts a worker role and binding
+	// programmatically, and returns the created role + task ids so the
+	// bridge can auto-select the new row. Returns ErrValidation on empty
+	// prompt; other errors surface as an error modal.
+	SpawnWorker(ctx context.Context, in ops.SpawnWorkerInput) (*ops.SpawnWorkerResult, error)
+
 	// Task-direct verbs for freelance rows (unmanaged argus tasks with no hera
 	// role or binding): both bypass the hera-binding lookup and address the
 	// argus task by id. ToggleArchiveTask backs `a`; archived is the task's
@@ -112,12 +119,25 @@ type railSelection struct {
 	RoleKind       string
 	Archived       bool
 
-	// CoordRoleID is the orchestrator's coord role id, carried on orchestrator
-	// rows so the resurrect-on-Enter flow can target the coord role when the
-	// operator presses Enter on an archived root coordinator (whose selection
-	// is the orchestrator header, not a role row). Zero for non-orchestrator
-	// selections or when the orchestrator has no coord role.
+	// CoordRoleID is the coord role id of the orchestrator the selection
+	// belongs to. Carried on:
+	//   - orchestrator (header) rows — so resurrect-on-Enter can target the
+	//     coord role when Enter lands on an archived root coordinator;
+	//   - agent/worker role rows — so `w` (OnNewWorker) can resolve the
+	//     coordinator to spawn the new worker under (delta scenario "w resolves
+	//     an agent selection to its coordinator"); without this an agent-row
+	//     `w` resolves CoordRoleID==0 and dies as not-applicable.
+	// Zero when the orchestrator has no coord role, or for freelance rows.
 	CoordRoleID int64
+
+	// ChildOrchestratorID is set ONLY on a promoted sub-coordinator role row (a
+	// worker whose own task coordinates a separate child orchestrator — a
+	// multi-binding). It is the CHILD orchestrator's id. `w` (OnNewWorker) uses
+	// it to spawn the new worker under the sub-coordinator itself (the child
+	// orchestrator), with the sub-coord's OWN role as the coord — per delta D2
+	// "a coordinator row (root OR a sub-coordinator role row) targets that
+	// coordinator." Zero for root coordinators and plain leaf workers.
+	ChildOrchestratorID int64
 
 	// CoordTaskID / CoordArgusArchived carry the orchestrator header's
 	// coord-pane binding and its argus-side archived bit. A displayed-active
@@ -192,6 +212,18 @@ type helpFrameSender interface {
 	SendHelp() error
 }
 
+// rowSelector stashes a role id to auto-select on the NEXT broadcaster-driven
+// rail repopulate. Because role/binding inserts trigger an async (~100ms) rail
+// refresh, the new row does not exist at the instant SpawnWorker returns — an
+// immediate select would silently no-op. QueueSelectRole defers the select to
+// when the row is actually present (the App applies it at the end of its
+// populateRail). Production wires this to *App; tests inject a fakeRowSelector.
+// nil makes auto-select a no-op (the row is still visible; the operator can
+// navigate to it manually).
+type rowSelector interface {
+	QueueSelectRole(id int64)
+}
+
 // mutationBridge implements MutationHandler by routing each rail
 // mutation key to modals + ops.Service. Construction wires it to the
 // surrounding App via the small interfaces above; tests inject
@@ -211,6 +243,7 @@ type mutationBridge struct {
 	listAll listAllState
 	repop   repopulator
 	help    helpFrameSender
+	rowSel  rowSelector
 	log     *slog.Logger
 
 	// inFlight guards the blocking phase of a mutation: while a svc call is
@@ -334,6 +367,102 @@ func (b *mutationBridge) OnNew() {
 			b.mutate("new project", true, func() error {
 				_, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{Name: name, Mission: mission})
 				return err
+			})
+		}, nil)
+	})
+}
+
+// OnNewWorker handles the `w` RAIL-focus-only key (D1). It:
+//  1. Resolves the target coordinator from the current rail selection.
+//  2. Opens a single-field input modal prompting for the worker's prompt.
+//  3. On confirm with a non-empty prompt, runs SpawnWorker off the event loop.
+//  4. On success, auto-selects the new worker row while keeping focus RAIL.
+//
+// Selection resolution (D2):
+//   - Orchestrator header → that orchestrator's coord role (CoordRoleID).
+//   - Sub-coordinator role row (a promoted worker whose own task coordinates a
+//     child orchestrator) → that CHILD orchestrator, with this row's own role
+//     as coord (D2: a sub-coordinator row targets itself).
+//   - Leaf agent/worker role row → that agent's orchestrator (OrchestratorID),
+//     using CoordRoleID carried on the selection.
+//   - Freelance row, selNone, or any selection without a coordinator →
+//     a dismissible "not applicable" notice, no spawn.
+func (b *mutationBridge) OnNewWorker() {
+	sel := b.sel.CurrentRailSelection()
+
+	// Resolve target orchestrator ID and coordinator role id. The coordinator
+	// NAME for the orientation prefix is NOT resolved here — the ops layer
+	// sources it from the coord role it loads, so an agent-row selection still
+	// yields a prefix naming the coordinator (not the agent).
+	var orchID, coordRoleID int64
+
+	switch sel.Kind {
+	case selOrchestrator:
+		// Root coordinator header: use the header's orchestrator + its coord role.
+		if sel.CoordRoleID == 0 {
+			b.notApplicable("w: selected coordinator has no coord role — cannot spawn a worker")
+			return
+		}
+		orchID = sel.OrchestratorID
+		coordRoleID = sel.CoordRoleID
+	case selRole:
+		if sel.RoleKind == string(db.KindFreelance) {
+			b.notApplicable("w: a freelancer is an unmanaged argus task — select a coordinator to spawn a worker under it")
+			return
+		}
+		if sel.RoleKind == string(db.KindCoordinator) {
+			// A promoted SUB-COORDINATOR row targets ITSELF (D2): spawn the new
+			// worker under its CHILD orchestrator, with this row's own role as
+			// coordinator. Its own task coordinates that child orchestrator.
+			if sel.ChildOrchestratorID == 0 {
+				b.notApplicable("w: this coordinator row has no child orchestrator to spawn under")
+				return
+			}
+			orchID = sel.ChildOrchestratorID
+			coordRoleID = sel.RoleID
+			break
+		}
+		// Leaf agent/worker row → that agent's coordinator.
+		if sel.OrchestratorID == 0 || sel.CoordRoleID == 0 {
+			b.notApplicable("w: selected row is not attached to a coordinator")
+			return
+		}
+		orchID = sel.OrchestratorID
+		coordRoleID = sel.CoordRoleID
+	default:
+		b.notApplicable("w: not applicable to this row")
+		return
+	}
+
+	capturedOrchID := orchID
+	capturedCoordRoleID := coordRoleID
+
+	b.goUI(func() {
+		b.modals.ShowInput("New worker", "Prompt", "", func(prompt string) {
+			if strings.TrimSpace(prompt) == "" {
+				// Empty/whitespace confirm: surface a dismissible notice rather
+				// than closing silently (D1). No argus/DB call on this path.
+				b.notApplicable("w: prompt is required")
+				return
+			}
+			b.mutate("spawn worker", true, func() error {
+				res, err := b.svc.SpawnWorker(b.ctx, ops.SpawnWorkerInput{
+					TargetOrchestratorID: capturedOrchID,
+					CoordRoleID:          capturedCoordRoleID,
+					Prompt:               prompt,
+				})
+				if err != nil {
+					return err
+				}
+				// Auto-select the new worker row (D3/D7). The rail repopulate is
+				// broadcaster-driven (~100ms) and has NOT run yet, so the row does
+				// not exist in the rail at this instant — an immediate select would
+				// silently no-op. Instead we STASH the role id; the App applies it
+				// on the next repopulate, when the row is present. Focus stays RAIL.
+				if b.rowSel != nil && res != nil {
+					b.rowSel.QueueSelectRole(res.RoleID)
+				}
+				return nil
 			})
 		}, nil)
 	})

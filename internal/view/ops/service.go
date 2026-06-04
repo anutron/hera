@@ -21,6 +21,17 @@ type DB interface {
 	GetRoleByID(ctx context.Context, id int64) (*Role, error)
 	ListRolesByOrchestrator(ctx context.Context, orchID int64) ([]*Role, error)
 
+	// CreateRole inserts a new active role under the given orchestrator.
+	// Returns the existing active row if (orchestrator_id, name) already
+	// exists with the same kind (the DAO is idempotent on same-kind
+	// collisions). Callers that need a guaranteed-new row MUST pre-unique
+	// the name before calling (SpawnWorker does this).
+	CreateRole(ctx context.Context, in CreateRoleInput) (*Role, error)
+
+	// CreateBinding inserts a new live binding row. Bindings are write-once
+	// on worktree_path — callers MUST pass the resolved path at insert time.
+	CreateBinding(ctx context.Context, in CreateBindingInput) (*Binding, error)
+
 	// ListRolesByOrchestratorInclusive returns every role under an
 	// orchestrator INCLUDING archived rows. Backs the unarchive branch
 	// of the `a` toggle, which must locate the archived coord role.
@@ -73,6 +84,14 @@ type CreatedTask struct {
 	Name string
 }
 
+// TaskDetails is the ops layer's view of an argus task, carrying the
+// fields SpawnWorker needs after creation (primarily WorktreePath, which
+// is required for the binding insert and unavailable from CreatedTask).
+type TaskDetails struct {
+	ID           string
+	WorktreePath string
+}
+
 // ArgusClient is the subset of internal/argus.Client the ops layer
 // needs. Tests substitute a fake.
 //
@@ -85,6 +104,14 @@ type CreatedTask struct {
 // (status stepping).
 type ArgusClient interface {
 	CreateTask(ctx context.Context, req CreateTaskRequest) (*CreatedTask, error)
+
+	// GetTask fetches the full task record, including WorktreePath. Used by
+	// SpawnWorker to read the created task's worktree path so the binding
+	// can be populated at insert time. argus creates the worktree
+	// synchronously inside POST /api/tasks, so GetTask immediately after
+	// CreateTask returns a populated WorktreePath.
+	GetTask(ctx context.Context, taskID string) (*TaskDetails, error)
+
 	ArchiveTask(ctx context.Context, taskID string) error
 	UnarchiveTask(ctx context.Context, taskID string) error
 

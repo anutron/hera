@@ -176,6 +176,13 @@ type roleEntry struct {
 	Archived       bool
 	StartedAt      time.Time
 
+	// CoordRoleID is the coord role id of the orchestrator this role belongs
+	// to (the same value as the owning orchEntry.CoordRoleID, captured when the
+	// row is built). Carried on the row so CurrentRailSelection can pass it to
+	// `w` (OnNewWorker), which spawns the new worker under that coordinator.
+	// Zero when the orchestrator has no coord role.
+	CoordRoleID int64
+
 	// argus-reported state for this role's bound task, populated from the
 	// ArgusStateCache when available. Drives the rail icon and archived
 	// hiding so the rail reflects argus reality rather than hera's binding

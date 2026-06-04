@@ -47,3 +47,34 @@ type Binding struct {
 	ArgusTaskID  string
 	WorktreePath string
 }
+
+// CreateRoleInput is the ops-layer input for inserting a new role.
+// Mirrors db.CreateRoleInput without importing internal/db.
+type CreateRoleInput struct {
+	OrchestratorID int64
+	Name           string
+	Kind           RoleKind
+	ArgusProject   string
+	Mission        string
+	Constraints    string
+}
+
+// CreateBindingInput is the ops-layer input for inserting a new binding.
+// Mirrors db.CreateBindingInput without importing internal/db.
+type CreateBindingInput struct {
+	RoleID         int64
+	OrchestratorID int64
+	ArgusTaskID    string
+	WorktreePath   string
+}
+
+// SpawnWorkerResult carries the identifiers of the role and argus task
+// created by SpawnWorker. The bridge uses them for auto-selection.
+type SpawnWorkerResult struct {
+	// RoleID is the new worker role's database id. Used by the bridge to
+	// call SelectByRoleID after the broadcaster-driven rail repopulate.
+	RoleID int64
+	// ArgusTaskID is the created argus task's id (as returned by
+	// argus POST /api/tasks).
+	ArgusTaskID string
+}

@@ -3,6 +3,7 @@ package view
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,13 @@ import (
 // movements coalesce into a single pane rebind. Without this, a rapid
 // hold of j burns one /api/tasks/{id}/resize roundtrip per row.
 const DefaultRailSelectDebounce = 120 * time.Millisecond
+
+// maxPendingSelectMisses bounds how many rail repopulates a queued auto-select
+// (QueueSelectRole) survives without its row appearing before it is abandoned.
+// A spawned worker's row lands on the very next broadcaster repopulate in the
+// common case; the slack tolerates a repopulate that raced just ahead of the
+// binding insert. Beyond this the row is presumed never-arriving.
+const maxPendingSelectMisses = 5
 
 // App is the hera-view tview application plus its bound layout primitives,
 // the open per-pane proxy subscriptions, and the terminalpanes consuming
@@ -118,6 +126,21 @@ type App struct {
 	selectTimer   *time.Timer
 	selectPending any
 	selectHasRef  bool
+
+	// pendingSelectRoleID is a role id queued by the mutation bridge
+	// (QueueSelectRole) to auto-select on the NEXT rail repopulate. Role/binding
+	// inserts trigger a broadcaster-driven (~100ms) refresh, so the new row does
+	// not exist when SpawnWorker returns — an immediate select would no-op. The
+	// id is consumed (set back to 0) in populateRail once the row is present and
+	// selection succeeds; an unresolvable id is logged and cleared so it cannot
+	// hijack a later unrelated repopulate. Guarded by selectMu.
+	pendingSelectRoleID int64
+
+	// pendingSelectMisses counts repopulates that ran while pendingSelectRoleID
+	// was set but the row was still absent. After maxPendingSelectMisses the
+	// pending id is abandoned (logged) so a never-arriving row cannot steer a
+	// much-later unrelated repopulate. Guarded by selectMu.
+	pendingSelectMisses int
 
 	// modalSync (tests only) makes queueModal run its body synchronously
 	// instead of bouncing through QueueUpdateDraw — which blocks forever
@@ -531,6 +554,11 @@ func (a *App) populateRail(database *db.DB) error {
 				ArgusTaskID:    argusTaskID,
 				Archived:       role.ArchivedAt != nil,
 				StartedAt:      startedAt,
+				// Carry the owning orchestrator's coord role id (roles are loaded
+				// coordinator-first, so entry.CoordRoleID is already set by the
+				// time we build worker rows). `w` reads this to spawn the new
+				// worker under this row's coordinator.
+				CoordRoleID: entry.CoordRoleID,
 			}
 			applyArgusState(r, stateProv)
 			entry.Roles = append(entry.Roles, r)
@@ -572,6 +600,11 @@ func (a *App) populateRail(database *db.DB) error {
 	a.pieces.rail.SetShowArchived(showArchived)
 	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database, showArchived, rendered))
 	a.pieces.rail.SetOrchestrators(entries)
+
+	// Apply any queued auto-select (e.g. the worker just spawned via `w`): the
+	// row now exists in the freshly-populated rail, so move the cursor to it.
+	// Focus is unchanged — the operator stays in RAIL.
+	a.applyPendingSelect()
 	return nil
 }
 
@@ -795,7 +828,7 @@ func (a *App) CurrentRailSelection() railSelection {
 			ChildCount: countLiveRoles(ref.Roles),
 		}
 	case *roleEntry:
-		return railSelection{
+		sel := railSelection{
 			Kind:           selRole,
 			OrchestratorID: ref.OrchestratorID,
 			RoleID:         ref.RoleID,
@@ -803,6 +836,9 @@ func (a *App) CurrentRailSelection() railSelection {
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
 			ArgusTaskID:    ref.ArgusTaskID,
+			// CoordRoleID is the owning orchestrator's coord role; `w` spawns
+			// the new worker under it for a leaf/agent row.
+			CoordRoleID: ref.CoordRoleID,
 			// Argus-side archived + binding-dead state: with the hera flag
 			// these let `a` compute the EFFECTIVE archived state the rail
 			// displays (roleArchived) and pick the explicit verb — a
@@ -813,8 +849,75 @@ func (a *App) CurrentRailSelection() railSelection {
 			Dead:          ref.Dead,
 			WorktreePath:  ref.WorktreePath,
 		}
+		// A promoted sub-coordinator row (its own task coordinates a child
+		// orchestrator) is a coordinator TARGET in its own right: `w` spawns
+		// under the CHILD orchestrator with this row's OWN role as coord. Carry
+		// the child orchestrator id so OnNewWorker can resolve that (D2).
+		if ref.childOrch != nil {
+			sel.ChildOrchestratorID = ref.childOrch.ID
+		}
+		return sel
 	}
 	return railSelection{}
+}
+
+// QueueSelectRole stashes a role id to auto-select on the NEXT rail
+// repopulate. The mutation bridge calls this after SpawnWorker inserts the
+// worker role + binding: those inserts trigger a broadcaster-driven (~100ms)
+// rail refresh, so the new row does not exist yet at call time. populateRail
+// consumes the id once the row is present (see applyPendingSelect). Focus is
+// not changed — the operator stays in RAIL.
+//
+// Satisfies the rowSelector contract used by the mutation bridge.
+func (a *App) QueueSelectRole(id int64) {
+	a.selectMu.Lock()
+	a.pendingSelectRoleID = id
+	// Reset the miss budget so each newly-queued select gets the full
+	// maxPendingSelectMisses allowance — otherwise a prior queue that burned
+	// misses then succeeded would leave this one with a reduced budget.
+	a.pendingSelectMisses = 0
+	a.selectMu.Unlock()
+}
+
+// applyPendingSelect moves the rail cursor to the queued role id (if any) once
+// the row is present. Called at the tail of populateRail, on the tview event
+// loop. When the queued row exists, selection moves to it and the id is
+// consumed. When it cannot be resolved on this repopulate the id is RETAINED
+// (the row may simply not have landed yet — a later repopulate retries); to
+// stop a permanently-unresolvable id from hijacking an unrelated future
+// repopulate it is only logged-and-cleared after it has survived a bounded
+// number of repopulate attempts.
+func (a *App) applyPendingSelect() {
+	a.selectMu.Lock()
+	id := a.pendingSelectRoleID
+	a.selectMu.Unlock()
+	if id == 0 || a.pieces.rail == nil {
+		return
+	}
+	if a.pieces.rail.SelectByRoleID(id) {
+		// Selected — consume the pending id.
+		a.selectMu.Lock()
+		if a.pendingSelectRoleID == id {
+			a.pendingSelectRoleID = 0
+		}
+		a.selectMu.Unlock()
+		return
+	}
+	// Not yet present. Bump the miss counter; clear after a bounded number of
+	// repopulates so a never-arriving row (e.g. insert raced an archive) does
+	// not silently steer a much-later unrelated repopulate.
+	a.selectMu.Lock()
+	a.pendingSelectMisses++
+	misses := a.pendingSelectMisses
+	if misses >= maxPendingSelectMisses {
+		a.pendingSelectRoleID = 0
+		a.pendingSelectMisses = 0
+	}
+	a.selectMu.Unlock()
+	if misses >= maxPendingSelectMisses {
+		slog.Default().Warn("view: pending auto-select role never appeared in rail; giving up",
+			"role_id", id, "repopulate_attempts", misses)
+	}
 }
 
 // countLiveRoles returns the number of non-archived roles in the slice —

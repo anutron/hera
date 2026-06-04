@@ -2595,3 +2595,471 @@ func TestBuildApp_EndedBindingWorkerRowDoesNotDuplicateIntoFreelance(t *testing.
 		t.Fatalf("task rendered as a role row must not duplicate into Freelance; got %+v", fl)
 	}
 }
+
+// TestApp_QueueSelectRole_AppliedOnNextRepopulate proves FIX 2: the worker
+// auto-select is DEFERRED to the next rail repopulate. At QueueSelectRole time
+// the new row does not exist (the broadcaster-driven refresh has not run), so
+// an immediate select would no-op. After the role+binding are inserted and the
+// rail repopulates, the queued row becomes the rail selection — and focus is
+// untouched (stays RAIL).
+func TestApp_QueueSelectRole_AppliedOnNextRepopulate(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "c1", WorktreePath: "/c"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Simulate SpawnWorker inserting the worker AFTER the operator pressed `w`:
+	// first the bridge queues the (not-yet-existent) role id, then the row lands
+	// in the DB, then the broadcaster-driven repopulate runs.
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "new-worker", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "w9", WorktreePath: "/w9"})
+
+	// Queue the select. (Order vs. insert does not matter — the apply happens at
+	// repopulate; queue it now to mirror the bridge's post-spawn call.)
+	a.QueueSelectRole(worker.ID)
+
+	// Repopulate the rail (what the DAO broadcaster triggers ~100ms after the
+	// inserts). Call populateRail directly to avoid QueueUpdateDraw blocking on
+	// a non-running event loop in the unit test.
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+
+	// The queued row must now be the rail selection.
+	ref, ok := a.pieces.rail.CurrentRef().(*roleEntry)
+	if !ok || ref.RoleID != worker.ID {
+		t.Fatalf("auto-select after repopulate: want rail on worker role %d; got %T %+v",
+			worker.ID, a.pieces.rail.CurrentRef(), a.pieces.rail.CurrentRef())
+	}
+
+	// Focus must be untouched (RAIL).
+	if focus.State() != FocusRAIL {
+		t.Fatalf("auto-select must keep focus in RAIL; got %s", focus.State())
+	}
+
+	// The pending id must be consumed — a second repopulate must NOT re-steer
+	// selection (move the cursor elsewhere first, then repopulate, and confirm
+	// it stays where the operator left it).
+	a.pieces.rail.SelectByOrchID(orch.ID) // move cursor off the worker
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail (second): %v", err)
+	}
+	if _, stillWorker := a.pieces.rail.CurrentRef().(*roleEntry); stillWorker {
+		if ref2, _ := a.pieces.rail.CurrentRef().(*roleEntry); ref2 != nil && ref2.RoleID == worker.ID {
+			t.Fatal("pending select must be consumed; a later repopulate re-selected the worker")
+		}
+	}
+}
+
+// TestApp_QueueSelectRole_AbandonsUnresolvableAfterBound proves the pending
+// id does not hijack future repopulates forever: a role id that never appears
+// is dropped after maxPendingSelectMisses repopulates.
+func TestApp_QueueSelectRole_AbandonsUnresolvableAfterBound(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "c1", WorktreePath: "/c"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Queue a role id that will never exist.
+	a.QueueSelectRole(999999)
+
+	for i := 0; i < maxPendingSelectMisses; i++ {
+		if err := a.populateRail(d); err != nil {
+			t.Fatalf("populateRail attempt %d: %v", i, err)
+		}
+	}
+
+	a.selectMu.Lock()
+	pending := a.pendingSelectRoleID
+	misses := a.pendingSelectMisses
+	a.selectMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("unresolvable pending select must be abandoned after %d repopulates; still %d",
+			maxPendingSelectMisses, pending)
+	}
+	// No unbounded retry: the miss counter is reset (not climbing) and a
+	// further repopulate touches nothing — the pending id is fully dropped.
+	if misses != 0 {
+		t.Fatalf("after abandonment the miss counter must reset; got %d", misses)
+	}
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail (post-abandon): %v", err)
+	}
+	a.selectMu.Lock()
+	pendingAfter := a.pendingSelectRoleID
+	a.selectMu.Unlock()
+	if pendingAfter != 0 {
+		t.Fatalf("post-abandon repopulate must not resurrect the pending select; got %d", pendingAfter)
+	}
+}
+
+// TestApp_QueueSelectRole_FreshBudgetPerQueue proves each newly-queued select
+// gets the full miss budget: queue A (never appears), burn most of its budget,
+// resolve nothing, then queue B — B must survive maxPendingSelectMisses
+// repopulates of its own (the prior queue's burned misses must not carry over).
+func TestApp_QueueSelectRole_FreshBudgetPerQueue(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "c1", WorktreePath: "/c"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Queue A and burn maxPendingSelectMisses-1 misses (one short of abandon).
+	a.QueueSelectRole(999999)
+	for i := 0; i < maxPendingSelectMisses-1; i++ {
+		if err := a.populateRail(d); err != nil {
+			t.Fatalf("populateRail (A) attempt %d: %v", i, err)
+		}
+	}
+
+	// Now queue B — a different never-arriving id. The reset must give B the
+	// FULL budget. If the burned misses carried over, B would be abandoned after
+	// a single repopulate.
+	a.QueueSelectRole(888888)
+
+	a.selectMu.Lock()
+	missesAfterRequeue := a.pendingSelectMisses
+	a.selectMu.Unlock()
+	if missesAfterRequeue != 0 {
+		t.Fatalf("QueueSelectRole must reset the miss counter; got %d", missesAfterRequeue)
+	}
+
+	// B survives one more than A had survived (proving fresh budget).
+	for i := 0; i < maxPendingSelectMisses-1; i++ {
+		if err := a.populateRail(d); err != nil {
+			t.Fatalf("populateRail (B) attempt %d: %v", i, err)
+		}
+	}
+	a.selectMu.Lock()
+	pendingB := a.pendingSelectRoleID
+	a.selectMu.Unlock()
+	if pendingB != 888888 {
+		t.Fatalf("queue B must retain its full budget across %d repopulates; pending=%d",
+			maxPendingSelectMisses-1, pendingB)
+	}
+}
+
+// TestApp_CurrentRailSelection_AgentRow_CarriesCoordRoleID drives the REAL
+// CurrentRailSelection (not the fake selector) for a worker/agent row and
+// asserts it carries the owning orchestrator's coord role id. This is the
+// signal OnNewWorker's selRole branch needs; without it `w` on an agent row
+// resolves CoordRoleID==0 and the spawn dies as "not applicable" (the
+// production face of delta scenario "w resolves an agent selection to its
+// coordinator").
+func TestApp_CurrentRailSelection_AgentRow_CarriesCoordRoleID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select worker row")
+	}
+	sel := a.CurrentRailSelection()
+	if sel.Kind != selRole || sel.RoleID != worker.ID {
+		t.Fatalf("selection should be the worker role row; got %+v", sel)
+	}
+	if sel.OrchestratorID != orch.ID {
+		t.Fatalf("OrchestratorID: want %d, got %d", orch.ID, sel.OrchestratorID)
+	}
+	if sel.CoordRoleID != coord.ID {
+		t.Fatalf("CoordRoleID: want the owning coord role %d, got %d (w on an agent row would die as not-applicable)", coord.ID, sel.CoordRoleID)
+	}
+}
+
+// TestApp_CurrentRailSelection_SubCoordRow_TargetsItself drives the REAL
+// CurrentRailSelection for a promoted sub-coordinator row and asserts it
+// carries (a) RoleKind == coordinator, (b) its OWN role id as the coord-role
+// target, and (c) the CHILD orchestrator's id — so OnNewWorker spawns the
+// worker under the sub-coordinator (the child orchestrator), not the parent.
+// Delta D2: "a coordinator row (root OR a sub-coordinator role row) targets
+// that coordinator."
+func TestApp_CurrentRailSelection_SubCoordRow_TargetsItself(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	parent, _ := d.Orchestrators.Create(ctx, "parent")
+	parentCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parent.ID, Name: "parent-coord", Kind: db.KindCoordinator, ArgusProject: "p"})
+	subWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parent.ID, Name: "sub", Kind: db.KindWorker, ArgusProject: "p"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: parentCoord.ID, ArgusTaskID: "t-parent-coord", WorktreePath: "/pc"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subWorker.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	child, _ := d.Orchestrators.Create(ctx, "child")
+	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: child.ID, Name: "child-coord", Kind: db.KindCoordinator, ArgusProject: "p"})
+	// The sub worker's task IS the child orchestrator's coord task (multi-binding).
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoord.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	if !a.pieces.rail.SelectByRoleID(subWorker.ID) {
+		t.Fatalf("could not select the sub-coordinator row")
+	}
+	sel := a.CurrentRailSelection()
+	if sel.Kind != selRole {
+		t.Fatalf("sub-coord selection must be a role row; got kind %v", sel.Kind)
+	}
+	if sel.RoleKind != string(db.KindCoordinator) {
+		t.Fatalf("promoted sub-coord row must report coordinator kind; got %q", sel.RoleKind)
+	}
+	if sel.RoleID != subWorker.ID {
+		t.Fatalf("RoleID: want the sub worker role %d, got %d", subWorker.ID, sel.RoleID)
+	}
+	// The child orchestrator id must be carried so OnNewWorker can target it.
+	if sel.ChildOrchestratorID != child.ID {
+		t.Fatalf("ChildOrchestratorID: want the child orchestrator %d, got %d (sub-coord row would spawn under the PARENT)", child.ID, sel.ChildOrchestratorID)
+	}
+}
+
+// TestApp_OnNewWorker_AgentRow_SpawnsUnderCoord_RealSelection wires the REAL
+// App selection into the mutation bridge (over a fake mutationService that only
+// records the resolved SpawnWorkerInput) and proves `w` on a worker row spawns
+// under that worker's coordinator — the integration the fake-selector unit test
+// could not catch.
+func TestApp_OnNewWorker_AgentRow_SpawnsUnderCoord_RealSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select worker row")
+	}
+
+	m := &fakeModals{stubInputAnswer: "do work"}
+	svc := &fakeMutationService{}
+	// Wire the REAL App as the selector; bridge resolves the target from it.
+	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("w on a worker row must spawn (got %d SpawnWorker calls); the CoordRoleID==0 guard would no-op", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != orch.ID {
+		t.Fatalf("TargetOrchestratorID: want %d, got %d", orch.ID, calls[0].TargetOrchestratorID)
+	}
+	if calls[0].CoordRoleID != coord.ID {
+		t.Fatalf("CoordRoleID: want %d, got %d", coord.ID, calls[0].CoordRoleID)
+	}
+}
+
+// TestApp_OnNewWorker_SubCoordRow_SpawnsUnderChild_RealSelection proves `w` on
+// a sub-coordinator row spawns under the CHILD orchestrator (the sub-coord
+// itself), using the real App selection.
+func TestApp_OnNewWorker_SubCoordRow_SpawnsUnderChild_RealSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	parent, _ := d.Orchestrators.Create(ctx, "parent")
+	parentCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parent.ID, Name: "parent-coord", Kind: db.KindCoordinator, ArgusProject: "p"})
+	subWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parent.ID, Name: "sub", Kind: db.KindWorker, ArgusProject: "p"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: parentCoord.ID, ArgusTaskID: "t-parent-coord", WorktreePath: "/pc"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subWorker.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	child, _ := d.Orchestrators.Create(ctx, "child")
+	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: child.ID, Name: "child-coord", Kind: db.KindCoordinator, ArgusProject: "p"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoord.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	if !a.pieces.rail.SelectByRoleID(subWorker.ID) {
+		t.Fatalf("could not select sub-coordinator row")
+	}
+
+	m := &fakeModals{stubInputAnswer: "do work"}
+	svc := &fakeMutationService{}
+	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("w on a sub-coordinator row must spawn; got %d SpawnWorker calls", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != child.ID {
+		t.Fatalf("sub-coord spawn must target the CHILD orchestrator %d; got %d (would nest under the parent)", child.ID, calls[0].TargetOrchestratorID)
+	}
+	if calls[0].CoordRoleID != subWorker.ID {
+		t.Fatalf("sub-coord spawn must use the sub-coord's OWN role %d as coord; got %d", subWorker.ID, calls[0].CoordRoleID)
+	}
+}
+
+// TestApp_OnNewWorker_ArchivedAgentRow_SpawnsUnderCoord_RealSelection proves a
+// `w` press on an ARCHIVED agent row still resolves to its (valid) coordinator
+// and spawns — the selected row's archived state must not block resolution
+// (spec: "an archived or dead agent row still resolves to its coordinator").
+// Drives the REAL App selection: archive the worker, reveal it via the Archive
+// expando, select it, run the bridge over a recording fake svc.
+func TestApp_OnNewWorker_ArchivedAgentRow_SpawnsUnderCoord_RealSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+	if err := d.Roles.Archive(ctx, worker.ID); err != nil {
+		t.Fatalf("archive worker role: %v", err)
+	}
+
+	a, err := BuildApp(d, &alivePaneSource{alive: map[string]bool{"tc": true, "tw": true}})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Reveal the archived row (it lives behind the per-coordinator Archive
+	// expando) so the cursor can land on it.
+	a.SetShowArchived(true)
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select the archived worker row")
+	}
+	// Sanity: the row really is archived, and still carries its coordinator.
+	sel := a.CurrentRailSelection()
+	if !sel.Archived {
+		t.Fatalf("expected the selected worker row to be archived; got %+v", sel)
+	}
+	if sel.CoordRoleID != coord.ID {
+		t.Fatalf("archived worker row must still carry CoordRoleID %d; got %d", coord.ID, sel.CoordRoleID)
+	}
+
+	m := &fakeModals{stubInputAnswer: "do work"}
+	svc := &fakeMutationService{}
+	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("w on an archived agent row must still spawn; got %d SpawnWorker calls", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != orch.ID || calls[0].CoordRoleID != coord.ID {
+		t.Fatalf("archived agent row spawn must target its coordinator (orch %d, coord %d); got orch %d coord %d",
+			orch.ID, coord.ID, calls[0].TargetOrchestratorID, calls[0].CoordRoleID)
+	}
+}
+
+// TestApp_OnNewWorker_DeadAgentRow_SpawnsUnderCoord_RealSelection proves a `w`
+// press on a DEAD agent row (its argus task record gone — absent from a warm
+// state cache) still resolves to its coordinator and spawns. Drives the REAL
+// App selection.
+func TestApp_OnNewWorker_DeadAgentRow_SpawnsUnderCoord_RealSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+
+	// Warm state cache that knows the coord task but NOT the worker task →
+	// the worker row is DEAD (record gone). statePaneSource has no StatesReady
+	// method, so taskGone treats the cache as warm.
+	src := &statePaneSource{states: map[string]ArgusTaskState{"tc": {Status: "in_progress"}}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Dead rows hide by default; reveal via the Archive expando.
+	a.SetShowArchived(true)
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select the dead worker row")
+	}
+	sel := a.CurrentRailSelection()
+	if !sel.Dead {
+		t.Fatalf("expected the selected worker row to be dead; got %+v", sel)
+	}
+	if sel.CoordRoleID != coord.ID {
+		t.Fatalf("dead worker row must still carry CoordRoleID %d; got %d", coord.ID, sel.CoordRoleID)
+	}
+
+	m := &fakeModals{stubInputAnswer: "do work"}
+	svc := &fakeMutationService{}
+	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("w on a dead agent row must still spawn; got %d SpawnWorker calls", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != orch.ID || calls[0].CoordRoleID != coord.ID {
+		t.Fatalf("dead agent row spawn must target its coordinator (orch %d, coord %d); got orch %d coord %d",
+			orch.ID, coord.ID, calls[0].TargetOrchestratorID, calls[0].CoordRoleID)
+	}
+}
