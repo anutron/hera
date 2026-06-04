@@ -81,7 +81,7 @@ func (r *RolesDAO) Create(ctx context.Context, in CreateRoleInput) (*Role, error
 // lookups are not filtered on archived_at.
 func (r *RolesDAO) GetByID(ctx context.Context, id int64) (*Role, error) {
 	return r.scanOne(ctx,
-		`SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at, pinned_at
 		 FROM roles WHERE id = ?`, id)
 }
 
@@ -94,7 +94,7 @@ func (r *RolesDAO) GetByOrchestratorAndName(ctx context.Context, orchID int64, n
 
 func (r *RolesDAO) findActiveByOrchestratorAndName(ctx context.Context, orchID int64, name string) (*Role, error) {
 	return r.scanOne(ctx,
-		`SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at, pinned_at
 		 FROM roles WHERE orchestrator_id = ? AND name = ? AND archived_at IS NULL`,
 		orchID, name)
 }
@@ -113,7 +113,7 @@ func (r *RolesDAO) ListByOrchestratorInclusive(ctx context.Context, orchID int64
 }
 
 func (r *RolesDAO) listByOrchestrator(ctx context.Context, orchID int64, includeArchived bool) ([]*Role, error) {
-	query := `SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at
+	query := `SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at, pinned_at
 	          FROM roles WHERE orchestrator_id = ?`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
@@ -140,11 +140,12 @@ func (r *RolesDAO) listByOrchestrator(ctx context.Context, orchID int64, include
 // Archive marks a role as archived by setting archived_at to the current
 // UTC timestamp. Idempotent: re-archiving an already-archived row is a
 // no-op (the original archived_at is preserved). Returns ErrNotFound if
-// no row matches the given id.
+// no row matches the given id. Archiving CLEARS pinned_at — pin and
+// archive are mutually exclusive (argus's SetArchived clears Pinned).
 func (r *RolesDAO) Archive(ctx context.Context, id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE roles SET archived_at = ? WHERE id = ? AND archived_at IS NULL`,
+		`UPDATE roles SET archived_at = ?, pinned_at = NULL WHERE id = ? AND archived_at IS NULL`,
 		now, id,
 	)
 	if err != nil {
@@ -173,6 +174,57 @@ func (r *RolesDAO) Unarchive(ctx context.Context, id int64) error {
 	)
 	if err != nil {
 		return fmt.Errorf("roles.Unarchive: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		if _, err := r.GetByID(ctx, id); err != nil {
+			return err
+		}
+		return nil
+	}
+	if r.events != nil {
+		r.events.Emit(Event{Entity: EntityRole, Op: OpUpdate, ID: id})
+	}
+	return nil
+}
+
+// Pin marks a role as pinned by setting pinned_at to the current UTC
+// timestamp AND clears archived_at — pin and archive are mutually exclusive
+// (argus's SetPinned forces Archived=false). COALESCE preserves an existing
+// pinned_at (idempotent pin) while always clearing archived_at, so a pin
+// issued against an archived role both pins and unarchives in one statement.
+// Returns ErrNotFound if no row matches the given id.
+func (r *RolesDAO) Pin(ctx context.Context, id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE roles SET pinned_at = COALESCE(pinned_at, ?), archived_at = NULL WHERE id = ?`,
+		now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("roles.Pin: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		if _, err := r.GetByID(ctx, id); err != nil {
+			return err
+		}
+		return nil
+	}
+	if r.events != nil {
+		r.events.Emit(Event{Entity: EntityRole, Op: OpUpdate, ID: id})
+	}
+	return nil
+}
+
+// Unpin clears pinned_at on a role. Idempotent: unpinning an already-
+// unpinned row is a no-op. Returns ErrNotFound if no row matches the id.
+func (r *RolesDAO) Unpin(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE roles SET pinned_at = NULL WHERE id = ? AND pinned_at IS NOT NULL`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("roles.Unpin: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
@@ -232,9 +284,9 @@ func (r *RolesDAO) scanOne(ctx context.Context, query string, args ...any) (*Rol
 	row := r.db.QueryRowContext(ctx, query, args...)
 	role := &Role{}
 	var kind, createdAt string
-	var archivedAt sql.NullString
+	var archivedAt, pinnedAt sql.NullString
 	if err := row.Scan(&role.ID, &role.OrchestratorID, &role.Name, &kind,
-		&role.ArgusProject, &role.Mission, &role.Constraints, &createdAt, &archivedAt); err != nil {
+		&role.ArgusProject, &role.Mission, &role.Constraints, &createdAt, &archivedAt, &pinnedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -246,15 +298,19 @@ func (r *RolesDAO) scanOne(ctx context.Context, query string, args ...any) (*Rol
 		t, _ := time.Parse(time.RFC3339Nano, archivedAt.String)
 		role.ArchivedAt = &t
 	}
+	if pinnedAt.Valid {
+		t, _ := time.Parse(time.RFC3339Nano, pinnedAt.String)
+		role.PinnedAt = &t
+	}
 	return role, nil
 }
 
 func (r *RolesDAO) scanFromRows(rows *sql.Rows) (*Role, error) {
 	role := &Role{}
 	var kind, createdAt string
-	var archivedAt sql.NullString
+	var archivedAt, pinnedAt sql.NullString
 	if err := rows.Scan(&role.ID, &role.OrchestratorID, &role.Name, &kind,
-		&role.ArgusProject, &role.Mission, &role.Constraints, &createdAt, &archivedAt); err != nil {
+		&role.ArgusProject, &role.Mission, &role.Constraints, &createdAt, &archivedAt, &pinnedAt); err != nil {
 		return nil, err
 	}
 	role.Kind = RoleKind(kind)
@@ -262,6 +318,10 @@ func (r *RolesDAO) scanFromRows(rows *sql.Rows) (*Role, error) {
 	if archivedAt.Valid {
 		t, _ := time.Parse(time.RFC3339Nano, archivedAt.String)
 		role.ArchivedAt = &t
+	}
+	if pinnedAt.Valid {
+		t, _ := time.Parse(time.RFC3339Nano, pinnedAt.String)
+		role.PinnedAt = &t
 	}
 	return role, nil
 }

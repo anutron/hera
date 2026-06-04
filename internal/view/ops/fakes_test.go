@@ -29,6 +29,10 @@ type fakeDB struct {
 	unarchiveOrchCalls []int64
 	archiveRoleCalls   []int64
 	unarchiveRoleCalls []int64
+	pinOrchCalls       []int64
+	unpinOrchCalls     []int64
+	pinRoleCalls       []int64
+	unpinRoleCalls     []int64
 	endBindingCalls    []endCall
 
 	// createRoleErr / createBindingErr, when set, make CreateRole /
@@ -180,6 +184,31 @@ func (f *fakeDB) UnarchiveOrchestrator(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (f *fakeDB) PinOrchestrator(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinOrchCalls = append(f.pinOrchCalls, id)
+	o, ok := f.orchestrators[id]
+	if !ok {
+		return ErrNotFound
+	}
+	o.Pinned = true
+	o.Archived = false
+	return nil
+}
+
+func (f *fakeDB) UnpinOrchestrator(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unpinOrchCalls = append(f.unpinOrchCalls, id)
+	o, ok := f.orchestrators[id]
+	if !ok {
+		return ErrNotFound
+	}
+	o.Pinned = false
+	return nil
+}
+
 func (f *fakeDB) RenameOrchestrator(ctx context.Context, id int64, newName string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -255,6 +284,31 @@ func (f *fakeDB) UnarchiveRole(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	r.Archived = false
+	return nil
+}
+
+func (f *fakeDB) PinRole(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinRoleCalls = append(f.pinRoleCalls, id)
+	r, ok := f.roles[id]
+	if !ok {
+		return ErrNotFound
+	}
+	r.Pinned = true
+	r.Archived = false
+	return nil
+}
+
+func (f *fakeDB) UnpinRole(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unpinRoleCalls = append(f.unpinRoleCalls, id)
+	r, ok := f.roles[id]
+	if !ok {
+		return ErrNotFound
+	}
+	r.Pinned = false
 	return nil
 }
 

@@ -34,9 +34,15 @@ type railList struct {
 
 	orchestrators []*orchEntry
 	freelance     []*freelanceProject
-	rows          []railRow
-	cursor        int
-	offset        int
+	// archivedFreelance holds archived freelancers (unmanaged argus tasks the
+	// operator archived with `a`) that would otherwise vanish from the rail.
+	// They render ONLY inside the bottom-of-rail Archive section (never inline
+	// in their Freelance repo group), reachable WITHOUT `l` — the fix for the
+	// archived-freelancer data-loss gap.
+	archivedFreelance []*roleEntry
+	rows              []railRow
+	cursor            int
+	offset            int
 
 	// lastSnapCursor is the cursor value observed by the previous Draw. The
 	// viewport snaps to keep the cursor visible ONLY when the cursor has
@@ -154,6 +160,10 @@ type orchEntry struct {
 	ID          int64
 	Name        string
 	Archived    bool
+	// Pinned floats this coordinator into the Pinned section at the rail top
+	// (with its subtree), mirroring argus. Pin and archive are mutually
+	// exclusive, so a Pinned orchestrator is never Archived.
+	Pinned      bool
 	CoordTaskID string
 	// CoordRoleID is the orchestrator's coord role id, captured so the
 	// resurrect-on-Enter flow can target the coord role when the operator
@@ -198,6 +208,11 @@ type roleEntry struct {
 	Dead           bool
 	ArgusTaskID    string
 	Archived       bool
+	// Pinned floats this agent OUT of its coordinator into the Pinned section
+	// at the rail top, as a standalone row (unless its coordinator is itself
+	// pinned, in which case it renders nested under the pinned coordinator).
+	// Mutually exclusive with the archived state.
+	Pinned         bool
 	StartedAt      time.Time
 
 	// CoordRoleID is the coord role id of the orchestrator this role belongs
@@ -255,6 +270,7 @@ const (
 	railRowFreelanceSep
 	railRowFreelanceProj
 	railRowArchiveExpando
+	railRowPinnedSep
 	railRowEmpty
 )
 
@@ -554,6 +570,20 @@ func (rl *railList) SetOrchestrators(orchs []*orchEntry) {
 func (rl *railList) SetFreelance(projects []*freelanceProject) {
 	prev := rl.currentRef()
 	rl.freelance = projects
+	rl.buildRows()
+	if !rl.restoreCursor(prev) {
+		rl.cursor = rl.firstSelectableRow()
+	}
+	rl.maybeFireSelectionChanged()
+}
+
+// SetArchivedFreelance replaces the rail's archived-freelancer set (archived
+// unmanaged argus tasks) and rebuilds, preserving the cursor where possible.
+// These render only inside the bottom-of-rail Archive section. Called by
+// populateRail alongside SetFreelance / SetOrchestrators.
+func (rl *railList) SetArchivedFreelance(tasks []*roleEntry) {
+	prev := rl.currentRef()
+	rl.archivedFreelance = tasks
 	rl.buildRows()
 	if !rl.restoreCursor(prev) {
 		rl.cursor = rl.firstSelectableRow()
@@ -908,6 +938,51 @@ func roleArchived(r *roleEntry) bool {
 	return r.Archived || r.ArgusArchived || r.Dead
 }
 
+// rolePinnedOut reports whether role r floats OUT of orchestrator o into the
+// top Pinned section as a standalone row: r is a pinned LEAF worker (no
+// childOrch) whose coordinator o is NOT itself pinned. Two carve-outs keep the
+// tree intact:
+//   - a pinned SUB-coordinator (childOrch != nil) stays nested with its
+//     subtree rather than floating a whole branch (a standalone Pinned row
+//     can't carry nested children) — pinning a coordinator is expressed by
+//     pinning the orchestrator header, which DOES float with its subtree;
+//   - a child under a PINNED coordinator stays nested (its ancestor already
+//     renders in the Pinned section), so it never double-renders.
+func rolePinnedOut(o *orchEntry, r *roleEntry) bool {
+	return r.Pinned && r.childOrch == nil && (o == nil || !o.Pinned)
+}
+
+// collectPinnedRoles walks the full orchestrator tree (including sub-
+// coordinators via childOrch) and returns every pinned leaf worker that floats
+// into the Pinned section (rolePinnedOut). Walking the whole tree — not just
+// top-level direct children — is what keeps a pinned leaf nested under a sub-
+// coordinator from vanishing: appendOrchChildren skips it (rolePinnedOut), so
+// it MUST be collected here to render standalone. seen guards cycles in a
+// malformed multi-binding chain.
+func (rl *railList) collectPinnedRoles() []*roleEntry {
+	var out []*roleEntry
+	seen := map[int64]bool{}
+	var walk func(o *orchEntry)
+	walk = func(o *orchEntry) {
+		if o == nil || seen[o.ID] {
+			return
+		}
+		seen[o.ID] = true
+		for _, r := range o.Roles {
+			if rolePinnedOut(o, r) {
+				out = append(out, r)
+			}
+			if r.childOrch != nil {
+				walk(r.childOrch)
+			}
+		}
+	}
+	for _, o := range rl.orchestrators {
+		walk(o)
+	}
+	return out
+}
+
 // archiveOpen reports whether the Archive expando for owner is folded open.
 // The `l` listall convenience (showArchived) force-expands every expando;
 // otherwise the per-owner toggle decides (default collapsed, D14).
@@ -947,18 +1022,32 @@ func (rl *railList) buildRows() {
 	// subtree (orchMatches), so a coordinator only reaches the tree when it or
 	// one of its (recursive) roles matches — ancestry-preserving. appendOrch's
 	// per-row gating (roleVisible) then narrows the children shown beneath it.
+	//
+	// Partition the survivors: pinned float to the top Pinned section, archived
+	// to the bottom Archive section, the rest into the active tree. Pinned wins
+	// over archived (mutual exclusivity — argus's SetPinned forces Archived
+	// false — but partition defensively in case of a stale mixed row).
 	fActive := rl.filterActive()
-	var active, archived []*orchEntry
+	var pinnedOrchs, active, archived []*orchEntry
 	for _, o := range rl.orchestrators {
 		if fActive && !rl.orchMatches(o) {
 			continue
 		}
-		if o.Archived {
+		switch {
+		case o.Pinned:
+			pinnedOrchs = append(pinnedOrchs, o)
+		case o.Archived:
 			archived = append(archived, o)
-		} else {
+		default:
 			active = append(active, o)
 		}
 	}
+	// Pinned leaf workers float OUT of their coordinator into the Pinned
+	// section as standalone rows (a pinned child of a pinned coordinator, and
+	// pinned sub-coordinators, stay nested — see rolePinnedOut). Collected by a
+	// full-tree walk so a pinned leaf nested under a sub-coordinator (skipped by
+	// appendOrchChildren) still surfaces rather than vanishing.
+	pinnedRoles := rl.collectPinnedRoles()
 
 	// appendOrch renders a coordinator (orchestrator root or, recursively, a
 	// sub-coordinator) at the given depth and, when expanded, its active
@@ -975,6 +1064,21 @@ func (rl *railList) buildRows() {
 			return
 		}
 		appendOrchChildren(rl, o, depth+1, map[int64]bool{o.ID: true})
+	}
+
+	// Pinned section at the very TOP of the rail (above the orchestrator list),
+	// mirroring argus. The separator only appears when at least one pinned
+	// coordinator or agent exists, so the operator never lands on an empty
+	// section. Pinned coordinators carry their subtrees; pinned agents render
+	// as standalone rows.
+	if len(pinnedOrchs) > 0 || len(pinnedRoles) > 0 {
+		rl.rows = append(rl.rows, railRow{kind: railRowPinnedSep})
+		for _, o := range pinnedOrchs {
+			appendOrch(o, 0)
+		}
+		for _, r := range pinnedRoles {
+			rl.rows = append(rl.rows, railRow{kind: railRowRole, role: r, depth: 0})
+		}
 	}
 
 	for _, o := range active {
@@ -1001,7 +1105,8 @@ func (rl *railList) buildRows() {
 			for _, fp := range rl.freelance {
 				var ts []*roleEntry
 				for _, t := range fp.Tasks {
-					if roleArchived(t) && !rl.showArchived {
+					// Archived freelancers live only in the bottom Archive section.
+					if roleArchived(t) {
 						continue
 					}
 					if rl.matchesFilterFields(t.Name, fp.Project) {
@@ -1029,7 +1134,8 @@ func (rl *railList) buildRows() {
 					continue
 				}
 				for _, t := range fp.Tasks {
-					if roleArchived(t) && !rl.showArchived {
+					// Archived freelancers NEVER render inline — bottom Archive only.
+					if roleArchived(t) {
 						continue
 					}
 					rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
@@ -1038,18 +1144,24 @@ func (rl *railList) buildRows() {
 		}
 	}
 
-	// Top-level Archive: archived root coordinators live here, at the very
-	// bottom of the rail (below Freelance), behind an always-reachable
-	// Archive (N) expando that is collapsed by default (D14).
-	if len(archived) > 0 {
+	// Bottom-of-rail Archive section (below Freelance): archived root
+	// coordinators AND archived freelancers live here, behind an always-
+	// reachable Archive (N) expando collapsed by default (D14) — reachable by
+	// j/k WITHOUT `l`. `l` (showArchived) force-expands it via archiveOpen.
+	if len(archived) > 0 || len(rl.archivedFreelance) > 0 {
 		rl.rows = append(rl.rows, railRow{
 			kind:         railRowArchiveExpando,
 			archiveOwner: archiveTopLevelOwner,
-			archiveCount: len(archived),
+			archiveCount: len(archived) + len(rl.archivedFreelance),
 		})
 		if rl.archiveOpen(archiveTopLevelOwner) {
 			for _, o := range archived {
 				appendOrch(o, 0)
+			}
+			// Archived freelancers render as standalone rows one level deep,
+			// like the archived children inside a per-coordinator expando.
+			for _, t := range rl.archivedFreelance {
+				rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t, depth: 1})
 			}
 		}
 	}
@@ -1078,11 +1190,12 @@ func (rl *railList) buildRows() {
 func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int64]bool) {
 	var activeRoles, archivedRoles []*roleEntry
 	for _, role := range o.Roles {
-		// Under an active filter, narrow to the children the query keeps
-		// visible (ancestry-preserving via roleVisible): the coordinator name
-		// matches (show the whole team), the role name matches, or the role is
-		// a sub-coordinator with a deeper match.
-		if !rl.roleVisible(o, role) {
+		// Skip a child here when EITHER: an active filter narrows it out
+		// (ancestry-preserving via roleVisible — coordinator name matches shows
+		// the whole team, role name matches, or a sub-coordinator with a deeper
+		// match), OR it's a pinned agent under a non-pinned coordinator that
+		// floated to the Pinned section (skip so it doesn't double-render).
+		if !rl.roleVisible(o, role) || rolePinnedOut(o, role) {
 			continue
 		}
 		if roleArchived(role) {
@@ -1249,6 +1362,8 @@ func (rl *railList) Draw(screen tcell.Screen) {
 			rl.drawOrchRow(screen, cx, y+i, cw, row.orch, row.depth, cursor)
 		case railRowRole:
 			rl.drawRoleRow(screen, cx, y+i, cw, row.role, row.depth, cursor)
+		case railRowPinnedSep:
+			rl.drawSeparator(screen, cx, y+i, cw, " Pinned ")
 		case railRowFreelanceSep:
 			rl.drawSeparator(screen, cx, y+i, cw, " Freelance ")
 		case railRowFreelanceProj:
@@ -1369,6 +1484,11 @@ func (rl *railList) visibleRoleCount(o *orchEntry) int {
 	n := 0
 	for _, r := range o.Roles {
 		if roleArchived(r) {
+			continue
+		}
+		// A pinned agent floated to the Pinned section (coordinator not pinned)
+		// no longer renders under this header, so it must not inflate the count.
+		if rolePinnedOut(o, r) {
 			continue
 		}
 		n++

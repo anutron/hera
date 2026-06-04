@@ -51,6 +51,7 @@ func (f *fakeTargets) AgentTaskID() string { return f.agent }
 type fakeMutations struct {
 	new, newWorker, rename, del, archive, listAll, help int
 	prune, openPR, statusAdvance, statusRevert          int
+	pin                                                 int
 	resurrect                                           int
 
 	// resurrectHandled is what OnResurrect returns — true means it consumed
@@ -70,6 +71,7 @@ func (f *fakeMutations) OnPrune()         { f.prune++ }
 func (f *fakeMutations) OnOpenPR()        { f.openPR++ }
 func (f *fakeMutations) OnStatusAdvance() { f.statusAdvance++ }
 func (f *fakeMutations) OnStatusRevert()  { f.statusRevert++ }
+func (f *fakeMutations) OnPin()           { f.pin++ }
 func (f *fakeMutations) OnResurrect() bool {
 	f.resurrect++
 	return f.resurrectHandled
@@ -1021,6 +1023,34 @@ func TestKeyRouter_StatusKeys_RailFocus_FireMutation(t *testing.T) {
 	}
 	if len(p.Calls()) != 0 {
 		t.Fatalf("status keys in RAIL must not forward to PTY; got %v", p.Calls())
+	}
+}
+
+// `P` toggles pin; RAIL-focus-only, intercepted (not forwarded).
+func TestKeyRouter_PinKey_RailFocus_FiresMutation(t *testing.T) {
+	r, p, m, _ := newRouter()
+	if out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'P', tcell.ModNone)); out != nil {
+		t.Fatalf("P in RAIL must be consumed; got %v", out)
+	}
+	if m.pin != 1 {
+		t.Fatalf("P in RAIL must fire OnPin once; got %d", m.pin)
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("P in RAIL must not forward to PTY; got %v", p.Calls())
+	}
+}
+
+// In a pane, `P` is ordinary input forwarded to the PTY (not the pin key).
+func TestKeyRouter_PinKey_PaneFocus_ForwardToPTY(t *testing.T) {
+	r, p, m, _ := newRouter()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'P', tcell.ModNone))
+	if m.pin != 0 {
+		t.Fatalf("P in pane must NOT fire OnPin; got %d", m.pin)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || string(calls[0].Payload) != "P" || calls[0].TaskID != "agent-1" {
+		t.Fatalf("P in AGENT must forward byte to agent task; got %+v", calls)
 	}
 }
 

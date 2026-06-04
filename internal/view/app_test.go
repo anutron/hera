@@ -3100,3 +3100,76 @@ func TestApp_IsFilteringDelegatesToRail(t *testing.T) {
 		t.Fatalf("IsFiltering must report false after the filter is accepted (input mode left)")
 	}
 }
+
+// --- rail-sections: populateRail integration ---
+
+// TestBuildApp_PinnedOrchestratorRendersInPinnedSection proves the full
+// DB→rail path: a pinned orchestrator (pinned_at set) floats into the Pinned
+// section at the rail top.
+func TestBuildApp_PinnedOrchestratorRendersInPinnedSection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "pinme")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+	if err := d.Orchestrators.Pin(ctx, orch.ID); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	rl := a.pieces.rail
+	if len(rl.orchestrators) != 1 || !rl.orchestrators[0].Pinned {
+		t.Fatalf("orchestrator must carry Pinned from pinned_at; got %+v", rl.orchestrators)
+	}
+	if len(rl.rows) == 0 || rl.rows[0].kind != railRowPinnedSep {
+		t.Fatalf("pinned orchestrator must produce a Pinned section first; kinds=%v", rowKinds(rl))
+	}
+	got := renderApp(t, a, 80, 24)
+	if !strings.Contains(got, "Pinned") || !strings.Contains(got, "pinme") {
+		t.Fatalf("rail must render the Pinned section with the pinned project; got:\n%s", got)
+	}
+}
+
+// TestBuildApp_ArchivedFreelancerLandsInBottomArchive proves Story 2's fix:
+// an archived freelancer (the data-loss case) is split out of the inline
+// Freelance section and reachable in the bottom Archive WITHOUT `l`.
+func TestBuildApp_ArchivedFreelancerLandsInBottomArchive(t *testing.T) {
+	d := openTestDB(t)
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{},
+		tasks: []ArgusTaskInfo{
+			{ID: "free-live", Name: "live-one", Project: "Alpha", State: ArgusTaskState{Status: "in_progress"}},
+			{ID: "free-arch", Name: "arch-one", Project: "Alpha", State: ArgusTaskState{Status: "complete", Archived: true}},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	rl := a.pieces.rail
+	// The archived freelancer must NOT be in the inline Freelance projects...
+	for _, fp := range rl.freelance {
+		for _, tk := range fp.Tasks {
+			if tk.ArgusTaskID == "free-arch" {
+				t.Fatalf("archived freelancer must not render inline in a Freelance repo group")
+			}
+		}
+	}
+	// ...it must be in the archived-freelance set (bottom Archive).
+	if len(rl.archivedFreelance) != 1 || rl.archivedFreelance[0].ArgusTaskID != "free-arch" {
+		t.Fatalf("archived freelancer must land in archivedFreelance; got %+v", rl.archivedFreelance)
+	}
+	// Default view (no `l`): the bottom Archive expando renders, reachable by j/k.
+	got := renderApp(t, a, 100, 40)
+	if !strings.Contains(got, "Archive (1)") {
+		t.Fatalf("bottom Archive (1) must render without `l`; got:\n%s", got)
+	}
+}

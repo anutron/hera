@@ -33,6 +33,14 @@ type mutationService interface {
 	ArchiveRole(ctx context.Context, id int64) error
 	UnarchiveRole(ctx context.Context, id int64) error
 
+	// Pin verbs (the `P` key). Pin sets pinned_at and clears archived_at
+	// (mutually exclusive); the view dispatches the direction from the
+	// selection's rendered pinned state.
+	PinOrchestrator(ctx context.Context, id int64) error
+	UnpinOrchestrator(ctx context.Context, id int64) error
+	PinRole(ctx context.Context, id int64) error
+	UnpinRole(ctx context.Context, id int64) error
+
 	// Stage P extended keyset.
 	ListCompletedAgents(ctx context.Context) ([]ops.CompletedAgent, error)
 	PruneCompleted(ctx context.Context, agents []ops.CompletedAgent) (int, error)
@@ -118,6 +126,12 @@ type railSelection struct {
 	Name           string
 	RoleKind       string
 	Archived       bool
+
+	// Pinned is the row's rendered pinned state (hera pinned_at set). Carried
+	// on orchestrator and role selections so `P` can dispatch the direction —
+	// unpin a pinned row, pin an unpinned one. Always false for freelance rows
+	// (an unmanaged argus task has no hera row to pin).
+	Pinned bool
 
 	// CoordRoleID is the coord role id of the orchestrator the selection
 	// belongs to. Carried on:
@@ -634,6 +648,47 @@ func (b *mutationBridge) OnArchive() {
 		}
 	default:
 		b.notApplicable("a: not applicable to this row")
+	}
+}
+
+// OnPin toggles the pinned state of the selected coordinator or agent (`P`).
+// No modal — pin is non-destructive and instantly reversible (press `P`
+// again). The direction follows the selection's rendered pinned state: a
+// pinned row unpins, an unpinned row pins (which also clears its archived
+// state, hera + argus, via the ops Pin verb). A freelance row is an
+// unmanaged argus task with NO hera row to persist a pin on, and argus
+// exposes no pin endpoint — so `P` there is not applicable and gets visible
+// feedback naming the gap, never a silent no-op. The argus/DB round-trip
+// runs off-loop via mutate.
+func (b *mutationBridge) OnPin() {
+	sel := b.sel.CurrentRailSelection()
+	switch sel.Kind {
+	case selOrchestrator:
+		if sel.Pinned {
+			b.mutate("unpin", true, func() error {
+				return b.svc.UnpinOrchestrator(b.ctx, sel.OrchestratorID)
+			})
+		} else {
+			b.mutate("pin", true, func() error {
+				return b.svc.PinOrchestrator(b.ctx, sel.OrchestratorID)
+			})
+		}
+	case selRole:
+		if sel.RoleKind == string(db.KindFreelance) {
+			b.notApplicable("P: pinning is hera-side; a freelancer is an unmanaged argus task with no hera row to pin (argus exposes no pin endpoint)")
+			return
+		}
+		if sel.Pinned {
+			b.mutate("unpin", true, func() error {
+				return b.svc.UnpinRole(b.ctx, sel.RoleID)
+			})
+		} else {
+			b.mutate("pin", true, func() error {
+				return b.svc.PinRole(b.ctx, sel.RoleID)
+			})
+		}
+	default:
+		b.notApplicable("P: not applicable to this row")
 	}
 }
 

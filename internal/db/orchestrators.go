@@ -69,7 +69,7 @@ func (o *OrchestratorsDAO) GetByName(ctx context.Context, name string) (*Orchest
 
 func (o *OrchestratorsDAO) findActiveByName(ctx context.Context, name string) (*Orchestrator, error) {
 	row := o.db.QueryRowContext(ctx,
-		`SELECT id, name, created_at, archived_at FROM orchestrators
+		`SELECT id, name, created_at, archived_at, pinned_at FROM orchestrators
 		 WHERE name = ? AND archived_at IS NULL`,
 		name,
 	)
@@ -80,7 +80,7 @@ func (o *OrchestratorsDAO) findActiveByName(ctx context.Context, name string) (*
 // primary-key lookups are not filtered on archived_at.
 func (o *OrchestratorsDAO) GetByID(ctx context.Context, id int64) (*Orchestrator, error) {
 	row := o.db.QueryRowContext(ctx,
-		`SELECT id, name, created_at, archived_at FROM orchestrators WHERE id = ?`,
+		`SELECT id, name, created_at, archived_at, pinned_at FROM orchestrators WHERE id = ?`,
 		id,
 	)
 	return scanOrchestrator(row)
@@ -99,7 +99,7 @@ func (o *OrchestratorsDAO) ListInclusive(ctx context.Context) ([]*Orchestrator, 
 }
 
 func (o *OrchestratorsDAO) list(ctx context.Context, includeArchived bool) ([]*Orchestrator, error) {
-	query := `SELECT id, name, created_at, archived_at FROM orchestrators`
+	query := `SELECT id, name, created_at, archived_at, pinned_at FROM orchestrators`
 	if !includeArchived {
 		query += ` WHERE archived_at IS NULL`
 	}
@@ -125,11 +125,12 @@ func (o *OrchestratorsDAO) list(ctx context.Context, includeArchived bool) ([]*O
 // Archive marks an orchestrator as archived by setting archived_at to the
 // current UTC timestamp. Idempotent: re-archiving an already-archived row
 // is a no-op (the original archived_at is preserved). Returns ErrNotFound
-// if no row matches the given id.
+// if no row matches the given id. Archiving CLEARS pinned_at — pin and
+// archive are mutually exclusive (argus's SetArchived clears Pinned).
 func (o *OrchestratorsDAO) Archive(ctx context.Context, id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := o.db.ExecContext(ctx,
-		`UPDATE orchestrators SET archived_at = ? WHERE id = ? AND archived_at IS NULL`,
+		`UPDATE orchestrators SET archived_at = ?, pinned_at = NULL WHERE id = ? AND archived_at IS NULL`,
 		now, id,
 	)
 	if err != nil {
@@ -158,6 +159,60 @@ func (o *OrchestratorsDAO) Unarchive(ctx context.Context, id int64) error {
 	)
 	if err != nil {
 		return fmt.Errorf("orchestrators.Unarchive: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		if _, err := o.GetByID(ctx, id); err != nil {
+			return err
+		}
+		return nil
+	}
+	if o.events != nil {
+		o.events.Emit(Event{Entity: EntityOrchestrator, Op: OpUpdate, ID: id})
+	}
+	return nil
+}
+
+// Pin marks an orchestrator as pinned by setting pinned_at to the current
+// UTC timestamp, AND clears archived_at — pin and archive are mutually
+// exclusive (argus's SetPinned forces Archived=false). Idempotent on the
+// pinned side: re-pinning preserves the original pinned_at, but a re-pin of
+// an archived-then-pinned row would not occur (Pin always clears archive).
+// Returns ErrNotFound if no row matches the given id.
+func (o *OrchestratorsDAO) Pin(ctx context.Context, id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// COALESCE preserves an existing pinned_at (idempotent pin) while always
+	// clearing archived_at, so a pin issued against an archived row both pins
+	// and unarchives in one statement.
+	res, err := o.db.ExecContext(ctx,
+		`UPDATE orchestrators SET pinned_at = COALESCE(pinned_at, ?), archived_at = NULL WHERE id = ?`,
+		now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("orchestrators.Pin: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		if _, err := o.GetByID(ctx, id); err != nil {
+			return err
+		}
+		return nil
+	}
+	if o.events != nil {
+		o.events.Emit(Event{Entity: EntityOrchestrator, Op: OpUpdate, ID: id})
+	}
+	return nil
+}
+
+// Unpin clears pinned_at on an orchestrator. Idempotent: unpinning an
+// already-unpinned row is a no-op. Returns ErrNotFound if no row matches id.
+func (o *OrchestratorsDAO) Unpin(ctx context.Context, id int64) error {
+	res, err := o.db.ExecContext(ctx,
+		`UPDATE orchestrators SET pinned_at = NULL WHERE id = ? AND pinned_at IS NOT NULL`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("orchestrators.Unpin: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
@@ -213,8 +268,8 @@ func (o *OrchestratorsDAO) Rename(ctx context.Context, id int64, newName string)
 func scanOrchestrator(row *sql.Row) (*Orchestrator, error) {
 	var orch Orchestrator
 	var createdAt string
-	var archivedAt sql.NullString
-	if err := row.Scan(&orch.ID, &orch.Name, &createdAt, &archivedAt); err != nil {
+	var archivedAt, pinnedAt sql.NullString
+	if err := row.Scan(&orch.ID, &orch.Name, &createdAt, &archivedAt, &pinnedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -225,20 +280,28 @@ func scanOrchestrator(row *sql.Row) (*Orchestrator, error) {
 		t, _ := time.Parse(time.RFC3339Nano, archivedAt.String)
 		orch.ArchivedAt = &t
 	}
+	if pinnedAt.Valid {
+		t, _ := time.Parse(time.RFC3339Nano, pinnedAt.String)
+		orch.PinnedAt = &t
+	}
 	return &orch, nil
 }
 
 func scanOrchestratorRows(rows *sql.Rows) (*Orchestrator, error) {
 	var orch Orchestrator
 	var createdAt string
-	var archivedAt sql.NullString
-	if err := rows.Scan(&orch.ID, &orch.Name, &createdAt, &archivedAt); err != nil {
+	var archivedAt, pinnedAt sql.NullString
+	if err := rows.Scan(&orch.ID, &orch.Name, &createdAt, &archivedAt, &pinnedAt); err != nil {
 		return nil, err
 	}
 	orch.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	if archivedAt.Valid {
 		t, _ := time.Parse(time.RFC3339Nano, archivedAt.String)
 		orch.ArchivedAt = &t
+	}
+	if pinnedAt.Valid {
+		t, _ := time.Parse(time.RFC3339Nano, pinnedAt.String)
+		orch.PinnedAt = &t
 	}
 	return &orch, nil
 }

@@ -56,6 +56,11 @@ type MutationHandler interface {
 	OnStatusAdvance()
 	OnStatusRevert()
 
+	// OnPin toggles the pinned state of the selected coordinator or agent
+	// (`P`, RAIL-focus-only). Pin and archive are mutually exclusive; in a
+	// pane the rune `P` forwards to the PTY instead.
+	OnPin()
+
 	// OnResurrect is consulted on Enter-in-RAIL BEFORE pane-entry. It returns
 	// true when it owns the Enter (an archived coord with the Archive section
 	// visible — it shows a resurrect confirm), so the router must NOT enter a
@@ -368,6 +373,13 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 		case 'S':
 			if r.Mutations != nil {
 				r.Mutations.OnStatusRevert()
+			}
+			return nil
+		case 'P':
+			// `P` toggles pin on the selected coord/agent; RAIL-focus-only
+			// (in a pane the rune forwards to the PTY via handlePane).
+			if r.Mutations != nil {
+				r.Mutations.OnPin()
 			}
 			return nil
 		case '?':
