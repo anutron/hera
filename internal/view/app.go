@@ -856,6 +856,10 @@ func (a *App) CurrentRailSelection() railSelection {
 func (a *App) QueueSelectRole(id int64) {
 	a.selectMu.Lock()
 	a.pendingSelectRoleID = id
+	// Reset the miss budget so each newly-queued select gets the full
+	// maxPendingSelectMisses allowance — otherwise a prior queue that burned
+	// misses then succeeded would leave this one with a reduced budget.
+	a.pendingSelectMisses = 0
 	a.selectMu.Unlock()
 }
 

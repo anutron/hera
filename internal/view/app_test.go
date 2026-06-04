@@ -2697,3 +2697,57 @@ func TestApp_QueueSelectRole_AbandonsUnresolvableAfterBound(t *testing.T) {
 			maxPendingSelectMisses, pending)
 	}
 }
+
+// TestApp_QueueSelectRole_FreshBudgetPerQueue proves each newly-queued select
+// gets the full miss budget: queue A (never appears), burn most of its budget,
+// resolve nothing, then queue B — B must survive maxPendingSelectMisses
+// repopulates of its own (the prior queue's burned misses must not carry over).
+func TestApp_QueueSelectRole_FreshBudgetPerQueue(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "c1", WorktreePath: "/c"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Queue A and burn maxPendingSelectMisses-1 misses (one short of abandon).
+	a.QueueSelectRole(999999)
+	for i := 0; i < maxPendingSelectMisses-1; i++ {
+		if err := a.populateRail(d); err != nil {
+			t.Fatalf("populateRail (A) attempt %d: %v", i, err)
+		}
+	}
+
+	// Now queue B — a different never-arriving id. The reset must give B the
+	// FULL budget. If the burned misses carried over, B would be abandoned after
+	// a single repopulate.
+	a.QueueSelectRole(888888)
+
+	a.selectMu.Lock()
+	missesAfterRequeue := a.pendingSelectMisses
+	a.selectMu.Unlock()
+	if missesAfterRequeue != 0 {
+		t.Fatalf("QueueSelectRole must reset the miss counter; got %d", missesAfterRequeue)
+	}
+
+	// B survives one more than A had survived (proving fresh budget).
+	for i := 0; i < maxPendingSelectMisses-1; i++ {
+		if err := a.populateRail(d); err != nil {
+			t.Fatalf("populateRail (B) attempt %d: %v", i, err)
+		}
+	}
+	a.selectMu.Lock()
+	pendingB := a.pendingSelectRoleID
+	a.selectMu.Unlock()
+	if pendingB != 888888 {
+		t.Fatalf("queue B must retain its full budget across %d repopulates; pending=%d",
+			maxPendingSelectMisses-1, pendingB)
+	}
+}
