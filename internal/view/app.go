@@ -554,6 +554,11 @@ func (a *App) populateRail(database *db.DB) error {
 				ArgusTaskID:    argusTaskID,
 				Archived:       role.ArchivedAt != nil,
 				StartedAt:      startedAt,
+				// Carry the owning orchestrator's coord role id (roles are loaded
+				// coordinator-first, so entry.CoordRoleID is already set by the
+				// time we build worker rows). `w` reads this to spawn the new
+				// worker under this row's coordinator.
+				CoordRoleID: entry.CoordRoleID,
 			}
 			applyArgusState(r, stateProv)
 			entry.Roles = append(entry.Roles, r)
@@ -823,7 +828,7 @@ func (a *App) CurrentRailSelection() railSelection {
 			ChildCount: countLiveRoles(ref.Roles),
 		}
 	case *roleEntry:
-		return railSelection{
+		sel := railSelection{
 			Kind:           selRole,
 			OrchestratorID: ref.OrchestratorID,
 			RoleID:         ref.RoleID,
@@ -831,6 +836,9 @@ func (a *App) CurrentRailSelection() railSelection {
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
 			ArgusTaskID:    ref.ArgusTaskID,
+			// CoordRoleID is the owning orchestrator's coord role; `w` spawns
+			// the new worker under it for a leaf/agent row.
+			CoordRoleID: ref.CoordRoleID,
 			// Argus-side archived + binding-dead state: with the hera flag
 			// these let `a` compute the EFFECTIVE archived state the rail
 			// displays (roleArchived) and pick the explicit verb — a
@@ -841,6 +849,14 @@ func (a *App) CurrentRailSelection() railSelection {
 			Dead:          ref.Dead,
 			WorktreePath:  ref.WorktreePath,
 		}
+		// A promoted sub-coordinator row (its own task coordinates a child
+		// orchestrator) is a coordinator TARGET in its own right: `w` spawns
+		// under the CHILD orchestrator with this row's OWN role as coord. Carry
+		// the child orchestrator id so OnNewWorker can resolve that (D2).
+		if ref.childOrch != nil {
+			sel.ChildOrchestratorID = ref.childOrch.ID
+		}
+		return sel
 	}
 	return railSelection{}
 }

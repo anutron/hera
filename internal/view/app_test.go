@@ -2751,3 +2751,181 @@ func TestApp_QueueSelectRole_FreshBudgetPerQueue(t *testing.T) {
 			maxPendingSelectMisses-1, pendingB)
 	}
 }
+
+// TestApp_CurrentRailSelection_AgentRow_CarriesCoordRoleID drives the REAL
+// CurrentRailSelection (not the fake selector) for a worker/agent row and
+// asserts it carries the owning orchestrator's coord role id. This is the
+// signal OnNewWorker's selRole branch needs; without it `w` on an agent row
+// resolves CoordRoleID==0 and the spawn dies as "not applicable" (the
+// production face of delta scenario "w resolves an agent selection to its
+// coordinator").
+func TestApp_CurrentRailSelection_AgentRow_CarriesCoordRoleID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select worker row")
+	}
+	sel := a.CurrentRailSelection()
+	if sel.Kind != selRole || sel.RoleID != worker.ID {
+		t.Fatalf("selection should be the worker role row; got %+v", sel)
+	}
+	if sel.OrchestratorID != orch.ID {
+		t.Fatalf("OrchestratorID: want %d, got %d", orch.ID, sel.OrchestratorID)
+	}
+	if sel.CoordRoleID != coord.ID {
+		t.Fatalf("CoordRoleID: want the owning coord role %d, got %d (w on an agent row would die as not-applicable)", coord.ID, sel.CoordRoleID)
+	}
+}
+
+// TestApp_CurrentRailSelection_SubCoordRow_TargetsItself drives the REAL
+// CurrentRailSelection for a promoted sub-coordinator row and asserts it
+// carries (a) RoleKind == coordinator, (b) its OWN role id as the coord-role
+// target, and (c) the CHILD orchestrator's id — so OnNewWorker spawns the
+// worker under the sub-coordinator (the child orchestrator), not the parent.
+// Delta D2: "a coordinator row (root OR a sub-coordinator role row) targets
+// that coordinator."
+func TestApp_CurrentRailSelection_SubCoordRow_TargetsItself(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	parent, _ := d.Orchestrators.Create(ctx, "parent")
+	parentCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parent.ID, Name: "parent-coord", Kind: db.KindCoordinator, ArgusProject: "p"})
+	subWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parent.ID, Name: "sub", Kind: db.KindWorker, ArgusProject: "p"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: parentCoord.ID, ArgusTaskID: "t-parent-coord", WorktreePath: "/pc"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subWorker.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	child, _ := d.Orchestrators.Create(ctx, "child")
+	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: child.ID, Name: "child-coord", Kind: db.KindCoordinator, ArgusProject: "p"})
+	// The sub worker's task IS the child orchestrator's coord task (multi-binding).
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoord.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	if !a.pieces.rail.SelectByRoleID(subWorker.ID) {
+		t.Fatalf("could not select the sub-coordinator row")
+	}
+	sel := a.CurrentRailSelection()
+	if sel.Kind != selRole {
+		t.Fatalf("sub-coord selection must be a role row; got kind %v", sel.Kind)
+	}
+	if sel.RoleKind != string(db.KindCoordinator) {
+		t.Fatalf("promoted sub-coord row must report coordinator kind; got %q", sel.RoleKind)
+	}
+	if sel.RoleID != subWorker.ID {
+		t.Fatalf("RoleID: want the sub worker role %d, got %d", subWorker.ID, sel.RoleID)
+	}
+	// The child orchestrator id must be carried so OnNewWorker can target it.
+	if sel.ChildOrchestratorID != child.ID {
+		t.Fatalf("ChildOrchestratorID: want the child orchestrator %d, got %d (sub-coord row would spawn under the PARENT)", child.ID, sel.ChildOrchestratorID)
+	}
+}
+
+// TestApp_OnNewWorker_AgentRow_SpawnsUnderCoord_RealSelection wires the REAL
+// App selection into the mutation bridge (over a fake mutationService that only
+// records the resolved SpawnWorkerInput) and proves `w` on a worker row spawns
+// under that worker's coordinator — the integration the fake-selector unit test
+// could not catch.
+func TestApp_OnNewWorker_AgentRow_SpawnsUnderCoord_RealSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "proj-coord", Kind: db.KindCoordinator, ArgusProject: "proj"})
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "tc", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: worker.ID, ArgusTaskID: "tw", WorktreePath: "/w"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select worker row")
+	}
+
+	m := &fakeModals{stubInputAnswer: "do work"}
+	svc := &fakeMutationService{}
+	// Wire the REAL App as the selector; bridge resolves the target from it.
+	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("w on a worker row must spawn (got %d SpawnWorker calls); the CoordRoleID==0 guard would no-op", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != orch.ID {
+		t.Fatalf("TargetOrchestratorID: want %d, got %d", orch.ID, calls[0].TargetOrchestratorID)
+	}
+	if calls[0].CoordRoleID != coord.ID {
+		t.Fatalf("CoordRoleID: want %d, got %d", coord.ID, calls[0].CoordRoleID)
+	}
+}
+
+// TestApp_OnNewWorker_SubCoordRow_SpawnsUnderChild_RealSelection proves `w` on
+// a sub-coordinator row spawns under the CHILD orchestrator (the sub-coord
+// itself), using the real App selection.
+func TestApp_OnNewWorker_SubCoordRow_SpawnsUnderChild_RealSelection(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	parent, _ := d.Orchestrators.Create(ctx, "parent")
+	parentCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parent.ID, Name: "parent-coord", Kind: db.KindCoordinator, ArgusProject: "p"})
+	subWorker, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parent.ID, Name: "sub", Kind: db.KindWorker, ArgusProject: "p"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: parentCoord.ID, ArgusTaskID: "t-parent-coord", WorktreePath: "/pc"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subWorker.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	child, _ := d.Orchestrators.Create(ctx, "child")
+	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: child.ID, Name: "child-coord", Kind: db.KindCoordinator, ArgusProject: "p"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoord.ID, ArgusTaskID: "t-sub", WorktreePath: "/sub"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	if !a.pieces.rail.SelectByRoleID(subWorker.ID) {
+		t.Fatalf("could not select sub-coordinator row")
+	}
+
+	m := &fakeModals{stubInputAnswer: "do work"}
+	svc := &fakeMutationService{}
+	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("w on a sub-coordinator row must spawn; got %d SpawnWorker calls", len(calls))
+	}
+	if calls[0].TargetOrchestratorID != child.ID {
+		t.Fatalf("sub-coord spawn must target the CHILD orchestrator %d; got %d (would nest under the parent)", child.ID, calls[0].TargetOrchestratorID)
+	}
+	if calls[0].CoordRoleID != subWorker.ID {
+		t.Fatalf("sub-coord spawn must use the sub-coord's OWN role %d as coord; got %d", subWorker.ID, calls[0].CoordRoleID)
+	}
+}

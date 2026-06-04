@@ -119,12 +119,25 @@ type railSelection struct {
 	RoleKind       string
 	Archived       bool
 
-	// CoordRoleID is the orchestrator's coord role id, carried on orchestrator
-	// rows so the resurrect-on-Enter flow can target the coord role when the
-	// operator presses Enter on an archived root coordinator (whose selection
-	// is the orchestrator header, not a role row). Zero for non-orchestrator
-	// selections or when the orchestrator has no coord role.
+	// CoordRoleID is the coord role id of the orchestrator the selection
+	// belongs to. Carried on:
+	//   - orchestrator (header) rows — so resurrect-on-Enter can target the
+	//     coord role when Enter lands on an archived root coordinator;
+	//   - agent/worker role rows — so `w` (OnNewWorker) can resolve the
+	//     coordinator to spawn the new worker under (delta scenario "w resolves
+	//     an agent selection to its coordinator"); without this an agent-row
+	//     `w` resolves CoordRoleID==0 and dies as not-applicable.
+	// Zero when the orchestrator has no coord role, or for freelance rows.
 	CoordRoleID int64
+
+	// ChildOrchestratorID is set ONLY on a promoted sub-coordinator role row (a
+	// worker whose own task coordinates a separate child orchestrator — a
+	// multi-binding). It is the CHILD orchestrator's id. `w` (OnNewWorker) uses
+	// it to spawn the new worker under the sub-coordinator itself (the child
+	// orchestrator), with the sub-coord's OWN role as the coord — per delta D2
+	// "a coordinator row (root OR a sub-coordinator role row) targets that
+	// coordinator." Zero for root coordinators and plain leaf workers.
+	ChildOrchestratorID int64
 
 	// CoordTaskID / CoordArgusArchived carry the orchestrator header's
 	// coord-pane binding and its argus-side archived bit. A displayed-active
@@ -367,7 +380,10 @@ func (b *mutationBridge) OnNew() {
 //
 // Selection resolution (D2):
 //   - Orchestrator header → that orchestrator's coord role (CoordRoleID).
-//   - Agent/worker role row → that agent's orchestrator (OrchestratorID),
+//   - Sub-coordinator role row (a promoted worker whose own task coordinates a
+//     child orchestrator) → that CHILD orchestrator, with this row's own role
+//     as coord (D2: a sub-coordinator row targets itself).
+//   - Leaf agent/worker role row → that agent's orchestrator (OrchestratorID),
 //     using CoordRoleID carried on the selection.
 //   - Freelance row, selNone, or any selection without a coordinator →
 //     a dismissible "not applicable" notice, no spawn.
@@ -394,6 +410,19 @@ func (b *mutationBridge) OnNewWorker() {
 			b.notApplicable("w: a freelancer is an unmanaged argus task — select a coordinator to spawn a worker under it")
 			return
 		}
+		if sel.RoleKind == string(db.KindCoordinator) {
+			// A promoted SUB-COORDINATOR row targets ITSELF (D2): spawn the new
+			// worker under its CHILD orchestrator, with this row's own role as
+			// coordinator. Its own task coordinates that child orchestrator.
+			if sel.ChildOrchestratorID == 0 {
+				b.notApplicable("w: this coordinator row has no child orchestrator to spawn under")
+				return
+			}
+			orchID = sel.ChildOrchestratorID
+			coordRoleID = sel.RoleID
+			break
+		}
+		// Leaf agent/worker row → that agent's coordinator.
 		if sel.OrchestratorID == 0 || sel.CoordRoleID == 0 {
 			b.notApplicable("w: selected row is not attached to a coordinator")
 			return
