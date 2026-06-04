@@ -30,8 +30,14 @@ type DB interface {
 	// Returns the existing active row if (orchestrator_id, name) already
 	// exists with the same kind (the DAO is idempotent on same-kind
 	// collisions). Callers that need a guaranteed-new row MUST pre-unique
-	// the name before calling (SpawnWorker does this).
+	// the name before calling (SpawnWorker does this; J-adopt de-collides
+	// via GetRoleByOrchestratorAndName).
 	CreateRole(ctx context.Context, in CreateRoleInput) (*Role, error)
+
+	// GetRoleByOrchestratorAndName returns the ACTIVE role with the given
+	// (orchestrator, name) or ErrNotFound. Backs the de-collision of the
+	// default adopt role name (archived siblings do not block).
+	GetRoleByOrchestratorAndName(ctx context.Context, orchID int64, name string) (*Role, error)
 
 	// CreateBinding inserts a new live binding row. Bindings are write-once
 	// on worktree_path — callers MUST pass the resolved path at insert time.
@@ -140,6 +146,11 @@ type ArgusClient interface {
 	// SetTaskStatus sets the task's workflow status, returning the
 	// resolved status. Backs `s`/`S`.
 	SetTaskStatus(ctx context.Context, taskID, status string) (string, error)
+
+	// PutTaskMeta sets a meta key on an argus task. Backs the best-effort
+	// meta:role=worker stamp on operator-side adoption (mirroring
+	// hera_join attach-mode). A failure here is non-fatal to the binding.
+	PutTaskMeta(ctx context.Context, taskID, key, value string) error
 }
 
 // PRCreator opens a pull request for a role's worktree. The production

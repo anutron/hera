@@ -18,6 +18,7 @@ const (
 	pageForm2   = "modal-form2"
 	pageConfirm = "modal-confirm"
 	pageError   = "modal-error"
+	pageSelect  = "modal-select"
 )
 
 // Modal focus contract (spec: "Modal overlays take keyboard focus,
@@ -213,6 +214,72 @@ func (a *App) ShowConfirm(title, message string, onYes func(), onNo func()) {
 		a.pieces.pages.AddPage(pageConfirm, modal, true, true)
 		if a.app != nil {
 			a.app.SetFocus(modal)
+		}
+	})
+}
+
+// ShowSelect opens a single-choice picker listing items in a themed,
+// focusable, dismissable modal. onSelect fires with the chosen 0-based index
+// when the operator confirms a row (Enter or click); onCancel fires on Esc.
+// Both callbacks run after the modal page is removed and focus is restored.
+// Backs the `J` adopt orchestrator picker.
+//
+// Safe to call from any goroutine — the body runs through app.QueueUpdateDraw
+// so it lands on the tview event loop.
+func (a *App) ShowSelect(title, label string, items []string, onSelect func(idx int), onCancel func()) {
+	a.queueModal(func() {
+		list := tview.NewList().
+			ShowSecondaryText(false).
+			SetWrapAround(true).
+			SetHighlightFullLine(true)
+
+		done := false
+		finish := func(submitted bool, idx int) {
+			if done {
+				return
+			}
+			done = true
+			a.closeModal(pageSelect)
+			if submitted {
+				if onSelect != nil {
+					onSelect(idx)
+				}
+			} else if onCancel != nil {
+				onCancel()
+			}
+		}
+
+		for i, it := range items {
+			idx := i
+			list.AddItem(it, "", 0, func() { finish(true, idx) })
+		}
+		// Esc cancels without a selection.
+		list.SetDoneFunc(func() { finish(false, -1) })
+
+		// Theme the list to match the other modals.
+		list.SetMainTextColor(theme.ColorNormal).
+			SetSelectedTextColor(tcell.ColorBlack).
+			SetSelectedBackgroundColor(theme.ColorHighlight)
+		list.SetBackgroundColor(theme.ColorStatusBG)
+		list.SetBorder(true)
+		list.SetBorderColor(theme.ColorTitle)
+		list.SetTitleColor(theme.ColorTitle)
+		if label != "" {
+			list.SetTitle(" " + title + " — " + label + " ").SetTitleAlign(tview.AlignCenter)
+		} else {
+			list.SetTitle(" " + title + " ").SetTitleAlign(tview.AlignCenter)
+		}
+
+		// Height: one row per item plus borders, capped so a long list stays
+		// on screen (the list scrolls internally past the cap).
+		height := len(items) + 2
+		if height > 14 {
+			height = 14
+		}
+		a.captureFocus()
+		a.pieces.pages.AddPage(pageSelect, centeredModal(list, 60, height), true, true)
+		if a.app != nil {
+			a.app.SetFocus(list)
 		}
 	})
 }

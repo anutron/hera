@@ -243,6 +243,11 @@ type roleEntry struct {
 	// no hera binding to resolve the path from). Empty for managed roles.
 	WorktreePath string
 
+	// Project is the argus repo this freelance task belongs to, carried on
+	// freelance rows so `J` adoption records it as the adopted worker role's
+	// argus_project. Empty for managed roles.
+	Project string
+
 	// childOrch is set when this worker role is ALSO the coordinator of another
 	// orchestrator — a sub-coordinator (a multi-binding: this role's ArgusTaskID
 	// equals childOrch.CoordTaskID). When non-nil, the rail renders this row as a

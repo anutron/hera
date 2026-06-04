@@ -52,6 +52,7 @@ type fakeMutations struct {
 	new, newWorker, rename, del, archive, listAll, help int
 	prune, openPR, statusAdvance, statusRevert          int
 	pin                                                 int
+	adopt                                               int
 	resurrect                                           int
 
 	// resurrectHandled is what OnResurrect returns — true means it consumed
@@ -72,6 +73,7 @@ func (f *fakeMutations) OnOpenPR()        { f.openPR++ }
 func (f *fakeMutations) OnStatusAdvance() { f.statusAdvance++ }
 func (f *fakeMutations) OnStatusRevert()  { f.statusRevert++ }
 func (f *fakeMutations) OnPin()           { f.pin++ }
+func (f *fakeMutations) OnAdopt()         { f.adopt++ }
 func (f *fakeMutations) OnResurrect() bool {
 	f.resurrect++
 	return f.resurrectHandled
@@ -1051,6 +1053,46 @@ func TestKeyRouter_PinKey_PaneFocus_ForwardToPTY(t *testing.T) {
 	calls := p.Calls()
 	if len(calls) != 1 || string(calls[0].Payload) != "P" || calls[0].TaskID != "agent-1" {
 		t.Fatalf("P in AGENT must forward byte to agent task; got %+v", calls)
+	}
+}
+
+// `J` adopts a freelancer; RAIL-focus-only, intercepted (not forwarded).
+func TestKeyRouter_AdoptKey_RailFocus_FiresMutation(t *testing.T) {
+	r, p, m, _ := newRouter()
+	if out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'J', tcell.ModNone)); out != nil {
+		t.Fatalf("J in RAIL must be consumed; got %v", out)
+	}
+	if m.adopt != 1 {
+		t.Fatalf("J in RAIL must fire OnAdopt once; got %d", m.adopt)
+	}
+	if len(p.Calls()) != 0 {
+		t.Fatalf("J in RAIL must not forward to PTY; got %v", p.Calls())
+	}
+}
+
+// Lowercase `j` is nav-down (KeyDown), NOT the adopt key.
+func TestKeyRouter_LowerJ_RailFocus_IsNavNotAdopt(t *testing.T) {
+	r, _, m, _ := newRouter()
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone))
+	if m.adopt != 0 {
+		t.Fatalf("lowercase j must NOT fire OnAdopt; got %d", m.adopt)
+	}
+	if out == nil || out.Key() != tcell.KeyDown {
+		t.Fatalf("lowercase j must translate to KeyDown; got %v", out)
+	}
+}
+
+// In a pane, `J` is ordinary input forwarded to the PTY (not the adopt key).
+func TestKeyRouter_AdoptKey_PaneFocus_ForwardToPTY(t *testing.T) {
+	r, p, m, _ := newRouter()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'J', tcell.ModNone))
+	if m.adopt != 0 {
+		t.Fatalf("J in pane must NOT fire OnAdopt; got %d", m.adopt)
+	}
+	calls := p.Calls()
+	if len(calls) != 1 || string(calls[0].Payload) != "J" || calls[0].TaskID != "agent-1" {
+		t.Fatalf("J in AGENT must forward byte to agent task; got %+v", calls)
 	}
 }
 

@@ -264,3 +264,61 @@ func TestShowInput_RendersWithArgusTheme(t *testing.T) {
 	a.ShowInput("Rename", "New name", "", nil, nil)
 	assertArgusThemedOverlay(t, renderPages(t, a, 80, 24))
 }
+
+func TestShowSelect_EnterInvokesOnSelectWithChosenIndex(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var got int
+	picked := false
+	cancelled := false
+	a.ShowSelect("Adopt \"feat-x\" into…", "Coordinator", []string{"alpha", "beta", "gamma"},
+		func(idx int) { got = idx; picked = true },
+		func() { cancelled = true })
+
+	if !a.IsModalActive() {
+		t.Fatalf("select modal must be active after ShowSelect")
+	}
+	modal := frontModal(t, a)
+	if !modal.HasFocus() {
+		t.Fatalf("select modal must take tview focus on open")
+	}
+
+	// Move down one (to "beta") and confirm with Enter.
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Enter must select a row and dismiss the picker")
+	}
+	if !picked || cancelled {
+		t.Fatalf("onSelect must fire (picked=%v cancelled=%v)", picked, cancelled)
+	}
+	if got != 1 {
+		t.Fatalf("expected index 1 (beta) after one Down + Enter; got %d", got)
+	}
+	if !a.pieces.rail.HasFocus() {
+		t.Fatalf("dismissing the picker must restore focus to the rail")
+	}
+}
+
+func TestShowSelect_EscInvokesOnCancel(t *testing.T) {
+	a := newModalTestApp(t)
+
+	picked := false
+	cancelled := false
+	a.ShowSelect("pick", "Coordinator", []string{"alpha", "beta"},
+		func(idx int) { picked = true },
+		func() { cancelled = true })
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Esc must dismiss the picker")
+	}
+	if picked || !cancelled {
+		t.Fatalf("Esc must fire onCancel, not onSelect (picked=%v cancelled=%v)", picked, cancelled)
+	}
+	if !a.pieces.rail.HasFocus() {
+		t.Fatalf("dismissing the picker must restore focus to the rail")
+	}
+}
