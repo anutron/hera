@@ -1804,8 +1804,9 @@ func bodyHasItem(a *App, p interface{ GetRect() (int, int, int, int) }) bool {
 }
 
 // TestBuildApp_CoordinatorSelectionIsFullWidthHERA proves the three-mode body:
-// selecting a coordinator (orchestrator header) composes rail + a single
-// full-width HERA pane bound to the coord task, with NO agent pane present.
+// selecting a coordinator (orchestrator header) composes rail + the HERA pane
+// bound to the coord task + the right-side Details pane, with NO agent pane
+// present (coord-details-pane change; HERA was previously full-width).
 func TestBuildApp_CoordinatorSelectionIsFullWidthHERA(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
@@ -1831,8 +1832,10 @@ func TestBuildApp_CoordinatorSelectionIsFullWidthHERA(t *testing.T) {
 	if a.CoordTaskID() != "tc" {
 		t.Fatalf("HERA pane should bind to coord task tc; got %q", a.CoordTaskID())
 	}
-	if got := bodyPaneCount(a); got != 1 {
-		t.Fatalf("coordinator mode body must have exactly one pane (full-width HERA); got %d", got)
+	// Coordinator mode composes the HERA pane plus the Details pane (2 panes),
+	// with NO agent pane (coord-details-pane change).
+	if got := bodyPaneCount(a); got != 2 {
+		t.Fatalf("coordinator mode body must have HERA + Details (2 panes); got %d", got)
 	}
 	if bodyHasItem(a, a.pieces.agent) {
 		t.Fatalf("coordinator mode must NOT compose the AGENT pane into the body")
@@ -1840,12 +1843,15 @@ func TestBuildApp_CoordinatorSelectionIsFullWidthHERA(t *testing.T) {
 	if !bodyHasItem(a, a.pieces.coord) {
 		t.Fatalf("coordinator mode must compose the HERA (coord) pane into the body")
 	}
+	if !bodyHasItem(a, a.pieces.details) {
+		t.Fatalf("coordinator mode must compose the Details pane into the body")
+	}
 }
 
 // TestBuildApp_InitialFrameMatchesInitialSelection proves the opening frame
 // honors the three-mode contract for the initially-selected row. With only a
 // coord bound (no live worker), findInitialSelection picks the coordinator, so
-// the first frame must be coordinator mode (full-width HERA, NO agent pane) —
+// the first frame must be coordinator mode (HERA + Details, NO agent pane) —
 // not the hardcoded agent split — even before any keypress.
 func TestBuildApp_InitialFrameMatchesInitialSelection(t *testing.T) {
 	d := openTestDB(t)
@@ -1865,11 +1871,15 @@ func TestBuildApp_InitialFrameMatchesInitialSelection(t *testing.T) {
 	if !a.coordPresent || a.agentPresent {
 		t.Fatalf("initial frame: want coordPresent=true agentPresent=false (coordinator-initial), got %v/%v", a.coordPresent, a.agentPresent)
 	}
-	if got := bodyPaneCount(a); got != 1 {
-		t.Fatalf("coordinator-initial frame must compose exactly one pane (full-width HERA); got %d", got)
+	// The coordinator-initial frame composes HERA + Details (2 panes), no agent.
+	if got := bodyPaneCount(a); got != 2 {
+		t.Fatalf("coordinator-initial frame must compose HERA + Details (2 panes); got %d", got)
 	}
 	if bodyHasItem(a, a.pieces.agent) {
 		t.Fatalf("coordinator-initial frame must NOT compose the AGENT pane")
+	}
+	if !bodyHasItem(a, a.pieces.details) {
+		t.Fatalf("coordinator-initial frame must compose the Details pane")
 	}
 }
 
@@ -2032,10 +2042,13 @@ func TestBuildApp_SwitchingSelectionRecomposesAndTearsDown(t *testing.T) {
 	a.SetFocusMachine(NewFocusMachine())
 	a.selectDebounce = 0
 
-	// Coordinator → full-width HERA.
+	// Coordinator → HERA + Details (2 panes), no agent.
 	a.applyRailSelection(&orchEntry{ID: orch.ID, Name: "proj", CoordTaskID: "tc"})
-	if bodyPaneCount(a) != 1 || !a.coordPresent || a.agentPresent {
-		t.Fatalf("after coordinator select: want 1 pane coord-only; got panes=%d coord=%v agent=%v", bodyPaneCount(a), a.coordPresent, a.agentPresent)
+	if bodyPaneCount(a) != 2 || !a.coordPresent || a.agentPresent {
+		t.Fatalf("after coordinator select: want HERA+Details (2 panes) coord-only; got panes=%d coord=%v agent=%v", bodyPaneCount(a), a.coordPresent, a.agentPresent)
+	}
+	if !bodyHasItem(a, a.pieces.details) {
+		t.Fatalf("coordinator select must compose the Details pane")
 	}
 
 	// Agent → split.
