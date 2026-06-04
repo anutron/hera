@@ -1018,6 +1018,14 @@ func (a *App) AgentTaskID() string {
 	return a.agentTask
 }
 
+// IsFiltering reports whether the rail is in search input mode, satisfying the
+// KeyRouter.RailFilter gate so the router yields keys to the rail while the
+// operator is typing a `/` query. Runs on the tview input pump (the rail's
+// filtering flag is event-loop state). nil-rail-safe.
+func (a *App) IsFiltering() bool {
+	return a.pieces.rail != nil && a.pieces.rail.Filtering()
+}
+
 // CurrentFocus returns the current focus state from the thread-safe mirror.
 // Satisfies focusReader so the raw-input transport layer can route inbound
 // bytes by focus from pluginview's read goroutine. Reads RAIL until the first

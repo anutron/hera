@@ -887,6 +887,7 @@ func assertMarkerOnRow(t *testing.T, dump, needle string) {
 func TestRailList_SelectionMarkerOnEverySelectableRowKind(t *testing.T) {
 	mk := func() *railList {
 		rl := newRailList()
+		rl.probeMarker = true // marker is probe-gated; this suite asserts the probe-visible glyph
 		rl.SetOrchestrators([]*orchEntry{
 			{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
 				{OrchestratorID: 1, RoleID: 10, Name: "w-active", RoleKind: "worker", Live: true},
@@ -943,6 +944,7 @@ func TestRailList_SelectionMarkerOnEverySelectableRowKind(t *testing.T) {
 // no row content shifts when the selection moves.
 func TestRailList_SelectionMarkerMovesWithCursorWithoutShift(t *testing.T) {
 	rl := newRailList()
+	rl.probeMarker = true // marker is probe-gated; assert it under the probe
 	rl.SetOrchestrators([]*orchEntry{
 		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
 			{OrchestratorID: 1, RoleID: 10, Name: "w1", RoleKind: "worker", Live: true},
@@ -1524,5 +1526,239 @@ func TestOrchIcon_HealthyHeaderRendersNormalGlyph(t *testing.T) {
 	}
 	if style != theme.StyleInReview {
 		t.Fatalf("healthy in_review header style = %v, want StyleInReview", style)
+	}
+}
+
+// --- rail search/filter (change rail-search) ---
+
+// railNames returns the set of rendered row names present in a rail dump,
+// tested via substring. Helper for filter assertions.
+func railHas(dump, needle string) bool { return strings.Contains(dump, needle) }
+
+// Scenario: `/` narrows the rail to rows whose name matches (case-insensitive
+// substring), hiding non-matching coordinators and agents.
+func TestRailList_FilterNarrowsToNameMatches(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "alpha", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "scout", RoleKind: "worker", Live: true},
+		}},
+		{ID: 2, Name: "beta", CoordTaskID: "c-2", Roles: []*roleEntry{
+			{OrchestratorID: 2, RoleID: 20, Name: "ranger", RoleKind: "worker", Live: true},
+		}},
+	})
+	rl.SetFilter("ALPHA") // case-insensitive
+	dump := renderRail(t, rl, 32, 14)
+	if !railHas(dump, "alpha") {
+		t.Fatalf("matching coordinator 'alpha' must render; got:\n%s", dump)
+	}
+	if railHas(dump, "beta") || railHas(dump, "ranger") {
+		t.Fatalf("non-matching rows must be hidden; got:\n%s", dump)
+	}
+}
+
+// Scenario: a matching agent keeps its parent coordinator header visible and
+// expanded (ancestry-preserving) even when the coordinator name doesn't match.
+func TestRailList_FilterPreservesAncestry(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "alpha", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "scout", RoleKind: "worker", Live: true},
+		}},
+		{ID: 2, Name: "beta", CoordTaskID: "c-2", Roles: []*roleEntry{
+			{OrchestratorID: 2, RoleID: 20, Name: "ranger", RoleKind: "worker", Live: true},
+		}},
+	})
+	rl.SetFilter("ranger") // matches an agent under "beta", not the coord name
+	dump := renderRail(t, rl, 32, 14)
+	if !railHas(dump, "ranger") {
+		t.Fatalf("matching agent 'ranger' must render; got:\n%s", dump)
+	}
+	if !railHas(dump, "beta") {
+		t.Fatalf("matching agent's parent coordinator 'beta' must stay visible (ancestry); got:\n%s", dump)
+	}
+	if railHas(dump, "alpha") || railHas(dump, "scout") {
+		t.Fatalf("unrelated coordinator/agent must be hidden; got:\n%s", dump)
+	}
+}
+
+// Scenario: a filter auto-expands a coordinator that the operator had
+// explicitly collapsed, so matches are never hidden behind a fold.
+func TestRailList_FilterAutoExpandsCollapsed(t *testing.T) {
+	rl := newRailList()
+	rl.collapsed[1] = true // explicitly collapsed before the first build
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "alpha", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "scout", RoleKind: "worker", Live: true},
+		}},
+	})
+	if railHas(renderRail(t, rl, 32, 12), "scout") {
+		t.Fatalf("precondition: collapsed coordinator should hide 'scout'")
+	}
+	rl.SetFilter("scout")
+	if !railHas(renderRail(t, rl, 32, 12), "scout") {
+		t.Fatalf("filter must auto-expand the collapsed coordinator to reveal the match")
+	}
+}
+
+// Scenario: whitespace-separated terms each must match (name terms).
+func TestRailList_FilterWhitespaceTerms(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "alpha", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "scout-fixer", RoleKind: "worker", Live: true},
+			{OrchestratorID: 1, RoleID: 11, Name: "scout-builder", RoleKind: "worker", Live: true},
+		}},
+	})
+	rl.SetFilter("scout fixer") // both terms must match the same row
+	dump := renderRail(t, rl, 34, 12)
+	if !railHas(dump, "scout-fixer") {
+		t.Fatalf("'scout fixer' must match 'scout-fixer'; got:\n%s", dump)
+	}
+	if railHas(dump, "scout-builder") {
+		t.Fatalf("'scout-builder' lacks term 'fixer' and must be hidden; got:\n%s", dump)
+	}
+}
+
+// Scenario: Esc / ClearFilter restores the full, unfiltered rail.
+func TestRailList_ClearFilterRestoresFullRail(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "alpha", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "scout", RoleKind: "worker", Live: true},
+		}},
+		{ID: 2, Name: "beta", CoordTaskID: "c-2", Roles: []*roleEntry{
+			{OrchestratorID: 2, RoleID: 20, Name: "ranger", RoleKind: "worker", Live: true},
+		}},
+	})
+	rl.BeginFilter()
+	rl.SetFilter("alpha")
+	if railHas(renderRail(t, rl, 32, 14), "beta") {
+		t.Fatalf("precondition: filtered rail should hide 'beta'")
+	}
+	rl.ClearFilter()
+	if rl.Filtering() {
+		t.Fatalf("ClearFilter must exit input mode")
+	}
+	dump := renderRail(t, rl, 32, 14)
+	if !railHas(dump, "alpha") || !railHas(dump, "beta") {
+		t.Fatalf("ClearFilter must restore the full rail; got:\n%s", dump)
+	}
+}
+
+// Scenario: Enter / AcceptFilter keeps the query applied but leaves input mode.
+func TestRailList_AcceptFilterKeepsQueryLeavesInputMode(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "alpha", CoordTaskID: "c-1"},
+		{ID: 2, Name: "beta", CoordTaskID: "c-2"},
+	})
+	rl.BeginFilter()
+	rl.SetFilter("alpha")
+	rl.AcceptFilter()
+	if rl.Filtering() {
+		t.Fatalf("AcceptFilter must leave input mode")
+	}
+	if rl.Filter() != "alpha" {
+		t.Fatalf("AcceptFilter must keep the query; got %q", rl.Filter())
+	}
+	dump := renderRail(t, rl, 32, 10)
+	if railHas(dump, "beta") {
+		t.Fatalf("accepted filter must stay applied (beta hidden); got:\n%s", dump)
+	}
+}
+
+// Scenario: while in input mode a rail mutation rune ('a') is appended to the
+// query rather than triggering a mutation; the input handler consumes it.
+func TestRailList_FilterInputAppendsRunes(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "alpha", CoordTaskID: "c-1"}})
+	rl.BeginFilter()
+	rl.HandleFilterKey(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone))
+	rl.HandleFilterKey(tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone))
+	if rl.Filter() != "al" {
+		t.Fatalf("filter input must append runes; got %q", rl.Filter())
+	}
+	// Backspace removes the last rune.
+	rl.HandleFilterKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModNone))
+	if rl.Filter() != "a" {
+		t.Fatalf("backspace must delete the last rune; got %q", rl.Filter())
+	}
+}
+
+// Scenario: the active query renders as an unobtrusive `/`-prefixed input line
+// while typing.
+func TestRailList_FilterInputLineRendered(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{{ID: 1, Name: "alpha", CoordTaskID: "c-1"}})
+	rl.BeginFilter()
+	rl.SetFilter("alp")
+	dump := renderRail(t, rl, 32, 12)
+	if !strings.Contains(dump, "/alp") && !strings.Contains(dump, "/ alp") {
+		t.Fatalf("filter input line must show the query; got:\n%s", dump)
+	}
+}
+
+// --- selection marker probe-gating (change rail-search) ---
+
+// Scenario: with the probe gate OFF (normal operation) no `›` marker renders,
+// yet the selected row is still distinguishable by its selected text style.
+func TestRailList_MarkerHiddenWithoutProbe(t *testing.T) {
+	rl := newRailList()
+	rl.probeMarker = false
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", RoleKind: "worker", Live: true},
+		}},
+	})
+	rl.SelectByOrchID(1)
+	dump, sim := renderRailSim(t, rl, 30, 8)
+	if len(markerLines(dump)) != 0 {
+		t.Fatalf("no `›` marker may render with the probe gate off; got:\n%s", dump)
+	}
+	y := rowOf(dump, "proj1")
+	if y < 0 || !rowHasForeground(sim, y, theme.ColorSelected) {
+		t.Fatalf("selected row must still render in theme.ColorSelected; got:\n%s", dump)
+	}
+}
+
+// Scenario: with the probe gate ON the `›` marker renders once, on the
+// selected row, exactly as before.
+func TestRailList_MarkerShownWithProbe(t *testing.T) {
+	rl := newRailList()
+	rl.probeMarker = true
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w1", RoleKind: "worker", Live: true},
+		}},
+	})
+	rl.SelectByOrchID(1)
+	assertMarkerOnRow(t, renderRail(t, rl, 30, 8), "proj1")
+}
+
+// Scenario: the gutter is reserved in both gate states, so toggling the marker
+// never shifts row content horizontally.
+func TestRailList_MarkerGateDoesNotShiftContent(t *testing.T) {
+	mk := func(probe bool) string {
+		rl := newRailList()
+		rl.probeMarker = probe
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "proj1", CoordTaskID: "c-1", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w1", RoleKind: "worker", Live: true},
+			}},
+		})
+		rl.SelectByOrchID(1)
+		return renderRail(t, rl, 30, 8)
+	}
+	off := runeColOf(strings.Split(mk(false), "\n"))
+	on := runeColOf(strings.Split(mk(true), "\n"))
+	for _, needle := range []string{"proj1", "w1"} {
+		a, b := off(needle), on(needle)
+		if a < 0 || b < 0 {
+			t.Fatalf("%q missing from a render", needle)
+		}
+		if a != b {
+			t.Fatalf("%q shifted from col %d (gate off) to %d (gate on)", needle, a, b)
+		}
 	}
 }

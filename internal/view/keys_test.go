@@ -1374,3 +1374,54 @@ func TestHotkeyItems_RailAdvertisesWorkerKey(t *testing.T) {
 		t.Errorf("RAIL hotkeys must advertise 'w' (spawn worker); items=%+v", items)
 	}
 }
+
+// --- rail filter routing (change rail-search) ---
+
+// fakeRailFilter satisfies the RailFilter gate; filtering is settable.
+type fakeRailFilter struct{ filtering bool }
+
+func (f *fakeRailFilter) IsFiltering() bool { return f.filtering }
+
+// While the rail is in filter input mode, the router must YIELD keys to the
+// focused rail widget (return the event, like the modal gate) so a rune that is
+// otherwise a mutation key ('a' = archive) becomes filter input instead of
+// firing the mutation handler.
+func TestKeyRouter_YieldsToRailWhileFiltering(t *testing.T) {
+	r, _, m, _ := newRouter()
+	f := &fakeRailFilter{filtering: true}
+	r.Filter = f
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone))
+	if out == nil {
+		t.Fatalf("while filtering, a key must propagate to the rail (not be consumed by the router)")
+	}
+	if m.archive != 0 {
+		t.Fatalf("while filtering, 'a' must NOT fire the archive mutation; got %d", m.archive)
+	}
+}
+
+// Esc while filtering must also yield to the rail (so the rail clears the
+// filter) rather than sending the argus key-surrender release frame.
+func TestKeyRouter_EscYieldsToRailWhileFiltering(t *testing.T) {
+	r, _, c := newRouterWithControl()
+	f := &fakeRailFilter{filtering: true}
+	r.Filter = f
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if out == nil {
+		t.Fatalf("Esc while filtering must propagate to the rail to clear the filter")
+	}
+	if c.releases != 0 {
+		t.Fatalf("Esc while filtering must NOT send a release frame; got %d", c.releases)
+	}
+}
+
+// When NOT filtering, routing is unchanged: 'a' fires the archive mutation.
+func TestKeyRouter_FilterGateOffRoutesNormally(t *testing.T) {
+	r, _, m, _ := newRouter()
+	r.Filter = &fakeRailFilter{filtering: false}
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone))
+	if m.archive != 1 {
+		t.Fatalf("with the filter gate off, 'a' must fire archive once; got %d", m.archive)
+	}
+}

@@ -150,6 +150,7 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 			Border:     app,
 			RailSelect: app,
 			Modal:      app,
+			Filter:     app,
 			Scroller:   app,
 			InPaneNav:  app,
 			Control:    control,

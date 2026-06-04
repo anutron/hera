@@ -3076,3 +3076,27 @@ func TestApp_OnNewWorker_DeadAgentRow_SpawnsUnderCoord_RealSelection(t *testing.
 			orch.ID, coord.ID, calls[0].TargetOrchestratorID, calls[0].CoordRoleID)
 	}
 }
+
+// IsFiltering delegates to the rail's input-mode flag so the KeyRouter's
+// RailFilter gate (wired Filter: app in session.go) yields keys to the rail
+// while the operator types a `/` query. (change rail-search)
+func TestApp_IsFilteringDelegatesToRail(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	if a.IsFiltering() {
+		t.Fatalf("rail must not be filtering initially")
+	}
+	a.pieces.rail.BeginFilter()
+	if !a.IsFiltering() {
+		t.Fatalf("IsFiltering must report true once the rail enters input mode")
+	}
+	a.pieces.rail.AcceptFilter()
+	if a.IsFiltering() {
+		t.Fatalf("IsFiltering must report false after the filter is accepted (input mode left)")
+	}
+}
