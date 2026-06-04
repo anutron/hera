@@ -33,12 +33,15 @@ const (
 )
 
 // Orchestrator is one coordination group. ArchivedAt is non-nil for
-// archived orchestrators.
+// archived orchestrators; PinnedAt is non-nil for pinned orchestrators.
+// Pin and archive are mutually exclusive (a pinned row has ArchivedAt nil
+// and vice versa), enforced by the Pin/Unpin/Archive DAO verbs.
 type Orchestrator struct {
 	ID         int64
 	Name       string
 	CreatedAt  time.Time
 	ArchivedAt *time.Time
+	PinnedAt   *time.Time
 }
 
 // Role is a participant in an orchestrator. Mission and Constraints are
@@ -54,6 +57,7 @@ type Role struct {
 	Constraints    string
 	CreatedAt      time.Time
 	ArchivedAt     *time.Time
+	PinnedAt       *time.Time
 }
 
 // Binding is one (role, argus task) incarnation. OrchestratorID is

@@ -87,6 +87,14 @@ func (a *dbAdapter) CreateBinding(ctx context.Context, in ops.CreateBindingInput
 	return adaptBinding(b), nil
 }
 
+func (a *dbAdapter) PinOrchestrator(ctx context.Context, id int64) error {
+	return translateDBErr(a.d.Orchestrators.Pin(ctx, id))
+}
+
+func (a *dbAdapter) UnpinOrchestrator(ctx context.Context, id int64) error {
+	return translateDBErr(a.d.Orchestrators.Unpin(ctx, id))
+}
+
 func (a *dbAdapter) GetRoleByID(ctx context.Context, id int64) (*ops.Role, error) {
 	r, err := a.d.Roles.GetByID(ctx, id)
 	if err != nil {
@@ -129,6 +137,14 @@ func (a *dbAdapter) UnarchiveRole(ctx context.Context, id int64) error {
 
 func (a *dbAdapter) RenameRole(ctx context.Context, id int64, newName string) error {
 	return translateDBErr(a.d.Roles.Rename(ctx, id, newName))
+}
+
+func (a *dbAdapter) PinRole(ctx context.Context, id int64) error {
+	return translateDBErr(a.d.Roles.Pin(ctx, id))
+}
+
+func (a *dbAdapter) UnpinRole(ctx context.Context, id int64) error {
+	return translateDBErr(a.d.Roles.Unpin(ctx, id))
 }
 
 func (a *dbAdapter) GetLiveBindingByRole(ctx context.Context, roleID int64) (*ops.Binding, error) {
@@ -179,7 +195,7 @@ func adaptOrchestrator(o *db.Orchestrator) *ops.Orchestrator {
 	if o == nil {
 		return nil
 	}
-	return &ops.Orchestrator{ID: o.ID, Name: o.Name, Archived: o.ArchivedAt != nil}
+	return &ops.Orchestrator{ID: o.ID, Name: o.Name, Archived: o.ArchivedAt != nil, Pinned: o.PinnedAt != nil}
 }
 
 func adaptRole(r *db.Role) *ops.Role {
@@ -195,6 +211,7 @@ func adaptRole(r *db.Role) *ops.Role {
 		Mission:        r.Mission,
 		Constraints:    r.Constraints,
 		Archived:       r.ArchivedAt != nil,
+		Pinned:         r.PinnedAt != nil,
 	}
 }
 

@@ -20,11 +20,13 @@ const (
 )
 
 // Orchestrator is the ops-layer view of one orchestrator row. Archived
-// is true when the underlying row has archived_at set.
+// is true when the underlying row has archived_at set; Pinned when it has
+// pinned_at set (mutually exclusive with Archived).
 type Orchestrator struct {
 	ID       int64
 	Name     string
 	Archived bool
+	Pinned   bool
 }
 
 // Role is the ops-layer view of one role row.
@@ -37,6 +39,7 @@ type Role struct {
 	Mission        string
 	Constraints    string
 	Archived       bool
+	Pinned         bool
 }
 
 // Binding is the ops-layer view of one binding row. Only the fields the

@@ -112,6 +112,23 @@ CREATE UNIQUE INDEX bindings_live_unique_worktree_orch
     ON bindings(worktree_path, orchestrator_id) WHERE ended_at IS NULL;
 `,
 	},
+	{
+		name: "0005_pinned_at",
+		sql: `
+-- Add nullable pinned_at (RFC3339 string) to orchestrators and roles,
+-- mirroring archived_at. Pin is a hera-view rail concern (a Pinned
+-- section at the rail top, the 'P' key) — argus exposes no pin/SetPinned
+-- REST endpoint, so pin state lives hera-side. Pin and archive are
+-- mutually exclusive: the DAO Pin verbs clear archived_at when pinning,
+-- and Archive clears pinned_at when archiving, mirroring argus's
+-- SetPinned/SetArchived. A plain ADD COLUMN suffices — no uniqueness
+-- constraint changes, so no table recreation is required.
+ALTER TABLE orchestrators ADD COLUMN pinned_at TEXT;
+ALTER TABLE roles ADD COLUMN pinned_at TEXT;
+CREATE INDEX orchestrators_by_pinned ON orchestrators(pinned_at);
+CREATE INDEX roles_by_pinned ON roles(pinned_at);
+`,
+	},
 }
 
 const initialSchema = `

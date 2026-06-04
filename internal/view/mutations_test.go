@@ -259,6 +259,14 @@ type fakeMutationService struct {
 	archiveRoleErr     error
 	unarchiveRoleCalls []int64
 	unarchiveRoleErr   error
+	pinOrchCalls       []int64
+	pinOrchErr         error
+	unpinOrchCalls     []int64
+	unpinOrchErr       error
+	pinRoleCalls       []int64
+	pinRoleErr         error
+	unpinRoleCalls     []int64
+	unpinRoleErr       error
 
 	completedAgents  []ops.CompletedAgent
 	listCompletedErr error
@@ -392,6 +400,34 @@ func (s *fakeMutationService) UnarchiveRole(_ context.Context, id int64) error {
 	defer s.mu.Unlock()
 	s.unarchiveRoleCalls = append(s.unarchiveRoleCalls, id)
 	return s.unarchiveRoleErr
+}
+
+func (s *fakeMutationService) PinOrchestrator(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pinOrchCalls = append(s.pinOrchCalls, id)
+	return s.pinOrchErr
+}
+
+func (s *fakeMutationService) UnpinOrchestrator(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unpinOrchCalls = append(s.unpinOrchCalls, id)
+	return s.unpinOrchErr
+}
+
+func (s *fakeMutationService) PinRole(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pinRoleCalls = append(s.pinRoleCalls, id)
+	return s.pinRoleErr
+}
+
+func (s *fakeMutationService) UnpinRole(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unpinRoleCalls = append(s.unpinRoleCalls, id)
+	return s.unpinRoleErr
 }
 
 func (s *fakeMutationService) ToggleArchiveTask(_ context.Context, taskID string, archived bool) error {
@@ -2048,5 +2084,85 @@ func TestBridge_OnNewWorker_SpawnError_SurfacesErrorModal(t *testing.T) {
 	}
 	if !strings.Contains(errs[0], "argus exploded") {
 		t.Fatalf("error modal should contain the error text; got %q", errs[0])
+	}
+}
+
+// --- Story 1: `P` pin toggle (OnPin) ---
+
+func TestBridge_OnPin_UnpinnedOrchestrator_Pins(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "foo"}
+
+	b.OnPin()
+	b.waitIdle()
+
+	if len(svc.pinOrchCalls) != 1 || svc.pinOrchCalls[0] != 5 {
+		t.Fatalf("want PinOrchestrator(5); got %v", svc.pinOrchCalls)
+	}
+	if len(svc.unpinOrchCalls) != 0 {
+		t.Fatalf("unpinned orchestrator must pin, not unpin; got %v", svc.unpinOrchCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnPin_PinnedOrchestrator_Unpins(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "foo", Pinned: true}
+
+	b.OnPin()
+	b.waitIdle()
+
+	if len(svc.unpinOrchCalls) != 1 || svc.unpinOrchCalls[0] != 5 {
+		t.Fatalf("want UnpinOrchestrator(5); got %v", svc.unpinOrchCalls)
+	}
+	if len(svc.pinOrchCalls) != 0 {
+		t.Fatalf("pinned orchestrator must unpin, not re-pin; got %v", svc.pinOrchCalls)
+	}
+}
+
+func TestBridge_OnPin_UnpinnedRole_Pins(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", RoleKind: "worker"}
+
+	b.OnPin()
+	b.waitIdle()
+
+	if len(svc.pinRoleCalls) != 1 || svc.pinRoleCalls[0] != 9 {
+		t.Fatalf("want PinRole(9); got %v", svc.pinRoleCalls)
+	}
+	if len(svc.unpinRoleCalls) != 0 {
+		t.Fatalf("unpinned role must pin, not unpin; got %v", svc.unpinRoleCalls)
+	}
+}
+
+func TestBridge_OnPin_PinnedRole_Unpins(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", RoleKind: "worker", Pinned: true}
+
+	b.OnPin()
+	b.waitIdle()
+
+	if len(svc.unpinRoleCalls) != 1 || svc.unpinRoleCalls[0] != 9 {
+		t.Fatalf("want UnpinRole(9); got %v", svc.unpinRoleCalls)
+	}
+	if len(svc.pinRoleCalls) != 0 {
+		t.Fatalf("pinned role must unpin, not re-pin; got %v", svc.pinRoleCalls)
+	}
+}
+
+func TestBridge_OnPin_Freelancer_NotApplicable(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 0, Name: "free", RoleKind: "freelance", ArgusTaskID: "T9"}
+
+	b.OnPin()
+	b.waitIdle()
+
+	if len(svc.pinRoleCalls)+len(svc.unpinRoleCalls) != 0 {
+		t.Fatalf("P on a freelancer must not call any pin verb; pin=%v unpin=%v", svc.pinRoleCalls, svc.unpinRoleCalls)
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "hera-side") {
+		t.Fatalf("P on a freelancer must give the hera-side gap feedback; errors=%v", m.errors)
 	}
 }

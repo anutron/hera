@@ -430,15 +430,13 @@ func (a *App) populateRail(database *db.DB) error {
 	// runs on the event loop.
 	showArchived := a.archiveVisible()
 
-	var (
-		orchs []*db.Orchestrator
-		err   error
-	)
-	if showArchived {
-		orchs, err = database.Orchestrators.ListInclusive(ctx)
-	} else {
-		orchs, err = database.Orchestrators.List(ctx)
-	}
+	// Always load orchestrators INCLUSIVELY (active + archived + pinned):
+	// buildRows partitions them into the Pinned section (pinned), the active
+	// tree, and the bottom Archive section (archived). Archived root
+	// coordinators must reach the rail data so they render in the bottom
+	// Archive section WITHOUT `l` (collapsed by default); `l` (showArchived)
+	// only force-expands the Archive expandos and reveals dead rows.
+	orchs, err := database.Orchestrators.ListInclusive(ctx)
 	if err != nil {
 		return fmt.Errorf("list orchestrators: %w", err)
 	}
@@ -458,6 +456,7 @@ func (a *App) populateRail(database *db.DB) error {
 			ID:       orch.ID,
 			Name:     orch.Name,
 			Archived: orch.ArchivedAt != nil,
+			Pinned:   orch.PinnedAt != nil,
 		}
 
 		// ALWAYS load roles inclusively: a hera-archived role (archived_at
@@ -553,6 +552,7 @@ func (a *App) populateRail(database *db.DB) error {
 				Dead:           dead,
 				ArgusTaskID:    argusTaskID,
 				Archived:       role.ArchivedAt != nil,
+				Pinned:         role.PinnedAt != nil,
 				StartedAt:      startedAt,
 				// Carry the owning orchestrator's coord role id (roles are loaded
 				// coordinator-first, so entry.CoordRoleID is already set by the
@@ -598,7 +598,9 @@ func (a *App) populateRail(database *db.DB) error {
 	entries = resolveSubCoordinators(entries)
 
 	a.pieces.rail.SetShowArchived(showArchived)
-	a.pieces.rail.SetFreelance(a.buildFreelance(ctx, database, showArchived, rendered))
+	active, archivedFree := a.buildFreelance(ctx, database, rendered)
+	a.pieces.rail.SetFreelance(active)
+	a.pieces.rail.SetArchivedFreelance(archivedFree)
 	a.pieces.rail.SetOrchestrators(entries)
 
 	// Apply any queued auto-select (e.g. the worker just spawned via `w`): the
@@ -675,49 +677,36 @@ func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
 // carry ended bindings' tasks via the latest-binding fallback). A task whose
 // bindings have ALL ENDED and that no row carries (a coord binding reconciled
 // away — the live-QA lost-session shape) falls back here so every non-archived
-// argus task stays findable in the rail. Returns nil when no FreelanceProvider
-// is wired (tests) or no freelancers exist. Archived freelancers are included
-// only when showArchived is set, so the active rail mirrors argus's
-// non-archived set.
-func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived bool, rendered map[string]struct{}) []*freelanceProject {
+// argus task stays findable in the rail.
+//
+// Returns (active, archived): active freelancers grouped by repo, and a flat
+// list of archived freelancers (the operator pressed `a` on them). Archived
+// freelancers are split out so the rail renders them ONLY in the bottom
+// Archive section — reachable WITHOUT `l`, never inline in their repo group
+// (no double-render). Both are nil when no FreelanceProvider is wired (tests)
+// or no freelancers exist.
+func (a *App) buildFreelance(ctx context.Context, database *db.DB, rendered map[string]struct{}) ([]*freelanceProject, []*roleEntry) {
 	prov, ok := a.src.(FreelanceProvider)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	tasks := prov.LiveTasks()
 	if len(tasks) == 0 {
-		return nil
+		return nil, nil
 	}
 	liveBindings, err := database.Bindings.ListLive(ctx)
 	if err != nil {
 		// On a query failure, fail safe to "everything looks managed" so we
 		// never mislabel a hera-managed task as a freelancer.
-		return nil
+		return nil, nil
 	}
 	liveBound := make(map[string]struct{}, len(liveBindings))
 	for _, b := range liveBindings {
 		liveBound[b.ArgusTaskID] = struct{}{}
 	}
 
-	byProject := map[string]*freelanceProject{}
-	var order []string
-	for _, t := range tasks {
-		if _, managed := liveBound[t.ID]; managed {
-			continue
-		}
-		if _, shown := rendered[t.ID]; shown {
-			continue
-		}
-		if t.State.Archived && !showArchived {
-			continue
-		}
-		fp, seen := byProject[t.Project]
-		if !seen {
-			fp = &freelanceProject{Project: t.Project}
-			byProject[t.Project] = fp
-			order = append(order, t.Project)
-		}
-		fp.Tasks = append(fp.Tasks, &roleEntry{
+	mkRow := func(t ArgusTaskInfo) *roleEntry {
+		return &roleEntry{
 			RoleKind:        string(db.KindFreelance),
 			Name:            t.Name,
 			ArgusTaskID:     t.ID,
@@ -729,17 +718,42 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB, showArchived 
 			ArgusIdle:       t.State.Idle,
 			NeedsInput:      t.State.NeedsInput,
 			ArgusArchived:   t.State.Archived,
-		})
+		}
+	}
+
+	byProject := map[string]*freelanceProject{}
+	var order []string
+	var archivedFree []*roleEntry
+	for _, t := range tasks {
+		if _, managed := liveBound[t.ID]; managed {
+			continue
+		}
+		if _, shown := rendered[t.ID]; shown {
+			continue
+		}
+		// Archived freelancers go to the bottom Archive section (always
+		// collected so they're reachable without `l`), never inline.
+		if t.State.Archived {
+			archivedFree = append(archivedFree, mkRow(t))
+			continue
+		}
+		fp, seen := byProject[t.Project]
+		if !seen {
+			fp = &freelanceProject{Project: t.Project}
+			byProject[t.Project] = fp
+			order = append(order, t.Project)
+		}
+		fp.Tasks = append(fp.Tasks, mkRow(t))
 	}
 	if len(order) == 0 {
-		return nil
+		return nil, archivedFree
 	}
 	sort.Strings(order)
 	out := make([]*freelanceProject, 0, len(order))
 	for _, p := range order {
 		out = append(out, byProject[p])
 	}
-	return out
+	return out, archivedFree
 }
 
 // RepopulateRail re-renders the rail from the current DB state. It bounces
@@ -817,6 +831,7 @@ func (a *App) CurrentRailSelection() railSelection {
 			CoordRoleID:    ref.CoordRoleID,
 			Name:           ref.Name,
 			Archived:       ref.Archived,
+			Pinned:         ref.Pinned,
 			// Coord-pane binding + its argus archived bit: together with
 			// Archived these let `a` detect the MIXED-COORD state (displayed-
 			// active orchestrator, argus-archived coord task) and repair —
@@ -835,6 +850,7 @@ func (a *App) CurrentRailSelection() railSelection {
 			Name:           ref.Name,
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
+			Pinned:         ref.Pinned,
 			ArgusTaskID:    ref.ArgusTaskID,
 			// CoordRoleID is the owning orchestrator's coord role; `w` spawns
 			// the new worker under it for a leaf/agent row.

@@ -18,6 +18,11 @@ type DB interface {
 	UnarchiveOrchestrator(ctx context.Context, id int64) error
 	RenameOrchestrator(ctx context.Context, id int64, newName string) error
 
+	// PinOrchestrator sets pinned_at AND clears archived_at (mutually
+	// exclusive); UnpinOrchestrator clears pinned_at. Backs the `P` toggle.
+	PinOrchestrator(ctx context.Context, id int64) error
+	UnpinOrchestrator(ctx context.Context, id int64) error
+
 	GetRoleByID(ctx context.Context, id int64) (*Role, error)
 	ListRolesByOrchestrator(ctx context.Context, orchID int64) ([]*Role, error)
 
@@ -39,6 +44,11 @@ type DB interface {
 	ArchiveRole(ctx context.Context, id int64) error
 	UnarchiveRole(ctx context.Context, id int64) error
 	RenameRole(ctx context.Context, id int64, newName string) error
+
+	// PinRole sets pinned_at AND clears archived_at (mutually exclusive);
+	// UnpinRole clears pinned_at. Backs the `P` toggle on an agent row.
+	PinRole(ctx context.Context, id int64) error
+	UnpinRole(ctx context.Context, id int64) error
 
 	// GetLiveBindingByRole returns the live binding for a role or
 	// ErrNotFound if the role currently has no live binding.
