@@ -9,6 +9,16 @@ import (
 // See design.md D7.
 const RailWidth = 36
 
+// coordDetailsHERAFlex / coordDetailsPaneFlex split the space right of the
+// rail in coordinator mode: the HERA pane takes ~2/3, the Details pane ~1/3.
+// Flex (not fixed) so the HERA pane is never starved at narrow terminals — at
+// 80 cols (rail 36) HERA still keeps ~29 cols. Composed only in coordinator
+// mode. See openspec change coord-details-pane.
+const (
+	coordDetailsHERAFlex = 2
+	coordDetailsPaneFlex = 1
+)
+
 // layoutPieces holds references to the individual chrome and body
 // primitives composed by buildLayout. The app keeps these around to
 // drive updates (rail refresh, pane swap) without recomposing the Flex
@@ -19,7 +29,11 @@ type layoutPieces struct {
 	rail   *railList
 	coord  *pinnedTerminalPane
 	agent  *pinnedTerminalPane
-	body   *tview.Flex
+	// details is the coordinator Details pane. It is created once here but
+	// composed into the body only in coordinator mode (refreshBody), so the
+	// agent and freelance layouts are unchanged.
+	details *detailsPane
+	body    *tview.Flex
 	// pages wraps the root layout so the mutation bridge can overlay
 	// input / confirm / help / error modals via AddPage. The base
 	// layout lives at page "base" (visible by default); each modal is
@@ -50,10 +64,13 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 	top.SetTextColor(tcell.ColorWhite)
 
 	rail := newRailList()
+	details := newDetailsPane()
 
 	coord.SetTitle("HERA")
 	agent.SetTitle("Agent")
 
+	// Default composition is the agent-mode split (rail + HERA + AGENT); the
+	// Details pane is added by refreshBody only when a coordinator is selected.
 	body := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(rail, RailWidth, 0, false).
 		AddItem(coord, 0, 1, false).
@@ -67,13 +84,14 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 		AddPage(pageBase, root, true, true)
 
 	return layoutPieces{
-		root:   root,
-		topBar: top,
-		rail:   rail,
-		coord:  coord,
-		agent:  agent,
-		body:   body,
-		pages:  pages,
+		root:    root,
+		topBar:  top,
+		rail:    rail,
+		coord:   coord,
+		agent:   agent,
+		details: details,
+		body:    body,
+		pages:   pages,
 	}
 }
 

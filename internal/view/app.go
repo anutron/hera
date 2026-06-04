@@ -1438,6 +1438,7 @@ func (a *App) applyRailSelection(ref any) {
 		if r.CoordTaskID != "" {
 			a.rebindCoord(r.CoordTaskID)
 		}
+		a.updateCoordDetails(r)
 		a.setBodyMode(true, false)
 	case *freelanceProject:
 		// A Freelance repo-group header is not pane-bindable; leave the panes
@@ -1468,6 +1469,7 @@ func (a *App) applyRailSelection(ref any) {
 				coordTask = r.ArgusTaskID
 			}
 			a.rebindCoord(coordTask)
+			a.updateCoordDetails(r.childOrch)
 			a.setBodyMode(true, false)
 			return
 		}
@@ -1487,6 +1489,15 @@ func (a *App) applyRailSelection(ref any) {
 		a.rebindCoord(coordTask)
 		if r.RoleKind == string(db.KindCoordinator) {
 			// A sub-coordinator selection is coordinator mode: full-width HERA.
+			// Describe the orchestrator this coord role belongs to (childOrch
+			// was nil here — a degenerate coord row without its own child
+			// orchestrator).
+			for _, o := range a.pieces.rail.orchestrators {
+				if o.ID == r.OrchestratorID {
+					a.updateCoordDetails(o)
+					break
+				}
+			}
 			a.setBodyMode(true, false)
 			return
 		}
@@ -1543,10 +1554,36 @@ func (a *App) refreshBody() {
 
 	body.Clear()
 	body.AddItem(a.pieces.rail, RailWidth, 0, false)
-	if coordPresent {
-		body.AddItem(a.pieces.coord, 0, 1, false)
+	switch {
+	case coordPresent && !agentPresent && a.pieces.details != nil:
+		// Coordinator mode: HERA (wider) + Details on the right. Flex-weighted
+		// so the HERA pane keeps the majority of the width and is never starved.
+		// Agent mode (both panes) and freelance mode (agent only) never compose
+		// the Details pane, so those layouts are unchanged.
+		body.AddItem(a.pieces.coord, 0, coordDetailsHERAFlex, false)
+		body.AddItem(a.pieces.details, 0, coordDetailsPaneFlex, false)
+	default:
+		if coordPresent {
+			body.AddItem(a.pieces.coord, 0, 1, false)
+		}
+		if agentPresent {
+			body.AddItem(a.pieces.agent, 0, 1, false)
+		}
 	}
-	if agentPresent {
-		body.AddItem(a.pieces.agent, 0, 1, false)
+}
+
+// updateCoordDetails rebuilds the Details pane's metadata for the selected
+// coordinator (an orchestrator header's orchEntry, or a sub-coordinator's
+// childOrch). Runs on the tview event loop (called from applyRailSelection);
+// buildCoordDetails issues only local SQLite reads. No-op when the pane or DB
+// is absent (tests that don't exercise rendering).
+func (a *App) updateCoordDetails(orch *orchEntry) {
+	if a.pieces.details == nil || orch == nil || a.database == nil {
+		return
 	}
+	cd, err := buildCoordDetails(context.Background(), a.database, orch)
+	if err != nil {
+		return
+	}
+	a.pieces.details.SetDetails(cd)
 }
