@@ -2,6 +2,7 @@ package view
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -119,6 +120,11 @@ type railList struct {
 	// tests set it directly. The marker GUTTER is reserved regardless, so
 	// toggling it never shifts row content.
 	probeMarker bool
+
+	// onStateChanged fires after ToggleCollapse changes any fold state.
+	// The App wires this to persist fold choices to the ConfigDAO so they
+	// survive daemon restarts. Runs on the tview event loop; must not block.
+	onStateChanged func()
 
 	// hasRunning reports whether any visible row renders the animated
 	// spinner (a known in_progress state, not idle, not blocked on input).
@@ -554,6 +560,48 @@ func (rl *railList) maybeFireSelectionChanged() {
 	}
 }
 
+// SetOnStateChanged registers a callback that fires after ToggleCollapse
+// changes any fold state (coordinator collapse, freelance group collapse,
+// archive expando). Runs on the tview event loop; the callback must not block.
+func (rl *railList) SetOnStateChanged(fn func()) {
+	rl.onStateChanged = fn
+}
+
+// maybeFireStateChanged invokes the registered fold-state callback if any.
+func (rl *railList) maybeFireStateChanged() {
+	if rl.onStateChanged != nil {
+		rl.onStateChanged()
+	}
+}
+
+// ViewState returns a snapshot of the rail's current fold choices (coordinator
+// collapse, freelance group collapse, archive expando). The maps are cloned so
+// the caller can hand them to a background goroutine without data races.
+// Called on the tview event loop (inside the onStateChanged callback).
+func (rl *railList) ViewState() railViewState {
+	return railViewState{
+		Collapsed:          maps.Clone(rl.collapsed),
+		FreelanceCollapsed: maps.Clone(rl.freelanceCollapsed),
+		ArchiveExpanded:    maps.Clone(rl.archiveExpanded),
+	}
+}
+
+// RestoreViewState applies a previously-saved fold state. Only non-nil maps
+// overwrite the existing maps; a zero-value (fresh DB) is a no-op.
+// Called before the first populateRail/SetOrchestrators, so no buildRows
+// call is needed here — the subsequent SetOrchestrators drives that.
+func (rl *railList) RestoreViewState(s railViewState) {
+	if s.Collapsed != nil {
+		rl.collapsed = s.Collapsed
+	}
+	if s.FreelanceCollapsed != nil {
+		rl.freelanceCollapsed = s.FreelanceCollapsed
+	}
+	if s.ArchiveExpanded != nil {
+		rl.archiveExpanded = s.ArchiveExpanded
+	}
+}
+
 // SetOrchestrators replaces the rail's input data and rebuilds rows.
 // The cursor is preserved on the same orchestrator/role when possible;
 // otherwise it lands on the first selectable row. Fires the selection-
@@ -826,6 +874,7 @@ func (rl *railList) ToggleCollapse() {
 		rl.buildRows()
 		rl.restoreCursorToArchiveOwner(r.archiveOwner, prev)
 		rl.maybeFireSelectionChanged()
+		rl.maybeFireStateChanged()
 		return
 	case railRowRole:
 		// A sub-coordinator row (a worker that is also another orchestrator's
@@ -840,6 +889,7 @@ func (rl *railList) ToggleCollapse() {
 			rl.buildRows()
 			rl.restoreCursor(prev)
 			rl.maybeFireSelectionChanged()
+			rl.maybeFireStateChanged()
 			return
 		}
 		// A freelance task row (OrchestratorID 0) collapses its repo group;
@@ -876,6 +926,7 @@ func (rl *railList) ToggleCollapse() {
 	rl.buildRows()
 	rl.restoreCursor(prev)
 	rl.maybeFireSelectionChanged()
+	rl.maybeFireStateChanged()
 }
 
 // restoreCursorToArchiveOwner re-pins the cursor on an Archive expando
