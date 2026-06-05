@@ -28,6 +28,11 @@ type Task struct {
 	// Archived mirrors argus's is_archived. Hera uses it to keep archived
 	// argus tasks out of the active rail (omitempty, so absent == false).
 	Archived bool `json:"archived,omitempty"`
+	// PRState is the GitHub PR review state string served by argus's daemon
+	// poller (awaiting-review / changes-requested / approved / none / draft /
+	// merged-closed / unknown). Absent on daemons that predate the PR-poll
+	// feature — hera treats an absent field as non-actionable (no indicator).
+	PRState string `json:"pr_state,omitempty"`
 }
 
 // ListTasksResponse is argus's GET /api/tasks payload envelope.
