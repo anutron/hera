@@ -48,10 +48,10 @@ type Daemon struct {
 	Watcher           *argus.Watcher
 	Subscriber        *events.Subscriber
 
-	periodicCancel       context.CancelFunc
-	periodicDone         chan struct{}
-	doorbellCancel       context.CancelFunc
-	doorbellDone         chan struct{}
+	periodicCancel context.CancelFunc
+	periodicDone   chan struct{}
+	doorbellCancel context.CancelFunc
+	doorbellDone   chan struct{}
 }
 
 // Start assembles hera and brings every subsystem up. Returns the live
