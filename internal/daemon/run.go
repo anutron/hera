@@ -182,7 +182,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	// single view session — they buffer bytes into in-memory rings the
 	// per-connection runner reads from.
 	proxyCtx, proxyCancel := context.WithCancel(context.Background())
-	viewProxy := view.NewProxyManager(client, log)
+	viewProxy := view.NewProxyManager(proxyCtx, client, log)
 	live, err := database.Bindings.ListLive(ctx)
 	if err != nil {
 		proxyCancel()
@@ -199,7 +199,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	for _, b := range live {
 		taskIDs = append(taskIDs, b.ArgusTaskID)
 	}
-	viewProxy.Seed(proxyCtx, taskIDs)
+	viewProxy.Seed(taskIDs)
 
 	// Poll argus's task list into a state cache so the rail can render each
 	// task's real status / idle / needs-input / archived without blocking

@@ -86,16 +86,107 @@ type resizeCall struct {
 	Rows   int
 }
 
+// streamingFetcher is a proxy.Fetcher whose SSE stream stays attached until the
+// subscription's context is cancelled, and delivers exactly one chunk through
+// the handler when release is closed. started fires once the stream attaches so
+// a test can sequence a session open/close around a single live delivery.
+type streamingFetcher struct {
+	started chan struct{}
+	release chan struct{}
+	chunk   []byte
+	once    sync.Once
+}
+
+func (f *streamingFetcher) GetTaskOutput(context.Context, string) (argus.TaskOutputSnapshot, error) {
+	return argus.TaskOutputSnapshot{}, nil
+}
+
+func (f *streamingFetcher) StreamTaskOutput(ctx context.Context, _ string, _ uint64, h argus.TaskOutputHandler) error {
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+		h(f.chunk)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *streamingFetcher) GetTaskSize(context.Context, string) (int, int, error) { return 0, 0, nil }
+func (f *streamingFetcher) ResizeTask(context.Context, string, int, int) error    { return nil }
+func (f *streamingFetcher) GetTask(_ context.Context, taskID string) (*argus.Task, error) {
+	return &argus.Task{ID: taskID, Status: "in_progress"}, nil
+}
+
+// TestProxyManager_SubscriptionOutlivesSessionContext is the regression guard
+// for the "frozen agent pane after reconnect" bug: a subscription opened on
+// behalf of one view session MUST keep streaming after that session's
+// WebSocket (and context) closes, so a later session that re-selects the same
+// task still gets LIVE bytes — not just the stale snapshot the dead
+// subscription last buffered. It drives the real managerPaneSource.SubscribeTask
+// path so it fails if subscription lifetime is ever re-tied to the caller's ctx.
+func TestProxyManager_SubscriptionOutlivesSessionContext(t *testing.T) {
+	ff := &streamingFetcher{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		chunk:   []byte("live-after-reconnect"),
+	}
+	daemonCtx, daemonCancel := context.WithCancel(context.Background())
+	defer daemonCancel()
+	m := NewProxyManager(daemonCtx, ff, nil)
+	defer m.Close()
+
+	// Session 1 opens the pane; its upstream SSE attaches.
+	sess1, cancel1 := context.WithCancel(context.Background())
+	_, _, unsub1 := managerPaneSource{mgr: m, ctx: sess1}.SubscribeTask("T1")
+	select {
+	case <-ff.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream stream never attached for session 1")
+	}
+
+	// Session 1's WebSocket closes: context cancelled, listener released.
+	cancel1()
+	if unsub1 != nil {
+		unsub1()
+	}
+
+	// Session 2 re-selects the SAME task. Before the fix it inherited session
+	// 1's now-dead subscription (cached but no longer streaming).
+	sess2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	_, live2, unsub2 := managerPaneSource{mgr: m, ctx: sess2}.SubscribeTask("T1")
+	defer func() {
+		if unsub2 != nil {
+			unsub2()
+		}
+	}()
+
+	// argus emits a live chunk AFTER session 1 closed.
+	close(ff.release)
+
+	select {
+	case b, ok := <-live2:
+		if !ok {
+			t.Fatal("session 2 listener channel closed — subscription was torn down with session 1")
+		}
+		if string(b) != "live-after-reconnect" {
+			t.Fatalf("session 2 got %q, want the live chunk", b)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session 2 received no live bytes — subscription died with session 1's context (regression)")
+	}
+}
+
 // TestProxyManager_SeedCreatesOnePerTaskID pins the seed path: every
 // taskID gets a Subscription, and the fetcher sees one snapshot per id.
 func TestProxyManager_SeedCreatesOnePerTaskID(t *testing.T) {
 	ff := &fakeFetcher{}
-	m := NewProxyManager(ff, nil)
+	m := NewProxyManager(context.Background(), ff, nil)
 	defer m.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	m.Seed(ctx, []string{"task-A", "task-B", "task-C"})
+	m.Seed([]string{"task-A", "task-B", "task-C"})
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -131,14 +222,11 @@ func TestProxyManager_SeedCreatesOnePerTaskID(t *testing.T) {
 // same id return the same Subscription instance — no double-subscribe.
 func TestProxyManager_EnsureIdempotent(t *testing.T) {
 	ff := &fakeFetcher{}
-	m := NewProxyManager(ff, nil)
+	m := NewProxyManager(context.Background(), ff, nil)
 	defer m.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sub1 := m.Ensure(ctx, "T1")
-	sub2 := m.Ensure(ctx, "T1")
+	sub1 := m.Ensure("T1")
+	sub2 := m.Ensure("T1")
 	if sub1 != sub2 {
 		t.Fatalf("Ensure(T1) returned different subscriptions on repeat call")
 	}
@@ -181,7 +269,7 @@ func waitForResizeCalls(t *testing.T, ff *fakeFetcher, n int, deadline time.Dura
 // tests exercising the coalesce/retry dispatcher don't sit through the
 // production debounce/retry intervals.
 func newResizeTestManager(ff *fakeFetcher) *ProxyManager {
-	m := NewProxyManager(ff, nil)
+	m := NewProxyManager(context.Background(), ff, nil)
 	m.resizeDebounce = 5 * time.Millisecond
 	m.resizeRetryDelay = 5 * time.Millisecond
 	return m
@@ -261,7 +349,7 @@ func TestProxyManager_ResizeTaskDispatchesOnDimChange(t *testing.T) {
 // wrapped output into the session history. Only the settled size is sent.
 func TestProxyManager_ResizeTaskCoalescesTransientDims(t *testing.T) {
 	ff := &fakeFetcher{}
-	m := NewProxyManager(ff, nil)
+	m := NewProxyManager(context.Background(), ff, nil)
 	m.resizeDebounce = 60 * time.Millisecond
 	m.resizeRetryDelay = 5 * time.Millisecond
 	defer m.Close()
@@ -426,7 +514,7 @@ func TestProxyManager_ResizeTaskGiveUpRechecksDesired(t *testing.T) {
 // session context aborts the dispatcher before it sends anything.
 func TestProxyManager_ResizeTaskStopsOnCtxCancel(t *testing.T) {
 	ff := &fakeFetcher{}
-	m := NewProxyManager(ff, nil)
+	m := NewProxyManager(context.Background(), ff, nil)
 	m.resizeDebounce = 50 * time.Millisecond
 	defer m.Close()
 
@@ -444,7 +532,7 @@ func TestProxyManager_ResizeTaskStopsOnCtxCancel(t *testing.T) {
 // non-positive dimensions are dropped locally without dispatch.
 func TestProxyManager_ResizeTaskIgnoresBadInputs(t *testing.T) {
 	ff := &fakeFetcher{}
-	m := NewProxyManager(ff, nil)
+	m := NewProxyManager(context.Background(), ff, nil)
 	defer m.Close()
 
 	m.ResizeTask(context.Background(), "", 100, 40)
@@ -465,11 +553,9 @@ func TestProxyManager_ResizeTaskIgnoresBadInputs(t *testing.T) {
 // closed and the manager's internal map is empty afterward.
 func TestProxyManager_CloseClearsAndReleases(t *testing.T) {
 	ff := &fakeFetcher{}
-	m := NewProxyManager(ff, nil)
+	m := NewProxyManager(context.Background(), ff, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	m.Seed(ctx, []string{"a", "b"})
+	m.Seed([]string{"a", "b"})
 
 	m.Close()
 	if got := m.TaskIDs(); len(got) != 0 {
@@ -489,7 +575,7 @@ func TestProxyManager_IsTaskAlive(t *testing.T) {
 			"archived":  "archived",
 		},
 	}
-	m := NewProxyManager(ff, nil)
+	m := NewProxyManager(context.Background(), ff, nil)
 	ctx := context.Background()
 	cases := []struct {
 		taskID string
