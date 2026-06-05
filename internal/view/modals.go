@@ -21,6 +21,39 @@ const (
 	pageSelect  = "modal-select"
 )
 
+// modalWidth is the outer width every centered form modal is sized to (see
+// centeredModal). Field widths are derived from it so inputs stay inside the
+// frame.
+const modalWidth = 60
+
+// formFieldWidth returns the input field width that keeps a labeled field
+// fully inside a modalWidth-wide form. tview lays a vertical form's field out
+// at x = innerLeft + labelWidth and draws the input's text area
+// labelWidth+fieldWidth wide; with no clamp the box runs past the right
+// border (BUG-002). The inner content width is modalWidth minus the form's
+// two border columns; reserving the longest label (plus tview's one-space
+// label gap) leaves the width an input may safely occupy. labels are the
+// raw label strings WITHOUT the trailing ": " that callers append.
+func formFieldWidth(labels ...string) int {
+	const borderCols = 2 // left+right form border
+	const labelSuffix = 2 // ": " appended to every label below
+	inner := modalWidth - borderCols
+	maxLabel := 0
+	for _, l := range labels {
+		// +labelSuffix for the ": " each caller appends, +1 for tview's
+		// inter-label/field space.
+		w := len(l) + labelSuffix + 1
+		if w > maxLabel {
+			maxLabel = w
+		}
+	}
+	fw := inner - maxLabel
+	if fw < 1 {
+		fw = 1
+	}
+	return fw
+}
+
 // Modal focus contract (spec: "Modal overlays take keyboard focus,
 // dismiss via Enter and Esc, restore prior focus, and use the argus
 // theme"):
@@ -67,6 +100,59 @@ func themeFormStyle(form *tview.Form, title string) {
 	form.SetTitle(title).SetTitleAlign(tview.AlignCenter)
 }
 
+// fieldFocusStyles are the input-field styles a modal form swaps between as
+// focus moves (BUG-005). The blurred style is the form's default field paint
+// (theme highlight background); the focused style brightens the field —
+// cyan border-coloured text on the title background, bold — so the operator
+// can always tell which input is active as they tab Name → Mission → OK →
+// Cancel. (Buttons already advertise focus via SetButtonActivatedStyle.) We
+// touch only foreground/border-style attributes per the focus-styling note;
+// the base modal background is owned by a later pass.
+var (
+	fieldBlurredStyle = tcell.StyleDefault.
+				Background(theme.ColorHighlight).
+				Foreground(theme.ColorNormal)
+	fieldFocusedStyle = tcell.StyleDefault.
+				Background(theme.ColorTitle).
+				Foreground(tcell.ColorBlack).
+				Bold(true)
+)
+
+// wireFieldFocusStyle gives an input field a visible focus indicator by
+// swapping its field style on focus/blur. Returns the field for chaining.
+func wireFieldFocusStyle(in *tview.InputField) *tview.InputField {
+	in.SetFieldStyle(fieldBlurredStyle)
+	in.SetFocusFunc(func() { in.SetFieldStyle(fieldFocusedStyle) })
+	in.SetBlurFunc(func() { in.SetFieldStyle(fieldBlurredStyle) })
+	return in
+}
+
+// submitOnEnter installs an input capture so that pressing Enter while an
+// input field is focused activates OK (BUG-006). Without it, tview's Form
+// treats Enter like Tab (advance to the next element) and only submits when
+// the OK button itself is focused — so labelling a button "OK [enter]" would
+// otherwise lie. When focus is on a BUTTON, Enter is left to tview so the
+// focused button (OK or Cancel) activates as the base spec requires; this
+// capture only short-circuits Enter from a text field. Esc is already wired
+// to cancel via form.SetCancelFunc by each caller.
+func submitOnEnter(form *tview.Form, onOK func()) {
+	form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Key() != tcell.KeyEnter {
+			return ev
+		}
+		// Only treat Enter as submit when a form item (input field) holds
+		// focus. If a button is focused, fall through to tview so Enter
+		// activates that button (OK *or* Cancel).
+		for i := 0; i < form.GetFormItemCount(); i++ {
+			if form.GetFormItem(i).HasFocus() {
+				onOK()
+				return nil
+			}
+		}
+		return ev
+	})
+}
+
 // captureFocus records the primitive currently holding tview focus so
 // closeModal can restore it after the modal goes. Runs on the event loop
 // (queueModal body), immediately before focus moves to the modal.
@@ -88,7 +174,8 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 		input := tview.NewInputField().
 			SetLabel(label + ": ").
 			SetText(initial).
-			SetFieldWidth(40)
+			SetFieldWidth(formFieldWidth(label))
+		wireFieldFocusStyle(input)
 
 		form := tview.NewForm().
 			AddFormItem(input).
@@ -106,14 +193,15 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 			}
 		}
 
-		form.AddButton("OK", func() { dismiss(true) })
-		form.AddButton("Cancel", func() { dismiss(false) })
+		form.AddButton("OK [enter]", func() { dismiss(true) })
+		form.AddButton("Cancel [esc]", func() { dismiss(false) })
 		form.SetCancelFunc(func() { dismiss(false) })
+		submitOnEnter(form, func() { dismiss(true) })
 
 		themeFormStyle(form, title)
 
 		a.captureFocus()
-		a.pieces.pages.AddPage(pageInput, centeredModal(form, 60, 7), true, true)
+		a.pieces.pages.AddPage(pageInput, centeredModal(form, modalWidth, 7), true, true)
 		if a.app != nil {
 			a.app.SetFocus(input)
 		}
@@ -130,14 +218,19 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 // so it lands on the tview event loop.
 func (a *App) ShowForm2(title, label1, initial1, label2, initial2 string, onSubmit func(v1, v2 string), onCancel func()) {
 	a.queueModal(func() {
+		// Both fields share the longest label's reserved width so they align
+		// and neither overflows the frame (BUG-002).
+		fw := formFieldWidth(label1, label2)
 		field1 := tview.NewInputField().
 			SetLabel(label1 + ": ").
 			SetText(initial1).
-			SetFieldWidth(40)
+			SetFieldWidth(fw)
 		field2 := tview.NewInputField().
 			SetLabel(label2 + ": ").
 			SetText(initial2).
-			SetFieldWidth(40)
+			SetFieldWidth(fw)
+		wireFieldFocusStyle(field1)
+		wireFieldFocusStyle(field2)
 
 		form := tview.NewForm().
 			AddFormItem(field1).
@@ -157,14 +250,15 @@ func (a *App) ShowForm2(title, label1, initial1, label2, initial2 string, onSubm
 			}
 		}
 
-		form.AddButton("OK", func() { dismiss(true) })
-		form.AddButton("Cancel", func() { dismiss(false) })
+		form.AddButton("OK [enter]", func() { dismiss(true) })
+		form.AddButton("Cancel [esc]", func() { dismiss(false) })
 		form.SetCancelFunc(func() { dismiss(false) })
+		submitOnEnter(form, func() { dismiss(true) })
 
 		themeFormStyle(form, title)
 
 		a.captureFocus()
-		a.pieces.pages.AddPage(pageForm2, centeredModal(form, 60, 9), true, true)
+		a.pieces.pages.AddPage(pageForm2, centeredModal(form, modalWidth, 9), true, true)
 		if a.app != nil {
 			a.app.SetFocus(field1)
 		}
