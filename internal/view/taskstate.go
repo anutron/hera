@@ -141,9 +141,7 @@ func (c *ArgusStateCache) Subscribe() (<-chan struct{}, func()) {
 	c.submu.Unlock()
 	return ch, func() {
 		c.submu.Lock()
-		if _, ok := c.subs[ch]; ok {
-			delete(c.subs, ch)
-		}
+		delete(c.subs, ch)
 		c.submu.Unlock()
 	}
 }

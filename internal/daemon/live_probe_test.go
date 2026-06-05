@@ -16,55 +16,10 @@ import (
 	"github.com/coder/websocket"
 )
 
-// renderANSIToText turns a full-surface ANSI byte stream (what the wsscreen
-// emits) into rough text: it emits a newline whenever the cursor is
-// positioned (CSI ... H/f), drops other escape sequences (colors, etc.), and
-// keeps printable + multibyte (nerd-font glyph) bytes. Good enough to read the
-// rail rows, icons, counts, and pane content without a full vt emulator.
-func renderANSIToText(b []byte) string {
-	var out bytes.Buffer
-	for i := 0; i < len(b); i++ {
-		c := b[i]
-		if c == 0x1b { // ESC
-			if i+1 < len(b) && b[i+1] == '[' { // CSI
-				j := i + 2
-				for j < len(b) && (b[j] < '@' || b[j] > '~') {
-					j++
-				}
-				if j < len(b) {
-					final := b[j]
-					if final == 'H' || final == 'f' {
-						out.WriteByte('\n')
-					}
-					i = j
-					continue
-				}
-			}
-			// other escape: skip ESC + next byte
-			i++
-			continue
-		}
-		if c == '\n' || c == '\t' || c >= 0x20 {
-			out.WriteByte(c)
-		}
-	}
-	// collapse runs of blank lines
-	lines := strings.Split(out.String(), "\n")
-	var keep []string
-	for _, ln := range lines {
-		ln = strings.TrimRight(ln, " ")
-		if strings.TrimSpace(ln) == "" {
-			continue
-		}
-		keep = append(keep, ln)
-	}
-	return strings.Join(keep, "\n")
-}
-
 // renderANSIToGrid reconstructs a 2D character grid from a full-surface ANSI
 // byte stream by honoring cursor-position (CSI row;col H/f), CR, LF, and
 // clear-screen (CSI 2J) — so cursor-addressed full repaints AND incremental
-// diffs land in the right cells. Unlike renderANSIToText (which fragments
+// diffs land in the right cells. Unlike a plain text flattening (which fragments
 // when live panes stream many positioned writes), this yields a stable
 // snapshot of the final screen. UTF-8 multibyte glyphs (nerd-font icons)
 // occupy one cell. Returns the grid as newline-joined rows, right-trimmed.
@@ -104,7 +59,8 @@ func renderANSIToGrid(b []byte, rows, cols int) string {
 					params := string(rs[i+2 : j])
 					switch rs[j] {
 					case 'H', 'f':
-						r, cmid := 1, 1
+						cmid := 1
+						var r int
 						if k := strings.IndexByte(params, ';'); k >= 0 {
 							r = atoi(params[:k], 1)
 							cmid = atoi(params[k+1:], 1)
@@ -175,7 +131,7 @@ func TestLiveViewProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial /view: %v", err)
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 
 	readCtx, readCancel := context.WithCancel(context.Background())
 	defer readCancel()
@@ -195,9 +151,10 @@ func TestLiveViewProbe(t *testing.T) {
 				return
 			}
 			mu.Lock()
-			if typ == websocket.MessageBinary {
+			switch typ {
+			case websocket.MessageBinary:
 				buf.Write(data)
-			} else if typ == websocket.MessageText {
+			case websocket.MessageText:
 				ctl = append(ctl, string(data))
 			}
 			mu.Unlock()
@@ -293,7 +250,7 @@ func TestLiveArgusAPIProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET %s/api/tasks: %v", base, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 400_000))
 	s := string(body)
 	t.Logf("HTTP %d, %d bytes", resp.StatusCode, len(body))

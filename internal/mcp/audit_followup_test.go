@@ -14,15 +14,6 @@ import (
 	"github.com/anutron/hera/internal/db"
 )
 
-// failingMetaArgus is a fake argus that returns 500 on PUT /api/tasks/{id}/meta
-// but otherwise behaves like the regular handlers fixture. Used to exercise
-// the soft-fail meta-mirror paths in hera_new_orchestrator and hera_status.
-type failingMetaArgus struct {
-	mu     *fakeArgusForHandlers
-	srv    *httptest.Server
-	client *argus.Client
-}
-
 func setupFailingMetaHandlers(t *testing.T) *handlerFixture {
 	t.Helper()
 	fake := &fakeArgusForHandlers{}
@@ -50,7 +41,7 @@ func setupFailingMetaHandlers(t *testing.T) *handlerFixture {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	client := argus.New(srv.URL, "tok")
 	resolver := NewResolver(client, database)

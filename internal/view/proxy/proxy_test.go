@@ -29,10 +29,10 @@ type fakeArgus struct {
 	streamOpens int32
 	streamCalls chan streamCall
 
-	chunks  [][]byte
-	exitAt  int // index after which to emit `event: exit`; -1 means never.
-	hangAt  int // index at which to hang the stream forever; -1 means never.
-	hangCh  chan struct{}
+	chunks [][]byte
+	exitAt int // index after which to emit `event: exit`; -1 means never.
+	hangAt int // index at which to hang the stream forever; -1 means never.
+	hangCh chan struct{}
 
 	output404 bool
 }
@@ -128,12 +128,12 @@ func (f *fakeArgus) handleStream(w http.ResponseWriter, r *http.Request) {
 			if pos < since {
 				deliver = c[since-pos:]
 			}
-			fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString(deliver))
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString(deliver))
 			flusher.Flush()
 		}
 		pos = end
 		if exitAt >= 0 && i == exitAt {
-			fmt.Fprintf(w, "event: exit\ndata: {}\n\n")
+			_, _ = fmt.Fprintf(w, "event: exit\ndata: {}\n\n")
 			flusher.Flush()
 			return
 		}
@@ -454,16 +454,16 @@ func TestProxy_StreamReconnectAfterError(t *testing.T) {
 		if n == 1 {
 			// Send one byte then return a partial response (close the
 			// hijack-style writer to simulate a network blip).
-			fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString([]byte("X")))
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString([]byte("X")))
 			flusher.Flush()
 			// Returning without `event: exit` leaves the scanner with EOF —
 			// the proxy treats it the same as a clean close + reconnects.
 			return
 		}
 		// Second open: send a byte and then exit cleanly.
-		fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString([]byte("Y")))
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString([]byte("Y")))
 		flusher.Flush()
-		fmt.Fprintf(w, "event: exit\ndata: {}\n\n")
+		_, _ = fmt.Fprintf(w, "event: exit\ndata: {}\n\n")
 		flusher.Flush()
 	})
 	srv := httptest.NewServer(mux)

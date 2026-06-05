@@ -1,0 +1,9 @@
+version: "2"
+
+# Standard linter set: errcheck, govet, ineffassign, staticcheck, unused.
+# No preset exclusions are enabled, which matches hera's existing convention
+# of explicit `_ =` for intentionally-ignored errors (e.g. deferred Close,
+# fmt.Fprint* to stdout/stderr). Keep this strict so swallowed errors in
+# business logic surface in review.
+linters:
+  default: standard

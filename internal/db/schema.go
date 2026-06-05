@@ -221,7 +221,7 @@ func applyMigration(sqldb *sql.DB, m migration, newVersion int) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(m.sql); err != nil {
 		return err

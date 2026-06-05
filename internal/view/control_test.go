@@ -2,7 +2,6 @@ package view
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 
@@ -36,23 +35,6 @@ func (f *fakeControlConn) Writes() []controlWrite {
 	out := make([]controlWrite, len(f.writes))
 	copy(out, f.writes)
 	return out
-}
-
-func (f *fakeControlConn) lastJSON(t *testing.T) map[string]any {
-	t.Helper()
-	w := f.Writes()
-	if len(w) == 0 {
-		t.Fatalf("no control frames written")
-	}
-	last := w[len(w)-1]
-	if last.Type != websocket.MessageText {
-		t.Fatalf("control frame must be a TEXT frame; got %v", last.Type)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(last.Data, &m); err != nil {
-		t.Fatalf("control frame is not valid JSON: %v (%q)", err, last.Data)
-	}
-	return m
 }
 
 func TestViewControl_Release_ExactJSON(t *testing.T) {

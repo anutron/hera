@@ -405,7 +405,7 @@ func TestViewSmoke_RenderAndKeyRouting(t *testing.T) {
 	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
 
 	conn := dialView(t, d)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	reader := newFrameReader(conn)
 	defer reader.stop()
 
@@ -476,7 +476,7 @@ func TestViewSmoke_EnterIntoPaneThenTypeForwards(t *testing.T) {
 	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
 
 	conn := dialView(t, d)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	reader := newFrameReader(conn)
 	defer reader.stop()
 	ctx := context.Background()
@@ -536,7 +536,7 @@ func TestViewSmoke_LastWriterWinsClosesPrior(t *testing.T) {
 	d, _, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
 
 	first := dialView(t, d)
-	defer first.CloseNow()
+	defer func() { _ = first.CloseNow() }()
 	firstReader := newFrameReader(first)
 	defer firstReader.stop()
 
@@ -545,7 +545,7 @@ func TestViewSmoke_LastWriterWinsClosesPrior(t *testing.T) {
 	_ = firstReader.drainBinary(300*time.Millisecond, 4096)
 
 	second := dialView(t, d)
-	defer second.CloseNow()
+	defer func() { _ = second.CloseNow() }()
 
 	// firstReader's read loop sees the supersede close as an error on
 	// `done`. Wait up to 2s for it.
@@ -567,7 +567,7 @@ func TestViewSmoke_LastWriterWinsClosesPrior(t *testing.T) {
 func TestViewSmoke_FocusFeedbackReflectsState(t *testing.T) {
 	d, _, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
 	conn := dialView(t, d)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	reader := newFrameReader(conn)
 	defer reader.stop()
 	ctx := context.Background()
@@ -650,7 +650,7 @@ func mustHotkeyLabels(t *testing.T, frames [][]byte) string {
 func TestViewSmoke_EscFromRailReleasesToArgus(t *testing.T) {
 	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
 	conn := dialView(t, d)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	reader := newFrameReader(conn)
 	defer reader.stop()
 	ctx := context.Background()
@@ -688,7 +688,7 @@ func TestViewSmoke_EscFromRailReleasesToArgus(t *testing.T) {
 func TestViewSmoke_RailResumesAfterReturn(t *testing.T) {
 	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
 	conn := dialView(t, d)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	reader := newFrameReader(conn)
 	defer reader.stop()
 	ctx := context.Background()
@@ -724,7 +724,7 @@ func TestViewSmoke_RailResumesAfterReturn(t *testing.T) {
 func TestViewSmoke_ShiftArrowScrollIntercepted(t *testing.T) {
 	d, fake, _ := smokeTestDaemon(t, seedCoordAndWorker(t))
 	conn := dialView(t, d)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	reader := newFrameReader(conn)
 	defer reader.stop()
 	ctx := context.Background()

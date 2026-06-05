@@ -39,7 +39,7 @@ func TestSubscriber_AdvancesCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 
 	// Seed the cursor so the subscriber sends ?since=
 	if err := database.EventCursor.Set(context.Background(), 1); err != nil {
@@ -112,7 +112,7 @@ func TestSubscriber_MultipleHandlersFanOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 
 	client := argus.New(srv.URL, "tok")
 	sub := NewSubscriber(client, database, nil)

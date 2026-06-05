@@ -229,7 +229,7 @@ func assertArgusThemedOverlay(t *testing.T, sim tcell.SimulationScreen) {
 	lavender, themed := 0, 0
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			_, _, style, _ := sim.GetContent(x, y)
+			_, style, _ := sim.Get(x, y)
 			_, bg, _ := style.Decompose()
 			if bg == defaultBG {
 				lavender++

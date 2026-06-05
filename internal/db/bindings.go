@@ -98,7 +98,7 @@ func (b *BindingsDAO) GetLiveByTaskID(ctx context.Context, taskID string) (*Bind
 	if err != nil {
 		return nil, fmt.Errorf("bindings.GetLiveByTaskID: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var found *Binding
 	for rows.Next() {
 		bnd, err := scanBindingRow(rows)
@@ -143,7 +143,7 @@ func (b *BindingsDAO) ListLiveByTaskID(ctx context.Context, taskID string) ([]*B
 	if err != nil {
 		return nil, fmt.Errorf("bindings.ListLiveByTaskID: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []*Binding
 	for rows.Next() {
 		bnd, err := scanBindingRow(rows)
@@ -166,7 +166,7 @@ func (b *BindingsDAO) GetLiveByWorktree(ctx context.Context, worktreePath string
 	if err != nil {
 		return nil, fmt.Errorf("bindings.GetLiveByWorktree: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var found *Binding
 	for rows.Next() {
 		bnd, err := scanBindingRow(rows)
@@ -216,7 +216,7 @@ func (b *BindingsDAO) ListLive(ctx context.Context) ([]*Binding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bindings.ListLive: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Binding
 	for rows.Next() {
@@ -238,7 +238,7 @@ func (b *BindingsDAO) ListByRole(ctx context.Context, roleID int64) ([]*Binding,
 	if err != nil {
 		return nil, fmt.Errorf("bindings.ListByRole: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Binding
 	for rows.Next() {

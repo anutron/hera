@@ -24,18 +24,18 @@ func newStatusCmd() *cobra.Command {
 
 			running, pid := pidIsAlive(cfg)
 			if running {
-				fmt.Fprintf(cmd.OutOrStdout(), "hera: running (pid %d)\n", pid)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "hera: running (pid %d)\n", pid)
 			} else if pid != 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "hera: stale pidfile (pid %d not alive)\n", pid)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "hera: stale pidfile (pid %d not alive)\n", pid)
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "hera: not running")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "hera: not running")
 			}
 
 			// Open the DB read-only-ish (we run migrations but no real
 			// writes) just to read summary counts. Skip if the DB doesn't
 			// exist yet.
 			if _, err := os.Stat(cfg.StatePath()); os.IsNotExist(err) {
-				fmt.Fprintln(cmd.OutOrStdout(), "state: (no SQLite yet)")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "state: (no SQLite yet)")
 				return nil
 			}
 
@@ -43,16 +43,16 @@ func newStatusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open db: %w", err)
 			}
-			defer database.Close()
+			defer func() { _ = database.Close() }()
 
 			ctx := context.Background()
 			orchs, _ := database.Orchestrators.List(ctx)
 			cursor, _ := database.EventCursor.Get(ctx)
-			fmt.Fprintf(cmd.OutOrStdout(), "argus_url:        %s\n", cfg.ArgusBaseURL)
-			fmt.Fprintf(cmd.OutOrStdout(), "mcp_addr:         %s\n", cfg.ListenAddr)
-			fmt.Fprintf(cmd.OutOrStdout(), "state_path:       %s\n", cfg.StatePath())
-			fmt.Fprintf(cmd.OutOrStdout(), "last_event_id:    %d\n", cursor)
-			fmt.Fprintf(cmd.OutOrStdout(), "orchestrator_cnt: %d\n", len(orchs))
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "argus_url:        %s\n", cfg.ArgusBaseURL)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "mcp_addr:         %s\n", cfg.ListenAddr)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "state_path:       %s\n", cfg.StatePath())
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "last_event_id:    %d\n", cursor)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "orchestrator_cnt: %d\n", len(orchs))
 			for _, o := range orchs {
 				roles, _ := database.Roles.ListByOrchestrator(ctx, o.ID)
 				live := 0
@@ -61,7 +61,7 @@ func newStatusCmd() *cobra.Command {
 						live++
 					}
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %d roles, %d live bindings\n", o.Name, len(roles), live)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %d roles, %d live bindings\n", o.Name, len(roles), live)
 			}
 			return nil
 		},

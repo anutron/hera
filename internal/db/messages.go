@@ -80,7 +80,7 @@ func (m *MessagesDAO) UnreadForRole(ctx context.Context, roleID int64) ([]*Messa
 	if err != nil {
 		return nil, fmt.Errorf("messages.UnreadForRole: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Message
 	for rows.Next() {

@@ -27,7 +27,7 @@ func (f *fakeRegistry) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/mcp/tools", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			http.Error(w, "method", 405)
+			http.Error(w, "method", http.StatusMethodNotAllowed)
 			return
 		}
 		var body argus.MCPTool
@@ -41,7 +41,7 @@ func (f *fakeRegistry) handler() http.Handler {
 	})
 	mux.HandleFunc("/api/mcp/tools/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "DELETE" {
-			http.Error(w, "method", 405)
+			http.Error(w, "method", http.StatusMethodNotAllowed)
 			return
 		}
 		name := strings.TrimPrefix(r.URL.Path, "/api/mcp/tools/")
