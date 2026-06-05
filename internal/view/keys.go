@@ -567,4 +567,3 @@ func inPaneNavDir(e *tcell.EventKey) (int, bool) {
 	}
 	return 0, false
 }
-
