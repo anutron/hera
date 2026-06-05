@@ -248,6 +248,26 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		}
 	}(pieces.rail, a.spinnerStop)
 
+	// Restore persisted fold state before the initial rail populate so
+	// buildRows honours the operator's prior coordinator/archive choices.
+	// Errors are non-fatal: a fresh DB returns ErrNotFound, a corrupt entry
+	// resets silently, and neither prevents hera from starting.
+	if database.Config != nil {
+		if s, err := loadRailStateFromDB(context.Background(), database.Config); err == nil && !s.isEmpty() {
+			a.pieces.rail.RestoreViewState(s)
+		}
+		cfg := database.Config
+		a.pieces.rail.SetOnStateChanged(func() {
+			// Capture state immediately (still on the tview event loop) then
+			// write to the DB on a background goroutine so the event pump is
+			// never blocked by a SQLite write.
+			s := a.pieces.rail.ViewState()
+			go func() {
+				_ = saveRailStateToDB(context.Background(), cfg, s)
+			}()
+		})
+	}
+
 	if err := a.populateRail(database); err != nil {
 		return nil, fmt.Errorf("view.BuildApp: populate rail: %w", err)
 	}
