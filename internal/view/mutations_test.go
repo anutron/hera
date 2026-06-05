@@ -42,6 +42,18 @@ type fakeModals struct {
 	// confirmGate, when non-nil, blocks ShowConfirm at entry until the test
 	// closes it. Set before driving the bridge; never mutate afterwards.
 	confirmGate chan struct{}
+
+	// selects records every ShowSelect call. stubSelectIndex / stubSelectCancel
+	// / stubSelectNotOpen drive the picker's callback the way stubConfirm* do.
+	selects           []fakeSelectCall
+	stubSelectIndex   int
+	stubSelectCancel  bool
+	stubSelectNotOpen bool
+}
+
+type fakeSelectCall struct {
+	Title, Label string
+	Items        []string
 }
 
 type fakeInputCall struct {
@@ -138,6 +150,34 @@ func (f *fakeModals) ShowConfirm(title, message string, onYes func(), onNo func(
 	if onNo != nil {
 		onNo()
 	}
+}
+
+func (f *fakeModals) ShowSelect(title, label string, items []string, onSelect func(idx int), onCancel func()) {
+	f.mu.Lock()
+	f.selects = append(f.selects, fakeSelectCall{Title: title, Label: label, Items: items})
+	idx := f.stubSelectIndex
+	cancel := f.stubSelectCancel
+	notOpen := f.stubSelectNotOpen
+	f.mu.Unlock()
+
+	if notOpen {
+		return
+	}
+	if cancel {
+		if onCancel != nil {
+			onCancel()
+		}
+		return
+	}
+	if onSelect != nil {
+		onSelect(idx)
+	}
+}
+
+func (f *fakeModals) SelectCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.selects)
 }
 
 func (f *fakeModals) ShowError(message string) {
@@ -293,6 +333,14 @@ type fakeMutationService struct {
 	spawnWorkerCalls []ops.SpawnWorkerInput
 	spawnWorkerResp  *ops.SpawnWorkerResult
 	spawnWorkerErr   error
+
+	// Adopt verbs (`J`). listOrchs is returned by ListActiveOrchestrators;
+	// adoptCalls records every AdoptTaskIntoOrchestrator input.
+	listOrchs     []*ops.Orchestrator
+	listOrchsErr  error
+	listOrchsGate chan struct{}
+	adoptCalls    []ops.AdoptInput
+	adoptErr      error
 
 	// Seam-test plumbing. *Started, when non-nil, is closed when the
 	// corresponding method is entered (after recording the call). *Gate,
@@ -524,6 +572,28 @@ func (s *fakeMutationService) SpawnWorker(_ context.Context, in ops.SpawnWorkerI
 		return &cp, nil
 	}
 	return &ops.SpawnWorkerResult{RoleID: 42, ArgusTaskID: "task-worker-1"}, nil
+}
+
+func (s *fakeMutationService) ListActiveOrchestrators(_ context.Context) ([]*ops.Orchestrator, error) {
+	s.mu.Lock()
+	orchs := s.listOrchs
+	err := s.listOrchsErr
+	gate := s.listOrchsGate
+	s.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	return orchs, err
+}
+
+func (s *fakeMutationService) AdoptTaskIntoOrchestrator(_ context.Context, in ops.AdoptInput) (*ops.AdoptResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adoptCalls = append(s.adoptCalls, in)
+	if s.adoptErr != nil {
+		return nil, s.adoptErr
+	}
+	return &ops.AdoptResult{OrchestratorName: "orch", RoleName: in.RoleName, RoleID: 1, BindingID: 1}, nil
 }
 
 // newBridgeUnderTest wires a mutationBridge with all-fake deps. The
@@ -2165,4 +2235,163 @@ func TestBridge_OnPin_Freelancer_NotApplicable(t *testing.T) {
 	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "hera-side") {
 		t.Fatalf("P on a freelancer must give the hera-side gap feedback; errors=%v", m.errors)
 	}
+}
+
+// --- `J` adopt (operator-side rail adoption) ---
+
+// On a freelancer, `J` lists the active orchestrators, opens the picker, and a
+// selection adopts the freelancer into the chosen orchestrator (worker
+// binding), passing the task id, default role name, repo, and worktree.
+func TestBridge_OnAdopt_Freelancer_PicksOrchestrator_Adopts(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:         selRole,
+		RoleKind:     "freelance",
+		RoleID:       0,
+		Name:         "feat-x",
+		ArgusTaskID:  "T7",
+		WorktreePath: "/tmp/wt/feat-x",
+		Project:      "Hera",
+	}
+	svc.listOrchs = []*ops.Orchestrator{{ID: 3, Name: "alpha"}, {ID: 5, Name: "beta"}}
+	m.stubSelectIndex = 1 // pick "beta"
+
+	b.OnAdopt()
+	b.waitIdle()
+
+	if m.SelectCount() != 1 {
+		t.Fatalf("J on a freelancer must open the picker once; got %d", m.SelectCount())
+	}
+	if got := m.selects[0].Items; len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
+		t.Fatalf("picker must list active orchestrator names; got %v", got)
+	}
+	if !stringsContains(m.selects[0].Title, "feat-x") {
+		t.Fatalf("picker title must name the freelancer; got %q", m.selects[0].Title)
+	}
+	if len(svc.adoptCalls) != 1 {
+		t.Fatalf("selecting an orchestrator must adopt once; got %d", len(svc.adoptCalls))
+	}
+	in := svc.adoptCalls[0]
+	if in.ArgusTaskID != "T7" || in.OrchestratorID != 5 || in.RoleName != "feat-x" ||
+		in.ArgusProject != "Hera" || in.WorktreePath != "/tmp/wt/feat-x" {
+		t.Fatalf("adopt input mismatch: %+v", in)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("a successful adopt must refresh the rail once; got %d", rp.Count())
+	}
+}
+
+// Cancelling the picker (Esc) adopts nothing.
+func TestBridge_OnAdopt_Freelancer_Cancel_NoAdopt(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleKind: "freelance", Name: "feat-x", ArgusTaskID: "T7"}
+	svc.listOrchs = []*ops.Orchestrator{{ID: 3, Name: "alpha"}}
+	m.stubSelectCancel = true
+
+	b.OnAdopt()
+	b.waitIdle()
+
+	if len(svc.adoptCalls) != 0 {
+		t.Fatalf("cancelling the picker must not adopt; got %v", svc.adoptCalls)
+	}
+}
+
+// `J` on a non-freelancer row (managed worker) gives visible feedback and does
+// not list orchestrators or open the picker.
+func TestBridge_OnAdopt_ManagedWorker_NotApplicable(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", RoleKind: "worker"}
+
+	b.OnAdopt()
+	b.waitIdle()
+
+	if m.SelectCount() != 0 || len(svc.adoptCalls) != 0 {
+		t.Fatalf("J on a managed worker must not pick or adopt; selects=%d adopts=%d", m.SelectCount(), len(svc.adoptCalls))
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "only freelancers") {
+		t.Fatalf("J on a managed worker must give freelancer-only feedback; errors=%v", m.errors)
+	}
+}
+
+// `J` on an orchestrator header gives feedback (only freelancers adopt).
+func TestBridge_OnAdopt_Orchestrator_NotApplicable(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 7, Name: "alpha"}
+
+	b.OnAdopt()
+	b.waitIdle()
+
+	if m.SelectCount() != 0 || len(svc.adoptCalls) != 0 {
+		t.Fatalf("J on an orchestrator must not pick or adopt")
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "only freelancers") {
+		t.Fatalf("J on an orchestrator must give feedback; errors=%v", m.errors)
+	}
+}
+
+// A freelancer with no argus task id gives feedback, opens no picker.
+func TestBridge_OnAdopt_Freelancer_NoTaskID_Feedback(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleKind: "freelance", Name: "feat-x"} // no ArgusTaskID
+
+	b.OnAdopt()
+	b.waitIdle()
+
+	if m.SelectCount() != 0 || len(svc.adoptCalls) != 0 {
+		t.Fatalf("freelancer with no task id must not pick or adopt")
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "argus task id") {
+		t.Fatalf("freelancer with no task id must give feedback; errors=%v", m.errors)
+	}
+}
+
+// No active orchestrators → feedback, no picker, no adopt.
+func TestBridge_OnAdopt_NoActiveOrchestrators_Feedback(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleKind: "freelance", Name: "feat-x", ArgusTaskID: "T7"}
+	svc.listOrchs = nil
+
+	b.OnAdopt()
+	b.waitIdle()
+
+	if m.SelectCount() != 0 || len(svc.adoptCalls) != 0 {
+		t.Fatalf("no orchestrators must not pick or adopt")
+	}
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "no active coordinators") {
+		t.Fatalf("no orchestrators must give feedback; errors=%v", m.errors)
+	}
+}
+
+// A failing adopt surfaces an error modal and refreshes nothing.
+func TestBridge_OnAdopt_ServiceError_ShowsErrorModal(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleKind: "freelance", Name: "feat-x", ArgusTaskID: "T7"}
+	svc.listOrchs = []*ops.Orchestrator{{ID: 3, Name: "alpha"}}
+	svc.adoptErr = errors.New("already bound")
+	m.stubSelectIndex = 0
+
+	b.OnAdopt()
+	b.waitIdle()
+
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "already bound") {
+		t.Fatalf("adopt error must surface in an error modal; errors=%v", m.errors)
+	}
+	if rp.Count() != 0 {
+		t.Fatalf("a failed adopt must not refresh the rail; got %d", rp.Count())
+	}
+}
+
+// OnAdopt returns to the event loop before the (blocking) orchestrator listing
+// completes — proving the work runs off-loop (no deadlock).
+func TestBridge_OnAdopt_ReturnsBeforeSvcCompletes(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleKind: "freelance", Name: "feat-x", ArgusTaskID: "T7"}
+	gate := make(chan struct{})
+	svc.listOrchsGate = gate
+	svc.listOrchs = []*ops.Orchestrator{{ID: 3, Name: "alpha"}}
+
+	returnsWithin(t, "OnAdopt", b.OnAdopt)
+
+	close(gate)
+	b.waitIdle()
 }

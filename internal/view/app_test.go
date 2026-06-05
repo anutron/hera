@@ -213,6 +213,12 @@ func TestApp_OnFocusChanged_PushesFocusAwareHotkeys(t *testing.T) {
 		t.Fatalf("RAIL hotkeys missing rail-specific bindings: %s", railLabels)
 	}
 
+	// `J` (adopt) is advertised in the help overlay alongside the other rail
+	// mutation keys so the operator can discover the gesture via `?`.
+	if !strings.Contains(railLabels, "J:adopt") {
+		t.Fatalf("RAIL hotkeys must advertise J:adopt: %s", railLabels)
+	}
+
 	a.OnFocusChanged(FocusCOORD)
 	_, items = decodeLast()
 	coordLabels := labelsFor(items)
@@ -1723,6 +1729,92 @@ func TestBuildApp_FreelanceGroupsByProjectExcludesManagedAndArchived(t *testing.
 			t.Errorf("rail render missing %q\n%s", want, out)
 		}
 	}
+}
+
+// TestBuildApp_AdoptedFreelancerLeavesFreelanceAndRendersUnderCoordinator
+// proves the rail-adopt headline scenario at the rail-build level: once the
+// freelancer's argus task gains a live worker binding (exactly what
+// ops.AdoptTaskIntoOrchestrator creates), the task drops out of the Freelance
+// section and renders as a managed worker under the chosen coordinator. The
+// exclusion is emergent from buildFreelance's liveBound filter, so this locks
+// it against a regression in that predicate.
+func TestBuildApp_AdoptedFreelancerLeavesFreelanceAndRendersUnderCoordinator(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	orch, err := d.Orchestrators.Create(ctx, "alpha")
+	if err != nil {
+		t.Fatalf("orch: %v", err)
+	}
+
+	src := &freelancePaneSource{
+		states: map[string]ArgusTaskState{},
+		tasks: []ArgusTaskInfo{
+			{ID: "free-x", Name: "feat-x", Project: "Hera", State: ArgusTaskState{Status: "in_progress"}},
+		},
+	}
+
+	// Before adoption: free-x is an unmanaged freelancer.
+	before, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	if !freelanceContains(before.pieces.rail.freelance, "free-x") {
+		t.Fatalf("free-x must start in the Freelance section; got %+v", before.pieces.rail.freelance)
+	}
+	before.Close()
+
+	// Adopt: create the worker role + live binding the operator's `J` would —
+	// the same DAO path ops.AdoptTaskIntoOrchestrator uses.
+	role, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "feat-x", Kind: db.KindWorker, ArgusProject: "Hera",
+	})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: role.ID, OrchestratorID: orch.ID, ArgusTaskID: "free-x", WorktreePath: "/wt/feat-x",
+	}); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+
+	// After adoption: free-x is gone from Freelance and renders as a worker
+	// under alpha.
+	after, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer after.Close()
+
+	if freelanceContains(after.pieces.rail.freelance, "free-x") {
+		t.Fatalf("adopted free-x must leave the Freelance section; got %+v", after.pieces.rail.freelance)
+	}
+	found := false
+	for _, o := range after.pieces.rail.orchestrators {
+		if o.ID != orch.ID {
+			continue
+		}
+		for _, r := range o.Roles {
+			if r.ArgusTaskID == "free-x" && r.RoleKind == string(db.KindWorker) {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("adopted free-x must render as a worker under alpha; orchestrators=%+v", after.pieces.rail.orchestrators)
+	}
+}
+
+// freelanceContains reports whether any freelance project group holds a task
+// with the given argus task id.
+func freelanceContains(projects []*freelanceProject, taskID string) bool {
+	for _, p := range projects {
+		for _, tk := range p.Tasks {
+			if tk.ArgusTaskID == taskID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestBuildApp_SelectingFreelancerEntersFullWidthMode proves that selecting a

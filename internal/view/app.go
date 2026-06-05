@@ -711,6 +711,7 @@ func (a *App) buildFreelance(ctx context.Context, database *db.DB, rendered map[
 			Name:            t.Name,
 			ArgusTaskID:     t.ID,
 			WorktreePath:    t.WorktreePath,
+			Project:         t.Project,
 			Live:            t.State.Status == "in_progress" && !t.State.Idle,
 			ElapsedOverride: t.Elapsed,
 			HasState:        true,
@@ -864,6 +865,7 @@ func (a *App) CurrentRailSelection() railSelection {
 			ArgusArchived: ref.ArgusArchived,
 			Dead:          ref.Dead,
 			WorktreePath:  ref.WorktreePath,
+			Project:       ref.Project,
 		}
 		// A promoted sub-coordinator row (its own task coordinates a child
 		// orchestrator) is a coordinator TARGET in its own right: `w` spawns

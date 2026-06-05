@@ -127,6 +127,14 @@ func (a *dbAdapter) ListRolesByOrchestratorInclusive(ctx context.Context, orchID
 	return out, nil
 }
 
+func (a *dbAdapter) GetRoleByOrchestratorAndName(ctx context.Context, orchID int64, name string) (*ops.Role, error) {
+	r, err := a.d.Roles.GetByOrchestratorAndName(ctx, orchID, name)
+	if err != nil {
+		return nil, translateDBErr(err)
+	}
+	return adaptRole(r), nil
+}
+
 func (a *dbAdapter) ArchiveRole(ctx context.Context, id int64) error {
 	return translateDBErr(a.d.Roles.Archive(ctx, id))
 }
@@ -326,4 +334,11 @@ func (a *argusAdapter) SetTaskStatus(ctx context.Context, taskID, status string)
 	}
 	resolved, err := a.c.SetTaskStatus(ctx, taskID, status)
 	return resolved, translateArgusTaskErr(err)
+}
+
+func (a *argusAdapter) PutTaskMeta(ctx context.Context, taskID, key, value string) error {
+	if a.c == nil {
+		return fmt.Errorf("argusAdapter: nil client")
+	}
+	return a.c.PutTaskMeta(ctx, taskID, key, value)
 }

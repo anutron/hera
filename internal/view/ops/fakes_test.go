@@ -263,6 +263,18 @@ func (f *fakeDB) ListRolesByOrchestratorInclusive(ctx context.Context, orchID in
 	return out, nil
 }
 
+func (f *fakeDB) GetRoleByOrchestratorAndName(ctx context.Context, orchID int64, name string) (*Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.roles {
+		if r.OrchestratorID == orchID && r.Name == name && !r.Archived {
+			cp := *r
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (f *fakeDB) ArchiveRole(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -489,6 +501,31 @@ type fakeArgus struct {
 	getStatusErr   error
 	setStatusCalls []setStatusCall
 	setStatusErr   error
+
+	// meta records PutTaskMeta writes keyed by "taskID\x00key"; putMetaErr,
+	// when set, makes every PutTaskMeta fail (the best-effort path).
+	meta       map[string]string
+	putMetaErr error
+}
+
+func (a *fakeArgus) PutTaskMeta(ctx context.Context, taskID, key, value string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.putMetaErr != nil {
+		return a.putMetaErr
+	}
+	if a.meta == nil {
+		a.meta = map[string]string{}
+	}
+	a.meta[taskID+"\x00"+key] = value
+	return nil
+}
+
+// metaFor returns the recorded meta value for (taskID, key), or "".
+func (a *fakeArgus) metaFor(taskID, key string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.meta[taskID+"\x00"+key]
 }
 
 type setStatusCall struct {

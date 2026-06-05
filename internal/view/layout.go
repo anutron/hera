@@ -150,6 +150,7 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			{Key: "^p", Label: "PR", Bar: false},
 			{Key: "s", Label: "status+", Bar: false},
 			{Key: "S", Label: "status-", Bar: false},
+			{Key: "J", Label: "adopt", Bar: false},
 			{Key: "?", Label: "help", Bar: false},
 			{Key: "Esc", Label: "argus", Bar: true},
 		}

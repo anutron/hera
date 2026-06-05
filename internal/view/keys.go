@@ -61,6 +61,13 @@ type MutationHandler interface {
 	// pane the rune `P` forwards to the PTY instead.
 	OnPin()
 
+	// OnAdopt adopts the selected FREELANCER into a chosen coordinator (`J`,
+	// RAIL-focus-only): it opens an orchestrator picker and creates an
+	// operator-side worker binding (mirroring hera_join attach-mode). On a
+	// non-freelancer row it surfaces visible feedback; in a pane the rune `J`
+	// forwards to the PTY instead.
+	OnAdopt()
+
 	// OnResurrect is consulted on Enter-in-RAIL BEFORE pane-entry. It returns
 	// true when it owns the Enter (an archived coord with the Archive section
 	// visible — it shows a resurrect confirm), so the router must NOT enter a
@@ -380,6 +387,14 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 			// (in a pane the rune forwards to the PTY via handlePane).
 			if r.Mutations != nil {
 				r.Mutations.OnPin()
+			}
+			return nil
+		case 'J':
+			// `J` adopts the selected freelancer into a chosen coordinator;
+			// RAIL-focus-only (in a pane the rune forwards to the PTY via
+			// handlePane). Lowercase `j` is nav-down, handled above.
+			if r.Mutations != nil {
+				r.Mutations.OnAdopt()
 			}
 			return nil
 		case '?':

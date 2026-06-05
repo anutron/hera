@@ -41,6 +41,12 @@ type mutationService interface {
 	PinRole(ctx context.Context, id int64) error
 	UnpinRole(ctx context.Context, id int64) error
 
+	// Adopt verbs (the `J` key). ListActiveOrchestrators feeds the target
+	// picker; AdoptTaskIntoOrchestrator creates the operator-side worker
+	// binding for the selected freelancer (mirroring hera_join attach-mode).
+	ListActiveOrchestrators(ctx context.Context) ([]*ops.Orchestrator, error)
+	AdoptTaskIntoOrchestrator(ctx context.Context, in ops.AdoptInput) (*ops.AdoptResult, error)
+
 	// Stage P extended keyset.
 	ListCompletedAgents(ctx context.Context) ([]ops.CompletedAgent, error)
 	PruneCompleted(ctx context.Context, agents []ops.CompletedAgent) (int, error)
@@ -100,6 +106,11 @@ type modalAPI interface {
 	// ShowConfirm opens a y/N confirmation modal. onYes runs when the
 	// operator picks Yes; onNo runs on No or cancel. Either may be nil.
 	ShowConfirm(title, message string, onYes func(), onNo func())
+	// ShowSelect opens a single-choice picker listing items. onSelect is
+	// invoked with the chosen 0-based index when the operator confirms a
+	// selection (Enter); onCancel runs on dismiss (Esc). Either callback may
+	// be nil. Backs the `J` adopt orchestrator picker.
+	ShowSelect(title, label string, items []string, onSelect func(idx int), onCancel func())
 	// ShowError surfaces a string in an error modal. Dismissed by any
 	// key.
 	ShowError(message string)
@@ -187,6 +198,12 @@ type railSelection struct {
 	// from. Empty for managed roles (their worktree is resolved via the
 	// live binding by the ops layer) and orchestrator rows.
 	WorktreePath string
+
+	// Project is the freelancer's argus repo, carried on freelance rows so
+	// `J` adoption can record it as the new worker role's argus_project
+	// (write-once, consistent with managed roles). Empty for managed roles
+	// and orchestrator rows.
+	Project string
 
 	// ChildCount is the number of child agents the selection has (live
 	// roles under an orchestrator). Drives the `^d` destructive-delete
@@ -690,6 +707,72 @@ func (b *mutationBridge) OnPin() {
 	default:
 		b.notApplicable("P: not applicable to this row")
 	}
+}
+
+// OnAdopt adopts the selected FREELANCER into a chosen coordinator (`J`). It
+// is freelancer-only: any other selection (coordinator, managed agent,
+// orchestrator header, section row) gets visible feedback, never a silent
+// no-op. On a freelancer it lists the active orchestrators and opens a target
+// picker; selecting one creates an operator-side worker role + binding via
+// AdoptTaskIntoOrchestrator (the same DAO path hera_join attach-mode uses), so
+// the agent need not act for the binding to exist.
+//
+// The selection is read synchronously (UI state, on-loop); the orchestrator
+// listing + picker open run off-loop via goUI (each modal open bounces through
+// QueueUpdateDraw), and the adopt itself runs through mutate from the picker's
+// on-loop select callback — so the event loop is never blocked.
+func (b *mutationBridge) OnAdopt() {
+	sel := b.sel.CurrentRailSelection()
+	if sel.Kind != selRole || sel.RoleKind != string(db.KindFreelance) {
+		b.notApplicable("J: only freelancers can be adopted into a coordinator")
+		return
+	}
+	if sel.ArgusTaskID == "" {
+		b.notApplicable("J: this freelancer has no argus task id to adopt")
+		return
+	}
+	taskID := sel.ArgusTaskID
+	name := sel.Name
+	project := sel.Project
+	worktree := sel.WorktreePath
+
+	b.goUI(func() {
+		orchs, err := b.svc.ListActiveOrchestrators(b.ctx)
+		if err != nil {
+			b.modals.ShowError(err.Error())
+			return
+		}
+		if len(orchs) == 0 {
+			b.modals.ShowError("J: no active coordinators to adopt into — create one with `n` first")
+			return
+		}
+		labels := make([]string, len(orchs))
+		for i, o := range orchs {
+			labels[i] = o.Name
+		}
+		b.modals.ShowSelect(
+			fmt.Sprintf("Adopt %q into…", name),
+			"Coordinator",
+			labels,
+			func(idx int) {
+				if idx < 0 || idx >= len(orchs) {
+					return
+				}
+				orchID := orchs[idx].ID
+				b.mutate("adopt", true, func() error {
+					_, err := b.svc.AdoptTaskIntoOrchestrator(b.ctx, ops.AdoptInput{
+						ArgusTaskID:    taskID,
+						OrchestratorID: orchID,
+						RoleName:       name,
+						ArgusProject:   project,
+						WorktreePath:   worktree,
+					})
+					return err
+				})
+			},
+			nil,
+		)
+	})
 }
 
 // OnResurrect handles Enter against an archived coord row when the Archive

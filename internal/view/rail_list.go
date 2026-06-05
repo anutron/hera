@@ -157,9 +157,9 @@ func rowRunning(r railRow) bool {
 // selected. Archived entries float to the bottom behind a separator
 // when showArchived is true.
 type orchEntry struct {
-	ID          int64
-	Name        string
-	Archived    bool
+	ID       int64
+	Name     string
+	Archived bool
 	// Pinned floats this coordinator into the Pinned section at the rail top
 	// (with its subtree), mirroring argus. Pin and archive are mutually
 	// exclusive, so a Pinned orchestrator is never Archived.
@@ -212,8 +212,8 @@ type roleEntry struct {
 	// at the rail top, as a standalone row (unless its coordinator is itself
 	// pinned, in which case it renders nested under the pinned coordinator).
 	// Mutually exclusive with the archived state.
-	Pinned         bool
-	StartedAt      time.Time
+	Pinned    bool
+	StartedAt time.Time
 
 	// CoordRoleID is the coord role id of the orchestrator this role belongs
 	// to (the same value as the owning orchEntry.CoordRoleID, captured when the
@@ -242,6 +242,11 @@ type roleEntry struct {
 	// freelance rows so `^p` can open a PR straight from it (a freelancer has
 	// no hera binding to resolve the path from). Empty for managed roles.
 	WorktreePath string
+
+	// Project is the argus repo this freelance task belongs to, carried on
+	// freelance rows so `J` adoption records it as the adopted worker role's
+	// argus_project. Empty for managed roles.
+	Project string
 
 	// childOrch is set when this worker role is ALSO the coordinator of another
 	// orchestrator — a sub-coordinator (a multi-binding: this role's ArgusTaskID
