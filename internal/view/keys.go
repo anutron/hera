@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/anutron/argus-sdk/keyenc"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -461,7 +462,7 @@ func (r *KeyRouter) handlePane(event *tcell.EventKey) *tcell.EventKey {
 			"focus", state.String())
 		return nil
 	}
-	payload := encodeEventForPTY(event)
+	payload := keyenc.Encode(event)
 	if len(payload) == 0 {
 		return nil
 	}
@@ -567,52 +568,3 @@ func inPaneNavDir(e *tcell.EventKey) (int, bool) {
 	return 0, false
 }
 
-// encodeEventForPTY converts a tcell key event into the byte sequence the
-// upstream PTY's stdin would have received from a real terminal. Best
-// effort; uncovered keys return nil (the keystroke is dropped). The
-// upstream task is responsible for its own line discipline.
-func encodeEventForPTY(e *tcell.EventKey) []byte {
-	switch e.Key() {
-	case tcell.KeyRune:
-		return []byte(string(e.Rune()))
-	case tcell.KeyEnter:
-		// CR is the PTY convention; the line discipline upstream
-		// translates it to NL if it cares.
-		return []byte{'\r'}
-	case tcell.KeyTab:
-		return []byte{'\t'}
-	case tcell.KeyBacktab:
-		return []byte("\x1b[Z")
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		return []byte{0x7f}
-	case tcell.KeyEsc:
-		return []byte{0x1b}
-	case tcell.KeyUp:
-		return []byte("\x1b[A")
-	case tcell.KeyDown:
-		return []byte("\x1b[B")
-	case tcell.KeyRight:
-		return []byte("\x1b[C")
-	case tcell.KeyLeft:
-		return []byte("\x1b[D")
-	case tcell.KeyHome:
-		return []byte("\x1b[H")
-	case tcell.KeyEnd:
-		return []byte("\x1b[F")
-	case tcell.KeyPgUp:
-		return []byte("\x1b[5~")
-	case tcell.KeyPgDn:
-		return []byte("\x1b[6~")
-	case tcell.KeyDelete:
-		return []byte("\x1b[3~")
-	}
-	// tcell encodes Ctrl-A through Ctrl-Z as KeyCtrlA..KeyCtrlZ, whose
-	// integer values are the ASCII letter codes (65..90), NOT the
-	// control-byte values (1..26). The upstream PTY wants the actual
-	// control character a real terminal would have produced, so map
-	// KeyCtrl<X> → byte (X − 'A' + 1).
-	if k := e.Key(); k >= tcell.KeyCtrlA && k <= tcell.KeyCtrlZ {
-		return []byte{byte(k - tcell.KeyCtrlA + 1)}
-	}
-	return nil
-}
