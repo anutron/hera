@@ -719,15 +719,31 @@ func TestRailList_SubCoordinatorNestsAsFoldableCoordRow(t *testing.T) {
 	}
 
 	// Depth check: the nested leaf must be indented MORE than its sub-coord row,
-	// which in turn is indented more than the parent coord. Find the column of
-	// the needle within each line (the rail border occupies column 0).
+	// which in turn is indented more than the parent coord. Measure from the
+	// CHEVRON column on coordinator rows (icon + chevron = 4 chars from base,
+	// consistent across depths) so the comparison is not confused by the
+	// variable number of prefix glyphs before the name. Leaf rows are plain
+	// workers; their name starts 2 cols after their base (icon col + 2).
+	// After BUG-008 fix, all depth-N rows start their icon at the same base
+	// column (cx + N*indentStep), so chevron positions increase by indentStep
+	// per level and leaf names land strictly deeper than the sub-coord chevron.
 	lines := strings.Split(got, "\n")
 	indent := runeColOf(lines)
-	parentIndent := indent(string(iconCoord) + " parent")
-	subIndent := indent(string(iconCoord) + " sub")
-	leafIndent := indent("leaf-worker")
-	if parentIndent >= subIndent || subIndent >= leafIndent {
-		t.Fatalf("expected increasing indentation parent(%d) < sub(%d) < leaf(%d); got:\n%s", parentIndent, subIndent, leafIndent, got)
+	parentChevron := indent("▾ " + string(iconCoord) + " parent")
+	subChevron := indent("▾ " + string(iconCoord) + " sub")
+	leafName := indent("leaf-worker")
+	if parentChevron >= subChevron || subChevron >= leafName {
+		t.Fatalf("expected increasing indentation parent-chevron(%d) < sub-chevron(%d) < leaf-name(%d); got:\n%s",
+			parentChevron, subChevron, leafName, got)
+	}
+
+	// BUG-008: sibling workers at the same depth as the sub-coordinator MUST
+	// NOT indent deeper than the sub-coordinator's own children. Verify that
+	// the plain-worker sibling (depth 1) appears SHALLOWER than the leaf (depth 2).
+	plainWorkerName := indent("plain-worker")
+	if plainWorkerName >= leafName {
+		t.Fatalf("BUG-008: sibling plain-worker(%d) must be shallower than leaf-worker(%d); got:\n%s",
+			plainWorkerName, leafName, got)
 	}
 }
 
@@ -1170,7 +1186,7 @@ func TestStatusIcon_ArchivedRowsKeepTrueStatusGlyph(t *testing.T) {
 		want       rune
 	}{
 		{"complete", "complete", false, false, '✓'},
-		{"in_review", "in_review", false, false, theme.IconMoonStars},
+		{"in_review", "in_review", false, false, theme.IconReview},
 		{"working", "in_progress", false, false, spinnerFrames[0]},
 		{"idle", "in_progress", false, true, theme.IconMoonOutline},
 		{"pending", "pending", false, false, '○'},
@@ -1275,7 +1291,7 @@ func TestStateGlyph_MirrorsArgusTable(t *testing.T) {
 	}{
 		{"pending", "pending", false, false, '○', theme.StylePending},
 		{"complete", "complete", false, false, '✓', theme.StyleComplete},
-		{"in_review", "in_review", false, false, theme.IconMoonStars, theme.StyleInReview},
+		{"in_review", "in_review", false, false, theme.IconReview, theme.StyleInReview},
 		{"needs-input", "in_progress", true, false, theme.IconNeedsInput, theme.StyleNeedsInput},
 		{"needs-input outranks idle", "in_progress", true, true, theme.IconNeedsInput, theme.StyleNeedsInput},
 		{"idle moon is blue", "in_progress", false, true, theme.IconMoonOutline, theme.StyleInReview},
@@ -1332,8 +1348,8 @@ func TestStateGlyph_NeedsInputScopedToInProgress(t *testing.T) {
 		t.Fatalf("complete+needsInput: glyph=%q style=%v ok=%v, want '✓' StyleComplete (status wins)", glyph, style, ok)
 	}
 	glyph, _, ok = stateGlyph(true, "in_review", false, 0)
-	if !ok || glyph != theme.IconMoonStars {
-		t.Fatalf("in_review+needsInput: glyph=%q ok=%v, want moon-stars (status wins)", glyph, ok)
+	if !ok || glyph != theme.IconReview {
+		t.Fatalf("in_review+needsInput: glyph=%q ok=%v, want IconReview/clipboard-check (status wins)", glyph, ok)
 	}
 }
 
@@ -1521,11 +1537,118 @@ func TestOrchIcon_HealthyHeaderRendersNormalGlyph(t *testing.T) {
 		CoordHasState: true, CoordStatus: "in_review",
 	}
 	glyph, style := rl.orchIcon(o)
-	if glyph != theme.IconMoonStars {
-		t.Fatalf("healthy in_review header: glyph = %q, want moon-stars", glyph)
+	if glyph != theme.IconReview {
+		t.Fatalf("healthy in_review header: glyph = %q, want IconReview/clipboard-check", glyph)
 	}
 	if style != theme.StyleInReview {
 		t.Fatalf("healthy in_review header style = %v, want StyleInReview", style)
+	}
+}
+
+// --- PR review indicator (change add-pr-review-indicator) ---
+
+// Spec: actionable PR states (awaiting-review, changes-requested, approved)
+// must render the correct glyph and style; non-actionable states return ok=false.
+func TestPRGlyph_ActionableStatesReturnGlyphAndOk(t *testing.T) {
+	cases := []struct {
+		state     string
+		wantGlyph rune
+		wantStyle tcell.Style
+	}{
+		{"awaiting-review", theme.IconPRAwaiting, theme.StylePRAwaiting},
+		{"changes-requested", theme.IconPRChanges, theme.StylePRChanges},
+		{"approved", theme.IconPRApproved, theme.StylePRApproved},
+	}
+	for _, tc := range cases {
+		got, style, ok := prGlyph(tc.state)
+		if !ok {
+			t.Errorf("prGlyph(%q): ok=false, want true", tc.state)
+			continue
+		}
+		if got != tc.wantGlyph {
+			t.Errorf("prGlyph(%q): glyph=%q, want %q", tc.state, got, tc.wantGlyph)
+		}
+		if style != tc.wantStyle {
+			t.Errorf("prGlyph(%q): style mismatch", tc.state)
+		}
+	}
+}
+
+// Spec: non-actionable PR states produce no indicator cell.
+func TestPRGlyph_NonActionableStatesReturnNotOk(t *testing.T) {
+	for _, state := range []string{"none", "draft", "merged-closed", "unknown", ""} {
+		_, _, ok := prGlyph(state)
+		if ok {
+			t.Errorf("prGlyph(%q): ok=true, want false (non-actionable)", state)
+		}
+	}
+}
+
+// Spec: when a role row has an actionable PR state the glyph renders in the
+// rail and the name shifts right; for non-actionable states the name reclaims
+// the space and appears at the same column as the status icon end.
+func TestRailList_PRIndicatorCellRendersForActionableState(t *testing.T) {
+	mk := func(prState string) *railList {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "proj", CoordTaskID: "ct", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "myworker", HasState: true, Status: "in_progress", PRState: prState},
+			}},
+		})
+		return rl
+	}
+
+	// Actionable: the PR glyph must appear in the rendered output.
+	for _, state := range []string{"awaiting-review", "changes-requested", "approved"} {
+		rl := mk(state)
+		got := renderRail(t, rl, 40, 6)
+		prRune, _, _ := prGlyph(state)
+		if !strings.ContainsRune(got, prRune) {
+			t.Errorf("actionable PR state %q: PR glyph %q not found in render:\n%s", state, prRune, got)
+		}
+		if !strings.Contains(got, "myworker") {
+			t.Errorf("actionable PR state %q: role name missing from render:\n%s", state, got)
+		}
+	}
+
+	// Non-actionable: no PR glyph should appear; name must still render.
+	for _, state := range []string{"none", "draft", "merged-closed", "unknown", ""} {
+		rl := mk(state)
+		got := renderRail(t, rl, 40, 6)
+		for _, s := range []string{"awaiting-review", "changes-requested", "approved"} {
+			pr, _, _ := prGlyph(s)
+			if strings.ContainsRune(got, pr) {
+				t.Errorf("non-actionable PR state %q: found PR glyph %q unexpectedly:\n%s", state, pr, got)
+			}
+		}
+		if !strings.Contains(got, "myworker") {
+			t.Errorf("non-actionable PR state %q: role name missing from render:\n%s", state, got)
+		}
+	}
+}
+
+// Spec: the PR indicator cell only consumes width when actionable — the name
+// column starts FURTHER right when there is an actionable PR than when there
+// is not. Verifies the "reclaim space" behavior mirrors argus.
+func TestRailList_PRCellReclainsSpaceWhenNonActionable(t *testing.T) {
+	mkRole := func(prState string) *railList {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "p", CoordTaskID: "ct", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "xworker", HasState: true, Status: "in_progress", PRState: prState},
+			}},
+		})
+		return rl
+	}
+	withPR := renderRail(t, mkRole("approved"), 50, 6)
+	noPR := renderRail(t, mkRole(""), 50, 6)
+
+	lines := strings.Split(withPR, "\n")
+	nlines := strings.Split(noPR, "\n")
+	colWithPR := runeColOf(lines)("xworker")
+	colNoPR := runeColOf(nlines)("xworker")
+	if colWithPR <= colNoPR {
+		t.Fatalf("with PR indicator, name should start further right (%d) than without (%d)", colWithPR, colNoPR)
 	}
 }
 

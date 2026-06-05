@@ -10,14 +10,17 @@ import (
 )
 
 // ArgusTaskState is the per-task state hera reads from argus to render the
-// rail accurately — status, idle/needs-input runtime flags, and the archived
-// bit. It is the "argus reality" the rail reflects, as opposed to hera's own
-// binding bookkeeping.
+// rail accurately — status, idle/needs-input runtime flags, the archived bit,
+// and the GitHub PR review state. It is the "argus reality" the rail reflects,
+// as opposed to hera's own binding bookkeeping.
 type ArgusTaskState struct {
 	Status     string // pending | in_progress | in_review | complete
 	Idle       bool
 	NeedsInput bool
 	Archived   bool
+	// PRState is the GitHub PR review state string from argus's daemon poll.
+	// Empty when argus does not populate the field (older daemons or no PR).
+	PRState string
 }
 
 // ArgusTaskInfo is the full per-task snapshot the cache retains so the rail
@@ -35,6 +38,8 @@ type ArgusTaskInfo struct {
 	// (`^p`) without a hera binding. Already present in the polled task list,
 	// so reading it costs no extra network. Absent on old daemons.
 	WorktreePath string
+	// PRState mirrors ArgusTaskState.PRState for freelance rows.
+	PRState string
 }
 
 // TaskStateProvider is an optional capability on a PaneSource: it returns the
@@ -178,6 +183,7 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 			Idle:       t.Idle,
 			NeedsInput: t.NeedsInput,
 			Archived:   t.Archived,
+			PRState:    t.PRState,
 		}
 		next[t.ID] = st
 		infos = append(infos, ArgusTaskInfo{
@@ -187,6 +193,7 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 			Elapsed:      t.Elapsed,
 			State:        st,
 			WorktreePath: t.WorktreePath,
+			PRState:      t.PRState,
 		})
 	}
 	c.mu.Lock()

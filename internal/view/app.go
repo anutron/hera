@@ -376,6 +376,7 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 		r.ArgusIdle = st.Idle
 		r.NeedsInput = st.NeedsInput
 		r.ArgusArchived = st.Archived
+		r.PRState = st.PRState
 		return
 	}
 	// Provider present but argus has no such task: the RECORD is gone

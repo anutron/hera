@@ -233,6 +233,12 @@ type roleEntry struct {
 	NeedsInput    bool
 	ArgusArchived bool
 
+	// PRState is the GitHub PR review state string from argus's daemon poll
+	// (awaiting-review / changes-requested / approved / ...). Empty when argus
+	// does not populate the field or the state is non-actionable. Read from
+	// the ArgusStateCache — no per-row HTTP calls.
+	PRState string
+
 	// ElapsedOverride, when non-empty, is rendered verbatim in the elapsed
 	// column instead of computing from StartedAt. Freelance rows use argus's
 	// pre-formatted age string so their column matches argus's own rail.
@@ -1513,15 +1519,19 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 		return
 	}
 
-	// Layout: " <icon> name           10m"
-	prefix := " "
+	// Layout: "<icon> [PR] name           10m"
 	col := x + depth*indentStep
-	widget.DrawText(screen, col, y, runeLen(prefix), prefix, theme.StyleDefault)
-	col += runeLen(prefix)
 
 	icon, iconStyle := rl.roleIcon(r)
 	screen.SetContent(col, y, icon, nil, iconStyle)
 	col += 2 // icon + space
+
+	// PR review indicator: only consumes width when actionable; the name
+	// reclaims the space otherwise (mirrors argus's task-row PR cell).
+	if prIcon, prStyle, ok := prGlyph(r.PRState); ok {
+		screen.SetContent(col, y, prIcon, nil, prStyle)
+		col += 2 // PR glyph + space
+	}
 
 	nameStyle := theme.StyleNormal
 	if r.Archived || r.Dead || r.ArgusArchived {
@@ -1766,7 +1776,7 @@ func stateGlyph(needsInput bool, status string, idle bool, frame int) (rune, tce
 	case "complete":
 		return '✓', theme.StyleComplete, true
 	case "in_review":
-		return theme.IconMoonStars, theme.StyleInReview, true
+		return theme.IconReview, theme.StyleInReview, true
 	case "in_progress":
 		switch {
 		case needsInput:
@@ -1778,6 +1788,26 @@ func stateGlyph(needsInput bool, status string, idle bool, frame int) (rune, tce
 		}
 	}
 	return 0, tcell.Style{}, false
+}
+
+// prGlyph maps an argus pr_state string to its indicator glyph and style,
+// reporting whether the state is actionable (ok=true). Only the three
+// actionable states produce a visible glyph; every other value (none, draft,
+// merged-closed, unknown, or empty) returns ok=false so the caller skips the
+// cell entirely and lets the name column reclaim the space. The hera-SDK
+// deliberately does not export PRGlyph (argus's model.PRState is an int
+// type not in the SDK); we map strings directly to avoid importing argus.
+func prGlyph(state string) (rune, tcell.Style, bool) {
+	switch state {
+	case "awaiting-review":
+		return theme.IconPRAwaiting, theme.StylePRAwaiting, true
+	case "changes-requested":
+		return theme.IconPRChanges, theme.StylePRChanges, true
+	case "approved":
+		return theme.IconPRApproved, theme.StylePRApproved, true
+	default:
+		return 0, tcell.Style{}, false
+	}
 }
 
 // roleIcon picks the status icon for a role based on its argus-reported (or,
