@@ -35,7 +35,7 @@ const modalWidth = 60
 // label gap) leaves the width an input may safely occupy. labels are the
 // raw label strings WITHOUT the trailing ": " that callers append.
 func formFieldWidth(labels ...string) int {
-	const borderCols = 2 // left+right form border
+	const borderCols = 2  // left+right form border
 	const labelSuffix = 2 // ": " appended to every label below
 	inner := modalWidth - borderCols
 	maxLabel := 0
