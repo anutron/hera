@@ -109,7 +109,7 @@ func (o *OrchestratorsDAO) list(ctx context.Context, includeArchived bool) ([]*O
 	if err != nil {
 		return nil, fmt.Errorf("orchestrators.List: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Orchestrator
 	for rows.Next() {

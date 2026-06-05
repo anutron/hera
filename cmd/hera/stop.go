@@ -43,7 +43,7 @@ func newStopCmd() *cobra.Command {
 			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
 				if _, err := os.Stat(cfg.PIDPath()); os.IsNotExist(err) {
-					fmt.Fprintf(cmd.OutOrStdout(), "hera (pid %d) stopped.\n", pid)
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "hera (pid %d) stopped.\n", pid)
 					return nil
 				}
 				time.Sleep(200 * time.Millisecond)

@@ -37,7 +37,7 @@ func (c *Client) GetTaskOutput(ctx context.Context, taskID string) (TaskOutputSn
 	if err != nil {
 		return TaskOutputSnapshot{}, fmt.Errorf("argus.GetTaskOutput: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		// 404 + "no output available" is the documented empty-snapshot
@@ -101,7 +101,7 @@ func (c *Client) StreamTaskOutput(ctx context.Context, taskID string, since uint
 	if err != nil {
 		return fmt.Errorf("argus.StreamTaskOutput: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("argus.StreamTaskOutput: HTTP %d", resp.StatusCode)
 	}

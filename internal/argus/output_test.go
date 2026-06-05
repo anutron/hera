@@ -85,14 +85,14 @@ func TestStreamTaskOutput_DecodesBase64Chunks(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
 		for _, c := range chunks {
-			fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString(c))
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString(c))
 			flusher.Flush()
 		}
 		// Send a clipboard event the proxy should ignore.
-		fmt.Fprintf(w, "event: clipboard\ndata: {\"text\":\"ignored\"}\n\n")
+		_, _ = fmt.Fprintf(w, "event: clipboard\ndata: {\"text\":\"ignored\"}\n\n")
 		flusher.Flush()
 		// Send exit so handler returns cleanly.
-		fmt.Fprintf(w, "event: exit\ndata: {}\n\n")
+		_, _ = fmt.Fprintf(w, "event: exit\ndata: {}\n\n")
 		flusher.Flush()
 	}))
 	defer srv.Close()
@@ -129,11 +129,11 @@ func TestStreamTaskOutput_IgnoresKeepalivesAndUnknown(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
-		fmt.Fprintf(w, ": ping\n\n")
+		_, _ = fmt.Fprintf(w, ": ping\n\n")
 		flusher.Flush()
-		fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString([]byte("x")))
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", base64.StdEncoding.EncodeToString([]byte("x")))
 		flusher.Flush()
-		fmt.Fprintf(w, "event: exit\ndata: {}\n\n")
+		_, _ = fmt.Fprintf(w, "event: exit\ndata: {}\n\n")
 		flusher.Flush()
 	}))
 	defer srv.Close()

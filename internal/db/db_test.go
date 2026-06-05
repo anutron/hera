@@ -16,7 +16,7 @@ func openTestDB(t *testing.T) *DB {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
@@ -45,7 +45,7 @@ func TestOpen_IsIdempotent_ReopenWithExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
-	defer d2.Close()
+	defer func() { _ = d2.Close() }()
 
 	v, err := d2.SchemaVersion()
 	if err != nil {

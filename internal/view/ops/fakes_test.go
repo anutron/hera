@@ -434,13 +434,6 @@ func (f *fakeDB) CreateBinding(ctx context.Context, in CreateBindingInput) (*Bin
 		return nil, f.createBindingErr
 	}
 	f.nextBindingID++
-	orchID := in.OrchestratorID
-	if orchID == 0 {
-		// Derive from the role.
-		if r, ok := f.roles[in.RoleID]; ok {
-			orchID = r.OrchestratorID
-		}
-	}
 	b := &Binding{
 		ID:           f.nextBindingID,
 		RoleID:       in.RoleID,

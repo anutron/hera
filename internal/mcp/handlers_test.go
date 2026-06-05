@@ -79,7 +79,7 @@ func setupHandlers(t *testing.T) *handlerFixture {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	client := argus.New(srv.URL, "tok")
 	resolver := NewResolver(client, database)

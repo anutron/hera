@@ -1294,7 +1294,7 @@ func (rl *railList) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) 
 
 // Draw renders the rail's box, then walks visible rows.
 func (rl *railList) Draw(screen tcell.Screen) {
-	rl.Box.DrawForSubclass(screen, rl)
+	rl.DrawForSubclass(screen, rl)
 	x, y, w, h := rl.GetInnerRect()
 	if w <= 0 || h <= 0 {
 		return

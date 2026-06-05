@@ -138,7 +138,7 @@ func setupAdopt(t *testing.T) *adoptTestEnv {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	client := argus.New(srv.URL, "tok")
 	handler := NewAdoptHandler(client, database, nil)

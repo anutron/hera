@@ -95,7 +95,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 	if err != nil {
 		return 0, fmt.Errorf("argus: %s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))

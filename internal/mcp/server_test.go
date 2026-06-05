@@ -26,7 +26,7 @@ func TestServer_HealthCheckRespondsOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -47,7 +47,7 @@ func TestServer_CallbackInvokesHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -73,7 +73,7 @@ func TestServer_RejectsWrongAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 401 {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
@@ -88,7 +88,7 @@ func TestServer_ReturnsNotFoundForUnknownTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 404 {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
@@ -111,7 +111,7 @@ func TestServer_RejectsEnvelopeMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 400 {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
@@ -123,7 +123,7 @@ func TestServer_RejectsGET(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}

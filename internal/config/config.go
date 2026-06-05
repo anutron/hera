@@ -111,7 +111,7 @@ func (c *Config) LoadToken() (string, error) {
 			return "", fmt.Errorf(
 				"hera: scope token file %s not found\n\n"+
 					"Run: argus token mint --scope hera > %s\n"+
-					"     chmod 600 %s\n",
+					"     chmod 600 %s",
 				path, path, path,
 			)
 		}
@@ -121,7 +121,7 @@ func (c *Config) LoadToken() (string, error) {
 	if token == "" {
 		return "", fmt.Errorf(
 			"hera: scope token file %s is empty\n\n"+
-				"Run: argus token mint --scope hera > %s\n",
+				"Run: argus token mint --scope hera > %s",
 			path, path,
 		)
 	}

@@ -84,7 +84,7 @@ func startFakeDaemonSocket(t *testing.T, svc *FakeDaemonRPC) (sockPath string, s
 
 	srv := rpc.NewServer()
 	if err := srv.RegisterName("Daemon", svc); err != nil {
-		ln.Close()
+		_ = ln.Close()
 		t.Fatalf("register: %v", err)
 	}
 
@@ -100,7 +100,7 @@ func startFakeDaemonSocket(t *testing.T, svc *FakeDaemonRPC) (sockPath string, s
 			wg.Add(1)
 			go func(c net.Conn) {
 				defer wg.Done()
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				var prefix [1]byte
 				if _, err := c.Read(prefix[:]); err != nil {
 					return
@@ -114,7 +114,7 @@ func startFakeDaemonSocket(t *testing.T, svc *FakeDaemonRPC) (sockPath string, s
 	}()
 
 	stop = func() {
-		ln.Close()
+		_ = ln.Close()
 		wg.Wait()
 	}
 	return sockPath, stop

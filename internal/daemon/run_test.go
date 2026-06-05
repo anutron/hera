@@ -428,7 +428,7 @@ func startFakeArgusSocket(t *testing.T, svc *FakeArgusSocketRPC) (sockPath strin
 
 	srv := rpc.NewServer()
 	if err := srv.RegisterName("Daemon", svc); err != nil {
-		ln.Close()
+		_ = ln.Close()
 		t.Fatalf("register: %v", err)
 	}
 
@@ -444,7 +444,7 @@ func startFakeArgusSocket(t *testing.T, svc *FakeArgusSocketRPC) (sockPath strin
 			wg.Add(1)
 			go func(c net.Conn) {
 				defer wg.Done()
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				var prefix [1]byte
 				if _, err := c.Read(prefix[:]); err != nil {
 					return
@@ -458,7 +458,7 @@ func startFakeArgusSocket(t *testing.T, svc *FakeArgusSocketRPC) (sockPath strin
 	}()
 
 	stop = func() {
-		ln.Close()
+		_ = ln.Close()
 		wg.Wait()
 	}
 	return sockPath, stop

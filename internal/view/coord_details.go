@@ -293,7 +293,7 @@ func (d *detailsPane) frame() int {
 
 // Draw renders the bordered box then the labeled metadata fields.
 func (d *detailsPane) Draw(screen tcell.Screen) {
-	d.Box.DrawForSubclass(screen, d)
+	d.DrawForSubclass(screen, d)
 	x, y, w, h := d.GetInnerRect()
 	if w <= 0 || h <= 0 {
 		return

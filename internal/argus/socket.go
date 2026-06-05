@@ -99,7 +99,7 @@ func (c *PortsClient) call(ctx context.Context, method string, args, reply any) 
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", c.socketPath, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(deadline)
 
 	if _, err := conn.Write([]byte{rpcDispatchByte}); err != nil {
@@ -107,7 +107,7 @@ func (c *PortsClient) call(ctx context.Context, method string, args, reply any) 
 	}
 
 	client := rpc.NewClientWithCodec(jsonrpc.NewClientCodec(conn))
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// rpc.Client.Call blocks; the conn deadline above is what bounds it.
 	if err := client.Call(method, args, reply); err != nil {

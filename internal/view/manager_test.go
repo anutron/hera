@@ -271,10 +271,10 @@ func TestProxyManager_ResizeTaskCoalescesTransientDims(t *testing.T) {
 	// …superseded milliseconds later by the real resize envelope.
 	m.ResizeTask(context.Background(), "task-A", 83, 45)
 
-	calls := waitForResizeCalls(t, ff, 1, time.Second)
+	waitForResizeCalls(t, ff, 1, time.Second)
 	time.Sleep(80 * time.Millisecond) // allow any (wrong) second dispatch
 	ff.mu.Lock()
-	calls = append([]resizeCall(nil), ff.resizeCalls...)
+	calls := append([]resizeCall(nil), ff.resizeCalls...)
 	ff.mu.Unlock()
 
 	if len(calls) != 1 {

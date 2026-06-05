@@ -124,7 +124,7 @@ func (r *RolesDAO) listByOrchestrator(ctx context.Context, orchID int64, include
 	if err != nil {
 		return nil, fmt.Errorf("roles.ListByOrchestrator: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Role
 	for rows.Next() {

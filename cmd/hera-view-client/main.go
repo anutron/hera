@@ -43,7 +43,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "dial:", err)
 		os.Exit(1)
 	}
-	defer c.CloseNow()
+	defer func() { _ = c.CloseNow() }()
 	c.SetReadLimit(-1)
 
 	// Print the quit hint BEFORE raw mode + before the daemon's first
@@ -56,7 +56,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "raw mode:", err)
 		os.Exit(1)
 	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
 	sendEnv := func(v any) {
 		b, _ := json.Marshal(v)

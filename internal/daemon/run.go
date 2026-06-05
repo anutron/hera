@@ -78,7 +78,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	// Override Config defaults with persisted settings (if any) before
 	// instantiating Tracker and Injector, so they see the saved values.
 	if err := LoadPersistedSettings(ctx, cfg, database.Config); err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("hera: load persisted settings: %w", err)
 	}
 
@@ -91,7 +91,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	apiPort, _, err := ports.Ports(discoverCtx)
 	discoverCancel()
 	if err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("hera: argus socket Ports: %w", err)
 	}
 	argusBaseURL := fmt.Sprintf("http://127.0.0.1:%d", apiPort)
@@ -105,7 +105,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 
 	auth, err := mcp.GenerateAuthHeader()
 	if err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("hera: generate mcp auth: %w", err)
 	}
 
@@ -120,7 +120,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	mcpSrv.Mount("/view", viewSrv.Handler())
 
 	if err := mcpSrv.Start(ctx); err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("hera: start mcp server: %w", err)
 	}
 
@@ -142,7 +142,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 	if err := registrar.Start(ctx); err != nil {
 		_ = mcpSrv.Stop()
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("hera: register tools: %w", err)
 	}
 
@@ -157,7 +157,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		_ = registrar.Stop(unregCtx)
 		cancel()
 		_ = mcpSrv.Stop()
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("hera: register settings section: %w", err)
 	}
 
@@ -173,7 +173,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		_ = registrar.Stop(unregCtx)
 		cancel()
 		_ = mcpSrv.Stop()
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("hera: register plugin view: %w", err)
 	}
 
@@ -192,7 +192,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		_ = registrar.Stop(unregCtx)
 		cancel()
 		_ = mcpSrv.Stop()
-		database.Close()
+		_ = database.Close()
 		return nil, fmt.Errorf("hera: list live bindings: %w", err)
 	}
 	taskIDs := make([]string, 0, len(live))
@@ -346,7 +346,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err := os.WriteFile(cfg.PIDPath(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
 		log.Warn("write pidfile", "path", cfg.PIDPath(), "err", err)
 	}
-	defer os.Remove(cfg.PIDPath())
+	defer func() { _ = os.Remove(cfg.PIDPath()) }()
 
 	<-ctx.Done()
 	return nil

@@ -726,7 +726,7 @@ func TestRailList_SubCoordinatorNestsAsFoldableCoordRow(t *testing.T) {
 	parentIndent := indent(string(iconCoord) + " parent")
 	subIndent := indent(string(iconCoord) + " sub")
 	leafIndent := indent("leaf-worker")
-	if !(parentIndent < subIndent && subIndent < leafIndent) {
+	if parentIndent >= subIndent || subIndent >= leafIndent {
 		t.Fatalf("expected increasing indentation parent(%d) < sub(%d) < leaf(%d); got:\n%s", parentIndent, subIndent, leafIndent, got)
 	}
 }

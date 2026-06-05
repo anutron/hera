@@ -101,7 +101,7 @@ func TestRegistrar_StartRegisters(t *testing.T) {
 	if err := r.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer r.Stop(context.Background())
+	defer func() { _ = r.Stop(context.Background()) }()
 
 	f.mu.Lock()
 	got := append([]argus.PluginView(nil), f.registered...)
@@ -158,7 +158,7 @@ func TestRegistrar_HeartbeatTickRunsAtInterval(t *testing.T) {
 	if err := r.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer r.Stop(context.Background())
+	defer func() { _ = r.Stop(context.Background()) }()
 
 	// Wait until at least 2 heartbeat lookups have landed.
 	deadline := time.Now().Add(2 * time.Second)
@@ -190,7 +190,7 @@ func TestRegistrar_ReRegistersWhenMissing(t *testing.T) {
 	if err := r.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer r.Stop(context.Background())
+	defer func() { _ = r.Stop(context.Background()) }()
 
 	// Flip the fake into "registration vanished" mode and wait for the
 	// next tick to issue a re-POST.

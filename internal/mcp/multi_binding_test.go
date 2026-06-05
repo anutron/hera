@@ -232,4 +232,3 @@ func TestMultiBinding_NewOrchestratorAddsThirdBinding(t *testing.T) {
 		t.Fatalf("expected 3 live bindings, got %d", len(got))
 	}
 }
-

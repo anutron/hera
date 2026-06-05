@@ -51,13 +51,13 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db.Open: sql.Open: %w", err)
 	}
 	if err := sqldb.Ping(); err != nil {
-		sqldb.Close()
+		_ = sqldb.Close()
 		return nil, fmt.Errorf("db.Open: ping: %w", err)
 	}
 
 	d := &DB{sqldb: sqldb, path: path}
 	if err := d.migrate(); err != nil {
-		sqldb.Close()
+		_ = sqldb.Close()
 		return nil, fmt.Errorf("db.Open: migrate: %w", err)
 	}
 

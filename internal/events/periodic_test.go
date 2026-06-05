@@ -42,7 +42,7 @@ func setupPeriodic(t *testing.T) *periodicEnv {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	client := argus.New(srv.URL, "tok")
 	handler := NewResyncHandler(client, database, nil)

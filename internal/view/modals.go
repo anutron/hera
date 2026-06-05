@@ -44,8 +44,8 @@ func themeModalStyle(m *tview.Modal, title string, textColor tcell.Color) {
 							SetButtonTextColor(theme.ColorNormal).
 							SetButtonActivatedStyle(tcell.StyleDefault.Background(theme.ColorTitle).Foreground(tcell.ColorBlack).Bold(true))
 	m.Box.SetBackgroundColor(theme.ColorStatusBG)
-	m.Box.SetBorderColor(theme.ColorTitle)
-	m.Box.SetTitleColor(theme.ColorTitle)
+	m.SetBorderColor(theme.ColorTitle)
+	m.SetTitleColor(theme.ColorTitle)
 	if title != "" {
 		m.Box.SetTitle(title).SetTitleAlign(tview.AlignCenter)
 	}

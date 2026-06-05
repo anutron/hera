@@ -43,14 +43,6 @@ func (b *paneBridge) startPump(snapshot []byte, upstream <-chan []byte, placehol
 	go pumpPaneBridge(b.ctx, b.out, snapshot, upstream, placeholder)
 }
 
-// startPaneBridge constructs a bridge and spawns its pump goroutine in
-// one step — for callers with no post-construction wiring to do.
-func startPaneBridge(snapshot []byte, upstream <-chan []byte, placeholder string) *paneBridge {
-	b := newPaneBridge()
-	b.startPump(snapshot, upstream, placeholder)
-	return b
-}
-
 // stop cancels the bridge. Safe to call multiple times.
 func (b *paneBridge) stop() {
 	if b == nil || b.cancel == nil {

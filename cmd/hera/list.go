@@ -20,14 +20,14 @@ func newListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Default()
 			if _, err := os.Stat(cfg.StatePath()); os.IsNotExist(err) {
-				fmt.Fprintln(cmd.OutOrStdout(), "(no orchestrators – hera has never started)")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "(no orchestrators – hera has never started)")
 				return nil
 			}
 			database, err := db.Open(cfg.StatePath())
 			if err != nil {
 				return fmt.Errorf("open db: %w", err)
 			}
-			defer database.Close()
+			defer func() { _ = database.Close() }()
 
 			ctx := context.Background()
 			orchs, err := database.Orchestrators.List(ctx)
@@ -35,11 +35,11 @@ func newListCmd() *cobra.Command {
 				return err
 			}
 			if len(orchs) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "(no orchestrators)")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "(no orchestrators)")
 				return nil
 			}
 			for _, o := range orchs {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\n", o.Name)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", o.Name)
 				roles, err := database.Roles.ListByOrchestrator(ctx, o.ID)
 				if err != nil {
 					return err
@@ -51,7 +51,7 @@ func newListCmd() *cobra.Command {
 					} else if !errors.Is(err, db.ErrNotFound) {
 						return err
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "  - %s [%s, %s]: %s\n", r.Name, r.Kind, r.ArgusProject, state)
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  - %s [%s, %s]: %s\n", r.Name, r.Kind, r.ArgusProject, state)
 				}
 			}
 			return nil
