@@ -52,6 +52,17 @@ type ProxyManager struct {
 	fetcher proxy.Fetcher
 	log     *slog.Logger
 
+	// lifetimeCtx bounds every subscription's upstream SSE loop. It is the
+	// DAEMON's context, not any view session's — subscriptions must outlive
+	// the connection that first opened them (the rings they fill are shared
+	// across all current and future sessions). Binding a subscription to a
+	// session ctx was the "frozen pane after reconnect" bug: the first
+	// session to view an un-seeded task (a freelancer, or a binding created
+	// after startup) created the subscription bound to its own ctx; when that
+	// session closed, the SSE loop died but the dead subscription stayed
+	// cached, so every later session got a snapshot that never advanced.
+	lifetimeCtx context.Context
+
 	mu   sync.Mutex
 	subs map[string]*proxy.Subscription
 
@@ -71,15 +82,23 @@ type ProxyManager struct {
 	resizeMaxAttempts int
 }
 
-// NewProxyManager constructs a ProxyManager. fetcher is the source for
-// snapshot + SSE fetches (production code passes an *argus.Client).
-func NewProxyManager(fetcher proxy.Fetcher, log *slog.Logger) *ProxyManager {
+// NewProxyManager constructs a ProxyManager. ctx is the DAEMON-lifetime
+// context that bounds every subscription's upstream loop (see lifetimeCtx);
+// pass the daemon's long-lived proxy context, never a per-session ctx. A nil
+// ctx falls back to context.Background() so tests need not thread one through.
+// fetcher is the source for snapshot + SSE fetches (production code passes an
+// *argus.Client).
+func NewProxyManager(ctx context.Context, fetcher proxy.Fetcher, log *slog.Logger) *ProxyManager {
 	if log == nil {
 		log = slog.Default()
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return &ProxyManager{
 		fetcher:           fetcher,
 		log:               log,
+		lifetimeCtx:       ctx,
 		subs:              make(map[string]*proxy.Subscription),
 		resizes:           make(map[string]*resizeState),
 		resizeDebounce:    defaultResizeDebounce,
@@ -89,24 +108,26 @@ func NewProxyManager(fetcher proxy.Fetcher, log *slog.Logger) *ProxyManager {
 }
 
 // Ensure starts (or returns) a Subscription for the given argus task id.
-// Repeated calls for the same id return the same Subscription. The parent
-// context bounds the upstream lifetime; cancellation is equivalent to
-// Close on every subscription.
-func (m *ProxyManager) Ensure(ctx context.Context, taskID string) *proxy.Subscription {
+// Repeated calls for the same id return the same Subscription. Every
+// subscription is bound to the manager's daemon-lifetime context (NOT the
+// calling session's), so it keeps streaming into its ring after the session
+// that opened it closes — and stays usable by future sessions. The whole set
+// is torn down only by Close (daemon shutdown).
+func (m *ProxyManager) Ensure(taskID string) *proxy.Subscription {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if sub, ok := m.subs[taskID]; ok {
 		return sub
 	}
-	sub := proxy.NewSubscription(ctx, m.fetcher, taskID)
+	sub := proxy.NewSubscription(m.lifetimeCtx, m.fetcher, taskID)
 	m.subs[taskID] = sub
 	return sub
 }
 
 // Seed opens a Subscription per taskID. Existing subscriptions are reused.
-func (m *ProxyManager) Seed(ctx context.Context, taskIDs []string) {
+func (m *ProxyManager) Seed(taskIDs []string) {
 	for _, id := range taskIDs {
-		m.Ensure(ctx, id)
+		m.Ensure(id)
 	}
 	m.log.Info("pty proxy seeded", "subscriptions", len(taskIDs))
 }

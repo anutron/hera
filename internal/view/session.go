@@ -230,7 +230,7 @@ func (p managerPaneSource) SubscribeTask(taskID string) ([]byte, <-chan []byte, 
 	if p.mgr == nil || taskID == "" {
 		return nil, nil, nil
 	}
-	sub := p.mgr.Ensure(p.ctx, taskID)
+	sub := p.mgr.Ensure(taskID)
 	lst := sub.Subscribe()
 	return lst.Snapshot, lst.Bytes, func() { sub.Unsubscribe(lst) }
 }
