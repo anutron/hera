@@ -129,6 +129,19 @@ CREATE INDEX orchestrators_by_pinned ON orchestrators(pinned_at);
 CREATE INDEX roles_by_pinned ON roles(pinned_at);
 `,
 	},
+	{
+		name: "0006_nudge_tracking",
+		sql: `
+-- Add nudge_count and nudged_at to the messages table for the delivery-receipt
+-- re-nudge loop. nudge_count tracks how many doorbell PTY writes have been
+-- emitted for this message; nudged_at is the RFC3339 timestamp of the most
+-- recent nudge. Both start 0/NULL on existing rows and new rows alike.
+ALTER TABLE messages ADD COLUMN nudge_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN nudged_at TEXT;
+CREATE INDEX messages_nudge_scan ON messages(delivery_mode, read_at, nudge_count)
+    WHERE delivery_mode = 'idle_submit' AND read_at IS NULL;
+`,
+	},
 }
 
 const initialSchema = `
