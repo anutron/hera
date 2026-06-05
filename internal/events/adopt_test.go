@@ -60,11 +60,14 @@ func (f *fakeArgus) handler() http.Handler {
 	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		includeArchived := r.URL.Query().Get("archived") == "all"
 		var out struct {
 			Tasks []argus.Task `json:"tasks"`
 		}
 		for _, t := range f.tasks {
-			out.Tasks = append(out.Tasks, t)
+			if includeArchived || !t.Archived {
+				out.Tasks = append(out.Tasks, t)
+			}
 		}
 		_ = json.NewEncoder(w).Encode(out)
 	})
@@ -307,26 +310,28 @@ func TestAdopt_ParentNotBound_NotAdopted(t *testing.T) {
 	}
 }
 
-func TestAdopt_TaskArchived_BindingEnds(t *testing.T) {
+func TestAdopt_TaskArchived_BindingPreserved(t *testing.T) {
 	ctx := context.Background()
 	e := setupAdopt(t)
 	fixtureCoordinator(t, e, "task-coord")
 
-	// Add a worker binding to end.
 	orch, _ := e.db.Orchestrators.GetByName(ctx, "foo")
 	role, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "p",
 	})
-	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+	bnd, _ := e.db.Bindings.Create(ctx, db.CreateBindingInput{
 		RoleID: role.ID, ArgusTaskID: "task-w1", WorktreePath: "/tmp/w1",
 	})
 
 	e.handler.HandleEvent(ctx, argus.Event{ID: 200, Type: TypeTaskArchived, TaskID: "task-w1"})
 
-	// Binding should now be ended.
-	_, err := e.db.Bindings.GetLiveByTaskID(ctx, "task-w1")
-	if err == nil {
-		t.Fatalf("expected live binding for task-w1 to be ended after task.archived")
+	// Binding must remain live — archive is non-destructive.
+	got, err := e.db.Bindings.GetLiveByTaskID(ctx, "task-w1")
+	if err != nil {
+		t.Fatalf("expected live binding for task-w1 to be preserved after task.archived; got %v", err)
+	}
+	if got.ID != bnd.ID {
+		t.Fatalf("binding id changed unexpectedly")
 	}
 }
 
@@ -437,9 +442,9 @@ func TestAdopt_ParentCoordOrchestratorArchived_NotAdopted(t *testing.T) {
 	}
 }
 
-func TestAdopt_TaskArchived_EndsEveryLiveBinding(t *testing.T) {
-	// Multi-binding: a task incarnates two roles. task.archived ends
-	// both bindings.
+func TestAdopt_TaskArchived_MultiBinding_BindingsPreserved(t *testing.T) {
+	// Multi-binding: a task incarnates two roles. task.archived must
+	// leave both bindings live (archive is non-destructive).
 	ctx := context.Background()
 	e := setupAdopt(t)
 
@@ -461,8 +466,54 @@ func TestAdopt_TaskArchived_EndsEveryLiveBinding(t *testing.T) {
 	e.handler.HandleEvent(ctx, argus.Event{ID: 400, Type: TypeTaskArchived, TaskID: "task-multi"})
 
 	got, _ := e.db.Bindings.ListLiveByTaskID(ctx, "task-multi")
-	if len(got) != 0 {
-		t.Fatalf("expected all bindings ended after task.archived; %d still live", len(got))
+	if len(got) != 2 {
+		t.Fatalf("expected both bindings preserved after task.archived; %d live (want 2)", len(got))
+	}
+}
+
+func TestAdopt_TaskDeleted_BindingEnds(t *testing.T) {
+	ctx := context.Background()
+	e := setupAdopt(t)
+	fixtureCoordinator(t, e, "task-coord")
+
+	orch, _ := e.db.Orchestrators.GetByName(ctx, "foo")
+	role, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: role.ID, ArgusTaskID: "task-w1", WorktreePath: "/tmp/w1",
+	})
+
+	e.handler.HandleEvent(ctx, argus.Event{ID: 201, Type: TypeTaskDeleted, TaskID: "task-w1"})
+
+	_, err := e.db.Bindings.GetLiveByTaskID(ctx, "task-w1")
+	if err == nil {
+		t.Fatalf("expected live binding for task-w1 to be ended after task.deleted")
+	}
+
+	// Verify the end_reason.
+	allBindings, err := e.db.Bindings.ListByRole(ctx, role.ID)
+	if err != nil {
+		t.Fatalf("ListByRole: %v", err)
+	}
+	if len(allBindings) != 1 {
+		t.Fatalf("expected 1 binding for role, got %d", len(allBindings))
+	}
+	if allBindings[0].EndReason != "task_deleted" {
+		t.Fatalf("expected end_reason=task_deleted, got %q", allBindings[0].EndReason)
+	}
+}
+
+func TestAdopt_TaskDeleted_NoBinding_NoError(t *testing.T) {
+	ctx := context.Background()
+	e := setupAdopt(t)
+
+	// No binding for this task — must be a silent no-op.
+	e.handler.HandleEvent(ctx, argus.Event{ID: 202, Type: TypeTaskDeleted, TaskID: "task-nonexistent"})
+
+	orchs, _ := e.db.Orchestrators.List(ctx)
+	if len(orchs) != 0 {
+		t.Fatalf("expected no orchestrators to be created, got %d", len(orchs))
 	}
 }
 

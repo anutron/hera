@@ -48,6 +48,9 @@ type fakeArgusForDaemon struct {
 	taskOutputReqs []string // argus task ids that were snapshotted
 	taskStreamReqs []string // argus task ids that opened streams
 	taskStreamHold chan struct{}
+
+	tasksListReqs int  // incremented on every GET /api/tasks
+	tasksListFail bool // when true, /api/tasks returns 500
 }
 
 func (f *fakeArgusForDaemon) handler() http.Handler {
@@ -98,6 +101,14 @@ func (f *fakeArgusForDaemon) handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.tasksListReqs++
+		fail := f.tasksListFail
+		f.mu.Unlock()
+		if fail {
+			http.Error(w, `{"error":"simulated failure"}`, http.StatusInternalServerError)
+			return
+		}
 		_, _ = io.WriteString(w, `{"tasks":[]}`)
 	})
 	// Plugin-view registry: hera registers + unregisters its plugin view.
@@ -882,4 +893,95 @@ func TestDaemonStart_TokenMissing(t *testing.T) {
 	if !strings.Contains(err.Error(), "api-token") {
 		t.Fatalf("error didn't reference token: %v", err)
 	}
+}
+
+// TestDaemonStart_BootReconcileCallsListTasks asserts that Start() calls
+// GET /api/tasks synchronously (the boot reconcile) before returning.
+func TestDaemonStart_BootReconcileCallsListTasks(t *testing.T) {
+	fake := &fakeArgusForDaemon{streamClose: make(chan struct{})}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	defer close(fake.streamClose)
+
+	apiPort := extractPort(t, srv.URL)
+	sockSvc := &FakeArgusSocketRPC{apiPort: apiPort}
+	sockPath, stopSock := startFakeArgusSocket(t, sockSvc)
+	defer stopSock()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	pidPath := filepath.Join(stateDir, "fake-argus.pid")
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	cfg := &config.Config{
+		StateDir:        stateDir,
+		ArgusBaseURL:    srv.URL,
+		ListenAddr:      "127.0.0.1:0",
+		IdleDebounce:    100 * time.Millisecond,
+		MCPHeartbeat:    24 * time.Hour,
+		ArgusSocketPath: sockPath,
+		ArgusPIDPath:    pidPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	d, err := Start(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer d.Stop(context.Background())
+
+	// Boot reconcile is synchronous: by the time Start() returns, at least
+	// one GET /api/tasks must have been issued.
+	fake.mu.Lock()
+	n := fake.tasksListReqs
+	fake.mu.Unlock()
+	if n < 1 {
+		t.Fatalf("expected at least 1 GET /api/tasks (boot reconcile), got %d", n)
+	}
+}
+
+// TestDaemonStart_BootReconcileFailure_DaemonStillStarts asserts that a
+// non-200 response from GET /api/tasks at boot does not prevent startup.
+func TestDaemonStart_BootReconcileFailure_DaemonStillStarts(t *testing.T) {
+	fake := &fakeArgusForDaemon{streamClose: make(chan struct{}), tasksListFail: true}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	defer close(fake.streamClose)
+
+	apiPort := extractPort(t, srv.URL)
+	sockSvc := &FakeArgusSocketRPC{apiPort: apiPort}
+	sockPath, stopSock := startFakeArgusSocket(t, sockSvc)
+	defer stopSock()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	pidPath := filepath.Join(stateDir, "fake-argus.pid")
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	cfg := &config.Config{
+		StateDir:        stateDir,
+		ArgusBaseURL:    srv.URL,
+		ListenAddr:      "127.0.0.1:0",
+		IdleDebounce:    100 * time.Millisecond,
+		MCPHeartbeat:    24 * time.Hour,
+		ArgusSocketPath: sockPath,
+		ArgusPIDPath:    pidPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	d, err := Start(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Start must succeed even when boot reconcile fails; got: %v", err)
+	}
+	d.Stop(context.Background())
 }

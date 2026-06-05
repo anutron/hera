@@ -29,14 +29,17 @@ func NewAdoptHandler(client *argus.Client, database *db.DB, log *slog.Logger) *A
 	return &AdoptHandler{client: client, db: database, log: log}
 }
 
-// HandleEvent implements events.Handler. Only link.created is acted on;
-// task.archived also ends the matching binding.
+// HandleEvent implements events.Handler. link.created triggers adoption;
+// task.deleted ends the matching binding. task.archived is a no-op —
+// archive is reversible so the binding must remain resumable.
 func (a *AdoptHandler) HandleEvent(ctx context.Context, ev argus.Event) {
 	switch ev.Type {
 	case TypeLinkCreated:
 		a.handleLinkCreated(ctx, ev)
 	case TypeTaskArchived:
 		a.handleTaskArchived(ctx, ev)
+	case TypeTaskDeleted:
+		a.handleTaskDeleted(ctx, ev)
 	}
 }
 
@@ -170,24 +173,33 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 	}
 }
 
-// handleTaskArchived ends every live binding for the archived task. A
-// multi-binding task incarnates N roles simultaneously; archive ends
-// them all.
-func (a *AdoptHandler) handleTaskArchived(ctx context.Context, ev argus.Event) {
+// handleTaskArchived is intentionally a no-op with respect to binding
+// lifecycle. Archive is a reversible visibility change — the worktree
+// still exists, the agent may still be live, and the role must remain
+// resumable. Only task.deleted ends a binding.
+func (a *AdoptHandler) handleTaskArchived(_ context.Context, ev argus.Event) {
+	if ev.TaskID == "" {
+		return
+	}
+	a.log.Info("task.archived: binding preserved (archive is non-destructive)", "task", ev.TaskID)
+}
+
+// handleTaskDeleted ends every live binding for the deleted task.
+func (a *AdoptHandler) handleTaskDeleted(ctx context.Context, ev argus.Event) {
 	if ev.TaskID == "" {
 		return
 	}
 	bindings, err := a.db.Bindings.ListLiveByTaskID(ctx, ev.TaskID)
 	if err != nil {
-		a.log.Warn("task.archived: list bindings", "task", ev.TaskID, "err", err)
+		a.log.Warn("task.deleted: list bindings", "task", ev.TaskID, "err", err)
 		return
 	}
 	for _, bnd := range bindings {
-		if err := a.db.Bindings.End(ctx, bnd.ID, "argus_archived"); err != nil {
-			a.log.Warn("task.archived: end binding", "task", ev.TaskID, "binding_id", bnd.ID, "err", err)
+		if err := a.db.Bindings.End(ctx, bnd.ID, "task_deleted"); err != nil {
+			a.log.Warn("task.deleted: end binding", "task", ev.TaskID, "binding_id", bnd.ID, "err", err)
 			continue
 		}
-		a.log.Info("binding ended on task.archived", "task", ev.TaskID, "binding_id", bnd.ID)
+		a.log.Info("binding ended on task.deleted", "task", ev.TaskID, "binding_id", bnd.ID)
 	}
 }
 
