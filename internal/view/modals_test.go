@@ -220,30 +220,37 @@ func renderPages(t *testing.T, a *App, w, h int) tcell.SimulationScreen {
 }
 
 // assertArgusThemedOverlay scans the drawn surface: no cell may carry
-// tview's default contrast (lavender/blue) modal background, and at least
-// one cell must carry the argus dark overlay background.
+// tview's default contrast (lavender/blue) modal background NOR the old
+// grey-blue overlay (theme.ColorStatusBG), and at least one cell must carry
+// the single hera background (heraBackground) — the same black the chrome and
+// pane interiors use (BUG-001). The modal reads as part of the app by its cyan
+// border/title, not a distinct fill.
 func assertArgusThemedOverlay(t *testing.T, sim tcell.SimulationScreen) {
 	t.Helper()
 	w, h := sim.Size()
-	defaultBG := tview.Styles.ContrastBackgroundColor
-	lavender, themed := 0, 0
+	// tview's stock lavender contrast color, captured before BuildApp repoints
+	// tview.Styles at heraBackground, so a regression to the default still trips.
+	lavenderBG := tcell.ColorBlue
+	greyBlue, themed := 0, 0
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			_, style, _ := sim.Get(x, y)
 			_, bg, _ := style.Decompose()
-			if bg == defaultBG {
-				lavender++
+			// The old grey-blue surfaces (tview lavender contrast OR the argus
+			// status-bar dark gray) must not appear on any hera surface.
+			if bg == lavenderBG || bg == theme.ColorStatusBG {
+				greyBlue++
 			}
-			if bg == theme.ColorStatusBG {
+			if bg == heraBackground {
 				themed++
 			}
 		}
 	}
-	if lavender > 0 {
-		t.Fatalf("modal renders %d cells with tview's default contrast background — must use the argus theme", lavender)
+	if greyBlue > 0 {
+		t.Fatalf("modal renders %d cells with a grey-blue background — every hera surface must use the consistent black (BUG-001)", greyBlue)
 	}
 	if themed == 0 {
-		t.Fatalf("expected the modal surface to use the argus dark background (theme.ColorStatusBG)")
+		t.Fatalf("expected the modal surface to use the single hera background (heraBackground)")
 	}
 }
 
@@ -298,6 +305,126 @@ func TestShowSelect_EnterInvokesOnSelectWithChosenIndex(t *testing.T) {
 	}
 	if !a.pieces.rail.HasFocus() {
 		t.Fatalf("dismissing the picker must restore focus to the rail")
+	}
+}
+
+// formButtonLabels returns the button labels of the form on the front modal
+// page, in order. Fails if the front page isn't a tview.Form.
+func formButtonLabels(t *testing.T, a *App) []string {
+	t.Helper()
+	form := frontForm(t, a)
+	labels := make([]string, 0, form.GetButtonCount())
+	for i := 0; i < form.GetButtonCount(); i++ {
+		labels = append(labels, form.GetButton(i).GetLabel())
+	}
+	return labels
+}
+
+// frontForm unwraps the centeredModal flex on the front page to the
+// tview.Form it contains.
+func frontForm(t *testing.T, a *App) *tview.Form {
+	t.Helper()
+	outer, ok := frontModal(t, a).(*tview.Flex)
+	if !ok {
+		t.Fatalf("front modal is not a flex wrapper")
+	}
+	inner, ok := outer.GetItem(1).(*tview.Flex)
+	if !ok {
+		t.Fatalf("centeredModal inner is not a flex")
+	}
+	form, ok := inner.GetItem(1).(*tview.Form)
+	if !ok {
+		t.Fatalf("centeredModal content is not a tview.Form")
+	}
+	return form
+}
+
+func TestShowInput_ButtonsAdvertiseKeys(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowInput("Rename", "New name", "", nil, nil)
+	got := formButtonLabels(t, a)
+	want := []string{"OK [enter]", "Cancel [esc]"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("input modal buttons must advertise keys: got %v want %v", got, want)
+	}
+}
+
+func TestShowForm2_ButtonsAdvertiseKeys(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowForm2("New project", "Name", "", "Mission (optional)", "", nil, nil)
+	got := formButtonLabels(t, a)
+	want := []string{"OK [enter]", "Cancel [esc]"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("form2 modal buttons must advertise keys: got %v want %v", got, want)
+	}
+}
+
+// TestShowInput_EnterSubmits proves the key advertised on the OK button is
+// real: a bare Enter (from the focused input field, not the button) must
+// activate OK and dismiss with the typed value.
+func TestShowInput_EnterSubmits(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var got string
+	submitted := false
+	a.ShowInput("Rename", "New name", "typed", func(v string) { got = v; submitted = true }, nil)
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Enter must activate OK and dismiss the input modal")
+	}
+	if !submitted || got != "typed" {
+		t.Fatalf("Enter must submit the typed value: submitted=%v got=%q", submitted, got)
+	}
+}
+
+// TestShowForm2_EnterSubmits proves Enter submits the two-field form
+// (matching the "OK [enter]" label) rather than merely advancing fields.
+func TestShowForm2_EnterSubmits(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var v1, v2 string
+	submitted := false
+	a.ShowForm2("New project", "Name", "proj", "Mission (optional)", "ship it",
+		func(a, b string) { v1, v2 = a, b; submitted = true }, nil)
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Enter must activate OK and dismiss the form2 modal")
+	}
+	if !submitted || v1 != "proj" || v2 != "ship it" {
+		t.Fatalf("Enter must submit both values: submitted=%v v1=%q v2=%q", submitted, v1, v2)
+	}
+}
+
+// TestFormFieldWidth_FitsInsideFrame asserts the derived field width keeps a
+// labeled field inside the modal frame: label + ": " + field must not exceed
+// the inner content width (modalWidth minus the two border columns), and the
+// longest label drives the shared width (BUG-002).
+func TestFormFieldWidth_FitsInsideFrame(t *testing.T) {
+	const inner = modalWidth - 2
+	cases := [][]string{
+		{"New name"},
+		{"Name", "Mission (optional)"},
+	}
+	for _, labels := range cases {
+		fw := formFieldWidth(labels...)
+		if fw < 1 {
+			t.Fatalf("field width must be positive for labels %v, got %d", labels, fw)
+		}
+		longest := 0
+		for _, l := range labels {
+			if len(l) > longest {
+				longest = len(l)
+			}
+		}
+		// label + ": " + one tview gap + field must fit the inner width.
+		used := longest + 2 + 1 + fw
+		if used > inner {
+			t.Fatalf("labels %v overflow frame: used=%d inner=%d (fw=%d)", labels, used, inner, fw)
+		}
 	}
 }
 

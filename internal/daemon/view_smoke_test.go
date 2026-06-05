@@ -421,8 +421,9 @@ func TestViewSmoke_RenderAndKeyRouting(t *testing.T) {
 
 	// 2. Drain binary frames until quiet. The combined buffer must
 	// contain at least one ESC byte and one tview-known cell — we look
-	// for the 'H' from the "HERA" top-bar label as a cheap proxy for
-	// "the layout actually rendered."
+	// for the "Agent" pane title as a cheap proxy for "the layout
+	// actually rendered" (the old "HERA" top-bar label was removed in
+	// the 1.0 polish pass; the Agent pane title is stable chrome).
 	rendered := reader.drainBinary(750*time.Millisecond, 64*1024)
 	if len(rendered) == 0 {
 		t.Fatal("no outbound binary frames after resize")
@@ -430,8 +431,8 @@ func TestViewSmoke_RenderAndKeyRouting(t *testing.T) {
 	if !bytes.ContainsRune(rendered, 0x1b) {
 		t.Fatalf("outbound frames contain no ANSI ESC bytes (%d bytes): %q", len(rendered), trim(rendered, 80))
 	}
-	if !bytes.Contains(rendered, []byte("HERA")) {
-		t.Fatalf("outbound frames missing top-bar text HERA (%d bytes): %q", len(rendered), trim(rendered, 200))
+	if !bytes.Contains(rendered, []byte("Agent")) {
+		t.Fatalf("outbound frames missing the Agent pane title (%d bytes): %q", len(rendered), trim(rendered, 200))
 	}
 
 	// 3. Send Ctrl-Right: CSI 1;5 C. tcell parses this as KeyRight +

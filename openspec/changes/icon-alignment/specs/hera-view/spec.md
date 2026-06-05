@@ -145,3 +145,17 @@ The rail's currently selected row MUST be indicated by selected-text styling —
 
 - **WHEN** the rail renders with the cursor on one row
 - **THEN** every other (non-selected) row MUST render with the default cell background, so no stale highlight from a previous cursor position can persist
+
+### Requirement: All hera-rendered surfaces share one consistent background
+
+Every hera-rendered surface — the root canvas, the top bar, the body, the rail, the coordinator and agent pane frames (including their empty/placeholder state), the Details pane, the gaps/canvas between or around panes, and every modal/popup overlay (input, two-field, confirm, select, error) — SHALL paint the SAME background color the SDK terminalpane uses for its emulator interior cells: the terminal's default background (`tcell.ColorDefault`, exposed as the view package's single `heraBackground` constant). No hera surface may render the grey-blue backgrounds that previously leaked through — neither tview's stock primitive/contrast defaults nor the argus status-bar dark gray (`theme.ColorStatusBG`). A modal overlay is distinguished from the chrome behind it by its cyan border + title and its highlighted buttons/fields, NOT by a different background fill.
+
+#### Scenario: Chrome surfaces use the single hera background
+
+- **WHEN** the hera-view application is built
+- **THEN** the root, top bar, body, rail, both panes, and the Details pane MUST each report `heraBackground`, AND none may report `theme.ColorStatusBG`, AND the global tview default background (primitive and contrast) MUST be repointed to `heraBackground` so any unset primitive falls through to the same black
+
+#### Scenario: Modal overlays use the single hera background, not grey-blue
+
+- **WHEN** any modal/popup overlay (input, two-field, confirm, select, or error) is rendered over the base layout
+- **THEN** no cell on the drawn surface may carry tview's stock contrast background or `theme.ColorStatusBG`, AND at least one cell of the overlay MUST carry `heraBackground`
