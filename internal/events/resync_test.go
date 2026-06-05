@@ -115,5 +115,30 @@ func TestResync_NoOpWhenAllTasksAlive(t *testing.T) {
 	}
 }
 
+func TestResync_PreservesBindingForArchivedTask(t *testing.T) {
+	// An archived task is absent from the default GET /api/tasks list but
+	// present in GET /api/tasks?archived=all. Reconcile must NOT end its
+	// binding — archived ≠ deleted.
+	ctx := context.Background()
+	e, h := setupResync(t)
+
+	orch, _ := e.db.Orchestrators.Create(ctx, "foo")
+	role, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: role.ID, ArgusTaskID: "archived-task", WorktreePath: "/tmp/archived",
+	})
+	// Archived: true — visible via ?archived=all, absent from default list.
+	e.fake.addTask(argus.Task{ID: "archived-task", Project: "p", WorktreePath: "/tmp/archived", Archived: true})
+
+	h.HandleEvent(ctx, resyncEvent(789))
+
+	// Binding must be preserved.
+	if _, err := e.db.Bindings.GetLiveByTaskID(ctx, "archived-task"); err != nil {
+		t.Fatalf("expected binding for archived task to be preserved after reconcile; got %v", err)
+	}
+}
+
 // silence path/filepath import keepers
 var _ = filepath.Join

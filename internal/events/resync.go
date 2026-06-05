@@ -37,12 +37,14 @@ func (r *ResyncHandler) HandleEvent(ctx context.Context, ev argus.Event) {
 	}
 }
 
-// Reconcile fetches the current argus task list and ends any hera
-// binding whose argus task is no longer present. Exported so the
-// periodic reconciler can call the same logic on its own timer in
-// addition to the event-driven path.
+// Reconcile fetches the current argus task list (including archived tasks)
+// and ends any hera binding whose argus task is no longer present at all.
+// Archived tasks are included in the "live" set so that merely-archived
+// tasks do not have their bindings ended — only tasks that have been
+// deleted/pruned trigger binding termination. Exported so the periodic
+// reconciler can call the same logic on its own timer.
 func (r *ResyncHandler) Reconcile(ctx context.Context) error {
-	tasks, err := r.client.ListTasks(ctx)
+	tasks, err := r.client.ListTasksAll(ctx)
 	if err != nil {
 		return err
 	}
