@@ -425,6 +425,56 @@ func TestKeyRouter_ArrowInPane_ForwardsCSI(t *testing.T) {
 	}
 }
 
+// TestKeyRouter_AltRune_ForwardsEscPrefixed proves that Alt+rune in pane
+// focus is forwarded as ESC + the rune byte (the xterm convention for Meta
+// keys), not dropped and not sent without the ESC prefix.
+func TestKeyRouter_AltRune_ForwardsEscPrefixed(t *testing.T) {
+	r, p, _, _ := newRouter()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModAlt))
+	calls := p.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Alt+a in pane must forward exactly 1 call; got %d", len(calls))
+	}
+	want := []byte{0x1b, 'a'}
+	if !bytes.Equal(calls[0].Payload, want) {
+		t.Fatalf("Alt+a must forward ESC+'a' (0x1b 0x61); got %q", calls[0].Payload)
+	}
+}
+
+// TestKeyRouter_ShiftEnterInPane_ForwardsEscCR proves that Shift+Enter in
+// pane focus is forwarded as ESC+CR (newline-insert) rather than plain CR.
+// TUIs such as bubbletea use ESC+CR to insert a newline without submitting.
+func TestKeyRouter_ShiftEnterInPane_ForwardsEscCR(t *testing.T) {
+	r, p, _, _ := newRouter()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModShift))
+	calls := p.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Shift+Enter in pane must forward exactly 1 call; got %d", len(calls))
+	}
+	want := []byte{0x1b, '\r'}
+	if !bytes.Equal(calls[0].Payload, want) {
+		t.Fatalf("Shift+Enter must forward ESC+CR; got %q", calls[0].Payload)
+	}
+}
+
+// TestKeyRouter_AltBackspaceInPane_ForwardsEscDEL proves that Alt+Backspace
+// in pane focus is forwarded as ESC+DEL (word-delete) rather than plain DEL.
+func TestKeyRouter_AltBackspaceInPane_ForwardsEscDEL(t *testing.T) {
+	r, p, _, _ := newRouter()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt))
+	calls := p.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Alt+Backspace in pane must forward exactly 1 call; got %d", len(calls))
+	}
+	want := []byte{0x1b, 0x7f}
+	if !bytes.Equal(calls[0].Payload, want) {
+		t.Fatalf("Alt+Backspace must forward ESC+DEL; got %q", calls[0].Payload)
+	}
+}
+
 func TestKeyRouter_NoAgentTaskID_DropsKeystroke(t *testing.T) {
 	r, p, _, _ := newRouter()
 	r.Targets = &fakeTargets{coord: "", agent: ""}
