@@ -214,6 +214,9 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	viewSrv.SetRunner(view.NewSessionFunc(database, viewProxy, client, argusState, log))
 
 	resyncHandler := events.NewResyncHandler(client, database, log)
+	if err := resyncHandler.Reconcile(ctx); err != nil {
+		log.Warn("boot reconcile failed", "err", err)
+	}
 	subscriber := events.NewSubscriber(client, database, log)
 	subscriber.Register(events.NewAdoptHandler(client, database, log))
 	subscriber.Register(resyncHandler)

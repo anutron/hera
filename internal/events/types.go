@@ -11,6 +11,7 @@ const (
 	TypeTaskStatusChanged = "task.status_changed"
 	TypeTaskCompleted     = "task.completed"
 	TypeTaskArchived      = "task.archived"
+	TypeTaskDeleted       = "task.deleted"
 	TypeTaskRenamed       = "task.renamed"
 	TypeTaskForked        = "task.forked"
 

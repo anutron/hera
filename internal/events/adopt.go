@@ -30,13 +30,15 @@ func NewAdoptHandler(client *argus.Client, database *db.DB, log *slog.Logger) *A
 }
 
 // HandleEvent implements events.Handler. Only link.created is acted on;
-// task.archived also ends the matching binding.
+// task.archived and task.deleted also end the matching binding.
 func (a *AdoptHandler) HandleEvent(ctx context.Context, ev argus.Event) {
 	switch ev.Type {
 	case TypeLinkCreated:
 		a.handleLinkCreated(ctx, ev)
 	case TypeTaskArchived:
 		a.handleTaskArchived(ctx, ev)
+	case TypeTaskDeleted:
+		a.handleTaskDeleted(ctx, ev)
 	}
 }
 
@@ -188,6 +190,25 @@ func (a *AdoptHandler) handleTaskArchived(ctx context.Context, ev argus.Event) {
 			continue
 		}
 		a.log.Info("binding ended on task.archived", "task", ev.TaskID, "binding_id", bnd.ID)
+	}
+}
+
+// handleTaskDeleted ends every live binding for the deleted task.
+func (a *AdoptHandler) handleTaskDeleted(ctx context.Context, ev argus.Event) {
+	if ev.TaskID == "" {
+		return
+	}
+	bindings, err := a.db.Bindings.ListLiveByTaskID(ctx, ev.TaskID)
+	if err != nil {
+		a.log.Warn("task.deleted: list bindings", "task", ev.TaskID, "err", err)
+		return
+	}
+	for _, bnd := range bindings {
+		if err := a.db.Bindings.End(ctx, bnd.ID, "task_deleted"); err != nil {
+			a.log.Warn("task.deleted: end binding", "task", ev.TaskID, "binding_id", bnd.ID, "err", err)
+			continue
+		}
+		a.log.Info("binding ended on task.deleted", "task", ev.TaskID, "binding_id", bnd.ID)
 	}
 }
 

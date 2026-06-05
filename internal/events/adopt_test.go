@@ -466,5 +466,51 @@ func TestAdopt_TaskArchived_EndsEveryLiveBinding(t *testing.T) {
 	}
 }
 
+func TestAdopt_TaskDeleted_BindingEnds(t *testing.T) {
+	ctx := context.Background()
+	e := setupAdopt(t)
+	fixtureCoordinator(t, e, "task-coord")
+
+	orch, _ := e.db.Orchestrators.GetByName(ctx, "foo")
+	role, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: role.ID, ArgusTaskID: "task-w1", WorktreePath: "/tmp/w1",
+	})
+
+	e.handler.HandleEvent(ctx, argus.Event{ID: 201, Type: TypeTaskDeleted, TaskID: "task-w1"})
+
+	_, err := e.db.Bindings.GetLiveByTaskID(ctx, "task-w1")
+	if err == nil {
+		t.Fatalf("expected live binding for task-w1 to be ended after task.deleted")
+	}
+
+	// Verify the end_reason.
+	allBindings, err := e.db.Bindings.ListByRole(ctx, role.ID)
+	if err != nil {
+		t.Fatalf("ListByRole: %v", err)
+	}
+	if len(allBindings) != 1 {
+		t.Fatalf("expected 1 binding for role, got %d", len(allBindings))
+	}
+	if allBindings[0].EndReason != "task_deleted" {
+		t.Fatalf("expected end_reason=task_deleted, got %q", allBindings[0].EndReason)
+	}
+}
+
+func TestAdopt_TaskDeleted_NoBinding_NoError(t *testing.T) {
+	ctx := context.Background()
+	e := setupAdopt(t)
+
+	// No binding for this task — must be a silent no-op.
+	e.handler.HandleEvent(ctx, argus.Event{ID: 202, Type: TypeTaskDeleted, TaskID: "task-nonexistent"})
+
+	orchs, _ := e.db.Orchestrators.List(ctx)
+	if len(orchs) != 0 {
+		t.Fatalf("expected no orchestrators to be created, got %d", len(orchs))
+	}
+}
+
 // silence unused vars in case io is removed from imports during edits.
 var _ = io.Discard
