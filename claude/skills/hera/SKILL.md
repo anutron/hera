@@ -106,6 +106,18 @@ reach them through *their* MCP tools, not hera's.
 
 These are orthogonal plugins. Hera does not wrap them and they do not wrap hera.
 
+## Doorbell re-delivery
+
+When hera detects that an idle_submit message was injected but never confirmed read (i.e., no `hera_mark_read` call arrived within ~30 seconds), it fires a **doorbell** nudge: a short message injected directly into your PTY:
+
+```
+[hera doorbell] N unread message(s) — call hera_inbox
+```
+
+**When you see this message as a turn: call `hera_inbox(cwd=$PWD)` immediately.** The doorbell is a re-delivery signal, not a new message. The actual content is in your inbox. After reading, call `hera_mark_read` so the nudge loop stops.
+
+Hera will re-fire the doorbell at ~30-second intervals until you read and mark the message, up to a maximum of 5 nudges per message.
+
 ## Common mistakes (reach for the tool, not these)
 
 - **`Bash(hera send …)` / `Bash(hera join …)`** — no such CLI verbs exist. The `hera` binary only

@@ -59,6 +59,21 @@ type Config struct {
 	// events without depending on substrate event-emit completeness.
 	// Default: 60s.
 	ReconcileInterval time.Duration
+
+	// NudgeAfter is how long after an idle_submit delivery hera waits before
+	// firing the first doorbell re-nudge if the message is still unread.
+	// Default: 30s.
+	NudgeAfter time.Duration
+
+	// NudgeEvery is the minimum interval between subsequent doorbell nudges
+	// for the same message after the first nudge.
+	// Default: 30s.
+	NudgeEvery time.Duration
+
+	// MaxNudges is the maximum number of doorbell re-nudges hera will emit
+	// for a single unread idle_submit message before giving up.
+	// Default: 5.
+	MaxNudges int
 }
 
 // Default returns a Config populated with the v1 defaults.
@@ -76,6 +91,9 @@ func Default() *Config {
 		ArgusSocketPath:   filepath.Join(argusDir, "daemon.sock"),
 		ArgusPIDPath:      filepath.Join(argusDir, "daemon.pid"),
 		ReconcileInterval: 60 * time.Second,
+		NudgeAfter:        30 * time.Second,
+		NudgeEvery:        30 * time.Second,
+		MaxNudges:         5,
 	}
 }
 

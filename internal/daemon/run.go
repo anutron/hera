@@ -37,6 +37,7 @@ type Daemon struct {
 	Ports             *argus.PortsClient
 	IdleTrack         *idle.Tracker
 	Injector          *inject.Injector
+	DeliveryWatcher   *inject.DeliveryWatcher
 	MCPServer         *mcp.Server
 	Registrar         *mcp.Registrar
 	SettingsRegistrar *settings.Registrar
@@ -49,6 +50,8 @@ type Daemon struct {
 
 	periodicCancel context.CancelFunc
 	periodicDone   chan struct{}
+	doorbellCancel context.CancelFunc
+	doorbellDone   chan struct{}
 }
 
 // Start assembles hera and brings every subsystem up. Returns the live
@@ -101,6 +104,15 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	tracker := idle.NewWithDebounce(cfg.IdleDebounce)
 	injector := inject.New(client, tracker)
 	injector.SetAutoInjectEnabled(cfg.AutoInjectEnabled)
+	dw := inject.NewDeliveryWatcher(
+		database.Messages,
+		database.Bindings,
+		client,
+		cfg.NudgeAfter,
+		cfg.NudgeEvery,
+		cfg.MaxNudges,
+		log,
+	)
 	resolver := mcp.NewResolver(client, database)
 
 	auth, err := mcp.GenerateAuthHeader()
@@ -242,6 +254,16 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		periodic.Run(periodicCtx)
 	}()
 
+	// Delivery watcher — re-nudges unread idle_submit messages with a
+	// non-duplicating doorbell until the recipient confirms receipt via
+	// read_at or the nudge cap is reached.
+	doorbellCtx, doorbellCancel := context.WithCancel(context.Background())
+	doorbellDone := make(chan struct{})
+	go func() {
+		defer close(doorbellDone)
+		dw.Run(doorbellCtx)
+	}()
+
 	// Wire recovery: the watcher fires on pid-mtime change or socket-ping
 	// failure; the registrar heartbeat fires the same callback as a
 	// passive fallback on 404 responses.
@@ -265,7 +287,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 
 	return &Daemon{
 		Cfg: cfg, Log: log, DB: database, Argus: client, Ports: ports,
-		IdleTrack: tracker, Injector: injector,
+		IdleTrack: tracker, Injector: injector, DeliveryWatcher: dw,
 		MCPServer: mcpSrv, Registrar: registrar,
 		SettingsRegistrar: settingsReg, Watcher: watcher,
 		Subscriber:      subscriber,
@@ -275,6 +297,8 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		viewProxyCancel: proxyCancel,
 		periodicCancel:  periodicCancel,
 		periodicDone:    periodicDone,
+		doorbellCancel:  doorbellCancel,
+		doorbellDone:    doorbellDone,
 	}, nil
 }
 
@@ -301,6 +325,16 @@ func (d *Daemon) Stop(ctx context.Context) {
 			case <-d.periodicDone:
 			case <-time.After(5 * time.Second):
 				d.Log.Warn("periodic reconciler did not exit within 5s")
+			}
+		}
+	}
+	if d.doorbellCancel != nil {
+		d.doorbellCancel()
+		if d.doorbellDone != nil {
+			select {
+			case <-d.doorbellDone:
+			case <-time.After(5 * time.Second):
+				d.Log.Warn("delivery watcher did not exit within 5s")
 			}
 		}
 	}
