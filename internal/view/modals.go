@@ -65,18 +65,20 @@ func formFieldWidth(labels ...string) int {
 //   - closeModal restores the captured primitive (falling back to the
 //     rail) so dismissal lands the operator where they were.
 
-// themeModalStyle paints a tview.Modal with the argus theme — dark
-// overlay background, cyan border/title, themed buttons — replacing
-// tview's default contrast (lavender) styling so overlays read as part
-// of the same application. textColor styles the message body (normal
-// for confirms, error red for error modals).
+// themeModalStyle paints a tview.Modal with the argus theme — the same black
+// background every other hera surface uses (BUG-001), cyan border/title, themed
+// buttons — replacing tview's default contrast (lavender) styling so overlays
+// read as part of the same application. The modal is distinguished from the
+// chrome behind it by its cyan border + title and its highlighted buttons, not
+// a different fill. textColor styles the message body (normal for confirms,
+// error red for error modals).
 func themeModalStyle(m *tview.Modal, title string, textColor tcell.Color) {
-	m.SetBackgroundColor(theme.ColorStatusBG). // form + frame
-							SetTextColor(textColor).
-							SetButtonBackgroundColor(theme.ColorHighlight).
-							SetButtonTextColor(theme.ColorNormal).
-							SetButtonActivatedStyle(tcell.StyleDefault.Background(theme.ColorTitle).Foreground(tcell.ColorBlack).Bold(true))
-	m.Box.SetBackgroundColor(theme.ColorStatusBG)
+	m.SetBackgroundColor(heraBackground). // form + frame
+						SetTextColor(textColor).
+						SetButtonBackgroundColor(theme.ColorHighlight).
+						SetButtonTextColor(theme.ColorNormal).
+						SetButtonActivatedStyle(tcell.StyleDefault.Background(theme.ColorTitle).Foreground(tcell.ColorBlack).Bold(true))
+	m.Box.SetBackgroundColor(heraBackground)
 	m.SetBorderColor(theme.ColorTitle)
 	m.SetTitleColor(theme.ColorTitle)
 	if title != "" {
@@ -93,7 +95,7 @@ func themeFormStyle(form *tview.Form, title string) {
 		SetButtonBackgroundColor(theme.ColorHighlight).
 		SetButtonTextColor(theme.ColorNormal).
 		SetButtonActivatedStyle(tcell.StyleDefault.Background(theme.ColorTitle).Foreground(tcell.ColorBlack).Bold(true))
-	form.SetBackgroundColor(theme.ColorStatusBG) // Box-level background
+	form.SetBackgroundColor(heraBackground) // Box-level background (BUG-001)
 	form.SetBorder(true)
 	form.SetBorderColor(theme.ColorTitle)
 	form.SetTitleColor(theme.ColorTitle)
@@ -354,7 +356,7 @@ func (a *App) ShowSelect(title, label string, items []string, onSelect func(idx 
 		list.SetMainTextColor(theme.ColorNormal).
 			SetSelectedTextColor(tcell.ColorBlack).
 			SetSelectedBackgroundColor(theme.ColorHighlight)
-		list.SetBackgroundColor(theme.ColorStatusBG)
+		list.SetBackgroundColor(heraBackground)
 		list.SetBorder(true)
 		list.SetBorderColor(theme.ColorTitle)
 		list.SetTitleColor(theme.ColorTitle)

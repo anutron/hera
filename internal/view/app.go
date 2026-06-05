@@ -173,6 +173,16 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 
 	coordTask, agentTask := findInitialSelection(database, src)
 
+	// Make every tview primitive that hera does not explicitly style fall
+	// through to the SAME black the pane interiors use (BUG-001). tview's stock
+	// PrimitiveBackgroundColor is ColorBlack (the dark Color0 that rendered as
+	// the grey-blue chrome/canvas); ContrastBackgroundColor is the lavder/blue
+	// modal default. Repointing both at heraBackground (tcell.ColorDefault,
+	// matching the emulator cells) means gaps, the pages canvas, and form
+	// internals all paint the uniform terminal black with no per-widget setter.
+	tview.Styles.PrimitiveBackgroundColor = heraBackground
+	tview.Styles.ContrastBackgroundColor = heraBackground
+
 	// tApp is constructed before the panes so each pane's OnNeedRedraw hook can
 	// bounce a repaint through its event loop the moment PTY output arrives
 	// (live repaint, independent of keystroke input).

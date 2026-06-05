@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/anutron/argus-sdk/theme"
 
@@ -308,6 +309,52 @@ func TestApp_OnFocusChanged_PaintsArgusCyanBorders(t *testing.T) {
 				t.Errorf("focused border regressed to the pre-stage yellow/white: %v", focusedColor)
 			}
 		})
+	}
+}
+
+// TestBuildApp_AllChromeSurfacesUseHeraBackground proves the single-background
+// contract (BUG-001): every hera-rendered chrome surface — root, top bar, body,
+// rail, both panes, and the Details pane — paints the same heraBackground the
+// pane interiors use, so no grey-blue (tview's stock ColorBlack/Color0 or the
+// argus ColorStatusBG dark gray) bleeds through anywhere. A regression that
+// drops one of the explicit SetBackgroundColor calls (or reverts the global
+// tview.Styles repoint) trips here.
+func TestBuildApp_AllChromeSurfacesUseHeraBackground(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	surfaces := []struct {
+		name string
+		bg   tcell.Color
+	}{
+		{"root", a.pieces.root.GetBackgroundColor()},
+		{"topBar", a.pieces.topBar.GetBackgroundColor()},
+		{"body", a.pieces.body.GetBackgroundColor()},
+		{"rail", a.pieces.rail.GetBackgroundColor()},
+		{"coord", a.pieces.coord.GetBackgroundColor()},
+		{"agent", a.pieces.agent.GetBackgroundColor()},
+		{"details", a.pieces.details.GetBackgroundColor()},
+	}
+	for _, s := range surfaces {
+		if s.bg != heraBackground {
+			t.Errorf("%s background = %v, want heraBackground (%v) — BUG-001", s.name, s.bg, heraBackground)
+		}
+		if s.bg == theme.ColorStatusBG {
+			t.Errorf("%s regressed to the grey-blue ColorStatusBG", s.name)
+		}
+	}
+
+	// The global tview default must also be repointed so unset primitives
+	// (gaps, the pages canvas, form internals) fall through to the same black.
+	if tview.Styles.PrimitiveBackgroundColor != heraBackground {
+		t.Errorf("tview.Styles.PrimitiveBackgroundColor = %v, want heraBackground", tview.Styles.PrimitiveBackgroundColor)
+	}
+	if tview.Styles.ContrastBackgroundColor != heraBackground {
+		t.Errorf("tview.Styles.ContrastBackgroundColor = %v, want heraBackground", tview.Styles.ContrastBackgroundColor)
 	}
 }
 

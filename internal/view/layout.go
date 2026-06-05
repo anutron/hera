@@ -9,6 +9,16 @@ import (
 // See design.md D7.
 const RailWidth = 36
 
+// heraBackground is the single background color every hera-rendered surface
+// uses, so the chrome (root, top bar, rail, pane frames, gaps, modals) matches
+// the pane interiors exactly (BUG-001). The SDK terminalpane paints its
+// emulator cells with tcell.StyleDefault — background tcell.ColorDefault, the
+// terminal's own default — so the pane interiors read as the terminal black.
+// Using that same tcell.ColorDefault for every other surface guarantees one
+// uniform black: no tview default (the dark Color0 that rendered grey-blue)
+// and no theme.ColorStatusBG (Color235 dark gray) bleeds through anywhere.
+const heraBackground = tcell.ColorDefault
+
 // coordDetailsHERAFlex / coordDetailsPaneFlex split the space right of the
 // rail in coordinator mode: the HERA pane takes ~2/3, the Details pane ~1/3.
 // Flex (not fixed) so the HERA pane is never starved at narrow terminals — at
@@ -66,9 +76,17 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 	top.SetText("")
 	top.SetTextAlign(tview.AlignLeft)
 	top.SetTextColor(tcell.ColorWhite)
+	top.SetBackgroundColor(heraBackground)
 
 	rail := newRailList()
+	rail.SetBackgroundColor(heraBackground)
 	details := newDetailsPane()
+	details.SetBackgroundColor(heraBackground)
+
+	// Pane Box backgrounds match the emulator interior so the border/title
+	// cells and any letterboxed gap inside a pane read as the same black.
+	coord.SetBackgroundColor(heraBackground)
+	agent.SetBackgroundColor(heraBackground)
 
 	// Coord pane title reads "Coord" (parallel to the "Agent" pane), not the
 	// redundant "HERA" branding (BUG-004). The rail and agent keep their own
@@ -82,10 +100,14 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 		AddItem(rail, RailWidth, 0, false).
 		AddItem(coord, 0, 1, false).
 		AddItem(agent, 0, 1, false)
+	// Flex containers paint their own background in any cells not covered by a
+	// child (the canvas between/around panes); pin it to the same black.
+	body.SetBackgroundColor(heraBackground)
 
 	root := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(top, 1, 0, false).
 		AddItem(body, 0, 1, false)
+	root.SetBackgroundColor(heraBackground)
 
 	pages := tview.NewPages().
 		AddPage(pageBase, root, true, true)

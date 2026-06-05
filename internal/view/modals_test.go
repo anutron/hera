@@ -220,30 +220,37 @@ func renderPages(t *testing.T, a *App, w, h int) tcell.SimulationScreen {
 }
 
 // assertArgusThemedOverlay scans the drawn surface: no cell may carry
-// tview's default contrast (lavender/blue) modal background, and at least
-// one cell must carry the argus dark overlay background.
+// tview's default contrast (lavender/blue) modal background NOR the old
+// grey-blue overlay (theme.ColorStatusBG), and at least one cell must carry
+// the single hera background (heraBackground) — the same black the chrome and
+// pane interiors use (BUG-001). The modal reads as part of the app by its cyan
+// border/title, not a distinct fill.
 func assertArgusThemedOverlay(t *testing.T, sim tcell.SimulationScreen) {
 	t.Helper()
 	w, h := sim.Size()
-	defaultBG := tview.Styles.ContrastBackgroundColor
-	lavender, themed := 0, 0
+	// tview's stock lavender contrast color, captured before BuildApp repoints
+	// tview.Styles at heraBackground, so a regression to the default still trips.
+	lavenderBG := tcell.ColorBlue
+	greyBlue, themed := 0, 0
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			_, style, _ := sim.Get(x, y)
 			_, bg, _ := style.Decompose()
-			if bg == defaultBG {
-				lavender++
+			// The old grey-blue surfaces (tview lavender contrast OR the argus
+			// status-bar dark gray) must not appear on any hera surface.
+			if bg == lavenderBG || bg == theme.ColorStatusBG {
+				greyBlue++
 			}
-			if bg == theme.ColorStatusBG {
+			if bg == heraBackground {
 				themed++
 			}
 		}
 	}
-	if lavender > 0 {
-		t.Fatalf("modal renders %d cells with tview's default contrast background — must use the argus theme", lavender)
+	if greyBlue > 0 {
+		t.Fatalf("modal renders %d cells with a grey-blue background — every hera surface must use the consistent black (BUG-001)", greyBlue)
 	}
 	if themed == 0 {
-		t.Fatalf("expected the modal surface to use the argus dark background (theme.ColorStatusBG)")
+		t.Fatalf("expected the modal surface to use the single hera background (heraBackground)")
 	}
 }
 
