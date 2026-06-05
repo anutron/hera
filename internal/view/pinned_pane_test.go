@@ -32,18 +32,24 @@ func (f *fakePaneResizer) Calls() []paneResizeCall {
 	return out
 }
 
-// TestPinnedTerminalPane_KeepsPinnedSizeAcrossDraw pins the core contract:
-// the SDK's Draw auto-resizes the emulator to its inner rect, but our
-// wrapper must override that so the emulator's surface stays at the
-// upstream PTY size for downstream paint logic to clip from.
-func TestPinnedTerminalPane_KeepsPinnedSizeAcrossDraw(t *testing.T) {
+// TestPinnedTerminalPane_BoundPaneKeepsPinnedSizeAcrossDraw pins the core
+// contract for a BOUND-without-resizer pane (Option 2 letterbox): the SDK's
+// Draw auto-resizes the emulator to its inner rect, but our wrapper must
+// override that so the emulator's surface stays at the upstream PTY size for
+// downstream paint logic to clip from. (An UNBOUND placeholder pane instead
+// tracks its allocation so it fills the pane — see
+// TestPinnedTerminalPane_UnboundPaneFillsAllocation.)
+func TestPinnedTerminalPane_BoundPaneKeepsPinnedSizeAcrossDraw(t *testing.T) {
 	src := make(chan []byte)
 	defer close(src)
 	tp := terminalpane.New(src)
 	defer tp.Close()
 
 	const pinCols, pinRows = 189, 69
-	p := newPinnedTerminalPane(tp, pinCols, pinRows)
+	// Bound to a task with NO resizer wired (Option 2 fallback): the emulator
+	// surface stays pinned at the upstream PTY size and wider content
+	// letterboxes inside the narrower allocation.
+	p := newBoundPinnedTerminalPane(tp, pinCols, pinRows, "task-X", nil)
 
 	if c, r := tp.PTYSize(); c != pinCols || r != pinRows {
 		t.Fatalf("after construct: emulator size = %dx%d, want %dx%d",
@@ -69,6 +75,47 @@ func TestPinnedTerminalPane_KeepsPinnedSizeAcrossDraw(t *testing.T) {
 
 	// Rect must be restored to the layout-allocated size so the next
 	// Flex reflow sees the original outer bounds, not the lied size.
+	x, y, w, h := p.GetRect()
+	if x != 0 || y != 0 || w != allocW || h != allocH {
+		t.Fatalf("after Draw: rect = (%d,%d,%d,%d), want (0,0,%d,%d)",
+			x, y, w, h, allocW, allocH)
+	}
+}
+
+// TestPinnedTerminalPane_UnboundPaneFillsAllocation pins BUG-003: an unbound
+// placeholder pane ("(no coord selected)" / "(no agent selected)") has no
+// worker PTY to letterbox, so its emulator surface must track the full
+// layout-allocated inner rect — filling the pane exactly like a bound pane,
+// both when the allocation is LARGER than the construction default (the
+// reported symptom: empty panes rendered short at 80x24) and when it is
+// smaller. No resizer dispatch occurs (there is no PTY to size).
+func TestPinnedTerminalPane_UnboundPaneFillsAllocation(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	// Construction default 80x24 (the no-size fallback for an unbound pane).
+	p := newPinnedTerminalPane(tp, 0, 0)
+
+	// Allocate LARGER than the 80x24 default — the real production shape for a
+	// coord/agent column in a tall terminal. Inner rect = alloc - 2 each side.
+	const allocW, allocH = 120, 60
+	p.SetRect(0, 0, allocW, allocH)
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(allocW, allocH)
+	p.Draw(sim)
+
+	if c, r := p.PinnedSize(); c != allocW-2 || r != allocH-2 {
+		t.Fatalf("unbound pane pinned size = %dx%d, want %dx%d (must fill allocation, not stay at 80x24)",
+			c, r, allocW-2, allocH-2)
+	}
+
+	// Rect restored to the allocation so the Flex reflow is unaffected.
 	x, y, w, h := p.GetRect()
 	if x != 0 || y != 0 || w != allocW || h != allocH {
 		t.Fatalf("after Draw: rect = (%d,%d,%d,%d), want (0,0,%d,%d)",
@@ -331,9 +378,12 @@ func TestPinnedTerminalPane_ClipsBeyondAllocatedRect(t *testing.T) {
 	defer tp.Close()
 
 	// Pinned much wider than the allocated rect; the SDK's border draw will
-	// try to paint a right vertical at x = pinCols+1.
+	// try to paint a right vertical at x = pinCols+1. Bound-without-resizer
+	// (Option 2 letterbox) so the surface STAYS larger than the allocation —
+	// the case that actually exercises clipping. (An unbound placeholder pane
+	// would instead re-pin to its allocation and never spill.)
 	const pinCols, pinRows = 120, 30
-	p := newPinnedTerminalPane(tp, pinCols, pinRows)
+	p := newBoundPinnedTerminalPane(tp, pinCols, pinRows, "task-X", nil)
 
 	const allocX, allocY, allocW, allocH = 5, 2, 40, 10
 	p.SetRect(allocX, allocY, allocW, allocH)

@@ -44,29 +44,36 @@ type layoutPieces struct {
 // buildLayout composes the tview Flex tree (design.md D7, revised by D12):
 //
 //	Flex (rows):
-//	  TopBar       (height 1, "HERA" left-aligned)
+//	  TopBar       (height 1, empty — no hera branding, BUG-004)
 //	  Body  (cols):
 //	    Rail       (width RailWidth)
-//	    CoordPane  (flex 1)
-//	    AgentPane  (flex 1)
+//	    CoordPane  (flex 1, title "Coord")
+//	    AgentPane  (flex 1, title "Agent")
 //
 // Coord and agent panes split the remaining horizontal space evenly. The
-// TopBar contains the literal text "HERA". Hera renders NO bottom-bar row of
+// TopBar is blank (the argus chrome already identifies the view, so a
+// hera-stamped "HERA" label here was redundant). Hera renders NO bottom-bar row of
 // its own — under the argus key-surrender contract (D12) argus draws the
 // plugin-mode status bar (including the reserved `^Q^Q argus` exit hint) from
 // the focus-aware hotkey dictionary hera pushes over the WebSocket. The two
 // terminalpanes own their own border and title rendering, so this layer only
 // wires titles and arranges them in the Flex.
 func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
+	// No "HERA" branding in the top row: the argus chrome already identifies
+	// the view, so a hera-stamped label here is redundant (BUG-004). The 1-row
+	// TopBar is kept (empty) so the body's vertical geometry is unchanged.
 	top := tview.NewTextView()
-	top.SetText("HERA")
+	top.SetText("")
 	top.SetTextAlign(tview.AlignLeft)
 	top.SetTextColor(tcell.ColorWhite)
 
 	rail := newRailList()
 	details := newDetailsPane()
 
-	coord.SetTitle("HERA")
+	// Coord pane title reads "Coord" (parallel to the "Agent" pane), not the
+	// redundant "HERA" branding (BUG-004). The rail and agent keep their own
+	// functional titles ("Rail" / "Agent").
+	coord.SetTitle("Coord")
 	agent.SetTitle("Agent")
 
 	// Default composition is the agent-mode split (rail + HERA + AGENT); the
@@ -139,10 +146,19 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			{Key: "Enter", Label: "agent", Bar: true},
 			advance,
 			{Key: "n", Label: "new", Bar: true},
-			{Key: "w", Label: "worker", Bar: false},
+			// `w` spawns a worker under the selected coordinator (RAIL-focus-only,
+			// applies on a coordinator-resolvable row — orchestrator header,
+			// sub-coordinator row, or a leaf agent attached to a coord). `J` adopts
+			// the selected freelancer into a coordinator (RAIL-focus-only, applies
+			// only on a freelance row). Both are advertised on the bottom bar so
+			// they are discoverable; the per-row applicability is surfaced by the
+			// op itself (a visible "not applicable" notice on a wrong row), matching
+			// how the other rail mutation keys (n/r/a) are always listed (BUG-007).
+			{Key: "w", Label: "new agent", Bar: true},
 			{Key: "r", Label: "rename", Bar: true},
 			{Key: "^d", Label: "del", Bar: true},
 			{Key: "a", Label: "archive", Bar: true},
+			{Key: "J", Label: "adopt", Bar: true},
 			{Key: "l", Label: "listall", Bar: true},
 			// Help-overlay-only rail keys (Bar:false): kept off the bottom bar
 			// to avoid clutter but advertised so argus's `?` overlay lists them.
@@ -150,7 +166,6 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			{Key: "^p", Label: "PR", Bar: false},
 			{Key: "s", Label: "status+", Bar: false},
 			{Key: "S", Label: "status-", Bar: false},
-			{Key: "J", Label: "adopt", Bar: false},
 			{Key: "?", Label: "help", Bar: false},
 			{Key: "Esc", Label: "argus", Bar: true},
 		}

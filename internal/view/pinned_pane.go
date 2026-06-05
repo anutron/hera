@@ -170,12 +170,27 @@ func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 	// the emulator surface to the same dimensions. Skip the dispatch
 	// when the dimensions haven't changed since the previous Draw —
 	// avoids waking a goroutine on every frame.
-	if p.taskID != "" && p.resizer != nil {
+	switch {
+	case p.taskID != "" && p.resizer != nil:
 		if innerCols != p.lastDesiredCols || innerRows != p.lastDesiredRows {
 			p.resizer.ResizeTask(p.taskID, innerCols, innerRows)
 			p.lastDesiredCols = innerCols
 			p.lastDesiredRows = innerRows
 		}
+		p.pinnedCols = innerCols
+		p.pinnedRows = innerRows
+	case p.taskID == "":
+		// Unbound / placeholder pane (no task at all, e.g. "(no coord
+		// selected)"): there is no worker PTY to letterbox, so the emulator
+		// surface must track the full layout-allocated inner rect — filling its
+		// Flex allocation exactly like a bound pane. Without this the pinned
+		// size stays at the construction-time default (80x24) and the pane draws
+		// at a fixed 82x26 box: shorter vertically and not splitting the
+		// horizontal space evenly (BUG-003). No resizer dispatch on this path
+		// (no PTY exists to size). NOTE: this is distinct from a BOUND pane with
+		// no resizer wired (Option 2 letterbox, below) — that case has a real
+		// (possibly wider) PTY whose surface must stay pinned so its content
+		// clips rather than reflowing.
 		p.pinnedCols = innerCols
 		p.pinnedRows = innerRows
 	}

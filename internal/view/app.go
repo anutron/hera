@@ -187,7 +187,7 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 	redrawCoalescer := newRedrawCoalescer(func() { tApp.QueueUpdateDraw(func() {}) }, DefaultRedrawInterval)
 	redraw := redrawCoalescer.Schedule
 
-	coordPane, coordBridge, coordUnsub := newBoundPane("HERA", "(no coord selected)", coordTask, src, redraw)
+	coordPane, coordBridge, coordUnsub := newBoundPane("Coord", "(no coord selected)", coordTask, src, redraw)
 	agentPane, agentBridge, agentUnsub := newBoundPane("Agent", "(no agent selected)", agentTask, src, redraw)
 
 	pieces := buildLayout(coordPane, agentPane)
@@ -1326,7 +1326,7 @@ func (a *App) rebindCoord(taskID string) {
 	oldUnsub := a.coordUnsub
 	oldBridge := a.coordBridge
 	oldPane := a.pieces.coord
-	pane, bridge, unsub := newBoundPane("HERA", "(no coord selected)", taskID, a.src, a.scheduleRedraw)
+	pane, bridge, unsub := newBoundPane("Coord", "(no coord selected)", taskID, a.src, a.scheduleRedraw)
 	a.coordTask = taskID
 	a.coordBridge = bridge
 	a.coordUnsub = unsub

@@ -101,7 +101,10 @@ func TestBuildApp_RejectsNilDB(t *testing.T) {
 	}
 }
 
-func TestBuildApp_TopBarShowsHERA(t *testing.T) {
+// The top row carries NO hera branding (BUG-004): the argus chrome already
+// identifies the view, so a hera-stamped "HERA" label in the top border was
+// redundant. The TopBar row is kept (empty) so the body geometry is unchanged.
+func TestBuildApp_TopBarHasNoHeraBranding(t *testing.T) {
 	d := openTestDB(t)
 	a, err := BuildApp(d, nil)
 	if err != nil {
@@ -111,8 +114,8 @@ func TestBuildApp_TopBarShowsHERA(t *testing.T) {
 
 	got := renderApp(t, a, 80, 24)
 	firstRow := strings.SplitN(got, "\n", 2)[0]
-	if !strings.Contains(firstRow, "HERA") {
-		t.Fatalf("expected 'HERA' on row 0; got %q", firstRow)
+	if strings.Contains(firstRow, "HERA") || strings.Contains(firstRow, "Hera") {
+		t.Fatalf("top row must not stamp hera branding; got %q", firstRow)
 	}
 }
 
@@ -134,8 +137,8 @@ func TestBuildApp_ThreeColumnsAndChrome(t *testing.T) {
 		t.Fatalf("expected at least 24 rows; got %d", len(rows))
 	}
 
-	// Top bar should NOT contain rail/pane border characters; it's the
-	// plain text "HERA".
+	// Top bar should NOT contain rail/pane border characters; it's a plain
+	// (now empty) text row, not a bordered box.
 	if strings.ContainsAny(rows[0][:RailWidth], "│┃") {
 		t.Errorf("top bar row should not include vertical border within rail column; row 0 = %q", rows[0])
 	}
@@ -203,6 +206,22 @@ func TestApp_OnFocusChanged_PushesFocusAwareHotkeys(t *testing.T) {
 		return sb.String()
 	}
 
+	// barLabelsFor renders only the items flagged Bar:true — the subset argus
+	// draws on its context-sensitive bottom bar (vs. the full help overlay set).
+	barLabelsFor := func(items []HotkeyItem) string {
+		var sb strings.Builder
+		for _, it := range items {
+			if !it.Bar {
+				continue
+			}
+			sb.WriteString(it.Key)
+			sb.WriteString(":")
+			sb.WriteString(it.Label)
+			sb.WriteString(" ")
+		}
+		return sb.String()
+	}
+
 	a.OnFocusChanged(FocusRAIL)
 	typ, items := decodeLast()
 	if typ != "hotkeys" {
@@ -213,10 +232,15 @@ func TestApp_OnFocusChanged_PushesFocusAwareHotkeys(t *testing.T) {
 		t.Fatalf("RAIL hotkeys missing rail-specific bindings: %s", railLabels)
 	}
 
-	// `J` (adopt) is advertised in the help overlay alongside the other rail
-	// mutation keys so the operator can discover the gesture via `?`.
-	if !strings.Contains(railLabels, "J:adopt") {
-		t.Fatalf("RAIL hotkeys must advertise J:adopt: %s", railLabels)
+	// `w` (spawn worker) and `J` (adopt) are advertised on the BOTTOM BAR
+	// (Bar:true) so both recently-added rail gestures are discoverable, not
+	// just in the `?` help overlay (BUG-007).
+	railBar := barLabelsFor(items)
+	if !strings.Contains(railBar, "w:new agent") {
+		t.Fatalf("RAIL bottom bar must advertise w:new agent (Bar:true): %s", railBar)
+	}
+	if !strings.Contains(railBar, "J:adopt") {
+		t.Fatalf("RAIL bottom bar must advertise J:adopt (Bar:true): %s", railBar)
 	}
 
 	a.OnFocusChanged(FocusCOORD)
