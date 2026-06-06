@@ -34,5 +34,5 @@ See the `hera-delivery-receipt` spec for the full nudge loop, doorbell format, s
 
 #### Scenario: Nudging stops when recipient reads the message
 
-- **WHEN** the recipient calls `hera_mark_read` and `read_at` is set on the message
+- **WHEN** `read_at` is set on a message — either by the recipient calling `hera_inbox` (which stamps `read_at` on all returned messages) or by an explicit `hera_mark_read` call
 - **THEN** the delivery watcher MUST NOT emit any further nudge for that message
