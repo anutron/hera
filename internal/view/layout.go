@@ -184,6 +184,7 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 		// (Ctrl-D/R/P), so they are NOT advertised here.
 		return []HotkeyItem{
 			{Key: "keys", Label: "coord PTY", Bar: true},
+			{Key: "^Z", Label: "fullscreen", Bar: true},
 			{Key: "^→", Label: "agent", Bar: true},
 			{Key: "^←", Label: "rail", Bar: true},
 			{Key: "^Q", Label: "rail", Bar: true},
@@ -192,12 +193,14 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 		if !coordPresent {
 			return []HotkeyItem{
 				{Key: "keys", Label: "agent PTY", Bar: true},
+				{Key: "^Z", Label: "fullscreen", Bar: true},
 				{Key: "^←", Label: "rail", Bar: true},
 				{Key: "^Q", Label: "rail", Bar: true},
 			}
 		}
 		return []HotkeyItem{
 			{Key: "keys", Label: "agent PTY", Bar: true},
+			{Key: "^Z", Label: "fullscreen", Bar: true},
 			{Key: "^←", Label: "coord", Bar: true},
 			{Key: "^Q", Label: "rail", Bar: true},
 		}

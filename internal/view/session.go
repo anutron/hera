@@ -158,6 +158,7 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 			Filter:     app,
 			Scroller:   app,
 			InPaneNav:  app,
+			Fullscreen: app,
 			Control:    control,
 			Ctx:        ctx,
 			Log:        log,

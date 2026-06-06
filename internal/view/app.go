@@ -82,6 +82,12 @@ type App struct {
 	coordPresent bool
 	agentPresent bool
 
+	// fullscreenActive and fullscreenPane track whether pane fullscreen is
+	// active (BUG-027). When active, refreshBody composes only the fullscreen
+	// pane (hiding the rail and the other pane). Guarded by mu.
+	fullscreenActive bool
+	fullscreenPane   FocusState
+
 	// focus is the session's focus machine, injected via SetFocusMachine so
 	// the App can flip the present-pane flags when the body mode changes.
 	// nil in tests that build the App without a router.
@@ -1216,6 +1222,29 @@ func (a *App) OnFocusChanged(state FocusState) {
 	}
 }
 
+// OnFullscreenChanged satisfies the KeyRouter.FullscreenUpdater contract
+// (BUG-027). When active=true, the named pane fills the entire body area
+// (rail and the other pane are hidden) and the top indicator bar names the
+// pane. When active=false, the normal split is restored and the bar is cleared.
+// Runs on the tview event loop (called from the key router's input pump).
+func (a *App) OnFullscreenChanged(pane FocusState, active bool) {
+	a.mu.Lock()
+	a.fullscreenActive = active
+	a.fullscreenPane = pane
+	a.mu.Unlock()
+
+	if active {
+		label := "Agent"
+		if pane == FocusCOORD {
+			label = "Coord"
+		}
+		a.pieces.topBar.SetText("  [ " + label + " ]")
+	} else {
+		a.pieces.topBar.SetText("")
+	}
+	a.refreshBody()
+}
+
 // OnRailSelectEnter handles Enter pressed while RAIL has focus. It enters the
 // selection's PRIMARY pane (D13 "Enter enters the selection's primary pane"):
 //
@@ -1716,7 +1745,10 @@ func (a *App) setBodyMode(coordPresent, agentPresent bool) {
 // refreshBody re-composes the body Flex with the rail plus whichever panes the
 // current mode (coordPresent / agentPresent) includes. The absent pane is
 // removed from the Flex entirely (not hidden) so the present pane(s) take the
-// full canvas. Called after a pane rebind or a mode switch.
+// full canvas. Called after a pane rebind, a mode switch, or a fullscreen change.
+//
+// When fullscreen is active (BUG-027), only the fullscreen pane is composed —
+// the rail and the other pane are omitted so the selected pane fills the body.
 func (a *App) refreshBody() {
 	body := a.pieces.body
 	if body == nil {
@@ -1725,9 +1757,26 @@ func (a *App) refreshBody() {
 	a.mu.Lock()
 	coordPresent := a.coordPresent
 	agentPresent := a.agentPresent
+	fullscreenActive := a.fullscreenActive
+	fullscreenPane := a.fullscreenPane
 	a.mu.Unlock()
 
 	body.Clear()
+
+	if fullscreenActive {
+		switch fullscreenPane {
+		case FocusCOORD:
+			if a.pieces.coord != nil {
+				body.AddItem(a.pieces.coord, 0, 1, false)
+			}
+		case FocusAGENT:
+			if a.pieces.agent != nil {
+				body.AddItem(a.pieces.agent, 0, 1, false)
+			}
+		}
+		return
+	}
+
 	body.AddItem(a.pieces.rail, RailWidth, 0, false)
 	switch {
 	case coordPresent && !agentPresent && a.pieces.details != nil:
