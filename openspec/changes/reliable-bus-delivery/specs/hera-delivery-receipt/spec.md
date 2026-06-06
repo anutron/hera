@@ -6,10 +6,29 @@
 
 The system SHALL treat `messages.read_at` as the authoritative delivery confirmation for `idle_submit` messages. A message with `delivery_mode = 'idle_submit'` and `read_at IS NULL` MUST be considered unconfirmed — the body was injected but the agent may not have seen or processed it.
 
+`read_at` is set by TWO mechanisms, both of which stop further doorbell nudges:
+
+1. **`hera_inbox` fetch** — when a recipient calls `hera_inbox`, the daemon MUST stamp `read_at = now` on all messages returned in that response, in the same server-side call. This is the primary delivery receipt: the agent received and saw the message.
+2. **`hera_mark_read` explicit ack** — the recipient may additionally call `hera_mark_read` as an explicit "handled" acknowledgement. This is idempotent if `read_at` is already set by an earlier `hera_inbox` fetch.
+
+The delivery watcher MUST stop nudging a message as soon as `read_at` is set, regardless of which mechanism set it.
+
+#### Scenario: hera_inbox fetch marks returned messages read
+
+- **WHEN** a recipient calls `hera_inbox` and N messages are returned
+- **THEN** all N returned message rows MUST have `read_at` set to a non-NULL RFC3339 timestamp immediately after the call
+- **AND** a subsequent `hera_inbox` call by the same recipient MUST return 0 messages (they are no longer unread)
+- **AND** the delivery watcher MUST NOT emit further nudges for those messages
+
 #### Scenario: Message read confirms delivery
 
 - **WHEN** a recipient calls `hera_mark_read` for a message
 - **THEN** the message row MUST have `read_at` set to a non-NULL RFC3339 timestamp, and the delivery watcher MUST NOT emit further nudges for that message
+
+#### Scenario: hera_inbox only marks read the caller's own messages
+
+- **WHEN** `hera_inbox` is called by role A and messages for both role A and role B exist
+- **THEN** only role A's messages MUST have `read_at` set; role B's messages MUST remain unread
 
 #### Scenario: idle_submit with read_at NULL considered unconfirmed
 

@@ -65,6 +65,16 @@ func (h *InboxHandler) Handle(ctx context.Context, raw json.RawMessage) Response
 		return ErrorResponse("hera_inbox: query: " + err.Error())
 	}
 
+	if len(msgs) > 0 {
+		ids := make([]int64, len(msgs))
+		for i, m := range msgs {
+			ids[i] = m.ID
+		}
+		if _, err := h.db.Messages.MarkRead(ctx, role.ID, ids); err != nil {
+			return ErrorResponse("hera_inbox: mark read: " + err.Error())
+		}
+	}
+
 	out := InboxOutput{RoleName: role.Name, Count: len(msgs)}
 	for _, m := range msgs {
 		from := fmt.Sprintf("role:%d", m.FromRoleID)
