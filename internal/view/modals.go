@@ -13,12 +13,13 @@ import (
 // modal kind so close logic can remove a specific page without
 // guessing.
 const (
-	pageBase    = "base"
-	pageInput   = "modal-input"
-	pageForm2   = "modal-form2"
-	pageConfirm = "modal-confirm"
-	pageError   = "modal-error"
-	pageSelect  = "modal-select"
+	pageBase     = "base"
+	pageInput    = "modal-input"
+	pageForm2    = "modal-form2"
+	pageNewCoord = "modal-new-coord"
+	pageConfirm  = "modal-confirm"
+	pageError    = "modal-error"
+	pageSelect   = "modal-select"
 )
 
 // modalWidth is the outer width every centered form modal is sized to (see
@@ -265,6 +266,132 @@ func (a *App) ShowForm2(title, label1, initial1, label2, initial2 string, onSubm
 		a.pieces.pages.AddPage(pageForm2, centeredModal(form, modalWidth, 9), true, true)
 		if a.app != nil {
 			a.app.SetFocus(field1)
+		}
+	})
+}
+
+// ShowNewCoordForm opens the five-field new-coordinator form modal:
+// Name (required), Project (dropdown), Branch (optional), Backend (dropdown),
+// Prompt (multi-line textarea). onSubmit fires with all field values when
+// the operator confirms with a non-empty name; onCancel fires on Esc.
+//
+// projects and backends are the dropdown options loaded before open (from
+// argus). Either list may be empty; defaults are shown when empty.
+//
+// Safe to call from any goroutine — the body runs through app.QueueUpdateDraw
+// so it lands on the tview event loop.
+func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubmit func(NewCoordFormInput), onCancel func()) {
+	a.queueModal(func() {
+		fw := formFieldWidth("Name", "Project", "Branch", "Backend", "Prompt")
+
+		nameField := tview.NewInputField().
+			SetLabel("Name: ").
+			SetFieldWidth(fw)
+		wireFieldFocusStyle(nameField)
+
+		projOptions := projects
+		if len(projOptions) == 0 {
+			projOptions = []string{"(no projects configured)"}
+		}
+		projectDD := tview.NewDropDown().
+			SetLabel("Project: ").
+			SetOptions(projOptions, nil).
+			SetFieldWidth(fw)
+		projectDD.SetCurrentOption(0)
+
+		branchField := tview.NewInputField().
+			SetLabel("Branch: ").
+			SetFieldWidth(fw)
+		wireFieldFocusStyle(branchField)
+
+		backendOptions := backends
+		if len(backendOptions) == 0 {
+			backendOptions = []string{"claude"}
+		}
+		backendDD := tview.NewDropDown().
+			SetLabel("Backend: ").
+			SetOptions(backendOptions, nil).
+			SetFieldWidth(fw)
+		backendDD.SetCurrentOption(0)
+
+		promptTA := tview.NewTextArea().
+			SetLabel("Prompt: ").
+			SetSize(3, fw)
+
+		form := tview.NewForm().
+			AddFormItem(nameField).
+			AddFormItem(projectDD).
+			AddFormItem(branchField).
+			AddFormItem(backendDD).
+			AddFormItem(promptTA).
+			SetButtonsAlign(tview.AlignCenter)
+
+		// Style dropdowns and textarea to match the modal background.
+		projectDD.SetBackgroundColor(heraBackground)
+		backendDD.SetBackgroundColor(heraBackground)
+		promptTA.SetBackgroundColor(heraBackground)
+		promptTA.SetTextStyle(tcell.StyleDefault.Background(theme.ColorHighlight).Foreground(theme.ColorNormal))
+
+		dismiss := func(submitted bool) {
+			name := strings.TrimSpace(nameField.GetText())
+			_, projOpt := projectDD.GetCurrentOption()
+			if projOpt == "(no projects configured)" {
+				projOpt = ""
+			}
+			_, backendOpt := backendDD.GetCurrentOption()
+			a.closeModal(pageNewCoord)
+			if submitted && name != "" {
+				if onSubmit != nil {
+					onSubmit(NewCoordFormInput{
+						Name:    name,
+						Project: projOpt,
+						Branch:  strings.TrimSpace(branchField.GetText()),
+						Backend: backendOpt,
+						Prompt:  promptTA.GetText(),
+					})
+				}
+			} else if !submitted {
+				if onCancel != nil {
+					onCancel()
+				}
+			}
+		}
+
+		form.AddButton("Submit [enter]", func() { dismiss(true) })
+		form.AddButton("Cancel [esc]", func() { dismiss(false) })
+		form.SetCancelFunc(func() { dismiss(false) })
+
+		// Enter submits from any non-TextArea field; from a TextArea it inserts
+		// a newline as normal.
+		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+			if ev.Key() != tcell.KeyEnter {
+				return ev
+			}
+			for i := 0; i < form.GetFormItemCount(); i++ {
+				item := form.GetFormItem(i)
+				if !item.HasFocus() {
+					continue
+				}
+				if _, isTA := item.(*tview.TextArea); isTA {
+					return ev // TextArea: Enter inserts newline
+				}
+				dismiss(true)
+				return nil
+			}
+			return ev
+		})
+
+		themeFormStyle(form, title)
+
+		// Modal height: 4 single-row fields (Name, Project, Branch, Backend) +
+		// 1 three-row TextArea (Prompt) + 2 button rows + 2 border rows + 3 padding
+		// rows = ~14 rows total.
+		const newCoordModalHeight = 14
+
+		a.captureFocus()
+		a.pieces.pages.AddPage(pageNewCoord, centeredModal(form, modalWidth, newCoordModalHeight), true, true)
+		if a.app != nil {
+			a.app.SetFocus(nameField)
 		}
 	})
 }

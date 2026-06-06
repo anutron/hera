@@ -39,6 +39,12 @@ type fakeModals struct {
 	stubForm2Cancel  bool
 	stubForm2NotOpen bool
 
+	// stubNewCoord* drive the new-coordinator form (ShowNewCoordForm).
+	newCoordCalls       []fakeNewCoordFormCall
+	stubNewCoordInput   NewCoordFormInput
+	stubNewCoordCancel  bool
+	stubNewCoordNotOpen bool
+
 	// confirmGate, when non-nil, blocks ShowConfirm at entry until the test
 	// closes it. Set before driving the bridge; never mutate afterwards.
 	confirmGate chan struct{}
@@ -62,6 +68,12 @@ type fakeInputCall struct {
 
 type fakeForm2Call struct {
 	Title, Label1, Label2 string
+}
+
+type fakeNewCoordFormCall struct {
+	Title    string
+	Projects []string
+	Backends []string
 }
 
 type fakeConfirmCall struct {
@@ -110,6 +122,28 @@ func (f *fakeModals) ShowForm2(title, label1, initial1, label2, initial2 string,
 	}
 	if onSubmit != nil {
 		onSubmit(v1, v2)
+	}
+}
+
+func (f *fakeModals) ShowNewCoordForm(title string, projects, backends []string, onSubmit func(NewCoordFormInput), onCancel func()) {
+	f.mu.Lock()
+	f.newCoordCalls = append(f.newCoordCalls, fakeNewCoordFormCall{Title: title, Projects: projects, Backends: backends})
+	in := f.stubNewCoordInput
+	cancel := f.stubNewCoordCancel
+	notOpen := f.stubNewCoordNotOpen
+	f.mu.Unlock()
+
+	if notOpen {
+		return
+	}
+	if cancel {
+		if onCancel != nil {
+			onCancel()
+		}
+		return
+	}
+	if onSubmit != nil {
+		onSubmit(in)
 	}
 }
 
@@ -334,6 +368,12 @@ type fakeMutationService struct {
 	spawnWorkerResp  *ops.SpawnWorkerResult
 	spawnWorkerErr   error
 
+	// ListProjects / ListBackends stubs (for the new-coordinator form).
+	listProjectsResp []string
+	listProjectsErr  error
+	listBackendsResp []string
+	listBackendsErr  error
+
 	// Adopt verbs (`J`). listOrchs is returned by ListActiveOrchestrators;
 	// adoptCalls records every AdoptTaskIntoOrchestrator input.
 	listOrchs     []*ops.Orchestrator
@@ -381,6 +421,18 @@ func (s *fakeMutationService) NewOrchestrator(_ context.Context, in ops.NewOrche
 		return nil, s.newErr
 	}
 	return &ops.CreatedTask{ID: "task-1", Name: in.Name + "-coord"}, nil
+}
+
+func (s *fakeMutationService) ListProjects(_ context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listProjectsResp, s.listProjectsErr
+}
+
+func (s *fakeMutationService) ListBackends(_ context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listBackendsResp, s.listBackendsErr
 }
 
 func (s *fakeMutationService) RenameOrchestrator(_ context.Context, id int64, newName string) error {
@@ -630,9 +682,11 @@ func newBridgeUnderTestWithHelp() (*mutationBridge, *fakeModals, *fakeSelector, 
 
 // --- OnNew ---
 
-func TestBridge_OnNew_ValidName_CallsNewOrchestrator(t *testing.T) {
+func TestBridge_OnNew_ValidInput_CallsNewOrchestrator(t *testing.T) {
 	b, m, _, svc, _, rp := newBridgeUnderTest()
-	m.stubForm2Name = "foo"
+	svc.listProjectsResp = []string{"hera-dev"}
+	svc.listBackendsResp = []string{"claude"}
+	m.stubNewCoordInput = NewCoordFormInput{Name: "foo", Project: "hera-dev", Backend: "claude"}
 
 	b.OnNew()
 	b.waitIdle()
@@ -641,10 +695,13 @@ func TestBridge_OnNew_ValidName_CallsNewOrchestrator(t *testing.T) {
 		t.Fatalf("want 1 NewOrchestrator call, got %d", len(svc.newCalls))
 	}
 	if svc.newCalls[0].Name != "foo" {
-		t.Fatalf("NewOrchestrator.Name: want %q, got %q", "foo", svc.newCalls[0].Name)
+		t.Fatalf("Name: want %q, got %q", "foo", svc.newCalls[0].Name)
+	}
+	if svc.newCalls[0].Project != "hera-dev" {
+		t.Fatalf("Project: want %q, got %q", "hera-dev", svc.newCalls[0].Project)
 	}
 	if rp.Count() != 1 {
-		t.Fatalf("expected rail refresh after successful create; got %d", rp.Count())
+		t.Fatalf("expected rail refresh; got %d", rp.Count())
 	}
 	if len(m.errors) != 0 {
 		t.Fatalf("expected no error modal; got %v", m.errors)
@@ -653,7 +710,9 @@ func TestBridge_OnNew_ValidName_CallsNewOrchestrator(t *testing.T) {
 
 func TestBridge_OnNew_EmptyName_NoServiceCall(t *testing.T) {
 	b, m, _, svc, _, rp := newBridgeUnderTest()
-	m.stubForm2Name = ""
+	svc.listProjectsResp = []string{"p1"}
+	svc.listBackendsResp = []string{"claude"}
+	m.stubNewCoordInput = NewCoordFormInput{Name: "", Project: "p1"}
 
 	b.OnNew()
 	b.waitIdle()
@@ -668,7 +727,9 @@ func TestBridge_OnNew_EmptyName_NoServiceCall(t *testing.T) {
 
 func TestBridge_OnNew_ServiceError_ShowsErrorModal(t *testing.T) {
 	b, m, _, svc, _, rp := newBridgeUnderTest()
-	m.stubForm2Name = "foo"
+	svc.listProjectsResp = []string{"p1"}
+	svc.listBackendsResp = []string{"claude"}
+	m.stubNewCoordInput = NewCoordFormInput{Name: "foo", Project: "p1"}
 	svc.newErr = errors.New("argus down")
 
 	b.OnNew()
@@ -684,13 +745,50 @@ func TestBridge_OnNew_ServiceError_ShowsErrorModal(t *testing.T) {
 
 func TestBridge_OnNew_Cancel_NoServiceCall(t *testing.T) {
 	b, m, _, svc, _, _ := newBridgeUnderTest()
-	m.stubForm2Cancel = true
+	svc.listProjectsResp = []string{"p1"}
+	svc.listBackendsResp = []string{"claude"}
+	m.stubNewCoordCancel = true
 
 	b.OnNew()
 	b.waitIdle()
 
 	if len(svc.newCalls) != 0 {
 		t.Fatalf("cancel must NOT call NewOrchestrator; got %d", len(svc.newCalls))
+	}
+}
+
+func TestBridge_OnNew_ListProjectsError_ShowsErrorModal(t *testing.T) {
+	b, m, _, svc, _, _ := newBridgeUnderTest()
+	svc.listProjectsErr = errors.New("argus unavailable")
+
+	b.OnNew()
+	b.waitIdle()
+
+	if len(svc.newCalls) != 0 {
+		t.Fatalf("project list error must NOT call NewOrchestrator; got %d", len(svc.newCalls))
+	}
+	if len(m.errors) == 0 {
+		t.Fatalf("project list error must show error modal")
+	}
+	if len(m.newCoordCalls) != 0 {
+		t.Fatalf("project list error must NOT open the coord form; got %d", len(m.newCoordCalls))
+	}
+}
+
+func TestBridge_OnNew_WithPrompt_PassesThrough(t *testing.T) {
+	b, m, _, svc, _, _ := newBridgeUnderTest()
+	svc.listProjectsResp = []string{"p1"}
+	svc.listBackendsResp = []string{"claude"}
+	m.stubNewCoordInput = NewCoordFormInput{Name: "foo", Project: "p1", Prompt: "implement feature X"}
+
+	b.OnNew()
+	b.waitIdle()
+
+	if len(svc.newCalls) != 1 {
+		t.Fatalf("want 1 NewOrchestrator call, got %d", len(svc.newCalls))
+	}
+	if svc.newCalls[0].Prompt != "implement feature X" {
+		t.Fatalf("Prompt: want %q, got %q", "implement feature X", svc.newCalls[0].Prompt)
 	}
 }
 
@@ -1313,33 +1411,6 @@ func TestBridge_OnOpenPR_Freelancer_NoWorktree_NoConfirm_Feedback(t *testing.T) 
 	}
 	if m.ErrorCount() != 1 {
 		t.Fatalf("freelancer ^p with no worktree must give visible feedback; errors=%v", m.errors)
-	}
-}
-
-// --- Gap 2: OnNew collects an optional coord mission ---
-
-// Confirming the new-project modal with a name AND a mission must pass BOTH
-// through to the new-orchestrator service (spec: "New-project confirm spawns
-// argus task" asserts the spawned prompt contains mission="ship F").
-func TestBridge_OnNew_NameAndMission_PassesBothThrough(t *testing.T) {
-	b, m, _, svc, _, rp := newBridgeUnderTest()
-	m.stubForm2Name = "foo"
-	m.stubForm2Second = "ship F"
-
-	b.OnNew()
-	b.waitIdle()
-
-	if len(svc.newCalls) != 1 {
-		t.Fatalf("want 1 NewOrchestrator call, got %d", len(svc.newCalls))
-	}
-	if svc.newCalls[0].Name != "foo" {
-		t.Fatalf("NewOrchestrator.Name: want %q, got %q", "foo", svc.newCalls[0].Name)
-	}
-	if svc.newCalls[0].Mission != "ship F" {
-		t.Fatalf("NewOrchestrator.Mission: want %q, got %q", "ship F", svc.newCalls[0].Mission)
-	}
-	if rp.Count() != 1 {
-		t.Fatalf("expected rail refresh after successful create; got %d", rp.Count())
 	}
 }
 

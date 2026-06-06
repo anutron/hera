@@ -277,6 +277,8 @@ func (a *argusAdapter) CreateTask(ctx context.Context, req ops.CreateTaskRequest
 		Project: req.Project,
 		Name:    req.Name,
 		Prompt:  req.Prompt,
+		Branch:  req.Branch,
+		Backend: req.Backend,
 	}
 	out, err := a.c.CreateTask(ctx, in, req.Meta)
 	if err != nil {
@@ -293,7 +295,7 @@ func (a *argusAdapter) GetTask(ctx context.Context, taskID string) (*ops.TaskDet
 	if err != nil {
 		return nil, translateArgusTaskErr(err)
 	}
-	return &ops.TaskDetails{ID: t.ID, WorktreePath: t.WorktreePath}, nil
+	return &ops.TaskDetails{ID: t.ID, WorktreePath: t.WorktreePath, Idle: t.Idle}, nil
 }
 
 func (a *argusAdapter) ArchiveTask(ctx context.Context, taskID string) error {
@@ -341,4 +343,33 @@ func (a *argusAdapter) PutTaskMeta(ctx context.Context, taskID, key, value strin
 		return fmt.Errorf("argusAdapter: nil client")
 	}
 	return a.c.PutTaskMeta(ctx, taskID, key, value)
+}
+
+func (a *argusAdapter) PostTaskInput(ctx context.Context, taskID string, bytes []byte) (int, error) {
+	if a.c == nil {
+		return 0, fmt.Errorf("argusAdapter: nil client")
+	}
+	return a.c.PostTaskInput(ctx, taskID, bytes)
+}
+
+func (a *argusAdapter) ListProjects(ctx context.Context) ([]string, error) {
+	if a.c == nil {
+		return nil, fmt.Errorf("argusAdapter: nil client")
+	}
+	return a.c.ListProjects(ctx)
+}
+
+func (a *argusAdapter) ListBackends(ctx context.Context) ([]string, error) {
+	if a.c == nil {
+		return nil, fmt.Errorf("argusAdapter: nil client")
+	}
+	bbs, err := a.c.ListBackends(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(bbs))
+	for i, b := range bbs {
+		names[i] = b.Name
+	}
+	return names, nil
 }

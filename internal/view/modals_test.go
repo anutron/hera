@@ -535,3 +535,111 @@ func TestShowSelect_EscInvokesOnCancel(t *testing.T) {
 		t.Fatalf("dismissing the picker must restore focus to the rail")
 	}
 }
+
+// --- ShowNewCoordForm tests ---
+
+// TestShowNewCoordForm_SubmitFiresCallback opens the form, sets the Name field,
+// presses Enter, and verifies the onSubmit callback fires with the right values.
+func TestShowNewCoordForm_SubmitFiresCallback(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var got NewCoordFormInput
+	submitted := false
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"},
+		func(in NewCoordFormInput) { got = in; submitted = true }, nil)
+
+	if !a.IsModalActive() {
+		t.Fatalf("new coord form must be active after ShowNewCoordForm")
+	}
+
+	form := frontForm(t, a)
+	if form.GetFormItemCount() < 5 {
+		t.Fatalf("form must have at least 5 items (Name, Project, Branch, Backend, Prompt); got %d", form.GetFormItemCount())
+	}
+
+	nameField, ok := form.GetFormItem(0).(*tview.InputField)
+	if !ok {
+		t.Fatalf("first form item must be InputField for Name")
+	}
+	nameField.SetText("my-coord")
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Enter must dismiss the new coord form")
+	}
+	if !submitted {
+		t.Fatalf("Enter must fire onSubmit")
+	}
+	if got.Name != "my-coord" {
+		t.Fatalf("got Name %q, want %q", got.Name, "my-coord")
+	}
+}
+
+// TestShowNewCoordForm_EscCancels verifies Esc fires onCancel.
+func TestShowNewCoordForm_EscCancels(t *testing.T) {
+	a := newModalTestApp(t)
+
+	cancelled := false
+	a.ShowNewCoordForm("New coordinator", []string{"p1"}, []string{"claude"},
+		nil, func() { cancelled = true })
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Esc must dismiss")
+	}
+	if !cancelled {
+		t.Fatalf("Esc must fire onCancel")
+	}
+}
+
+// TestShowNewCoordForm_EmptyNameDoesNotSubmit verifies that an empty Name
+// field does NOT fire onSubmit.
+func TestShowNewCoordForm_EmptyNameDoesNotSubmit(t *testing.T) {
+	a := newModalTestApp(t)
+
+	submitted := false
+	a.ShowNewCoordForm("New coordinator", []string{"p1"}, []string{"claude"},
+		func(_ NewCoordFormInput) { submitted = true }, nil)
+
+	// Name stays empty (default); press Enter
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if submitted {
+		t.Fatalf("empty Name must NOT invoke onSubmit")
+	}
+}
+
+// TestShowNewCoordForm_FieldsContainedInFrame verifies field widths keep all
+// inputs inside the modal frame (BUG-002 compliance).
+func TestShowNewCoordForm_FieldsContainedInFrame(t *testing.T) {
+	const inner = modalWidth - 2
+	labels := []string{"Name", "Project", "Branch", "Backend", "Prompt"}
+	fw := formFieldWidth(labels...)
+	if fw < 1 {
+		t.Fatalf("field width must be positive, got %d", fw)
+	}
+	longest := 0
+	for _, l := range labels {
+		if len(l) > longest {
+			longest = len(l)
+		}
+	}
+	// label + ": " + tview gap + field must fit inside inner width.
+	used := longest + 2 + 1 + fw
+	if used > inner {
+		t.Fatalf("labels %v overflow frame: used=%d inner=%d (fw=%d)", labels, used, inner, fw)
+	}
+}
+
+// TestShowNewCoordForm_ButtonLabels verifies the button labels advertise keys.
+func TestShowNewCoordForm_ButtonLabels(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"p1"}, []string{"claude"}, nil, nil)
+	got := formButtonLabels(t, a)
+	want := []string{"Submit [enter]", "Cancel [esc]"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("new coord form buttons must advertise keys: got %v want %v", got, want)
+	}
+}

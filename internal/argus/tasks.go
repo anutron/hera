@@ -215,11 +215,13 @@ func (f *flexInt) UnmarshalJSON(data []byte) error {
 //
 // Name is optional; argus auto-derives a slug from Prompt when empty.
 // Backend is optional; an empty value uses argus's per-project default.
+// Branch is optional; an empty value uses the project's default branch.
 type CreateTaskInput struct {
 	Project string `json:"project"`
 	Name    string `json:"name,omitempty"`
 	Prompt  string `json:"prompt"`
 	Backend string `json:"backend,omitempty"`
+	Branch  string `json:"branch,omitempty"`
 }
 
 // CreatedTask is argus's POST /api/tasks response envelope.
@@ -277,6 +279,42 @@ func (c *Client) CreateProject(ctx context.Context, in CreateProjectInput) error
 	}
 	_, err := c.doJSON(ctx, "POST", "/api/projects", in, nil)
 	return err
+}
+
+// ListProjects fetches the names of every configured argus project via
+// GET /api/projects. Returns an empty slice (not an error) when the
+// daemon has no projects configured.
+func (c *Client) ListProjects(ctx context.Context) ([]string, error) {
+	var resp struct {
+		Projects []string `json:"projects"`
+	}
+	if _, err := c.doJSON(ctx, "GET", "/api/projects", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Projects, nil
+}
+
+// BackendEntry describes one argus backend entry as returned by
+// GET /api/backends. Command is the process template argus uses to
+// spawn the agent. PromptFlag is the flag used to pass the initial
+// prompt (e.g. "--" for positional args).
+type BackendEntry struct {
+	Name       string `json:"name"`
+	Command    string `json:"command"`
+	PromptFlag string `json:"prompt_flag,omitempty"`
+}
+
+// ListBackends fetches every configured argus backend via
+// GET /api/backends. Returns an empty slice (not an error) when the
+// daemon has no backends configured beyond its built-in default.
+func (c *Client) ListBackends(ctx context.Context) ([]BackendEntry, error) {
+	var resp struct {
+		Backends []BackendEntry `json:"backends"`
+	}
+	if _, err := c.doJSON(ctx, "GET", "/api/backends", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Backends, nil
 }
 
 // ArchiveTask flips the argus task's archived flag to true via

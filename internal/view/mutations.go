@@ -12,12 +12,24 @@ import (
 	"github.com/anutron/hera/internal/view/ops"
 )
 
+// NewCoordFormInput carries the validated field values from the new-coordinator
+// form modal.
+type NewCoordFormInput struct {
+	Name    string
+	Project string
+	Branch  string
+	Backend string
+	Prompt  string
+}
+
 // mutationService is the subset of *ops.Service the mutation bridge
 // uses. Defining an interface rather than depending on *ops.Service
 // directly lets tests inject a fake without standing up ops's full
 // dependency tree.
 type mutationService interface {
 	NewOrchestrator(ctx context.Context, in ops.NewOrchestratorInput) (*ops.CreatedTask, error)
+	ListProjects(ctx context.Context) ([]string, error)
+	ListBackends(ctx context.Context) ([]string, error)
 	RenameOrchestrator(ctx context.Context, id int64, newName string) error
 	RenameRole(ctx context.Context, id int64, newName string) error
 	DeleteOrchestrator(ctx context.Context, id int64) error
@@ -103,6 +115,12 @@ type modalAPI interface {
 	// Used by the new-project flow (name required, mission optional). Either
 	// callback may be nil.
 	ShowForm2(title, label1, initial1, label2, initial2 string, onSubmit func(v1, v2 string), onCancel func())
+	// ShowNewCoordForm opens the five-field new-coordinator form modal.
+	// projects and backends are loaded before the modal opens (from argus).
+	// onSubmit fires with the form values when the operator confirms with a
+	// non-empty name; onCancel fires on Esc or empty-name submit.
+	// Either callback may be nil.
+	ShowNewCoordForm(title string, projects, backends []string, onSubmit func(NewCoordFormInput), onCancel func())
 	// ShowConfirm opens a y/N confirmation modal. onYes runs when the
 	// operator picks Yes; onNo runs on No or cancel. Either may be nil.
 	ShowConfirm(title, message string, onYes func(), onNo func())
@@ -393,20 +411,40 @@ func newMutationBridge(
 	}
 }
 
-// OnNew prompts for an orchestrator name (required) and an optional coord
-// mission, then spawns the bootstrap argus task via ops.NewOrchestrator. Both
-// fields are passed through so the spawned prompt carries the mission. Empty-
-// name submissions no-op. The modal opens via goUI (the open bounces through
-// QueueUpdateDraw); the submit callback runs back on the event loop, so the
-// spawn itself goes through mutate.
+// OnNew opens the five-field new-coordinator form. The project and backend
+// lists are fetched from argus before opening the modal; either failure
+// surfaces an error modal and aborts the open (the form is never shown).
+// An empty-name submission no-ops silently. The modal opens via goUI (the
+// open bounces through QueueUpdateDraw); the submit callback runs back on
+// the event loop, so the spawn itself goes through mutate.
 func (b *mutationBridge) OnNew() {
 	b.goUI(func() {
-		b.modals.ShowForm2("New project", "Name", "", "Mission (optional)", "", func(name, mission string) {
-			if name == "" {
+		projects, err := b.svc.ListProjects(b.ctx)
+		if err != nil {
+			b.modals.ShowError("new coordinator: could not load projects: " + err.Error())
+			return
+		}
+		backends, err := b.svc.ListBackends(b.ctx)
+		if err != nil {
+			b.modals.ShowError("new coordinator: could not load backends: " + err.Error())
+			return
+		}
+		if len(backends) == 0 {
+			backends = []string{"claude"}
+		}
+
+		b.modals.ShowNewCoordForm("New coordinator", projects, backends, func(in NewCoordFormInput) {
+			if strings.TrimSpace(in.Name) == "" {
 				return
 			}
-			b.mutate("new project", true, func() error {
-				_, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{Name: name, Mission: mission})
+			b.mutate("new coordinator", true, func() error {
+				_, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{
+					Name:    in.Name,
+					Project: in.Project,
+					Branch:  in.Branch,
+					Backend: in.Backend,
+					Prompt:  in.Prompt,
+				})
 				return err
 			})
 		}, nil)

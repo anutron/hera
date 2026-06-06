@@ -92,6 +92,10 @@ type CreateTaskRequest struct {
 	Name    string
 	Prompt  string
 	Meta    map[string]string
+	// Branch is optional; an empty value uses the project's default branch.
+	Branch string
+	// Backend is optional; an empty value uses the project's default backend.
+	Backend string
 }
 
 // CreatedTask is the ops layer's view of argus's create-task response.
@@ -106,6 +110,8 @@ type CreatedTask struct {
 type TaskDetails struct {
 	ID           string
 	WorktreePath string
+	// Idle mirrors argus's idle flag (the agent is waiting for input).
+	Idle bool
 }
 
 // ArgusClient is the subset of internal/argus.Client the ops layer
@@ -151,6 +157,20 @@ type ArgusClient interface {
 	// meta:role=worker stamp on operator-side adoption (mirroring
 	// hera_join attach-mode). A failure here is non-fatal to the binding.
 	PutTaskMeta(ctx context.Context, taskID, key, value string) error
+
+	// PostTaskInput writes raw bytes to a task's PTY input. Used by
+	// NewOrchestrator to send an auto-submit CR after task creation so the
+	// bootstrap prompt executes without manual confirmation. Soft-fail: a
+	// failure is logged but does not propagate as a NewOrchestrator error.
+	PostTaskInput(ctx context.Context, taskID string, bytes []byte) (int, error)
+
+	// ListProjects returns the names of every configured argus project.
+	// Used to populate the Project dropdown in the new-coordinator form.
+	ListProjects(ctx context.Context) ([]string, error)
+
+	// ListBackends returns the names of every configured argus backend.
+	// Used to populate the Backend dropdown in the new-coordinator form.
+	ListBackends(ctx context.Context) ([]string, error)
 }
 
 // PRCreator opens a pull request for a role's worktree. The production
@@ -210,4 +230,16 @@ func NewService(db DB, argus ArgusClient, wr WorktreeRemover, logger Logger) *Se
 		Logger:          logger,
 		ListAll:         NewListAllState(),
 	}
+}
+
+// ListProjects returns the names of every configured argus project.
+// Delegates straight to the ArgusClient.
+func (s *Service) ListProjects(ctx context.Context) ([]string, error) {
+	return s.Argus.ListProjects(ctx)
+}
+
+// ListBackends returns the names of every configured argus backend.
+// Delegates straight to the ArgusClient.
+func (s *Service) ListBackends(ctx context.Context) ([]string, error) {
+	return s.Argus.ListBackends(ctx)
 }
