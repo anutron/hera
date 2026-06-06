@@ -251,3 +251,70 @@ func TestStepStatus_SetError_Propagates(t *testing.T) {
 		t.Fatalf("AdvanceStatus must propagate SetTaskStatus error")
 	}
 }
+
+// BUG-017: Shift-S backward walk must traverse the full ladder without bouncing.
+// Each RevertStatus call fetches the CURRENT argus status and steps it one rung
+// toward pending; pressing Shift-S three times from complete must land at pending
+// and then CLAMP (no further write).
+func TestRevertStatus_FullBackwardWalk_NoBounceFwd(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedBinding(role.ID, "T1", "")
+
+	a := &fakeArgus{statuses: map[string]string{"T1": "complete"}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+	ctx := context.Background()
+
+	// complete → in_review
+	got, err := s.RevertStatus(ctx, role.ID)
+	if err != nil || got != "in_review" {
+		t.Fatalf("step 1: want in_review, got %q err=%v", got, err)
+	}
+	// in_review → in_progress
+	got, err = s.RevertStatus(ctx, role.ID)
+	if err != nil || got != "in_progress" {
+		t.Fatalf("step 2: want in_progress, got %q err=%v", got, err)
+	}
+	// in_progress → pending
+	got, err = s.RevertStatus(ctx, role.ID)
+	if err != nil || got != "pending" {
+		t.Fatalf("step 3: want pending, got %q err=%v", got, err)
+	}
+	// pending → clamp (no write)
+	callsBefore := len(a.setStatusCalls)
+	got, err = s.RevertStatus(ctx, role.ID)
+	if err != nil || got != "pending" {
+		t.Fatalf("clamp: want pending (no-op), got %q err=%v", got, err)
+	}
+	if len(a.setStatusCalls) != callsBefore {
+		t.Fatalf("clamp at pending must not POST status; calls before=%d after=%d", callsBefore, len(a.setStatusCalls))
+	}
+}
+
+// BUG-017: status direction sanity — prevStatus never returns a value ABOVE its
+// input on the ladder (no forward bounce). Exhaustively checks every valid
+// transition.
+func TestPrevStatus_NeverBounceForward(t *testing.T) {
+	ladder := statusOrder // ["pending","in_progress","in_review","complete"]
+	for i, s := range ladder {
+		prev := prevStatus(s)
+		prevIdx := statusIndex(prev)
+		if prevIdx > i {
+			t.Errorf("prevStatus(%q)=%q is HIGHER on the ladder than %q — would bounce forward", s, prev, s)
+		}
+	}
+}
+
+// BUG-017: nextStatus never returns a value BELOW its input (no backward bounce
+// on advance — mirrors the Shift-S clamp guarantee for `s`).
+func TestNextStatus_NeverBouncBackward(t *testing.T) {
+	ladder := statusOrder
+	for i, s := range ladder {
+		next := nextStatus(s)
+		nextIdx := statusIndex(next)
+		if nextIdx < i {
+			t.Errorf("nextStatus(%q)=%q is LOWER on the ladder than %q — would bounce backward", s, next, s)
+		}
+	}
+}

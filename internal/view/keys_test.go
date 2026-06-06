@@ -1497,6 +1497,37 @@ func TestHotkeyItems_RailAdvertisesWorkerKey(t *testing.T) {
 	}
 }
 
+// BUG-020: Both `w` (new worker) and `J` (adopt freelancer) must be advertised
+// ON THE BOTTOM BAR (Bar:true) so they appear in argus's context-sensitive
+// bottom-bar strip, not only in the `?` help overlay (Bar:false). Previously
+// only the overlay listed them; the bar stayed silent about two key actions.
+func TestHotkeyItems_RailAdvertisesJAndWOnBottomBar(t *testing.T) {
+	items := hotkeyItems(FocusRAIL, true)
+	for _, tc := range []struct {
+		key   string
+		label string
+	}{
+		{"w", "new agent"},
+		{"J", "adopt"},
+	} {
+		if !hotkeyHas(items, tc.key, true) {
+			t.Errorf("RAIL hotkey %q must have Bar:true (bottom-bar visible); items=%+v", tc.key, items)
+		}
+	}
+}
+
+// BUG-020: `helpHotkeyItems` (the `?` overlay source) must also include both
+// `w` and `J` so the comprehensive overlay matches the bottom bar. Both
+// consumers read from the same hotkeyItems source, so they never drift.
+func TestHelpHotkeyItems_IncludesJAndW(t *testing.T) {
+	all := helpHotkeyItems(true)
+	for _, key := range []string{"w", "J"} {
+		if !hotkeyContains(all, key) {
+			t.Errorf("helpHotkeyItems must include %q (for the ? overlay); items=%+v", key, all)
+		}
+	}
+}
+
 // --- rail filter routing (change rail-search) ---
 
 // fakeRailFilter satisfies the RailFilter gate; filtering is settable.
