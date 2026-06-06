@@ -3,6 +3,7 @@ package view
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // Tests for the rail-sections change: a Pinned section at the rail top (Story
@@ -64,21 +65,35 @@ func TestRailList_PinnedRole_FloatsOutOfCoordinator(t *testing.T) {
 	if rl.rows[0].kind != railRowPinnedSep {
 		t.Fatalf("expected Pinned separator first; kinds=%v", rowKinds(rl))
 	}
-	var pinnedRow, nestedPinned bool
-	for i, r := range rl.rows {
-		if r.kind == railRowRole && r.role != nil && r.role.RoleID == 11 {
-			if i == 1 { // directly under the Pinned separator
-				pinnedRow = true
-			} else {
-				nestedPinned = true
+
+	// BUG-025: pinned managed roles render as two-line entries in the Pinned
+	// section. The breadcrumb row (railRowPinnedBreadcrumb) is the cursor
+	// target; the continuation role row (railRowRole, non-selectable) carries
+	// the name. Check that the breadcrumb appears INSIDE the Pinned block and
+	// the role does NOT also appear outside as a non-continuation row.
+	var pinnedBreadcrumb, nestedNonContinuation bool
+	inPinned := false
+	for _, r := range rl.rows {
+		switch r.kind {
+		case railRowPinnedSep:
+			inPinned = true
+		case railRowPinnedEnd:
+			inPinned = false
+		case railRowPinnedBreadcrumb:
+			if r.role != nil && r.role.RoleID == 11 && inPinned {
+				pinnedBreadcrumb = true
+			}
+		case railRowRole:
+			if r.role != nil && r.role.RoleID == 11 && !r.isBreadcrumbContinuation {
+				nestedNonContinuation = true
 			}
 		}
 	}
-	if !pinnedRow {
-		t.Fatalf("pinned role must render as a standalone row in the Pinned section; kinds=%v", rowKinds(rl))
+	if !pinnedBreadcrumb {
+		t.Fatalf("pinned role must render as a breadcrumb entry in the Pinned section; kinds=%v", rowKinds(rl))
 	}
-	if nestedPinned {
-		t.Fatalf("pinned role must NOT also render nested under its coordinator (double-render)")
+	if nestedNonContinuation {
+		t.Fatalf("pinned role must NOT also render as a non-continuation row (double-render); kinds=%v", rowKinds(rl))
 	}
 
 	// The coordinator's live-child (N) count must EXCLUDE the floated role.
@@ -90,7 +105,8 @@ func TestRailList_PinnedRole_FloatsOutOfCoordinator(t *testing.T) {
 // TestRailList_PinnedLeafUnderSubCoordinator_DoesNotVanish guards the
 // full-tree collection: a pinned leaf nested under a (non-pinned) sub-
 // coordinator is skipped by appendOrchChildren, so it MUST surface in the
-// Pinned section rather than vanish.
+// Pinned section rather than vanish. BUG-025: it renders as a two-line
+// breadcrumb entry (railRowPinnedBreadcrumb + continuation railRowRole).
 func TestRailList_PinnedLeafUnderSubCoordinator_DoesNotVanish(t *testing.T) {
 	rl := newRailList()
 	child := &orchEntry{ID: 2, Name: "child", CoordTaskID: "T-sc", Roles: []*roleEntry{
@@ -102,12 +118,22 @@ func TestRailList_PinnedLeafUnderSubCoordinator_DoesNotVanish(t *testing.T) {
 	}}
 	rl.SetOrchestrators([]*orchEntry{parent})
 
+	// BUG-025: the pinned leaf surfaces as a railRowPinnedBreadcrumb in the
+	// Pinned section; the non-continuation railRowRole must not appear.
 	var floated, nested bool
-	for i, r := range rl.rows {
-		if r.kind == railRowRole && r.role != nil && r.role.RoleID == 30 {
-			if i >= 1 && rl.rows[0].kind == railRowPinnedSep && i <= len(rl.rows) && r.depth == 0 {
+	inPinned := false
+	for _, r := range rl.rows {
+		switch r.kind {
+		case railRowPinnedSep:
+			inPinned = true
+		case railRowPinnedEnd:
+			inPinned = false
+		case railRowPinnedBreadcrumb:
+			if r.role != nil && r.role.RoleID == 30 && inPinned {
 				floated = true
-			} else {
+			}
+		case railRowRole:
+			if r.role != nil && r.role.RoleID == 30 && !r.isBreadcrumbContinuation {
 				nested = true
 			}
 		}
@@ -116,7 +142,7 @@ func TestRailList_PinnedLeafUnderSubCoordinator_DoesNotVanish(t *testing.T) {
 		t.Fatalf("deeply-nested pinned leaf must float to the Pinned section, not vanish; kinds=%v", rowKinds(rl))
 	}
 	if nested {
-		t.Fatalf("deeply-nested pinned leaf must not also render nested (double-render)")
+		t.Fatalf("deeply-nested pinned leaf must not also render as a non-continuation row (double-render); kinds=%v", rowKinds(rl))
 	}
 }
 
@@ -186,32 +212,37 @@ func TestRailList_PinnedSubCoord_FloatsToTopWithChildren(t *testing.T) {
 		}},
 	})
 
-	// Row structure: PinnedSep → sub-coord row → sc-worker → PinnedEnd → parent header → sibling-worker
+	// Row structure: PinnedSep → breadcrumb(sub-coord) → continuation(sub-coord)
+	//                → sc-worker → PinnedEnd → parent header → sibling-worker
 	if len(rl.rows) == 0 || rl.rows[0].kind != railRowPinnedSep {
 		t.Fatalf("expected Pinned separator first; kinds=%v", rowKinds(rl))
 	}
 
-	// Find the sub-coord row in the Pinned section (must be at depth 0).
+	// BUG-025: find the sub-coord breadcrumb row in the Pinned section (depth 0).
 	foundPinned := false
-	for i, r := range rl.rows {
-		if r.kind == railRowPinnedEnd {
-			break // done with Pinned block
-		}
-		if r.kind == railRowRole && r.role != nil && r.role.RoleID == 20 {
-			if r.depth != 0 {
-				t.Errorf("pinned sub-coord must render at depth 0 in Pinned section; got depth %d", r.depth)
+	inPinned := false
+	for _, r := range rl.rows {
+		switch r.kind {
+		case railRowPinnedSep:
+			inPinned = true
+		case railRowPinnedEnd:
+			inPinned = false
+		case railRowPinnedBreadcrumb:
+			if r.role != nil && r.role.RoleID == 20 && inPinned {
+				if r.depth != 0 {
+					t.Errorf("pinned sub-coord breadcrumb must be at depth 0; got depth %d", r.depth)
+				}
+				foundPinned = true
 			}
-			_ = i
-			foundPinned = true
 		}
 	}
 	if !foundPinned {
-		t.Fatalf("pinned sub-coordinator must appear in the Pinned section; kinds=%v", rowKinds(rl))
+		t.Fatalf("pinned sub-coordinator must appear as breadcrumb in the Pinned section; kinds=%v", rowKinds(rl))
 	}
 
 	// sc-worker (child of the sub-coordinator) must render inside the Pinned block.
 	workerInPinned := false
-	inPinned := false
+	inPinned = false
 	for _, r := range rl.rows {
 		if r.kind == railRowPinnedSep {
 			inPinned = true
@@ -229,15 +260,19 @@ func TestRailList_PinnedSubCoord_FloatsToTopWithChildren(t *testing.T) {
 		t.Fatalf("sub-coordinator's worker must render inside the Pinned block; kinds=%v", rowKinds(rl))
 	}
 
-	// Count pinned sub-coord occurrences (kind==railRowRole, RoleID==20).
-	var occurrences []int
-	for i, r := range rl.rows {
-		if r.kind == railRowRole && r.role != nil && r.role.RoleID == 20 {
-			occurrences = append(occurrences, i)
+	// Count all breadcrumb + non-continuation role occurrences for RoleID 20.
+	// Must be exactly 1 breadcrumb row (no double-render).
+	var breadcrumbCount int
+	for _, r := range rl.rows {
+		if r.kind == railRowPinnedBreadcrumb && r.role != nil && r.role.RoleID == 20 {
+			breadcrumbCount++
+		}
+		if r.kind == railRowRole && !r.isBreadcrumbContinuation && r.role != nil && r.role.RoleID == 20 {
+			t.Errorf("pinned sub-coord must not appear as a non-continuation role row (double-render); kinds=%v", rowKinds(rl))
 		}
 	}
-	if len(occurrences) != 1 {
-		t.Fatalf("pinned sub-coord must render exactly once; got at rows %v\nkinds=%v", occurrences, rowKinds(rl))
+	if breadcrumbCount != 1 {
+		t.Fatalf("pinned sub-coord must render exactly one breadcrumb row; got %d; kinds=%v", breadcrumbCount, rowKinds(rl))
 	}
 
 	// Rendered output must show sub-coord in the Pinned block and sc-worker nested under it.
@@ -492,6 +527,396 @@ func TestRailList_PinnedFreelancer_FloatsToRootPinnedSection(t *testing.T) {
 	}
 	if !unPinnedInFree {
 		t.Fatalf("unpinned freelancer must return to the Freelance section; kinds=%v", rowKinds(rl))
+	}
+}
+
+// BUG-025: A pinned managed role renders as a two-line breadcrumb entry.
+// Line 1 (railRowPinnedBreadcrumb, selectable): status icon + dimmed ancestry.
+// Line 2 (railRowRole continuation, non-selectable): bright name + age.
+func TestRailList_PinnedSubItem_GetsBreadcrumbForm(t *testing.T) {
+	rl := newRailList()
+	rl.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "kbtest", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "nested-child-worker", Pinned: true,
+				StartedAt: time.Unix(1_700_000_000-3*3600, 0), // 3 hours ago
+			},
+		}},
+	})
+
+	// Must have a Pinned section.
+	if len(rl.rows) == 0 || rl.rows[0].kind != railRowPinnedSep {
+		t.Fatalf("expected Pinned separator first; kinds=%v", rowKinds(rl))
+	}
+
+	// Find the breadcrumb row inside the Pinned block.
+	var bc, cont *railRow
+	inPinned := false
+	for i := range rl.rows {
+		r := &rl.rows[i]
+		switch r.kind {
+		case railRowPinnedSep:
+			inPinned = true
+		case railRowPinnedEnd:
+			inPinned = false
+		case railRowPinnedBreadcrumb:
+			if inPinned && r.role != nil && r.role.RoleID == 10 {
+				bc = r
+			}
+		case railRowRole:
+			if inPinned && r.role != nil && r.role.RoleID == 10 {
+				cont = r
+			}
+		}
+	}
+	if bc == nil {
+		t.Fatalf("expected railRowPinnedBreadcrumb for the pinned sub-item; kinds=%v", rowKinds(rl))
+	}
+	if cont == nil {
+		t.Fatalf("expected railRowRole continuation for the pinned sub-item; kinds=%v", rowKinds(rl))
+	}
+
+	// Breadcrumb row: depth 0, selectable, carries the ancestry trail.
+	if bc.depth != 0 {
+		t.Errorf("breadcrumb row must be at depth 0; got %d", bc.depth)
+	}
+	if bc.breadcrumb != "kbtest › " {
+		t.Errorf("breadcrumb ancestry: got %q, want %q", bc.breadcrumb, "kbtest › ")
+	}
+	for i := range rl.rows {
+		if &rl.rows[i] == bc {
+			if !rl.selectable(i) {
+				t.Errorf("breadcrumb row at index %d must be selectable", i)
+			}
+		}
+	}
+
+	// Continuation row: depth 1, non-selectable, isBreadcrumbContinuation.
+	if cont.depth != 1 {
+		t.Errorf("continuation row must be at depth 1; got %d", cont.depth)
+	}
+	if !cont.isBreadcrumbContinuation {
+		t.Errorf("continuation row must have isBreadcrumbContinuation=true")
+	}
+	for i := range rl.rows {
+		if &rl.rows[i] == cont {
+			if rl.selectable(i) {
+				t.Errorf("continuation row at index %d must NOT be selectable", i)
+			}
+		}
+	}
+
+	// Rendered output: breadcrumb line shows dimmed "kbtest ›", name line shows
+	// "nested-child-worker" and age "3h".
+	got := renderRail(t, rl, 40, 8)
+	if !strings.Contains(got, "kbtest") {
+		t.Fatalf("breadcrumb line must show the parent orch name; got:\n%s", got)
+	}
+	if !strings.Contains(got, "nested-child-worker") {
+		t.Fatalf("name line must show the item name; got:\n%s", got)
+	}
+	if !strings.Contains(got, "3h") {
+		t.Fatalf("name line must show the age; got:\n%s", got)
+	}
+
+	// SelectByRoleID must find the breadcrumb row (cursor target).
+	if !rl.SelectByRoleID(10) {
+		t.Fatalf("SelectByRoleID must succeed for a pinned sub-item")
+	}
+	if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.RoleID != 10 {
+		t.Fatalf("currentRef after SelectByRoleID must be the role; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+	}
+	// Cursor must be on the breadcrumb row, not the continuation.
+	if rl.rows[rl.cursor].kind != railRowPinnedBreadcrumb {
+		t.Errorf("cursor must be on railRowPinnedBreadcrumb after SelectByRoleID; got kind=%v", rl.rows[rl.cursor].kind)
+	}
+}
+
+// BUG-025: A pinned root coordinator stays single-line (no breadcrumb).
+func TestRailList_PinnedRootOrch_StaysSingleLine(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "top-coord", Pinned: true, Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "worker"},
+		}},
+	})
+
+	// No railRowPinnedBreadcrumb rows anywhere.
+	for _, r := range rl.rows {
+		if r.kind == railRowPinnedBreadcrumb {
+			t.Fatalf("pinned root coordinator must NOT emit a breadcrumb row; kinds=%v", rowKinds(rl))
+		}
+	}
+	// The root coord renders as a regular orchRow.
+	found := false
+	for _, r := range rl.rows {
+		if r.kind == railRowOrch && r.orch != nil && r.orch.ID == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pinned root coordinator must render as railRowOrch; kinds=%v", rowKinds(rl))
+	}
+}
+
+// BUG-025: A pinned freelancer renders as a single line — no breadcrumb —
+// because freelancers pin at root level (no coordinator ancestry, BUG-024).
+func TestRailList_PinnedFreelancer_StaysSingleLine(t *testing.T) {
+	rl := newRailList()
+	rl.SetFreelance([]*freelanceProject{
+		{Project: "Hera", Tasks: []*roleEntry{
+			{RoleKind: "freelance", Name: "free-task", ArgusTaskID: "T1", Project: "Hera"},
+		}},
+	})
+	rl.ToggleFreelancePin("T1")
+
+	for _, r := range rl.rows {
+		if r.kind == railRowPinnedBreadcrumb {
+			t.Fatalf("pinned freelancer must NOT emit a breadcrumb row; kinds=%v", rowKinds(rl))
+		}
+	}
+	// The freelancer renders as a plain railRowRole with depth 0 in the Pinned block.
+	found := false
+	inPinned := false
+	for _, r := range rl.rows {
+		if r.kind == railRowPinnedSep {
+			inPinned = true
+			continue
+		}
+		if r.kind == railRowPinnedEnd {
+			inPinned = false
+			continue
+		}
+		if inPinned && r.kind == railRowRole && r.role != nil && r.role.ArgusTaskID == "T1" {
+			if r.isBreadcrumbContinuation {
+				t.Errorf("pinned freelancer must not be a breadcrumb continuation; kinds=%v", rowKinds(rl))
+			}
+			if r.depth != 0 {
+				t.Errorf("pinned freelancer must render at depth 0; got %d", r.depth)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pinned freelancer must appear in the Pinned block as a plain role row; kinds=%v", rowKinds(rl))
+	}
+}
+
+// BUG-025: j/k navigation treats a two-line breadcrumb entry as one unit —
+// pressing j once from the entry before the two-line block moves PAST both
+// lines to the next selectable entry after them.
+func TestRailList_PinnedBreadcrumb_NavigationTreatsAsTwoLineUnit(t *testing.T) {
+	rl := newRailList()
+	// Two orchestrators: alpha (with a pinned role) and beta (active).
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "alpha", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "pin-me", Pinned: true},
+		}},
+		{ID: 2, Name: "beta", Roles: []*roleEntry{
+			{OrchestratorID: 2, RoleID: 20, Name: "beta-worker"},
+		}},
+	})
+
+	// Row layout (expected):
+	//   0: railRowPinnedSep
+	//   1: railRowPinnedBreadcrumb (cursor target for "pin-me")
+	//   2: railRowRole continuation (non-selectable)
+	//   3: railRowPinnedEnd
+	//   4: railRowOrch (alpha)
+	//   5: railRowOrch (beta)
+	//   6: railRowRole (beta-worker)
+	//
+	// From the PinnedEnd or the alpha orch, pressing j should land on the
+	// breadcrumb (index 1). From the breadcrumb, pressing j should skip the
+	// continuation (non-selectable) and land on the next selectable (PinnedEnd
+	// is non-selectable, so it lands on alpha header at index 4).
+
+	// Verify the breadcrumb row is at index 1 and selectable.
+	if len(rl.rows) < 4 {
+		t.Fatalf("expected at least 4 rows; got %d; kinds=%v", len(rl.rows), rowKinds(rl))
+	}
+	if rl.rows[1].kind != railRowPinnedBreadcrumb {
+		t.Fatalf("expected breadcrumb at index 1; got kind=%v; kinds=%v", rl.rows[1].kind, rowKinds(rl))
+	}
+	if !rl.selectable(1) {
+		t.Fatalf("breadcrumb row at index 1 must be selectable")
+	}
+	if rl.selectable(2) {
+		t.Fatalf("continuation row at index 2 must NOT be selectable")
+	}
+
+	// Navigate: select the pinned entry via SelectByRoleID.
+	if !rl.SelectByRoleID(10) {
+		t.Fatalf("SelectByRoleID(10) must succeed")
+	}
+	if rl.cursor != 1 {
+		t.Fatalf("cursor must be at breadcrumb row (index 1); got %d", rl.cursor)
+	}
+
+	// One j from the breadcrumb must skip the continuation and land on the
+	// next selectable (PinnedEnd is non-selectable, so: alpha orch header).
+	rl.CursorDown()
+	curRow := rl.rows[rl.cursor]
+	if curRow.kind != railRowOrch || curRow.orch == nil || curRow.orch.ID != 1 {
+		t.Fatalf("one j from breadcrumb must land on alpha orch; got kind=%v ref=%+v; cursor=%d kinds=%v",
+			curRow.kind, rl.CurrentRef(), rl.cursor, rowKinds(rl))
+	}
+
+	// One k from alpha orch must land back on the breadcrumb (index 1).
+	rl.CursorUp()
+	if rl.cursor != 1 {
+		t.Fatalf("k from alpha must land back on breadcrumb (index 1); got %d; kinds=%v", rl.cursor, rowKinds(rl))
+	}
+}
+
+// BUG-025: A deep ancestry chain that overflows the breadcrumb line width is
+// left-truncated with "…" so the nearest parent stays visible.
+func TestRailList_PinnedBreadcrumb_DeepChainLeftTruncates(t *testing.T) {
+	// Build a 3-level deep chain: grandparent → parent → child, with the leaf
+	// inside child being pinned.
+	leaf := &orchEntry{ID: 3, Name: "child", Roles: []*roleEntry{
+		{OrchestratorID: 3, RoleID: 30, Name: "pinned-leaf", Pinned: true},
+	}}
+	mid := &orchEntry{ID: 2, Name: "parent", Roles: []*roleEntry{
+		{OrchestratorID: 2, RoleID: 20, Name: "child", RoleKind: "coordinator",
+			ArgusTaskID: "T-child", childOrch: leaf},
+	}}
+	root := &orchEntry{ID: 1, Name: "grandparent", Roles: []*roleEntry{
+		{OrchestratorID: 1, RoleID: 10, Name: "parent", RoleKind: "coordinator",
+			ArgusTaskID: "T-mid", childOrch: mid},
+	}}
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{root})
+
+	// Find the breadcrumb row and verify the ancestry trail.
+	var bc *railRow
+	for i := range rl.rows {
+		if rl.rows[i].kind == railRowPinnedBreadcrumb && rl.rows[i].role != nil && rl.rows[i].role.RoleID == 30 {
+			bc = &rl.rows[i]
+		}
+	}
+	if bc == nil {
+		t.Fatalf("pinned deep leaf must have a breadcrumb row; kinds=%v", rowKinds(rl))
+	}
+	// Full ancestry: "grandparent › parent › child › "
+	wantFull := "grandparent › parent › child › "
+	if bc.breadcrumb != wantFull {
+		t.Errorf("breadcrumb ancestry: got %q, want %q", bc.breadcrumb, wantFull)
+	}
+
+	// Render at a narrow width where the ancestry overflows; the output must
+	// contain "…" (left-truncated) and include the nearest parent "child".
+	got := renderRail(t, rl, 24, 8) // very narrow
+	if !strings.Contains(got, "…") {
+		t.Fatalf("truncated ancestry must start with '…'; got:\n%s", got)
+	}
+	// The name must still fully render (it's on a separate line with its own space).
+	if !strings.Contains(got, "pinned-leaf") {
+		t.Fatalf("pinned leaf name must render on the name line; got:\n%s", got)
+	}
+
+	// Also verify truncRunesLeft directly.
+	full := "grandparent › parent › child › "
+	got2 := truncRunesLeft(full, 12)
+	if !strings.HasPrefix(got2, "…") {
+		t.Errorf("truncRunesLeft: result must start with '…'; got %q", got2)
+	}
+	if len([]rune(got2)) > 12 {
+		t.Errorf("truncRunesLeft: result must be at most 12 runes; got %d in %q", len([]rune(got2)), got2)
+	}
+
+	// No-op: string shorter than max returns unchanged.
+	if got3 := truncRunesLeft("abc", 10); got3 != "abc" {
+		t.Errorf("truncRunesLeft no-op: got %q, want %q", got3, "abc")
+	}
+}
+
+// BUG-025: A two-line entry renders both lines consecutively on screen: the
+// breadcrumb line appears immediately ABOVE the name line, and the name is
+// indented one step more than the breadcrumb icon.
+func TestRailList_PinnedBreadcrumb_TwoLinesAreConsecutive(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "kbtest", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "nested-worker", Pinned: true},
+		}},
+	})
+	got := renderRail(t, rl, 40, 10)
+	lines := strings.Split(got, "\n")
+	bcLine := -1
+	nameLine := -1
+	// Identify the breadcrumb line via the ancestry "›" at the end (distinct
+	// from the orch header which uses the "▸" chevron, not "›").
+	bcNeedle := "kbtest ›" // "kbtest ›"
+	for i, ln := range lines {
+		if strings.Contains(ln, bcNeedle) && bcLine < 0 {
+			bcLine = i
+		}
+		if strings.Contains(ln, "nested-worker") {
+			nameLine = i
+		}
+	}
+	if bcLine < 0 {
+		t.Fatalf("breadcrumb line (containing %q) not found; got:\n%s", bcNeedle, got)
+	}
+	if nameLine < 0 {
+		t.Fatalf("name line (containing 'nested-worker') not found; got:\n%s", got)
+	}
+	if nameLine != bcLine+1 {
+		t.Fatalf("name line (%d) must immediately follow breadcrumb line (%d); got:\n%s", nameLine, bcLine, got)
+	}
+	// The name is aligned with the breadcrumb TEXT (after the status icon), so
+	// both "kbtest" and "nested-worker" start at the same column — the name is
+	// visually "indented under" the icon, not further right than the ancestor text.
+	// Assert that the icon column (col of the breadcrumb line's first non-border
+	// cell) is strictly LEFT of the name column.
+	colOf := runeColOf(lines)
+	// The "○" icon starts 2 cells into the content (after border + 2-cell gutter);
+	// "kbtest" starts 2 more (after icon + space). The name at depth=1 starts
+	// at the same column as "kbtest". Verify name col >= bcNeedle col.
+	bcTextCol := colOf(bcNeedle)
+	nameCol := colOf("nested-worker")
+	if nameCol < bcTextCol {
+		t.Fatalf("name col (%d) must be >= breadcrumb-text col (%d); got:\n%s", nameCol, bcTextCol, got)
+	}
+}
+
+// BUG-025: Deep nested breadcrumb — a role under a sub-coordinator under a root
+// coordinator shows both ancestor names in the ancestry trail.
+func TestRailList_PinnedBreadcrumb_DeepAncestry(t *testing.T) {
+	sub := &orchEntry{ID: 2, Name: "nested-sub", Roles: []*roleEntry{
+		{OrchestratorID: 2, RoleID: 20, Name: "nested-child-worker", Pinned: true},
+	}}
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "kbtest", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "nested-sub", RoleKind: "coordinator",
+				ArgusTaskID: "T-sub", childOrch: sub},
+		}},
+	})
+
+	var bc *railRow
+	for i := range rl.rows {
+		if rl.rows[i].kind == railRowPinnedBreadcrumb && rl.rows[i].role != nil && rl.rows[i].role.RoleID == 20 {
+			bc = &rl.rows[i]
+		}
+	}
+	if bc == nil {
+		t.Fatalf("deep nested pinned role must have a breadcrumb row; kinds=%v", rowKinds(rl))
+	}
+	// Ancestry must include both kbtest and nested-sub.
+	want := "kbtest › nested-sub › "
+	if bc.breadcrumb != want {
+		t.Errorf("deep ancestry: got %q, want %q", bc.breadcrumb, want)
+	}
+
+	// Rendered output must show both ancestor names on the breadcrumb line.
+	got := renderRail(t, rl, 50, 10)
+	if !strings.Contains(got, "kbtest") || !strings.Contains(got, "nested-sub") {
+		t.Fatalf("breadcrumb line must show kbtest and nested-sub; got:\n%s", got)
+	}
+	if !strings.Contains(got, "nested-child-worker") {
+		t.Fatalf("name line must show nested-child-worker; got:\n%s", got)
 	}
 }
 

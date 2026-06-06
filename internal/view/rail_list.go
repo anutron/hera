@@ -298,6 +298,12 @@ const (
 	// immediately below the last row of the Pinned block, so the operator can
 	// see clearly where Pinned ends and the active tree begins.
 	railRowPinnedEnd
+	// railRowPinnedBreadcrumb is a SELECTABLE row that renders line 1 of a
+	// two-line pinned-sub-item entry (BUG-025): the status icon + dimmed
+	// ancestry trail ("kbtest › nested-sub › "). The immediately-following
+	// railRowRole with isBreadcrumbContinuation renders line 2 (the name +
+	// age) and is non-selectable — the two lines act as one unit for j/k.
+	railRowPinnedBreadcrumb
 	railRowEmpty
 )
 
@@ -362,6 +368,25 @@ type railRow struct {
 	// is an orchestrator ID (per-coordinator) or archiveTopLevelOwner.
 	archiveOwner int64
 	archiveCount int
+
+	// breadcrumb is the ancestry trail text for railRowPinnedBreadcrumb rows
+	// (BUG-025), e.g. "kbtest › nested-sub › ". Empty for all other row kinds.
+	breadcrumb string
+
+	// isBreadcrumbContinuation marks a railRowRole as the non-selectable name
+	// line (line 2) of a two-line pinned-sub-item entry (BUG-025). The cursor
+	// anchors on the preceding railRowPinnedBreadcrumb; this row carries the
+	// item's name + age and is always rendered at depth > 0 (indented under
+	// its breadcrumb line).
+	isBreadcrumbContinuation bool
+}
+
+// pinnedRole pairs a floating pinned managed role with its computed ancestry
+// trail (BUG-025). The ancestry is always non-empty for managed roles (they
+// always have a parent coordinator) and has the form "root › sub › ".
+type pinnedRole struct {
+	role     *roleEntry
+	ancestry string
 }
 
 // indentStep is the per-depth indentation in columns. Mirrors the prototype's
@@ -749,6 +774,10 @@ func (rl *railList) currentRef() any {
 		return r.role
 	case railRowFreelanceProj:
 		return r.fproj
+	case railRowPinnedBreadcrumb:
+		// Two-line pinned entry (BUG-025): cursor is on the breadcrumb line;
+		// the ref is the role, identical to selecting the name line below it.
+		return r.role
 	}
 	// railRowArchiveExpando is selectable (so space/Enter folds it) but is
 	// not pane-bindable, so currentRef reports nil for it like a separator.
@@ -757,10 +786,17 @@ func (rl *railList) currentRef() any {
 
 // SelectByRoleID moves the cursor to the row matching roleID. Returns
 // true on success. Fires the selection-changed callback when the
-// cursor lands on a different row.
+// cursor lands on a different row. For two-line pinned entries (BUG-025),
+// the cursor lands on the railRowPinnedBreadcrumb row (line 1).
 func (rl *railList) SelectByRoleID(id int64) bool {
 	for i, r := range rl.rows {
-		if r.kind == railRowRole && r.role != nil && r.role.RoleID == id {
+		switch {
+		case r.kind == railRowPinnedBreadcrumb && r.role != nil && r.role.RoleID == id:
+			rl.cursor = i
+			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
+			return true
+		case r.kind == railRowRole && !r.isBreadcrumbContinuation && r.role != nil && r.role.RoleID == id:
 			rl.cursor = i
 			rl.clampOffset()
 			rl.maybeFireSelectionChanged()
@@ -773,13 +809,20 @@ func (rl *railList) SelectByRoleID(id int64) bool {
 // SelectByArgusTaskID moves the cursor to the role row whose bound argus task
 // matches id. Returns true on success. This is the stable restore identity for
 // freelance rows, which carry RoleID==0 (so SelectByRoleID can't disambiguate
-// between freelancers) but always carry a unique ArgusTaskID.
+// between freelancers) but always carry a unique ArgusTaskID. For two-line
+// pinned entries (BUG-025), the cursor lands on the breadcrumb row (line 1).
 func (rl *railList) SelectByArgusTaskID(id string) bool {
 	if id == "" {
 		return false
 	}
 	for i, r := range rl.rows {
-		if r.kind == railRowRole && r.role != nil && r.role.ArgusTaskID == id {
+		switch {
+		case r.kind == railRowPinnedBreadcrumb && r.role != nil && r.role.ArgusTaskID == id:
+			rl.cursor = i
+			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
+			return true
+		case r.kind == railRowRole && !r.isBreadcrumbContinuation && r.role != nil && r.role.ArgusTaskID == id:
 			rl.cursor = i
 			rl.clampOffset()
 			rl.maybeFireSelectionChanged()
@@ -892,6 +935,10 @@ func (rl *railList) bindable(i int) bool {
 	case railRowOrch:
 		return r.orch != nil
 	case railRowRole:
+		return r.role != nil && r.role.ArgusTaskID != "" && !r.isBreadcrumbContinuation
+	case railRowPinnedBreadcrumb:
+		// Two-line pinned entry (BUG-025): the breadcrumb row is the cursor
+		// target and carries a task target via role.ArgusTaskID.
 		return r.role != nil && r.role.ArgusTaskID != ""
 	}
 	return false
@@ -908,9 +955,14 @@ func (rl *railList) selectable(i int) bool {
 	if i < 0 || i >= len(rl.rows) {
 		return false
 	}
-	switch rl.rows[i].kind {
-	case railRowOrch, railRowRole, railRowFreelanceProj, railRowArchiveExpando:
+	r := rl.rows[i]
+	switch r.kind {
+	case railRowOrch, railRowFreelanceProj, railRowArchiveExpando, railRowPinnedBreadcrumb:
 		return true
+	case railRowRole:
+		// Breadcrumb-continuation rows are non-selectable: the cursor anchors
+		// on the preceding railRowPinnedBreadcrumb (BUG-025).
+		return !r.isBreadcrumbContinuation
 	}
 	return false // railRowPinnedSep, railRowPinnedEnd, railRowFreelanceSep, railRowEmpty
 }
@@ -1079,19 +1131,24 @@ func rolePinnedOut(o *orchEntry, r *roleEntry) bool {
 
 // collectPinnedRoles walks the full orchestrator tree (including sub-
 // coordinators via childOrch) and returns every pinned role that floats into
-// the Pinned section (rolePinnedOut). Walking the whole tree keeps a pinned
-// role nested under a sub-coordinator from vanishing: appendOrchChildren skips
-// it (rolePinnedOut), so it must be collected here to render standalone.
-// When a filter is active, only roles that pass roleVisible are collected.
-// When a pinned sub-coordinator floats OUT, its subtree renders under it in
-// the Pinned block — so we do NOT also walk into its childOrch (double-collect
-// prevention). seen guards cycles in a malformed multi-binding chain.
-func (rl *railList) collectPinnedRoles() []*roleEntry {
-	var out []*roleEntry
+// the Pinned section (rolePinnedOut), paired with its computed ancestry trail
+// (BUG-025). Walking the whole tree keeps a pinned role nested under a sub-
+// coordinator from vanishing: appendOrchChildren skips it (rolePinnedOut), so
+// it must be collected here to render standalone. When a filter is active,
+// only roles that pass roleVisible are collected. When a pinned sub-coordinator
+// floats OUT, its subtree renders under it in the Pinned block — so we do NOT
+// also walk into its childOrch (double-collect prevention). seen guards cycles
+// in a malformed multi-binding chain.
+//
+// ancestorPath carries the accumulated ancestry from root to the current
+// orchestrator o, inclusive of o.Name, e.g. "root › " or "root › sub › ".
+// This becomes the breadcrumb text for roles inside o (BUG-025).
+func (rl *railList) collectPinnedRoles() []pinnedRole {
+	var out []pinnedRole
 	seen := map[int64]bool{}
 	fActive := rl.filterActive()
-	var walk func(o *orchEntry)
-	walk = func(o *orchEntry) {
+	var walk func(o *orchEntry, ancestorPath string)
+	walk = func(o *orchEntry, ancestorPath string) {
 		if o == nil || seen[o.ID] {
 			return
 		}
@@ -1102,16 +1159,19 @@ func (rl *railList) collectPinnedRoles() []*roleEntry {
 				if fActive && !rl.roleVisible(nil, r) {
 					continue
 				}
-				out = append(out, r)
+				out = append(out, pinnedRole{role: r, ancestry: ancestorPath})
 				// Pinned sub-coordinator: its children render under it inside
 				// the Pinned block, so skip walking into childOrch here.
 			} else if r.childOrch != nil {
-				walk(r.childOrch)
+				// Recurse with the accumulated path extended to include this
+				// sub-coordinator's orch name, so its children's ancestry is
+				// "ancestorPath + childOrch.Name + ' › '".
+				walk(r.childOrch, ancestorPath+r.childOrch.Name+" › ")
 			}
 		}
 	}
 	for _, o := range rl.orchestrators {
-		walk(o)
+		walk(o, o.Name+" › ")
 	}
 	return out
 }
@@ -1231,13 +1291,30 @@ func (rl *railList) buildRows() {
 		for _, o := range pinnedOrchs {
 			appendOrch(o, 0)
 		}
-		for _, r := range pinnedRoles {
-			rl.rows = append(rl.rows, railRow{kind: railRowRole, role: r, depth: 0})
+		// BUG-025: pinned managed roles render as a two-line breadcrumb entry.
+		// Line 1 (railRowPinnedBreadcrumb, selectable): dimmed status icon +
+		// ancestry trail. Line 2 (railRowRole continuation, non-selectable):
+		// full-bright name + right-aligned age. A pinned sub-coordinator also
+		// expands its own children one level deeper (BUG-021).
+		for _, pr := range pinnedRoles {
+			r := pr.role
+			rl.rows = append(rl.rows, railRow{
+				kind:       railRowPinnedBreadcrumb,
+				role:       r,
+				depth:      0,
+				breadcrumb: pr.ancestry,
+			})
+			rl.rows = append(rl.rows, railRow{
+				kind:                     railRowRole,
+				role:                     r,
+				depth:                    1,
+				isBreadcrumbContinuation: true,
+			})
 			// A pinned sub-coordinator floats WITH its own children (BUG-021).
 			// The children are NOT rendered elsewhere (appendOrchChildren skips
 			// rolePinnedOut roles), so expand them here when not collapsed.
 			if r.childOrch != nil && !rl.orchCollapsed(r.childOrch) {
-				appendOrchChildren(rl, r.childOrch, 1, map[int64]bool{r.childOrch.ID: true})
+				appendOrchChildren(rl, r.childOrch, 2, map[int64]bool{r.childOrch.ID: true})
 			}
 		}
 		// BUG-024: pinned freelancers render at root level alongside pinned
@@ -1597,8 +1674,16 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		if rl.cursor < rl.offset {
 			rl.offset = rl.cursor
 		}
-		if rl.cursor >= rl.offset+listH {
-			rl.offset = rl.cursor - listH + 1
+		// For a two-line pinned entry (BUG-025), the cursor is on the
+		// railRowPinnedBreadcrumb (line 1); also ensure line 2 (continuation)
+		// is visible when snapping down.
+		snapLow := rl.cursor
+		if rl.cursor >= 0 && rl.cursor < len(rl.rows) &&
+			rl.rows[rl.cursor].kind == railRowPinnedBreadcrumb {
+			snapLow = rl.cursor + 1
+		}
+		if snapLow >= rl.offset+listH {
+			rl.offset = snapLow - listH + 1
 		}
 	}
 	rl.lastSnapCursor = rl.cursor
@@ -1640,7 +1725,20 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		case railRowOrch:
 			rl.drawOrchRow(screen, cx, y+i, cw, row.orch, row.depth, cursor)
 		case railRowRole:
-			rl.drawRoleRow(screen, cx, y+i, cw, row.role, row.depth, cursor)
+			if row.isBreadcrumbContinuation {
+				// Line 2 of a two-line pinned entry (BUG-025): bright name +
+				// age only. The cursor is on the preceding breadcrumb row; render
+				// name in StyleSelected when that breadcrumb row is selected.
+				prevSelected := idx > 0 && rl.rows[idx-1].kind == railRowPinnedBreadcrumb &&
+					idx-1 == rl.cursor
+				rl.drawBreadcrumbNameRow(screen, cx, y+i, cw, row.role, row.depth, prevSelected)
+			} else {
+				rl.drawRoleRow(screen, cx, y+i, cw, row.role, row.depth, cursor)
+			}
+		case railRowPinnedBreadcrumb:
+			// Line 1 of a two-line pinned entry (BUG-025): dimmed status icon +
+			// ancestry trail. The selection marker is already painted above.
+			rl.drawPinnedBreadcrumbRow(screen, cx, y+i, cw, row.role, row.breadcrumb)
 		case railRowPinnedSep:
 			rl.drawSeparator(screen, cx, y+i, cw, " Pinned ")
 		case railRowPinnedEnd:
@@ -2143,6 +2241,67 @@ func (rl *railList) elapsed(r *roleEntry) string {
 	}
 }
 
+// drawPinnedBreadcrumbRow renders line 1 of a two-line pinned-sub-item entry
+// (BUG-025): the role's status icon (dimmed) followed by the dimmed ancestry
+// trail. If the trail is too wide for the available space it is left-truncated
+// with a leading "…" so the NEAREST parent (rightmost text) stays visible.
+func (rl *railList) drawPinnedBreadcrumbRow(screen tcell.Screen, x, y, w int, r *roleEntry, ancestry string) {
+	if r == nil {
+		return
+	}
+	col := x
+
+	// Status icon, always dimmed — context only, not independently actionable.
+	icon, _ := rl.roleIcon(r)
+	screen.SetContent(col, y, icon, nil, theme.StyleDimmed)
+	col += 2
+
+	// Ancestry trail, dimmed. Left-truncate if too wide so the nearest
+	// parent (rightmost text) is always visible.
+	availW := w - (col - x)
+	if availW < 0 {
+		availW = 0
+	}
+	trail := truncRunesLeft(ancestry, availW)
+	widget.DrawText(screen, col, y, availW, trail, theme.StyleDimmed)
+}
+
+// drawBreadcrumbNameRow renders line 2 of a two-line pinned-sub-item entry
+// (BUG-025): the item's name (indented under line 1) and right-aligned age.
+// cursor is true when the preceding breadcrumb row is selected (so the name
+// renders in StyleSelected to mirror normal selection highlighting).
+func (rl *railList) drawBreadcrumbNameRow(screen tcell.Screen, x, y, w int, r *roleEntry, depth int, cursor bool) {
+	if r == nil {
+		return
+	}
+	// A sub-coordinator continuation renders its name without the chevron/count
+	// that drawSubCoordRow would add — those belong on the breadcrumb line.
+	col := x + depth*indentStep
+
+	nameStyle := theme.StyleNormal
+	if r.Archived || r.Dead || r.ArgusArchived {
+		nameStyle = theme.StyleDimmed
+	}
+	if cursor {
+		nameStyle = theme.StyleSelected
+	}
+
+	elapsed := rl.elapsed(r)
+	maxName := w - (col - x) - runeLen(elapsed) - 1
+	if maxName < 0 {
+		maxName = 0
+	}
+	name := truncRunes(r.Name, maxName)
+	widget.DrawText(screen, col, y, maxName, name, nameStyle)
+	col += runeLen(name)
+	if elapsed != "" {
+		elapsedCol := x + w - runeLen(elapsed)
+		if elapsedCol > col {
+			widget.DrawText(screen, elapsedCol, y, runeLen(elapsed), elapsed, tcell.StyleDefault.Foreground(theme.ColorElapsed))
+		}
+	}
+}
+
 func runeLen(s string) int {
 	n := 0
 	for range s {
@@ -2166,4 +2325,21 @@ func truncRunes(s string, max int) string {
 		out = append(out, r)
 	}
 	return string(out)
+}
+
+// truncRunesLeft left-truncates s to at most max runes, prepending "…" when
+// truncation occurs. This keeps the rightmost (nearest-ancestor) text visible
+// in a breadcrumb trail that overflows the available width (BUG-025).
+func truncRunesLeft(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	return "…" + string(runes[len(runes)-(max-1):])
 }

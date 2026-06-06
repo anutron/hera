@@ -45,6 +45,22 @@ Pin state SHALL be persisted HERA-SIDE in a nullable `pinned_at` column on `orch
 - **WHEN** a freelance task renders in the Freelance section OR in the Pinned block
 - **THEN** the row MUST display the `iconFreelance` marker (`nf-md-alpha_f_box`, U+F0229) after the status icon, so freelancers are visually distinct from managed agents and coordinators at a glance. The marker MUST render consistently at the same icon-column position in both sections.
 
+#### Scenario: Pinned managed sub-item renders as a stacked two-line breadcrumb (BUG-025)
+
+- **WHEN** a pinned managed role (worker or sub-coordinator) that lives INSIDE a coordinator floats to the Pinned block
+- **THEN** its entry in the Pinned block MUST span TWO consecutive visual lines:
+  - **Line 1** (`railRowPinnedBreadcrumb`, selectable cursor target, DIMMED): the role's status icon followed by the full ancestry trail from the root coordinator down to the role's immediate parent, each name separated by ` › ` and ending with a trailing ` › ` (e.g. `○ kbtest › nested-sub › `). This line is the cursor target for j/k and pane-binding; `currentRef()` MUST return the role, identical to selecting the name line.
+  - **Line 2** (`railRowRole` with `isBreadcrumbContinuation=true`, NON-selectable): the role's name in full-bright style (`StyleNormal`, or `StyleSelected` when line 1 is the cursor), right-aligned age, indented one `indentStep` more than line 1. This line MUST NOT be individually selectable; j/k MUST treat both lines as a single navigation unit (pressing j once from the entry before lands on line 1; pressing j once from line 1 skips line 2 and lands on the next selectable row after both lines).
+- A **top-level pinned coordinator** (a pinned `orchEntry`) MUST stay single-line (the existing `railRowOrch` render path).
+- A **pinned freelancer** MUST stay single-line (rendered at root depth with no coordinator ancestry per BUG-024).
+- When the ancestry trail is too wide for the available line width, it MUST be **left-truncated** with a leading `…` so the nearest parent (rightmost text) remains visible. The role name on line 2 MUST NEVER truncate due to ancestry overflow.
+- `SelectByRoleID` and `SelectByArgusTaskID` MUST find `railRowPinnedBreadcrumb` rows (the cursor target) in addition to non-continuation `railRowRole` rows.
+
+#### Scenario: Deep ancestry chain left-truncates in breadcrumb line
+
+- **WHEN** the breadcrumb ancestry trail (e.g. `grandparent › parent › child › `) exceeds the available line-1 width
+- **THEN** the leftmost ancestors MUST be dropped and the trail replaced with `…` + the remaining suffix, keeping the nearest parent visible. The role name on line 2 MUST render in full with no truncation from the ancestry.
+
 ### Requirement: Archived Hera tasks render in a navigable Archive section below Freelance
 
 The system SHALL render a bottom-of-rail `Archive (N)` section, below the Freelance section, holding archived Hera tasks that would otherwise vanish from the rail — archived freelancers (unmanaged argus tasks the operator archived with `a`) and archived root coordinators. This Archive section MUST be reachable by normal j/k navigation WITHOUT pressing `l`, and MUST be collapsed by default; `space` or `Enter` on its header toggles its fold. `N` is the count of archived items it holds.
