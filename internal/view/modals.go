@@ -82,7 +82,7 @@ func themeModalStyle(m *tview.Modal, title string, textColor tcell.Color) {
 	m.SetBorderColor(theme.ColorTitle)
 	m.SetTitleColor(theme.ColorTitle)
 	if title != "" {
-		m.Box.SetTitle(title).SetTitleAlign(tview.AlignCenter)
+		m.Box.SetTitle(" " + title + " ").SetTitleAlign(tview.AlignCenter)
 	}
 }
 
@@ -99,7 +99,9 @@ func themeFormStyle(form *tview.Form, title string) {
 	form.SetBorder(true)
 	form.SetBorderColor(theme.ColorTitle)
 	form.SetTitleColor(theme.ColorTitle)
-	form.SetTitle(title).SetTitleAlign(tview.AlignCenter)
+	if title != "" {
+		form.SetTitle(" " + title + " ").SetTitleAlign(tview.AlignCenter)
+	}
 }
 
 // fieldFocusStyles are the input-field styles a modal form swaps between as
@@ -352,10 +354,12 @@ func (a *App) ShowSelect(title, label string, items []string, onSelect func(idx 
 		// Esc cancels without a selection.
 		list.SetDoneFunc(func() { finish(false, -1) })
 
-		// Theme the list to match the other modals.
+		// Theme the list to match the other modals. Use the title colour
+		// (cyan) as the selection background for high contrast — dark gray
+		// (ColorHighlight) was too close to the modal background (BUG-023 S6).
 		list.SetMainTextColor(theme.ColorNormal).
 			SetSelectedTextColor(tcell.ColorBlack).
-			SetSelectedBackgroundColor(theme.ColorHighlight)
+			SetSelectedBackgroundColor(theme.ColorTitle)
 		list.SetBackgroundColor(heraBackground)
 		list.SetBorder(true)
 		list.SetBorderColor(theme.ColorTitle)

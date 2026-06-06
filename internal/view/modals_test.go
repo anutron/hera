@@ -428,6 +428,92 @@ func TestFormFieldWidth_FitsInsideFrame(t *testing.T) {
 	}
 }
 
+// frontList unwraps the centeredModal flex on the front page to the
+// tview.List it contains.
+func frontList(t *testing.T, a *App) *tview.List {
+	t.Helper()
+	outer, ok := frontModal(t, a).(*tview.Flex)
+	if !ok {
+		t.Fatalf("front modal is not a flex wrapper")
+	}
+	inner, ok := outer.GetItem(1).(*tview.Flex)
+	if !ok {
+		t.Fatalf("centeredModal inner is not a flex")
+	}
+	list, ok := inner.GetItem(1).(*tview.List)
+	if !ok {
+		t.Fatalf("centeredModal content is not a tview.List")
+	}
+	return list
+}
+
+// TestShowError_TitleHasPadding verifies the error modal title has one space of
+// padding on each side so the label is legible in the border rule (BUG-023 J4).
+func TestShowError_TitleHasPadding(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowError("boom")
+
+	m, ok := frontModal(t, a).(*tview.Modal)
+	if !ok {
+		t.Fatalf("error modal must be a *tview.Modal")
+	}
+	title := m.GetTitle()
+	if len(title) < 2 || title[0] != ' ' || title[len(title)-1] != ' ' {
+		t.Fatalf("error modal title must have surrounding spaces (BUG-023 J4), got %q", title)
+	}
+}
+
+// TestShowInput_TitleHasPadding verifies the input form modal title has
+// surrounding spaces (BUG-023 J4).
+func TestShowInput_TitleHasPadding(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowInput("Rename", "New name", "", nil, nil)
+
+	form := frontForm(t, a)
+	title := form.GetTitle()
+	if len(title) < 2 || title[0] != ' ' || title[len(title)-1] != ' ' {
+		t.Fatalf("input form title must have surrounding spaces (BUG-023 J4), got %q", title)
+	}
+}
+
+// TestShowSelect_TitleHasPadding verifies the select-list modal title has
+// surrounding spaces (BUG-023 J4).
+func TestShowSelect_TitleHasPadding(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowSelect("pick", "Coordinator", []string{"alpha"}, nil, nil)
+
+	list := frontList(t, a)
+	title := list.GetTitle()
+	if len(title) < 2 || title[0] != ' ' || title[len(title)-1] != ' ' {
+		t.Fatalf("select modal title must have surrounding spaces (BUG-023 J4), got %q", title)
+	}
+}
+
+// TestShowSelect_SelectedRowIsHighContrast verifies the selected row uses the
+// title colour (cyan) as its background so it is clearly legible against the
+// dark modal background (BUG-023 S6: grey ColorHighlight was low-contrast).
+func TestShowSelect_SelectedRowIsHighContrast(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowSelect("pick", "Coordinator", []string{"alpha", "beta"}, nil, nil)
+
+	sim := renderPages(t, a, 80, 24)
+	w, h := sim.Size()
+	found := false
+	for y := 0; y < h && !found; y++ {
+		for x := 0; x < w; x++ {
+			_, style, _ := sim.Get(x, y)
+			_, bg, _ := style.Decompose()
+			if bg == theme.ColorTitle {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("selected row must use theme.ColorTitle background for high contrast (BUG-023 S6)")
+	}
+}
+
 func TestShowSelect_EscInvokesOnCancel(t *testing.T) {
 	a := newModalTestApp(t)
 
