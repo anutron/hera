@@ -3503,6 +3503,92 @@ func TestOnRailSelectEnter_DeadWorkerStaysInRail(t *testing.T) {
 	}
 }
 
+// TestApplyRailSelection_NestedWorkerBindsChildCoord proves that selecting a
+// worker under a NESTED (child) orchestrator binds the COORD pane to the child
+// orchestrator's coord task, not empty (BUG-015). Before the fix, the worker
+// path in applyRailSelection searched only the top-level orchestrators list;
+// resolveSubCoordinators removes child orchestrators from that list and nests
+// them under their parent role's childOrch — so the lookup always missed,
+// leaving coordTask="" and the COORD pane showing "(no coord selected)".
+func TestApplyRailSelection_NestedWorkerBindsChildCoord(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	// Parent orchestrator: a coordinator + a regular worker + a sub-coordinator
+	// worker whose argus task is also the child orchestrator's coord task.
+	parentOrch, _ := d.Orchestrators.Create(ctx, "parent-proj")
+	parentCoordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parentOrch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "parent-proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: parentCoordRole.ID, ArgusTaskID: "t-parent-coord", WorktreePath: "/pc"})
+	parentWorkerRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parentOrch.ID, Name: "top-worker", Kind: db.KindWorker, ArgusProject: "parent-proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: parentWorkerRole.ID, ArgusTaskID: "t-top-worker", WorktreePath: "/tw"})
+	// The sub-coordinator worker: its task id is the join key for the child orch.
+	subCoordWorkerRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: parentOrch.ID, Name: "sub-coord", Kind: db.KindWorker, ArgusProject: "parent-proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: subCoordWorkerRole.ID, ArgusTaskID: "t-sub-coord", WorktreePath: "/sc"})
+
+	// Child orchestrator whose coordinator's argus task is t-sub-coord (the
+	// multi-binding join: resolveSubCoordinators links the two via CoordTaskID).
+	childOrch, _ := d.Orchestrators.Create(ctx, "child-proj")
+	childCoordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: childOrch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "child-proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childCoordRole.ID, ArgusTaskID: "t-sub-coord", WorktreePath: "/sc"})
+	// A plain worker inside the child orchestrator — this is the row under test.
+	childWorkerRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: childOrch.ID, Name: "child-worker", Kind: db.KindWorker, ArgusProject: "child-proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: childWorkerRole.ID, ArgusTaskID: "t-child-worker", WorktreePath: "/cw"})
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+
+	// After resolveSubCoordinators, child-orch is absent from the top-level
+	// list. Find the child-worker entry nested inside:
+	//   parent-orch → sub-coord-worker.childOrch (= child-orch) → child-worker
+	var childWorker *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.childOrch == nil {
+				continue
+			}
+			for _, cr := range r.childOrch.Roles {
+				if cr.RoleID == childWorkerRole.ID {
+					childWorker = cr
+				}
+			}
+		}
+	}
+	if childWorker == nil {
+		t.Fatalf("child-worker role not found nested under sub-coordinator in rail data")
+	}
+
+	// Selecting the nested worker must bind COORD to the child orch's coord task
+	// (t-sub-coord), not empty.
+	a.applyRailSelection(childWorker)
+	if a.CoordTaskID() != "t-sub-coord" {
+		t.Fatalf("nested worker: coord pane must bind to child orch coord task %q; got %q (BUG-015: top-level-only search missed child orch)", "t-sub-coord", a.CoordTaskID())
+	}
+
+	// Regression: top-level worker still resolves to the parent's coord task.
+	var topWorker *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == parentWorkerRole.ID {
+				topWorker = r
+			}
+		}
+	}
+	if topWorker == nil {
+		t.Fatalf("top-level worker role not found in rail data")
+	}
+	a.applyRailSelection(topWorker)
+	if a.CoordTaskID() != "t-parent-coord" {
+		t.Fatalf("top-level worker: coord pane must bind to parent coord task %q; got %q", "t-parent-coord", a.CoordTaskID())
+	}
+}
+
 // TestOnRailSelectEnter_DeadFreelancerStaysInRail proves Enter on a dead
 // freelancer row stays in RAIL, mirroring the worker guard above (BUG-014).
 func TestOnRailSelectEnter_DeadFreelancerStaysInRail(t *testing.T) {
