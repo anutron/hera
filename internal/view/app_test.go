@@ -3619,3 +3619,178 @@ func TestOnRailSelectEnter_DeadFreelancerStaysInRail(t *testing.T) {
 		t.Fatalf("Enter on dead freelancer row must not bind agent pane to dead task; got AgentTaskID=%q", a.AgentTaskID())
 	}
 }
+
+// --- BUG-016: comprehensive help overlay ---
+
+// TestHelpHotkeyItems_ContainsAllFocusStates asserts that helpHotkeyItems
+// returns a flat list containing keys from every focus state (Rail, Coord pane,
+// Agent pane). The test checks for representative labels from each section and
+// verifies that all items are Bar:false (the comprehensive frame must not
+// corrupt argus's context-sensitive bottom bar).
+func TestHelpHotkeyItems_ContainsAllFocusStates(t *testing.T) {
+	items := helpHotkeyItems(true)
+
+	labelSet := func(its []HotkeyItem) map[string]bool {
+		m := make(map[string]bool, len(its))
+		for _, it := range its {
+			if it.Label != "" {
+				m[it.Label] = true
+			}
+		}
+		return m
+	}
+	labels := labelSet(items)
+
+	// Rail keys.
+	if !labels["move"] {
+		t.Errorf("helpHotkeyItems must include Rail 'move' (j/k); labels: %v", labels)
+	}
+	if !labels["new"] {
+		t.Errorf("helpHotkeyItems must include Rail 'new' (n); labels: %v", labels)
+	}
+	if !labels["archive"] {
+		t.Errorf("helpHotkeyItems must include Rail 'archive' (a); labels: %v", labels)
+	}
+	if !labels["prune"] {
+		t.Errorf("helpHotkeyItems must include Rail 'prune' (^r); labels: %v", labels)
+	}
+
+	// Coord pane keys (coordPresent=true).
+	if !labels["coord PTY"] {
+		t.Errorf("helpHotkeyItems must include Coord pane 'coord PTY'; labels: %v", labels)
+	}
+
+	// Agent pane keys.
+	if !labels["agent PTY"] {
+		t.Errorf("helpHotkeyItems must include Agent pane 'agent PTY'; labels: %v", labels)
+	}
+
+	// All items Bar:false — the comprehensive frame must not drive the bottom bar.
+	for _, it := range items {
+		if it.Bar {
+			t.Errorf("helpHotkeyItems must return all Bar:false; found Bar:true {%q %q}", it.Key, it.Label)
+		}
+	}
+}
+
+// TestHelpHotkeyItems_CoordAbsent asserts that when coordPresent is false the
+// Coord pane section is omitted but Rail and Agent pane sections are present.
+func TestHelpHotkeyItems_CoordAbsent(t *testing.T) {
+	items := helpHotkeyItems(false)
+
+	hasLabel := func(label string) bool {
+		for _, it := range items {
+			if it.Label == label {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasLabel("move") {
+		t.Errorf("helpHotkeyItems (no coord) must include Rail 'move'")
+	}
+	if !hasLabel("agent PTY") {
+		t.Errorf("helpHotkeyItems (no coord) must include Agent pane 'agent PTY'")
+	}
+	if hasLabel("coord PTY") {
+		t.Errorf("helpHotkeyItems (no coord) must NOT include Coord pane 'coord PTY'")
+	}
+}
+
+// TestApp_SendHelp_PushesComprehensiveThreeStateSections asserts that
+// App.SendHelp sends exactly three frames: (1) comprehensive hotkeys with
+// entries from all three focus states, all Bar:false; (2) the help control
+// frame; (3) the current-focus restore hotkeys so argus's bar is correct when
+// the overlay is dismissed.
+func TestApp_SendHelp_PushesComprehensiveThreeStateSections(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	conn := &fakeControlConn{}
+	a.SetControl(newViewControl(context.Background(), conn))
+
+	if err := a.SendHelp(); err != nil {
+		t.Fatalf("SendHelp: %v", err)
+	}
+
+	writes := conn.Writes()
+	if len(writes) != 3 {
+		t.Fatalf("want 3 frames (comprehensive hotkeys + help + restore); got %d", len(writes))
+	}
+
+	// Frame 0: comprehensive hotkeys.
+	var env0 struct {
+		Type  string       `json:"type"`
+		Items []HotkeyItem `json:"items"`
+	}
+	if err := json.Unmarshal(writes[0].Data, &env0); err != nil {
+		t.Fatalf("frame 0: %v", err)
+	}
+	if env0.Type != "hotkeys" {
+		t.Fatalf("frame 0 type: want hotkeys, got %q", env0.Type)
+	}
+	allLabels := make(map[string]bool)
+	for _, it := range env0.Items {
+		if it.Label != "" {
+			allLabels[it.Label] = true
+		}
+	}
+	// Rail keys.
+	if !allLabels["move"] {
+		t.Errorf("comprehensive frame must include Rail 'move'; labels: %v", allLabels)
+	}
+	if !allLabels["new"] {
+		t.Errorf("comprehensive frame must include Rail 'new'; labels: %v", allLabels)
+	}
+	// Coord pane keys (App defaults coordPresent=true).
+	if !allLabels["coord PTY"] {
+		t.Errorf("comprehensive frame must include Coord 'coord PTY'; labels: %v", allLabels)
+	}
+	// Agent pane keys.
+	if !allLabels["agent PTY"] {
+		t.Errorf("comprehensive frame must include Agent 'agent PTY'; labels: %v", allLabels)
+	}
+	// All Bar:false.
+	for _, it := range env0.Items {
+		if it.Bar {
+			t.Errorf("comprehensive frame must be all Bar:false; found Bar:true {%q %q}", it.Key, it.Label)
+		}
+	}
+
+	// Frame 1: help control.
+	var env1 struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(writes[1].Data, &env1); err != nil {
+		t.Fatalf("frame 1: %v", err)
+	}
+	if env1.Type != "help" {
+		t.Fatalf("frame 1 type: want help, got %q", env1.Type)
+	}
+
+	// Frame 2: restore hotkeys for current focus (FocusRAIL at rest).
+	var env2 struct {
+		Type  string       `json:"type"`
+		Items []HotkeyItem `json:"items"`
+	}
+	if err := json.Unmarshal(writes[2].Data, &env2); err != nil {
+		t.Fatalf("frame 2: %v", err)
+	}
+	if env2.Type != "hotkeys" {
+		t.Fatalf("frame 2 type: want hotkeys, got %q", env2.Type)
+	}
+	hasRailKey := false
+	for _, it := range env2.Items {
+		if it.Label == "move" {
+			hasRailKey = true
+		}
+	}
+	if !hasRailKey {
+		t.Errorf("restore frame must include Rail 'move'; got %+v", env2.Items)
+	}
+}

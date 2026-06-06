@@ -124,6 +124,49 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 	}
 }
 
+// helpHotkeyItems returns the comprehensive hotkey dictionary for the ? help
+// overlay: Rail, Coord pane, and Agent pane shortcuts in a flat list with
+// labeled section-separator items. All items carry Bar:false so argus's bottom
+// bar is unaffected during the brief push-before-help window; App.SendHelp
+// restores the current-focus hotkeys after {"type":"help"} so the bar is
+// correct when the overlay is dismissed. The COORD section is omitted when
+// coordPresent is false (freelance / no-coord mode).
+func helpHotkeyItems(coordPresent bool) []HotkeyItem {
+	var items []HotkeyItem
+
+	// appendSection appends src items with Bar forced to false — the help
+	// overlay shows the complete keyset; Bar is only meaningful on the bottom
+	// bar, not in the overlay.
+	appendSection := func(src []HotkeyItem) {
+		for _, it := range src {
+			items = append(items, HotkeyItem{Key: it.Key, Label: it.Label})
+		}
+	}
+
+	// Rail section.
+	items = append(items, HotkeyItem{Key: "[ Rail ]"})
+	appendSection(hotkeyItems(FocusRAIL, coordPresent))
+
+	// Coord pane section — only when a coord pane exists.
+	if coordPresent {
+		items = append(items, HotkeyItem{}) // blank spacer
+		items = append(items, HotkeyItem{Key: "[ Coord pane ]"})
+		appendSection(hotkeyItems(FocusCOORD, coordPresent))
+	}
+
+	// Agent pane section.
+	items = append(items, HotkeyItem{}) // blank spacer
+	items = append(items, HotkeyItem{Key: "[ Agent pane ]"})
+	appendSection(hotkeyItems(FocusAGENT, coordPresent))
+
+	// Rail mutation keys (n/r/^d/a/l/w/J/P/^r/^p) are RAIL-focus-only; in a
+	// pane they forward as literal bytes to the PTY.
+	items = append(items, HotkeyItem{})
+	items = append(items, HotkeyItem{Key: "(pane note)", Label: "n/r/^d/a/l/w/J/P/^r/^p → PTY in pane"})
+
+	return items
+}
+
 // hotkeyItems returns the focus-aware hotkey dictionary hera advertises to
 // argus via a {"type":"hotkeys",...} frame on connect and on every focus
 // change (design.md D12). Operator-facing keys are flagged Bar:true to drive
