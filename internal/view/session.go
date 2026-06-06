@@ -138,7 +138,11 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// `^p` opens PRs via the host git/gh flow (os/exec from the worktree);
 		// the daemon is unsandboxed under launchd so it can reach gh.
 		opsService.PR = ops.ExecPRCreator{}
-		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, control, log)
+		// Pass app (not control) as helpFrameSender: App.SendHelp pushes the
+		// comprehensive three-section dictionary before {"type":"help"} and
+		// restores the current-focus hotkeys after, so argus's bar is correct
+		// when the overlay is dismissed.
+		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, app, log)
 		bridge.rowSel = app
 
 		router := &KeyRouter{

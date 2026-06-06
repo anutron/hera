@@ -328,6 +328,35 @@ func (a *App) SetControl(c *viewControl) {
 	a.mu.Unlock()
 }
 
+// SendHelp satisfies helpFrameSender. It pushes a comprehensive hotkey
+// dictionary covering all three focus states (Rail, Coord pane, Agent pane),
+// sends {"type":"help"} so argus pops its help overlay, then restores the
+// current-focus hotkeys so argus's bar is correct when the overlay is
+// dismissed. "?" is only reachable from Rail focus, so the restore is always
+// Rail-keyed; the live focus state is read for safety. nil control (no session
+// conn) makes this a no-op.
+func (a *App) SendHelp() error {
+	a.mu.Lock()
+	coordPresent := a.coordPresent
+	control := a.control
+	a.mu.Unlock()
+	if control == nil {
+		return nil
+	}
+	// Push comprehensive dictionary (all Bar:false so the bar is not corrupted
+	// during the brief window before the overlay appears).
+	if err := control.SendHotkeys(helpHotkeyItems(coordPresent)); err != nil {
+		return err
+	}
+	// Pop argus's help overlay.
+	if err := control.SendHelp(); err != nil {
+		return err
+	}
+	// Restore current-focus hotkeys so the bar is correct on overlay dismiss.
+	focus := FocusState(a.focusState.Load())
+	return control.SendHotkeys(hotkeyItems(focus, coordPresent))
+}
+
 // Close stops the terminalpane consumer goroutines, cancels each pane's
 // bridge pump, and releases every open proxy subscription. Idempotent.
 func (a *App) Close() {
