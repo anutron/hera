@@ -490,10 +490,15 @@ func TestRailList_CoordHeaderStatusIconAndMarker(t *testing.T) {
 	if !strings.Contains(got, string(theme.IconNeedsInput)+" ▾ "+string(iconCoord)+" blocked") {
 		t.Fatalf("expected needs-input icon + chevron + marker on coord header; got:\n%s", got)
 	}
-	// complete coordinator: ✓ icon before its (worker-less) header. Zero
-	// non-archived children → the row defaults collapsed (▸).
-	if !strings.Contains(got, "✓ ▸ "+string(iconCoord)+" shipped") {
-		t.Fatalf("expected ✓ status icon on completed (default-collapsed) coord header; got:\n%s", got)
+	// live coordinator whose argus task is "complete" (BUG-028): argus auto-
+	// completes coord tasks when idle, but the coordinator is still live. Hera
+	// masks this to idle moon (☾) — never ✓ for a live coord. Zero non-archived
+	// children → the row defaults collapsed (▸).
+	if strings.Contains(got, "✓ ▸ "+string(iconCoord)+" shipped") {
+		t.Fatalf("live coord with argus-complete task must NOT render ✓; got:\n%s", got)
+	}
+	if !strings.Contains(got, string(theme.IconMoonOutline)+" ▸ "+string(iconCoord)+" shipped") {
+		t.Fatalf("live coord with argus-complete task must render idle moon (☾); got:\n%s", got)
 	}
 }
 
@@ -1888,5 +1893,48 @@ func TestRailList_MarkerGateDoesNotShiftContent(t *testing.T) {
 		if a != b {
 			t.Fatalf("%q shifted from col %d (gate off) to %d (gate on)", needle, a, b)
 		}
+	}
+}
+
+// --- BUG-028: live coordinator must never render ✓/complete ---
+
+// Spec (live-coord-never-complete): a live (non-archived) coordinator whose
+// argus task status is "complete" MUST render the idle moon (☾) glyph, not ✓.
+// Argus auto-completes coordinator tasks when the session goes idle; this does
+// not mean the coordinator is done.
+func TestOrchIcon_LiveCoordWithCompleteArgusTaskRendersIdleMoon(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "hera-1.0-release", Archived: false, CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "complete",
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph == '✓' {
+		t.Fatalf("live coord with argus-complete task: got ✓ glyph, want idle moon (%q)", theme.IconMoonOutline)
+	}
+	if glyph != theme.IconMoonOutline {
+		t.Fatalf("live coord with argus-complete task: glyph = %q (U+%04X), want idle moon %q (U+%04X)",
+			glyph, glyph, theme.IconMoonOutline, theme.IconMoonOutline)
+	}
+	if style != theme.StyleInReview {
+		t.Fatalf("live coord idle moon style = %v, want StyleInReview", style)
+	}
+}
+
+// Spec (live-coord-never-complete): archived coordinator with complete argus
+// task MUST still render ✓ dimmed — the fix applies only to LIVE coords.
+// (This mirrors TestOrchIcon_ArchivedHeaderKeepsTrueStatusGlyph and must pass.)
+func TestOrchIcon_ArchivedCoordCompleteStillShowsCheck(t *testing.T) {
+	rl := newRailList()
+	o := &orchEntry{
+		ID: 1, Name: "old-release", Archived: true, CoordTaskID: "t-1",
+		CoordHasState: true, CoordStatus: "complete",
+	}
+	glyph, style := rl.orchIcon(o)
+	if glyph != '✓' {
+		t.Fatalf("archived coord header: glyph = %q, want '✓'", glyph)
+	}
+	if style != theme.StyleDimmed {
+		t.Fatalf("archived coord header must render dimmed; got %v", style)
 	}
 }

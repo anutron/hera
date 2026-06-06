@@ -234,3 +234,56 @@ func TestDetailsPane_RendersCoordFields(t *testing.T) {
 		}
 	}
 }
+
+// --- BUG-028: live coordinator must never render ✓/complete ---
+
+// Spec (live-coord-never-complete): buildCoordDetails for a live coordinator
+// whose argus task is "complete" must produce Status="in_progress" + CoordIdle=true
+// so the Details pane renders "idle" and the idle moon glyph, not "complete"/✓.
+func TestBuildCoordDetails_LiveCoordCompleteBecomesIdle(t *testing.T) {
+	oe := &orchEntry{
+		ID:            1,
+		Name:          "hera-1.0-release",
+		Archived:      false,
+		CoordTaskID:   "t-coord",
+		CoordHasState: true,
+		CoordStatus:   "complete",
+		CoordIdle:     false,
+	}
+	cd, err := buildCoordDetails(context.Background(), nil, oe)
+	if err != nil {
+		t.Fatalf("buildCoordDetails: %v", err)
+	}
+	if cd.Status == "complete" {
+		t.Fatalf("live coord: Details Status = %q, want non-complete (idle masking)", cd.Status)
+	}
+	if cd.Status != "in_progress" || !cd.CoordIdle {
+		t.Fatalf("live coord: Details Status=%q CoordIdle=%v, want Status=in_progress CoordIdle=true", cd.Status, cd.CoordIdle)
+	}
+	// statusLabel must report "idle", not "complete".
+	lbl := statusLabel(cd.HasState, cd.NeedsInput, cd.Status, cd.CoordIdle)
+	if lbl != "idle" {
+		t.Fatalf("live coord statusLabel = %q, want %q", lbl, "idle")
+	}
+}
+
+// Spec (live-coord-never-complete): archived coordinator with complete argus
+// task is NOT masked — buildCoordDetails must keep Status="complete" so the
+// Details pane for an archived coord still shows ✓.
+func TestBuildCoordDetails_ArchivedCoordCompletionNotMasked(t *testing.T) {
+	oe := &orchEntry{
+		ID:            2,
+		Name:          "old-release",
+		Archived:      true,
+		CoordTaskID:   "t-old",
+		CoordHasState: true,
+		CoordStatus:   "complete",
+	}
+	cd, err := buildCoordDetails(context.Background(), nil, oe)
+	if err != nil {
+		t.Fatalf("buildCoordDetails: %v", err)
+	}
+	if cd.Status != "complete" {
+		t.Fatalf("archived coord: Details Status = %q, want complete (no masking)", cd.Status)
+	}
+}

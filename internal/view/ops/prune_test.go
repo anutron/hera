@@ -88,3 +88,40 @@ func TestPruneCompleted_EmptyList_NoDestruction(t *testing.T) {
 		t.Fatalf("empty prune must destroy nothing; n=%d calls=%v", n, a.deleteCalls)
 	}
 }
+
+// Spec (live-coord-never-complete): ListCompletedAgents MUST NOT include
+// coordinator roles even when their argus task reports "complete". A sibling
+// worker with a complete task MUST still be listed (guard is coord-specific).
+func TestListCompletedAgents_SkipsCoordinatorRoles(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("live-proj", false)
+	coord := db.seedRole(orch.ID, "live-proj-coord", KindCoordinator, "live-proj", false)
+	worker := db.seedRole(orch.ID, "done-worker", KindWorker, "live-proj", false)
+	db.seedBinding(coord.ID, "Tcoord", "")
+	db.seedBinding(worker.ID, "Tworker", "")
+
+	a := &fakeArgus{statuses: map[string]string{
+		"Tcoord":  "complete",
+		"Tworker": "complete",
+	}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	got, err := s.ListCompletedAgents(context.Background())
+	if err != nil {
+		t.Fatalf("ListCompletedAgents: %v", err)
+	}
+	for _, ag := range got {
+		if ag.ArgusTaskID == "Tcoord" {
+			t.Fatalf("coordinator role must NOT appear in prune list; got %+v", ag)
+		}
+	}
+	found := false
+	for _, ag := range got {
+		if ag.ArgusTaskID == "Tworker" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("worker role with complete task must appear in prune list; got %v", got)
+	}
+}
