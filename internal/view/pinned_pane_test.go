@@ -480,3 +480,63 @@ func TestPinnedTerminalPane_RepaintsCyanBorderOnFocus(t *testing.T) {
 		t.Fatalf("focused border color = %v, want theme.ColorTitle (argus cyan); SDK white leaked through", fg)
 	}
 }
+
+// TestPinnedTerminalPane_FocusDelegatesToEmbeddedPaneForCursorRendering pins
+// the BUG-010 fix: when the operator focuses the agent or coord pane,
+// OnFocusChanged calls a.app.SetFocus(pinnedTerminalPane). The wrapper's
+// Focus() must ensure the embedded TerminalPane reports HasFocus()==true,
+// because the SDK's paint() (v0.0.7+) gates ShowCursor on that exact check.
+//
+// The test verifies three things:
+//   - After app.SetFocus(wrapper), the embedded TerminalPane.HasFocus()==true.
+//   - After app.SetFocus(wrapper), the wrapper itself also reports HasFocus()==true
+//     so the Draw border-focus branch (pinned_pane.go ~line 218) still fires.
+//   - Draw places the hardware cursor on the sim screen at the emulator's
+//     cursor position (the SDK's ShowCursor path only fires when HasFocus is
+//     true, so a missing cursor here means the focus delegation is broken).
+func TestPinnedTerminalPane_FocusDelegatesToEmbeddedPaneForCursorRendering(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	p := newPinnedTerminalPane(tp, 78, 22)
+	const allocW, allocH = 80, 24
+	p.SetRect(0, 0, allocW, allocH)
+
+	// Move the emulator cursor to a known position: CSI 5;10H → row 5, col 10
+	// (1-indexed) = (col=9, row=4) zero-indexed. The SDK's paint() will call
+	// ShowCursor at (inner.X+9, inner.Y+4) = (1+9, 1+4) = (10, 5) on screen.
+	feedPane(t, tp, src, []byte("\x1b[5;10H"))
+
+	// Focus the wrapper via a real Application — exactly the production path
+	// used by OnFocusChanged (a.app.SetFocus(a.pieces.agent)).
+	app := tview.NewApplication()
+	app.SetFocus(p)
+
+	// Both the embedded TerminalPane and the wrapper must report HasFocus.
+	if !tp.HasFocus() {
+		t.Fatal("embedded TerminalPane.HasFocus() must be true after app.SetFocus(wrapper) — SDK paint() gates ShowCursor on this")
+	}
+	if !p.HasFocus() {
+		t.Fatal("wrapper.HasFocus() must be true after app.SetFocus(wrapper) — border-focus styling requires this")
+	}
+
+	// Draw onto a simulation screen and verify the hardware cursor was placed.
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(allocW, allocH)
+	p.Draw(sim)
+
+	cx, cy, visible := sim.GetCursor()
+	if !visible {
+		t.Fatal("cursor must be visible after drawing a focused pane — Focus delegation to embedded TerminalPane is broken")
+	}
+	// inner origin is (1,1) (one-cell border). Emulator cursor is at (9,4)
+	// zero-indexed → screen position (1+9, 1+4) = (10, 5).
+	if cx != 10 || cy != 5 {
+		t.Errorf("cursor at (%d,%d), want (10,5) — cursor placed at wrong emulator position", cx, cy)
+	}
+}

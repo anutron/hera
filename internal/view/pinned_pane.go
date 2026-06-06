@@ -5,6 +5,7 @@ import (
 	"github.com/anutron/argus-sdk/theme"
 	"github.com/anutron/argus-sdk/widget"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 // defaultPinnedCols / defaultPinnedRows are used when argus has no PTY size
@@ -121,6 +122,18 @@ func newBoundPinnedTerminalPane(tp *terminalpane.TerminalPane, cols, rows int, t
 // tests.
 func (p *pinnedTerminalPane) PinnedSize() (int, int) {
 	return p.pinnedCols, p.pinnedRows
+}
+
+// Focus implements tview.Primitive by explicitly forwarding to the embedded
+// TerminalPane. Without this override, Go's promotion would forward to
+// TerminalPane.Box.Focus, which is the same underlying Box — but the explicit
+// call makes the delegation contract clear and guards against a future
+// TerminalPane.Focus override that might redirect the delegate elsewhere
+// (breaking the invariant that TerminalPane.HasFocus() is true while the
+// wrapper is the focused pane). The SDK's paint() gates ShowCursor on
+// TerminalPane.HasFocus(), so this must be true for cursor rendering to work.
+func (p *pinnedTerminalPane) Focus(delegate func(tview.Primitive)) {
+	p.TerminalPane.Focus(delegate)
 }
 
 // Draw paints the emulator at its pinned surface size and clips the output
