@@ -71,6 +71,12 @@ type railList struct {
 	// unmanaged agent needs attention).
 	freelanceCollapsed map[string]bool
 
+	// pinnedFreelance tracks which freelance tasks (keyed by ArgusTaskID)
+	// are pinned. Freelancers have no hera DB row, so their pin state lives
+	// here alongside freelanceCollapsed rather than in the roles table.
+	// A pinned freelancer floats to the root level of the Pinned block.
+	pinnedFreelance map[string]bool
+
 	// archiveExpanded tracks which Archive expandos are folded open, keyed
 	// by owner: an orchestrator ID for a per-coordinator Archive expando, or
 	// archiveTopLevelOwner (0) for the bottom-of-rail Archive holding archived
@@ -322,6 +328,14 @@ func freelanceProjArchiveOwner(project string) int64 {
 // for state, so the coordinator identity needs its own glyph). nf-md U+F0E7B.
 const iconCoord = rune(0x0F0E7B) // 󰹻
 
+// iconFreelance is the (F)-in-a-box marker drawn on every freelance row (both
+// in the Freelance section and when pinned) so freelancers are visually
+// distinct from managed agents and coordinators at a glance. Uses
+// nf-md-alpha_f_box (U+F0229). NOTE: eyeball this in a real Nerd Font terminal
+// — the codepoint is correct per the Nerd Fonts v3 table but has not been
+// render-tested live.
+const iconFreelance = rune(0x0F0229) // 󰈩
+
 // iconCoordBroken is the mixed-coord repair cue: rendered at a coordinator
 // header's status-icon cell (in error red) when the orchestrator displays as
 // ACTIVE while its coord-pane binding's argus task is ARCHIVED. Cue choice
@@ -376,6 +390,7 @@ func newRailList() *railList {
 		collapsed:          map[int64]bool{},
 		freelanceCollapsed: map[string]bool{},
 		archiveExpanded:    map[int64]bool{},
+		pinnedFreelance:    map[string]bool{},
 		lastFiredCursor:    -1,
 		probeMarker:        probeMarkerFromEnv(),
 	}
@@ -608,6 +623,7 @@ func (rl *railList) ViewState() railViewState {
 		Collapsed:          maps.Clone(rl.collapsed),
 		FreelanceCollapsed: maps.Clone(rl.freelanceCollapsed),
 		ArchiveExpanded:    maps.Clone(rl.archiveExpanded),
+		PinnedFreelance:    maps.Clone(rl.pinnedFreelance),
 	}
 }
 
@@ -625,6 +641,36 @@ func (rl *railList) RestoreViewState(s railViewState) {
 	if s.ArchiveExpanded != nil {
 		rl.archiveExpanded = s.ArchiveExpanded
 	}
+	if s.PinnedFreelance != nil {
+		rl.pinnedFreelance = s.PinnedFreelance
+	}
+}
+
+// IsFreelancePinned reports whether the freelance task with the given ArgusTaskID
+// is pinned. Used by CurrentRailSelection to populate Pinned for freelance rows.
+func (rl *railList) IsFreelancePinned(argusTaskID string) bool {
+	return argusTaskID != "" && rl.pinnedFreelance[argusTaskID]
+}
+
+// ToggleFreelancePin flips the pinned state of the freelance task identified by
+// argusTaskID, rebuilds rows, and fires the state-changed callback so the new
+// pin state persists to the DB (same pattern as ToggleCollapse / freelanceCollapsed).
+// Must be called on the tview event loop.
+func (rl *railList) ToggleFreelancePin(argusTaskID string) {
+	if argusTaskID == "" {
+		return
+	}
+	rl.pinnedFreelance[argusTaskID] = !rl.pinnedFreelance[argusTaskID]
+	// Clean up explicit false entries so the map stays compact (same as
+	// orchCollapsed's approach: absent key = default).
+	if !rl.pinnedFreelance[argusTaskID] {
+		delete(rl.pinnedFreelance, argusTaskID)
+	}
+	prev := rl.currentRef()
+	rl.buildRows()
+	rl.restoreCursor(prev)
+	rl.maybeFireSelectionChanged()
+	rl.maybeFireStateChanged()
 }
 
 // SetOrchestrators replaces the rail's input data and rebuilds rows.
@@ -1137,6 +1183,23 @@ func (rl *railList) buildRows() {
 	// Active filters are applied inside collectPinnedRoles (BUG-022).
 	pinnedRoles := rl.collectPinnedRoles()
 
+	// Pinned freelancers (BUG-024): freelancers pinned via the in-memory
+	// pinnedFreelance map. They have no coordinator, so they render at ROOT
+	// level in the Pinned block, intermixed with pinned coords. Pinned
+	// freelancers are skipped in the Freelance section (no double-render).
+	var pinnedFree []*roleEntry
+	for _, fp := range rl.freelance {
+		for _, t := range fp.Tasks {
+			if !rl.pinnedFreelance[t.ArgusTaskID] {
+				continue
+			}
+			if fActive && !rl.matchesFilterFields(t.Name, fp.Project) {
+				continue
+			}
+			pinnedFree = append(pinnedFree, t)
+		}
+	}
+
 	// appendOrch renders a coordinator (orchestrator root or, recursively, a
 	// sub-coordinator) at the given depth and, when expanded, its active
 	// children folders-first followed by a per-coordinator Archive (N) expando
@@ -1156,12 +1219,14 @@ func (rl *railList) buildRows() {
 
 	// Pinned section at the very TOP of the rail (above the orchestrator list),
 	// mirroring argus. The separator only appears when at least one pinned
-	// coordinator or agent exists, so the operator never lands on an empty
-	// section. Pinned coordinators carry their subtrees; pinned roles render
-	// at depth 0 (pinned sub-coordinators also expand their own children here).
+	// coordinator, agent, or freelancer exists, so the operator never lands on
+	// an empty section. Pinned coordinators carry their subtrees; pinned roles
+	// render at depth 0 (pinned sub-coordinators also expand their own children
+	// here). Pinned freelancers render at root level (depth 0) intermixed with
+	// pinned coords — they have no coordinator ancestry.
 	// A closing rule (railRowPinnedEnd) delineates the Pinned block from the
 	// active tree below (BUG-021).
-	if len(pinnedOrchs) > 0 || len(pinnedRoles) > 0 {
+	if len(pinnedOrchs) > 0 || len(pinnedRoles) > 0 || len(pinnedFree) > 0 {
 		rl.rows = append(rl.rows, railRow{kind: railRowPinnedSep})
 		for _, o := range pinnedOrchs {
 			appendOrch(o, 0)
@@ -1174,6 +1239,11 @@ func (rl *railList) buildRows() {
 			if r.childOrch != nil && !rl.orchCollapsed(r.childOrch) {
 				appendOrchChildren(rl, r.childOrch, 1, map[int64]bool{r.childOrch.ID: true})
 			}
+		}
+		// BUG-024: pinned freelancers render at root level alongside pinned
+		// coords. No subtree to expand (freelancers are leaf nodes).
+		for _, r := range pinnedFree {
+			rl.rows = append(rl.rows, railRow{kind: railRowRole, role: r, depth: 0})
 		}
 		// Closing separator rule — mirrors argus's Pinned delineation (BUG-021).
 		rl.rows = append(rl.rows, railRow{kind: railRowPinnedEnd})
@@ -1232,6 +1302,9 @@ func (rl *railList) buildRows() {
 				for _, t := range fp.Tasks {
 					if roleArchived(t) {
 						continue
+					}
+					if rl.pinnedFreelance[t.ArgusTaskID] {
+						continue // pinned freelancers float to the Pinned block (BUG-024)
 					}
 					if rl.matchesFilterFields(t.Name, fp.Project) {
 						live = append(live, t)
@@ -1313,6 +1386,9 @@ func (rl *railList) buildRows() {
 				for _, t := range fp.Tasks {
 					if roleArchived(t) {
 						continue // archived tasks live in the per-project expando
+					}
+					if rl.pinnedFreelance[t.ArgusTaskID] {
+						continue // pinned freelancers float to the Pinned block (BUG-024)
 					}
 					rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
 				}
@@ -1721,9 +1797,18 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	screen.SetContent(col, y, icon, nil, iconStyle)
 	col += 2 // icon + space
 
-	// PR review indicator: only consumes width when actionable; the name
-	// reclaims the space otherwise (mirrors argus's task-row PR cell).
-	if prIcon, prStyle, ok := prGlyph(r.PRState); ok {
+	// Freelance marker (BUG-024): drawn for every freelance row so freelancers
+	// are visually distinct from managed agents in both the Freelance section
+	// and the Pinned block. The marker occupies the same slot as the PR
+	// indicator — PR state is never set on unmanaged tasks (no hera binding),
+	// so the two are mutually exclusive in practice.
+	if r.RoleKind == string(db.KindFreelance) {
+		markerStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed)
+		screen.SetContent(col, y, iconFreelance, nil, markerStyle)
+		col += 2
+	} else if prIcon, prStyle, ok := prGlyph(r.PRState); ok {
+		// PR review indicator: only consumes width when actionable; the name
+		// reclaims the space otherwise (mirrors argus's task-row PR cell).
 		screen.SetContent(col, y, prIcon, nil, prStyle)
 		col += 2 // PR glyph + space
 	}

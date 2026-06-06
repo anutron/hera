@@ -138,10 +138,11 @@ type railSelection struct {
 	RoleKind       string
 	Archived       bool
 
-	// Pinned is the row's rendered pinned state (hera pinned_at set). Carried
-	// on orchestrator and role selections so `P` can dispatch the direction —
-	// unpin a pinned row, pin an unpinned one. Always false for freelance rows
-	// (an unmanaged argus task has no hera row to pin).
+	// Pinned is the row's rendered pinned state. Carried on orchestrator and
+	// role selections so `P` can dispatch the direction — unpin a pinned row,
+	// pin an unpinned one. For managed rows this reflects hera's pinned_at DB
+	// column; for freelance rows it reflects the rail's pinnedFreelance map
+	// (persisted via railViewState — no DB role row exists for freelancers).
 	Pinned bool
 
 	// CoordRoleID is the coord role id of the orchestrator the selection
@@ -243,6 +244,14 @@ type helpFrameSender interface {
 	SendHelp() error
 }
 
+// freelancePinner toggles the pinned state of a freelance task in the rail.
+// Implemented by *railList (ToggleFreelancePin). Wired by the App so the
+// mutation bridge can pin freelancers without needing direct access to the
+// rail widget.
+type freelancePinner interface {
+	ToggleFreelancePin(argusTaskID string)
+}
+
 // rowSelector stashes a role id to auto-select on the NEXT broadcaster-driven
 // rail repopulate. Because role/binding inserts trigger an async (~100ms) rail
 // refresh, the new row does not exist at the instant SpawnWorker returns — an
@@ -275,6 +284,7 @@ type mutationBridge struct {
 	repop   repopulator
 	help    helpFrameSender
 	rowSel  rowSelector
+	fPinner freelancePinner
 	log     *slog.Logger
 
 	// inFlight guards the blocking phase of a mutation: while a svc call is
@@ -668,15 +678,19 @@ func (b *mutationBridge) OnArchive() {
 	}
 }
 
-// OnPin toggles the pinned state of the selected coordinator or agent (`P`).
-// No modal — pin is non-destructive and instantly reversible (press `P`
-// again). The direction follows the selection's rendered pinned state: a
-// pinned row unpins, an unpinned row pins (which also clears its archived
-// state, hera + argus, via the ops Pin verb). A freelance row is an
-// unmanaged argus task with NO hera row to persist a pin on, and argus
-// exposes no pin endpoint — so `P` there is not applicable and gets visible
-// feedback naming the gap, never a silent no-op. The argus/DB round-trip
-// runs off-loop via mutate.
+// OnPin toggles the pinned state of the selected coordinator, agent, or
+// freelancer (`P`). No modal — pin is non-destructive and instantly reversible
+// (press `P` again). The direction follows the selection's rendered pinned
+// state: a pinned row unpins, an unpinned row pins.
+//
+// For managed coordinators and agents the pin is hera-side (pinned_at on the
+// DB row); the DB round-trip runs off-loop via mutate.
+//
+// For freelancers the pin state is stored in the rail's in-memory
+// pinnedFreelance map (persisted via railViewState to the config table). No
+// DB role row exists and argus exposes no pin endpoint, so the toggle runs
+// synchronously on-loop via fPinner.ToggleFreelancePin — no mutate wrapper.
+// A pinned freelancer floats to the root level of the Pinned block (BUG-024).
 func (b *mutationBridge) OnPin() {
 	sel := b.sel.CurrentRailSelection()
 	switch sel.Kind {
@@ -692,7 +706,14 @@ func (b *mutationBridge) OnPin() {
 		}
 	case selRole:
 		if sel.RoleKind == string(db.KindFreelance) {
-			b.notApplicable("P: pinning is hera-side; a freelancer is an unmanaged argus task with no hera row to pin (argus exposes no pin endpoint)")
+			if b.fPinner == nil {
+				b.notApplicable("P: freelance pin not available in this context")
+				return
+			}
+			// Toggle in-memory pin state. Runs on-loop (ToggleFreelancePin
+			// rebuilds the rail and persists via onStateChanged — no DB role row
+			// exists and argus has no pin endpoint for unmanaged tasks).
+			b.fPinner.ToggleFreelancePin(sel.ArgusTaskID)
 			return
 		}
 		if sel.Pinned {
