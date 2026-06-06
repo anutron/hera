@@ -3336,3 +3336,200 @@ func TestBuildApp_ArchivedFreelancerLandsInBottomArchive(t *testing.T) {
 		t.Fatalf("bottom Archive (1) must render without `l`; got:\n%s", got)
 	}
 }
+
+// TestApplyRailSelection_DeadWorkerClearsAgentPane proves that navigating (j/k)
+// to a dead worker row — a role whose argus task record no longer exists —
+// does NOT bind the dead task to the agent pane (BUG-014). The fix guards the
+// worker/agent path in applyRailSelection: Dead rows call rebindAgent("") so
+// the pane shows a placeholder and AgentTaskID() is never the dead task id.
+func TestApplyRailSelection_DeadWorkerClearsAgentPane(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	liveRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "live", Kind: db.KindWorker, ArgusProject: "proj"})
+	deadRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "dead", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: liveRole.ID, ArgusTaskID: "t-live", WorktreePath: "/l"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: deadRole.ID, ArgusTaskID: "t-dead", WorktreePath: "/d"})
+
+	// t-dead absent from warm state cache: the argus task record is gone.
+	// aliveStatePaneSource also implements TaskAliveChecker so findInitialSelection
+	// skips "t-dead" and picks "t-live" — keeping src.calls clean before the test.
+	src := &aliveStatePaneSource{
+		alive:  map[string]bool{"t-live": true, "t-dead": false},
+		states: map[string]ArgusTaskState{"t-live": {Status: "in_progress"}},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.showArchived = true
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+
+	var deadEntry *roleEntry
+	for _, o := range a.pieces.rail.orchestrators {
+		for _, r := range o.Roles {
+			if r.RoleID == deadRole.ID {
+				deadEntry = r
+			}
+		}
+	}
+	if deadEntry == nil {
+		t.Fatalf("dead role missing from rail data")
+	}
+	if !deadEntry.Dead {
+		t.Fatalf("precondition: expected Dead=true on dead role; got Dead=false")
+	}
+
+	callsBefore := len(src.calls)
+
+	// Simulate j/k landing on the dead row (what onRailSelectionChanged calls).
+	a.applyRailSelection(deadEntry)
+
+	// The dead task must never be bound to the agent pane.
+	if a.AgentTaskID() == "t-dead" {
+		t.Fatalf("dead worker: agent pane must not bind to dead task; got AgentTaskID=%q", a.AgentTaskID())
+	}
+	// The pane is cleared to "" (placeholder), not left at the prior live binding.
+	if a.AgentTaskID() != "" {
+		t.Fatalf("dead worker: agent pane must be cleared to placeholder; got AgentTaskID=%q", a.AgentTaskID())
+	}
+	// SubscribeTask must not be called for the dead task after the guard point.
+	for _, call := range src.calls[callsBefore:] {
+		if call == "t-dead" {
+			t.Fatalf("dead worker: SubscribeTask must not be called for dead task; new calls: %v", src.calls[callsBefore:])
+		}
+	}
+}
+
+// TestApplyRailSelection_DeadFreelancerClearsAgentPane proves that the
+// freelancer path in applyRailSelection also guards against dead tasks.
+// A dead freelancer row (Dead=true) must clear the agent pane to placeholder
+// instead of calling rebindAgent with the dead task id (BUG-014).
+func TestApplyRailSelection_DeadFreelancerClearsAgentPane(t *testing.T) {
+	d := openTestDB(t)
+
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Prime the pane with a live freelancer so we start from a non-empty binding.
+	liveFreelancer := &roleEntry{
+		RoleKind:    string(db.KindFreelance),
+		ArgusTaskID: "t-free-live",
+		Name:        "live-free",
+	}
+	a.applyRailSelection(liveFreelancer)
+	if a.AgentTaskID() != "t-free-live" {
+		t.Fatalf("baseline: expected agent bound to live freelancer; got %q", a.AgentTaskID())
+	}
+	preCalls := make([]string, len(src.calls))
+	copy(preCalls, src.calls)
+
+	// Now simulate landing on a dead freelancer row.
+	deadFreelancer := &roleEntry{
+		RoleKind:    string(db.KindFreelance),
+		ArgusTaskID: "t-free-dead",
+		Name:        "dead-free",
+		Dead:        true,
+	}
+	a.applyRailSelection(deadFreelancer)
+
+	// The dead task must never be bound.
+	if a.AgentTaskID() == "t-free-dead" {
+		t.Fatalf("dead freelancer: agent pane must not bind to dead task; got AgentTaskID=%q", a.AgentTaskID())
+	}
+	// Pane is cleared to placeholder.
+	if a.AgentTaskID() != "" {
+		t.Fatalf("dead freelancer: agent pane must be cleared to placeholder; got AgentTaskID=%q", a.AgentTaskID())
+	}
+	// SubscribeTask was not called with the dead task id after the guard point.
+	for _, call := range src.calls[len(preCalls):] {
+		if call == "t-free-dead" {
+			t.Fatalf("dead freelancer: SubscribeTask must not be called for dead task; new calls: %v", src.calls[len(preCalls):])
+		}
+	}
+}
+
+// TestOnRailSelectEnter_DeadWorkerStaysInRail proves that pressing Enter on a
+// dead worker row returns FocusRAIL — never FocusAGENT — so the operator's
+// focus is not moved into a pane bound to a 404-ing PTY (BUG-014). Before the
+// fix, Enter on a dead row returned FocusAGENT and bound the agent pane to the
+// dead task, which stalled the proxy subscription and starved the input loop.
+func TestOnRailSelectEnter_DeadWorkerStaysInRail(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	liveRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "live", Kind: db.KindWorker, ArgusProject: "proj"})
+	deadRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "dead", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: liveRole.ID, ArgusTaskID: "t-live", WorktreePath: "/l"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: deadRole.ID, ArgusTaskID: "t-dead", WorktreePath: "/d"})
+
+	src := &aliveStatePaneSource{
+		alive:  map[string]bool{"t-live": true, "t-dead": false},
+		states: map[string]ArgusTaskState{"t-live": {Status: "in_progress"}},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.showArchived = true
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+
+	if !a.pieces.rail.SelectByRoleID(deadRole.ID) {
+		t.Fatalf("could not select dead worker row in rail (showArchived must open the Archive expando)")
+	}
+	ref, ok := a.pieces.rail.CurrentRef().(*roleEntry)
+	if !ok || !ref.Dead {
+		t.Fatalf("current row must be a dead roleEntry; got type %T Dead=%v", a.pieces.rail.CurrentRef(), ok && ref.Dead)
+	}
+
+	got := a.OnRailSelectEnter()
+	if got != FocusRAIL {
+		t.Fatalf("Enter on dead worker row: want FocusRAIL (no PTY bind, no freeze), got %s", got)
+	}
+	if a.AgentTaskID() == "t-dead" {
+		t.Fatalf("Enter on dead worker row must not bind agent pane to dead task; got AgentTaskID=%q", a.AgentTaskID())
+	}
+}
+
+// TestOnRailSelectEnter_DeadFreelancerStaysInRail proves Enter on a dead
+// freelancer row stays in RAIL, mirroring the worker guard above (BUG-014).
+func TestOnRailSelectEnter_DeadFreelancerStaysInRail(t *testing.T) {
+	d := openTestDB(t)
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	deadFreelancer := &roleEntry{
+		RoleKind:    string(db.KindFreelance),
+		ArgusTaskID: "t-free-dead",
+		Name:        "dead-free",
+		Dead:        true,
+	}
+	a.pieces.rail.rows = []railRow{
+		{kind: railRowRole, role: deadFreelancer},
+	}
+	a.pieces.rail.cursor = 0
+
+	got := a.OnRailSelectEnter()
+	if got != FocusRAIL {
+		t.Fatalf("Enter on dead freelancer row: want FocusRAIL, got %s", got)
+	}
+	if a.AgentTaskID() == "t-free-dead" {
+		t.Fatalf("Enter on dead freelancer row must not bind agent pane to dead task; got AgentTaskID=%q", a.AgentTaskID())
+	}
+}

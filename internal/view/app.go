@@ -1190,6 +1190,11 @@ func (a *App) OnRailSelectEnter() FocusState {
 			return FocusRAIL
 		}
 		a.applyRailSelection(ref)
+		if ref.Dead {
+			// Dead row: applyRailSelection cleared the agent pane to the
+			// placeholder. Stay in RAIL — never enter a pane with no live task.
+			return FocusRAIL
+		}
 		if ref.RoleKind == string(db.KindCoordinator) {
 			// A sub-coordinator is a coordinator selection → HERA pane.
 			return FocusCOORD
@@ -1509,8 +1514,12 @@ func (a *App) applyRailSelection(ref any) {
 		if r.RoleKind == string(db.KindFreelance) {
 			// Freelancer: full-width AGENT, no coord (release the coord sub).
 			a.rebindCoord("")
-			if r.ArgusTaskID != "" {
+			if r.ArgusTaskID != "" && !r.Dead {
 				a.rebindAgent(r.ArgusTaskID)
+			} else if r.Dead {
+				// Dead task: clear the agent pane to its placeholder so no
+				// 404-ing PTY is ever bound and keystrokes have nowhere to go.
+				a.rebindAgent("")
 			}
 			a.setBodyMode(false, true)
 			return
@@ -1559,8 +1568,12 @@ func (a *App) applyRailSelection(ref any) {
 			return
 		}
 		// Worker/agent: HERA + AGENT split.
-		if r.ArgusTaskID != "" {
+		if r.ArgusTaskID != "" && !r.Dead {
 			a.rebindAgent(r.ArgusTaskID)
+		} else if r.Dead {
+			// Dead task: clear the agent pane to its placeholder so no
+			// 404-ing PTY is ever bound and keystrokes have nowhere to go.
+			a.rebindAgent("")
 		}
 		a.setBodyMode(true, true)
 	}
