@@ -66,14 +66,16 @@ type coordDetails struct {
 // It issues only local SQLite reads (no argus HTTP), so it is safe to call on
 // the tview event loop from applyRailSelection.
 func buildCoordDetails(ctx context.Context, database *db.DB, orch *orchEntry) (coordDetails, error) {
+	archived := orch.Archived || orch.CoordArgusArchived
+	dispStatus, dispIdle := liveCoordDisplayStatus(archived, orch.CoordStatus, orch.CoordIdle)
 	cd := coordDetails{
 		Name:       orch.Name,
 		HasState:   orch.CoordHasState,
-		Status:     orch.CoordStatus,
-		CoordIdle:  orch.CoordIdle,
+		Status:     dispStatus,
+		CoordIdle:  dispIdle,
 		NeedsInput: orch.CoordNeedsInput,
 		CoordLive:  orch.CoordTaskID != "",
-		Archived:   orch.Archived || orch.CoordArgusArchived,
+		Archived:   archived,
 	}
 
 	// Roster = the rail's DEFAULT-VISIBLE child rows (excludes the coord role;
@@ -171,6 +173,19 @@ func buildCoordDetails(ctx context.Context, database *db.DB, orch *orchEntry) (c
 	cd.Repos = repos
 
 	return cd, nil
+}
+
+// liveCoordDisplayStatus returns the (status, idle) pair to display for a
+// coordinator header. For non-archived coordinators, argus auto-completes the
+// coordinator's task when the session goes idle — but the coordinator remains
+// live. Mask "complete" → in_progress+idle so the display shows ☾ (idle moon)
+// rather than ✓, which would mislead the operator into thinking it is done.
+// Archived coordinators are exempt: their session is genuinely finished.
+func liveCoordDisplayStatus(archived bool, status string, idle bool) (string, bool) {
+	if !archived && status == "complete" {
+		return "in_progress", true
+	}
+	return status, idle
 }
 
 // statusLabel maps argus-reported task state to a short human label that

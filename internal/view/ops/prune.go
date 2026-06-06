@@ -44,8 +44,14 @@ func (s *Service) ListCompletedAgents(ctx context.Context) ([]CompletedAgent, er
 		if status != "complete" {
 			continue
 		}
+		role, _ := s.DB.GetRoleByID(ctx, bnd.RoleID)
+		// Coordinator roles are excluded: argus auto-completes coordinator tasks
+		// when the session goes idle, but a live coordinator must never be pruned.
+		if role != nil && role.Kind == KindCoordinator {
+			continue
+		}
 		name := bnd.ArgusTaskID
-		if role, rerr := s.DB.GetRoleByID(ctx, bnd.RoleID); rerr == nil && role != nil {
+		if role != nil {
 			name = role.Name
 		}
 		out = append(out, CompletedAgent{

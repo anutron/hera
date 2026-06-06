@@ -2274,11 +2274,17 @@ func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
 // red — the operator must SEE "this coord is broken/archived" at a glance.
 // An orchestrator that is itself archived is NOT mixed (both sides agree) and
 // keeps the normal dimmed-archived treatment.
+//
+// Live coordinators are never rendered as ✓/complete: argus auto-completes
+// coordinator tasks when the session goes idle, but the coordinator remains
+// live. For non-archived coordinators, "complete" is masked to in_progress+idle
+// so the glyph shows ☾ rather than ✓.
 func (rl *railList) orchIcon(o *orchEntry) (rune, tcell.Style) {
 	if o.CoordArgusArchived && !o.Archived {
 		return iconCoordBroken, theme.StyleError
 	}
-	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, o.CoordStatus, o.CoordIdle, o.CoordTaskID != "", rl.animFrame())
+	status, idle := liveCoordDisplayStatus(o.Archived, o.CoordStatus, o.CoordIdle)
+	return statusIcon(o.Archived, o.CoordHasState, o.CoordNeedsInput, status, idle, o.CoordTaskID != "", rl.animFrame())
 }
 
 // elapsed formats the time since r.StartedAt using argus's "10s/10m/10h/10d"
