@@ -460,6 +460,12 @@ func (f *fakeDB) EndBinding(ctx context.Context, bindingID int64, reason string)
 	return nil
 }
 
+// postInputCall records one PostTaskInput invocation.
+type postInputCall struct {
+	TaskID string
+	Bytes  []byte
+}
+
 // fakeArgus implements ArgusClient. Records every call and returns
 // pre-configured responses or errors.
 type fakeArgus struct {
@@ -499,6 +505,16 @@ type fakeArgus struct {
 	// when set, makes every PutTaskMeta fail (the best-effort path).
 	meta       map[string]string
 	putMetaErr error
+
+	// PostTaskInput tracking for auto-submit CR tests.
+	postInputCalls []postInputCall
+	postInputErr   error
+
+	// ListProjects / ListBackends stubs.
+	listProjectsResp []string
+	listProjectsErr  error
+	listBackendsResp []string
+	listBackendsErr  error
 }
 
 func (a *fakeArgus) PutTaskMeta(ctx context.Context, taskID, key, value string) error {
@@ -605,6 +621,28 @@ func (a *fakeArgus) SetTaskStatus(ctx context.Context, taskID, status string) (s
 	}
 	a.statuses[taskID] = status
 	return status, nil
+}
+
+func (a *fakeArgus) PostTaskInput(_ context.Context, taskID string, bytes []byte) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.postInputCalls = append(a.postInputCalls, postInputCall{TaskID: taskID, Bytes: bytes})
+	if a.postInputErr != nil {
+		return 0, a.postInputErr
+	}
+	return len(bytes), nil
+}
+
+func (a *fakeArgus) ListProjects(_ context.Context) ([]string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.listProjectsResp, a.listProjectsErr
+}
+
+func (a *fakeArgus) ListBackends(_ context.Context) ([]string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.listBackendsResp, a.listBackendsErr
 }
 
 // fakePRCreator records CreatePR invocations. url / err are returned on
