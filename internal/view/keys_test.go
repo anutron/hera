@@ -1397,6 +1397,275 @@ func hotkeyHas(items []HotkeyItem, key string, wantBar bool) bool {
 	return false
 }
 
+// --- BUG-027: Ctrl-Z pane fullscreen + ladder nav ---
+
+// fakeFullscreen records OnFullscreenChanged calls so router tests can assert
+// the fullscreen state transitions without a running tview app.
+type fakeFullscreen struct {
+	calls []fullscreenCall
+}
+
+type fullscreenCall struct {
+	Pane   FocusState
+	Active bool
+}
+
+func (f *fakeFullscreen) OnFullscreenChanged(pane FocusState, active bool) {
+	f.calls = append(f.calls, fullscreenCall{Pane: pane, Active: active})
+}
+
+func (f *fakeFullscreen) lastCall() (fullscreenCall, bool) {
+	if len(f.calls) == 0 {
+		return fullscreenCall{}, false
+	}
+	return f.calls[len(f.calls)-1], true
+}
+
+// newRouterWithFullscreen returns a router with a fakeFullscreen wired in.
+func newRouterWithFullscreen() (*KeyRouter, *fakeFullscreen) {
+	r, _, _, _ := newRouter()
+	fs := &fakeFullscreen{}
+	r.Fullscreen = fs
+	return r, fs
+}
+
+// TestKeyRouter_CtrlZ_InCOORD_EntersFullscreen proves that Ctrl-Z while the
+// COORD pane has focus activates fullscreen on COORD and notifies the updater.
+func TestKeyRouter_CtrlZ_InCOORD_EntersFullscreen(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	r.Focus.Advance() // RAIL → COORD
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone))
+	if out != nil {
+		t.Fatalf("Ctrl-Z in COORD must be consumed; got non-nil event")
+	}
+	if r.Focus.State() != FocusCOORD {
+		t.Fatalf("Ctrl-Z must keep focus in COORD; got %s", r.Focus.State())
+	}
+	c, ok := fs.lastCall()
+	if !ok {
+		t.Fatal("Ctrl-Z in COORD must notify FullscreenUpdater; got no calls")
+	}
+	if !c.Active {
+		t.Fatalf("fullscreen must be active after Ctrl-Z in COORD; got active=%v", c.Active)
+	}
+	if c.Pane != FocusCOORD {
+		t.Fatalf("fullscreen pane must be COORD; got %s", c.Pane)
+	}
+}
+
+// TestKeyRouter_CtrlZ_InAGENT_EntersFullscreen proves that Ctrl-Z while the
+// AGENT pane has focus activates fullscreen on AGENT.
+func TestKeyRouter_CtrlZ_InAGENT_EntersFullscreen(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	r.Focus.JumpToAGENT()
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone))
+
+	c, ok := fs.lastCall()
+	if !ok {
+		t.Fatal("Ctrl-Z in AGENT must notify FullscreenUpdater; got no calls")
+	}
+	if !c.Active || c.Pane != FocusAGENT {
+		t.Fatalf("fullscreen must be active on AGENT; got active=%v pane=%s", c.Active, c.Pane)
+	}
+}
+
+// TestKeyRouter_CtrlZ_InCOORDFullscreen_ExitsFullscreen proves that a second
+// Ctrl-Z while fullscreen is active exits fullscreen.
+func TestKeyRouter_CtrlZ_InCOORDFullscreen_ExitsFullscreen(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	r.Focus.Advance()                                                // → COORD
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone)) // enter fullscreen
+	fs.calls = nil                                                   // reset
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone)) // exit fullscreen
+
+	c, ok := fs.lastCall()
+	if !ok {
+		t.Fatal("second Ctrl-Z must notify FullscreenUpdater; got no calls")
+	}
+	if c.Active {
+		t.Fatalf("fullscreen must be inactive after second Ctrl-Z; got active=%v", c.Active)
+	}
+}
+
+// TestKeyRouter_CtrlZ_InRAIL_ConsumedNoOp proves that Ctrl-Z in RAIL focus
+// is consumed (returned nil) but does NOT activate fullscreen — the 0x1a byte
+// must never reach a PTY or widget.
+func TestKeyRouter_CtrlZ_InRAIL_ConsumedNoOp(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	// Focus starts RAIL.
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone))
+	if out != nil {
+		t.Fatalf("Ctrl-Z in RAIL must be consumed; got non-nil event")
+	}
+	if len(fs.calls) != 0 {
+		t.Fatalf("Ctrl-Z in RAIL must NOT activate fullscreen; got calls %+v", fs.calls)
+	}
+}
+
+// TestKeyRouter_CtrlZ_InPane_NotForwardedToPTY proves that Ctrl-Z in pane
+// focus is NEVER forwarded as the SIGTSTP byte to the bound PTY — regardless
+// of whether fullscreen becomes active.
+func TestKeyRouter_CtrlZ_InPane_NotForwardedToPTY(t *testing.T) {
+	r, _ := newRouterWithFullscreen()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone))
+	// The poster is the fakePoster from newRouter; all calls recorded there.
+	// We need access to it — rewire.
+	r2, p, _, _ := newRouter()
+	fs2 := &fakeFullscreen{}
+	r2.Fullscreen = fs2
+	r2.Focus.JumpToAGENT()
+	r2.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone))
+	if len(p.Calls()) != 0 {
+		t.Fatalf("Ctrl-Z must NOT be forwarded to PTY; got %d calls payload=%v", len(p.Calls()), payloadOf(p.Calls()))
+	}
+}
+
+// TestKeyRouter_Fullscreen_CtrlRight_COORDToAGENT proves that Ctrl-Right while
+// fullscreen is active on COORD switches to fullscreen AGENT (stays fullscreen).
+func TestKeyRouter_Fullscreen_CtrlRight_COORDToAGENT(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	r.Focus.Advance()                                                // → COORD
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone)) // enter COORD fullscreen
+	fs.calls = nil
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl))
+	if out != nil {
+		t.Fatalf("Ctrl-Right in fullscreen COORD must be consumed; got %v", out)
+	}
+	if r.Focus.State() != FocusAGENT {
+		t.Fatalf("Ctrl-Right in fullscreen COORD must move focus to AGENT; got %s", r.Focus.State())
+	}
+	c, ok := fs.lastCall()
+	if !ok {
+		t.Fatal("Ctrl-Right in fullscreen COORD must notify FullscreenUpdater")
+	}
+	if !c.Active || c.Pane != FocusAGENT {
+		t.Fatalf("must stay fullscreen on AGENT; got active=%v pane=%s", c.Active, c.Pane)
+	}
+}
+
+// TestKeyRouter_Fullscreen_CtrlRight_AGENTNoOp proves that Ctrl-Right while
+// fullscreen is active on AGENT is a no-op (AGENT is the rightmost pane).
+func TestKeyRouter_Fullscreen_CtrlRight_AGENTNoOp(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone)) // enter AGENT fullscreen
+	callsBefore := len(fs.calls)
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl))
+
+	if r.Focus.State() != FocusAGENT {
+		t.Fatalf("Ctrl-Right in fullscreen AGENT must be a no-op; focus changed to %s", r.Focus.State())
+	}
+	if len(fs.calls) != callsBefore {
+		t.Fatalf("Ctrl-Right in fullscreen AGENT must not call FullscreenUpdater; got extra calls")
+	}
+}
+
+// TestKeyRouter_Fullscreen_CtrlLeft_AGENTToCOORD proves that Ctrl-Left while
+// fullscreen is active on AGENT switches to fullscreen COORD (stays fullscreen).
+func TestKeyRouter_Fullscreen_CtrlLeft_AGENTToCOORD(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone)) // enter AGENT fullscreen
+	fs.calls = nil
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl))
+
+	if r.Focus.State() != FocusCOORD {
+		t.Fatalf("Ctrl-Left in fullscreen AGENT must move focus to COORD; got %s", r.Focus.State())
+	}
+	c, ok := fs.lastCall()
+	if !ok {
+		t.Fatal("Ctrl-Left in fullscreen AGENT must notify FullscreenUpdater")
+	}
+	if !c.Active || c.Pane != FocusCOORD {
+		t.Fatalf("must stay fullscreen on COORD; got active=%v pane=%s", c.Active, c.Pane)
+	}
+}
+
+// TestKeyRouter_Fullscreen_CtrlLeft_COORDExitsToRAIL proves that Ctrl-Left
+// while fullscreen is active on COORD exits fullscreen and moves focus to RAIL.
+func TestKeyRouter_Fullscreen_CtrlLeft_COORDExitsToRAIL(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	r.Focus.Advance()                                                // → COORD
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone)) // enter COORD fullscreen
+	fs.calls = nil
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl))
+
+	if r.Focus.State() != FocusRAIL {
+		t.Fatalf("Ctrl-Left in fullscreen COORD must exit fullscreen and move to RAIL; got %s", r.Focus.State())
+	}
+	c, ok := fs.lastCall()
+	if !ok {
+		t.Fatal("Ctrl-Left in fullscreen COORD must notify FullscreenUpdater")
+	}
+	if c.Active {
+		t.Fatalf("fullscreen must be inactive after Ctrl-Left from COORD fullscreen; got active=%v", c.Active)
+	}
+}
+
+// TestKeyRouter_Fullscreen_CtrlQ_ExitsFullscreenToRAIL proves that Ctrl-Q while
+// fullscreen is active exits fullscreen and returns focus to RAIL.
+func TestKeyRouter_Fullscreen_CtrlQ_ExitsFullscreenToRAIL(t *testing.T) {
+	r, fs := newRouterWithFullscreen()
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone)) // enter AGENT fullscreen
+	fs.calls = nil
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModCtrl))
+
+	if r.Focus.State() != FocusRAIL {
+		t.Fatalf("Ctrl-Q in fullscreen must exit to RAIL; got %s", r.Focus.State())
+	}
+	c, ok := fs.lastCall()
+	if !ok {
+		t.Fatal("Ctrl-Q in fullscreen must notify FullscreenUpdater")
+	}
+	if c.Active {
+		t.Fatalf("fullscreen must be inactive after Ctrl-Q; got active=%v", c.Active)
+	}
+}
+
+// TestKeyRouter_Fullscreen_NormalKeysStillForwarded proves that while fullscreen
+// is active, regular typed keys are still forwarded to the focused pane's PTY.
+func TestKeyRouter_Fullscreen_NormalKeysStillForwarded(t *testing.T) {
+	r, p, _, _ := newRouter()
+	fs := &fakeFullscreen{}
+	r.Fullscreen = fs
+	r.Focus.JumpToAGENT()
+	r.HandleKey(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone)) // enter fullscreen
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+
+	calls := p.Calls()
+	if len(calls) != 1 || string(calls[0].Payload) != "x" || calls[0].TaskID != "agent-1" {
+		t.Fatalf("regular keys in fullscreen must forward to PTY; got %+v", calls)
+	}
+}
+
+// TestHotkeyItems_PanesAdvertiseCtrlZ proves the COORD and AGENT hotkey
+// dictionaries include ^Z (fullscreen toggle) so it appears in argus's bottom bar.
+func TestHotkeyItems_PanesAdvertiseCtrlZ(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		items []HotkeyItem
+	}{
+		{"COORD", hotkeyItems(FocusCOORD, true)},
+		{"AGENT-coordful", hotkeyItems(FocusAGENT, true)},
+		{"AGENT-coordless", hotkeyItems(FocusAGENT, false)},
+	} {
+		if !hotkeyHas(tc.items, "^Z", true) {
+			t.Errorf("%s hotkeys must advertise ^Z with bar:true (fullscreen); items=%+v", tc.name, tc.items)
+		}
+	}
+}
+
 // hotkeyContains reports whether items contains an entry with the given key
 // (regardless of Bar flag).
 func hotkeyContains(items []HotkeyItem, key string) bool {

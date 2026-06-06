@@ -131,6 +131,15 @@ type BorderUpdater interface {
 	OnFocusChanged(state FocusState)
 }
 
+// FullscreenUpdater is invoked when the pane fullscreen state changes (BUG-027).
+// OnFullscreenChanged(pane, active=true) means the given pane should fill the
+// entire body area; OnFullscreenChanged(_, active=false) means the normal
+// rail+coord+agent split should be restored. App is the production implementation;
+// tests inject a recording fake.
+type FullscreenUpdater interface {
+	OnFullscreenChanged(pane FocusState, active bool)
+}
+
 // RailSelectHandler is fired when the operator presses Enter while RAIL
 // is focused. The implementation reads the rail's currently-highlighted
 // node and (when appropriate) rebinds the COORD or AGENT pane to that
@@ -168,6 +177,11 @@ type KeyRouter struct {
 	RailSelect RailSelectHandler
 	Modal      ModalGate
 
+	// Fullscreen, when set, receives pane fullscreen state transitions
+	// (BUG-027: Ctrl-Z toggles pane fullscreen). Nil makes the feature a no-op
+	// layout-wise while still consuming Ctrl-Z so 0x1a never reaches a PTY.
+	Fullscreen FullscreenUpdater
+
 	// Filter, when set, lets the router yield keys to the rail while it is in
 	// search input mode (the `/` filter). Nil disables the gate (no yielding).
 	Filter RailFilter
@@ -202,6 +216,11 @@ type KeyRouter struct {
 	// turns a silent drop into a diagnosable event. A nil Log is a safe no-op
 	// (falls back to slog.Default()).
 	Log *slog.Logger
+
+	// fullscreenActive and fullscreenPane track pane-fullscreen state (BUG-027).
+	// Not safe for concurrent access (single-threaded tview input pump by contract).
+	fullscreenActive bool
+	fullscreenPane   FocusState
 }
 
 // HandleKey is the tview-compatible input capture. Returns nil when the
@@ -222,22 +241,45 @@ func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 		return event
 	}
 
+	// Ctrl-Z: toggle pane fullscreen (BUG-027). Always consume so 0x1a never
+	// reaches a PTY or tview widget as SIGTSTP. In RAIL focus it is a no-op.
+	if isCtrlZ(event) {
+		if r.Focus.State() != FocusRAIL {
+			r.toggleFullscreen()
+		}
+		return nil
+	}
+
 	// Focus-traversal keys take precedence over everything else and apply
-	// in every focus state.
+	// in every focus state. In fullscreen mode the ladder is modified: moving
+	// between panes stays fullscreen, moving left from COORD exits fullscreen.
 	if isFocusForward(event) {
-		r.Focus.Advance()
-		r.notifyBorder()
+		if r.fullscreenActive {
+			r.fullscreenForward()
+		} else {
+			r.Focus.Advance()
+			r.notifyBorder()
+		}
 		return nil
 	}
 	if isFocusBackward(event) {
-		r.Focus.Retreat()
-		r.notifyBorder()
+		if r.fullscreenActive {
+			r.fullscreenBackward()
+		} else {
+			r.Focus.Retreat()
+			r.notifyBorder()
+		}
 		return nil
 	}
 	if isCtrlQ(event) {
 		prev := r.Focus.State()
+		wasFullscreen := r.fullscreenActive
+		if r.fullscreenActive {
+			r.fullscreenActive = false
+			r.notifyFullscreen()
+		}
 		r.Focus.ToRAIL()
-		if prev != FocusRAIL {
+		if prev != FocusRAIL || wasFullscreen {
 			r.notifyBorder()
 		}
 		return nil
@@ -505,6 +547,60 @@ func (r *KeyRouter) notifyBorder() {
 	}
 }
 
+func (r *KeyRouter) notifyFullscreen() {
+	if r.Fullscreen != nil {
+		r.Fullscreen.OnFullscreenChanged(r.fullscreenPane, r.fullscreenActive)
+	}
+}
+
+// toggleFullscreen flips the fullscreen state for the currently-focused pane.
+// Called when Ctrl-Z is pressed while focus is in COORD or AGENT.
+func (r *KeyRouter) toggleFullscreen() {
+	if r.fullscreenActive {
+		r.fullscreenActive = false
+		r.notifyFullscreen()
+		r.notifyBorder()
+	} else {
+		r.fullscreenActive = true
+		r.fullscreenPane = r.Focus.State()
+		r.notifyFullscreen()
+		r.notifyBorder()
+	}
+}
+
+// fullscreenForward handles Ctrl-Right while fullscreen is active.
+// COORD + Right → switch to AGENT fullscreen.
+// AGENT + Right → no-op (already at the rightmost pane).
+func (r *KeyRouter) fullscreenForward() {
+	if r.Focus.State() == FocusAGENT {
+		return // already rightmost; no-op
+	}
+	// COORD → AGENT fullscreen
+	r.Focus.Advance()
+	r.fullscreenPane = r.Focus.State()
+	r.notifyFullscreen()
+	r.notifyBorder()
+}
+
+// fullscreenBackward handles Ctrl-Left while fullscreen is active.
+// AGENT + Left → switch to COORD fullscreen.
+// COORD + Left → exit fullscreen and move to RAIL.
+func (r *KeyRouter) fullscreenBackward() {
+	if r.Focus.State() == FocusCOORD {
+		// Exit fullscreen and return to RAIL.
+		r.fullscreenActive = false
+		r.Focus.Retreat() // COORD → RAIL
+		r.notifyFullscreen()
+		r.notifyBorder()
+		return
+	}
+	// AGENT → COORD fullscreen
+	r.Focus.Retreat()
+	r.fullscreenPane = r.Focus.State()
+	r.notifyFullscreen()
+	r.notifyBorder()
+}
+
 // isFocusForward matches Cmd/Ctrl-→. macOS terminals may report Cmd as
 // ModMeta; Linux uses ModCtrl. We accept either to honour the spec
 // wording "Cmd/Ctrl-←/→".
@@ -526,6 +622,10 @@ func isFocusBackward(e *tcell.EventKey) bool {
 
 func isCtrlQ(e *tcell.EventKey) bool {
 	return e.Key() == tcell.KeyCtrlQ
+}
+
+func isCtrlZ(e *tcell.EventKey) bool {
+	return e.Key() == tcell.KeyCtrlZ
 }
 
 // scrollDelta decodes ⇧↑ / ⇧↓ into a scroll delta: ⇧↑ scrolls UP into history
