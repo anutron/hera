@@ -926,6 +926,12 @@ func (a *App) CurrentRailSelection() railSelection {
 			ChildCount: countLiveRoles(ref.Roles),
 		}
 	case *roleEntry:
+		pinned := ref.Pinned
+		if ref.RoleKind == string(db.KindFreelance) {
+			// Freelancers have no DB pinned_at; their pin state lives in the
+			// rail's pinnedFreelance map (persisted via railViewState).
+			pinned = a.pieces.rail.IsFreelancePinned(ref.ArgusTaskID)
+		}
 		sel := railSelection{
 			Kind:           selRole,
 			OrchestratorID: ref.OrchestratorID,
@@ -933,7 +939,7 @@ func (a *App) CurrentRailSelection() railSelection {
 			Name:           ref.Name,
 			RoleKind:       ref.RoleKind,
 			Archived:       ref.Archived,
-			Pinned:         ref.Pinned,
+			Pinned:         pinned,
 			ArgusTaskID:    ref.ArgusTaskID,
 			// CoordRoleID is the owning orchestrator's coord role; `w` spawns
 			// the new worker under it for a leaf/agent row.
@@ -959,6 +965,15 @@ func (a *App) CurrentRailSelection() railSelection {
 		return sel
 	}
 	return railSelection{}
+}
+
+// ToggleFreelancePin toggles the pinned state of the freelance task identified
+// by argusTaskID in the rail's pinnedFreelance map. Runs on the event loop
+// (called synchronously from OnPin). Satisfies the freelancePinner contract.
+func (a *App) ToggleFreelancePin(argusTaskID string) {
+	if a.pieces.rail != nil {
+		a.pieces.rail.ToggleFreelancePin(argusTaskID)
+	}
 }
 
 // QueueSelectRole stashes a role id to auto-select on the NEXT rail

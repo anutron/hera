@@ -610,6 +610,13 @@ type fakeHelpSender struct{ helps int }
 
 func (f *fakeHelpSender) SendHelp() error { f.helps++; return nil }
 
+// fakeFreelancePinner records ToggleFreelancePin calls for bridge tests.
+type fakeFreelancePinner struct{ toggled []string }
+
+func (f *fakeFreelancePinner) ToggleFreelancePin(argusTaskID string) {
+	f.toggled = append(f.toggled, argusTaskID)
+}
+
 func newBridgeUnderTestWithHelp() (*mutationBridge, *fakeModals, *fakeSelector, *fakeMutationService, *fakeListAll, *fakeRepopulator, *fakeHelpSender) {
 	m := &fakeModals{}
 	sel := &fakeSelector{}
@@ -2222,8 +2229,33 @@ func TestBridge_OnPin_PinnedRole_Unpins(t *testing.T) {
 	}
 }
 
-func TestBridge_OnPin_Freelancer_NotApplicable(t *testing.T) {
+// BUG-024: P on a freelancer with fPinner wired calls ToggleFreelancePin (no
+// DB round-trip, no error modal).
+func TestBridge_OnPin_Freelancer_TogglesViaFPinner(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	fp := &fakeFreelancePinner{}
+	b.fPinner = fp
+	sel.sel = railSelection{Kind: selRole, RoleID: 0, Name: "free", RoleKind: "freelance", ArgusTaskID: "T9"}
+
+	b.OnPin()
+	b.waitIdle()
+
+	if len(svc.pinRoleCalls)+len(svc.unpinRoleCalls) != 0 {
+		t.Fatalf("P on a freelancer must not call any DB pin verb; pin=%v unpin=%v", svc.pinRoleCalls, svc.unpinRoleCalls)
+	}
+	if m.ErrorCount() != 0 {
+		t.Fatalf("P on a freelancer with fPinner must not show an error modal; errors=%v", m.errors)
+	}
+	if len(fp.toggled) != 1 || fp.toggled[0] != "T9" {
+		t.Fatalf("P on a freelancer must call ToggleFreelancePin with the task id; toggled=%v", fp.toggled)
+	}
+}
+
+// P on a freelancer without fPinner wired shows a feedback notice (graceful
+// degradation for test/daemon contexts that don't wire the pinner).
+func TestBridge_OnPin_Freelancer_NoFPinner_NotApplicable(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	// fPinner intentionally left nil.
 	sel.sel = railSelection{Kind: selRole, RoleID: 0, Name: "free", RoleKind: "freelance", ArgusTaskID: "T9"}
 
 	b.OnPin()
@@ -2232,8 +2264,8 @@ func TestBridge_OnPin_Freelancer_NotApplicable(t *testing.T) {
 	if len(svc.pinRoleCalls)+len(svc.unpinRoleCalls) != 0 {
 		t.Fatalf("P on a freelancer must not call any pin verb; pin=%v unpin=%v", svc.pinRoleCalls, svc.unpinRoleCalls)
 	}
-	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "hera-side") {
-		t.Fatalf("P on a freelancer must give the hera-side gap feedback; errors=%v", m.errors)
+	if m.ErrorCount() != 1 {
+		t.Fatalf("P on a freelancer without fPinner must show an error modal; errors=%v", m.errors)
 	}
 }
 

@@ -229,12 +229,6 @@ func TestRailList_PinnedSubCoord_FloatsToTopWithChildren(t *testing.T) {
 		t.Fatalf("sub-coordinator's worker must render inside the Pinned block; kinds=%v", rowKinds(rl))
 	}
 
-	// sub-coord must NOT appear in the active tree (no double-render).
-	for _, r := range rl.rows {
-		if r.kind != railRowPinnedSep && r.kind != railRowPinnedEnd {
-			// Only check rows OUTSIDE the Pinned block.
-		}
-	}
 	// Count pinned sub-coord occurrences (kind==railRowRole, RoleID==20).
 	var occurrences []int
 	for i, r := range rl.rows {
@@ -327,9 +321,10 @@ func TestRailList_FilterAppliesTo_PinnedRoles(t *testing.T) {
 			continue
 		}
 		if inPinned && r.kind == railRowRole && r.role != nil {
-			if r.role.RoleID == 10 {
+			switch r.role.RoleID {
+			case 10:
 				pinnedMatch = true
-			} else if r.role.RoleID == 11 {
+			case 11:
 				pinnedOther = true
 			}
 		}
@@ -409,5 +404,118 @@ func TestRailList_ArchivedFreelancer_NoDoubleRenderWithListAll(t *testing.T) {
 		if r.kind == railRowArchiveExpando && r.archiveOwner == archiveTopLevelOwner {
 			t.Fatalf("archived freelancer must NOT appear in the bottom Archive (archiveTopLevelOwner=0); found such expando")
 		}
+	}
+}
+
+// BUG-024: A pinned freelancer floats to the ROOT level of the Pinned block,
+// alongside pinned coords — no coordinator ancestry (freelancers are unmanaged).
+func TestRailList_PinnedFreelancer_FloatsToRootPinnedSection(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "live-coord", Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "managed-worker"},
+		}},
+	})
+	rl.SetFreelance([]*freelanceProject{
+		{Project: "Hera", Tasks: []*roleEntry{
+			{RoleKind: "freelance", Name: "free-pinned", ArgusTaskID: "T1", Project: "Hera"},
+			{RoleKind: "freelance", Name: "free-live", ArgusTaskID: "T2", Project: "Hera"},
+		}},
+	})
+	// Pin T1 via ToggleFreelancePin.
+	rl.ToggleFreelancePin("T1")
+
+	// Pinned section must exist.
+	if len(rl.rows) == 0 || rl.rows[0].kind != railRowPinnedSep {
+		t.Fatalf("expected Pinned separator first; kinds=%v", rowKinds(rl))
+	}
+
+	// The pinned freelancer must appear inside the Pinned block at depth 0.
+	foundInPinned := false
+	inPinned := false
+	for _, r := range rl.rows {
+		switch r.kind {
+		case railRowPinnedSep:
+			inPinned = true
+		case railRowPinnedEnd:
+			inPinned = false
+		case railRowRole:
+			if r.role != nil && r.role.ArgusTaskID == "T1" {
+				if inPinned && r.depth == 0 {
+					foundInPinned = true
+				} else {
+					t.Fatalf("pinned freelancer must render at depth 0 inside the Pinned block; got depth=%d inPinned=%v", r.depth, inPinned)
+				}
+			}
+		}
+	}
+	if !foundInPinned {
+		t.Fatalf("pinned freelancer must appear in the Pinned section at root level; kinds=%v", rowKinds(rl))
+	}
+
+	// The pinned freelancer must NOT also appear in the Freelance section.
+	inPinned = false
+	for _, r := range rl.rows {
+		switch r.kind {
+		case railRowPinnedSep:
+			inPinned = true
+		case railRowPinnedEnd:
+			inPinned = false
+		case railRowRole:
+			if !inPinned && r.role != nil && r.role.ArgusTaskID == "T1" {
+				t.Fatalf("pinned freelancer must NOT also render in the Freelance section (double-render)")
+			}
+		}
+	}
+
+	// The non-pinned freelancer (T2) must still appear in the Freelance section.
+	foundLive := false
+	for _, r := range rl.rows {
+		if r.kind == railRowRole && r.role != nil && r.role.ArgusTaskID == "T2" {
+			foundLive = true
+		}
+	}
+	if !foundLive {
+		t.Fatalf("non-pinned freelancer must remain in the Freelance section; kinds=%v", rowKinds(rl))
+	}
+
+	// Unpinning must return the freelancer to the Freelance section.
+	rl.ToggleFreelancePin("T1")
+	if rl.rows[0].kind == railRowPinnedSep {
+		t.Fatalf("after unpin, Pinned section must disappear when no pinned items remain")
+	}
+	unPinnedInFree := false
+	for _, r := range rl.rows {
+		if r.kind == railRowRole && r.role != nil && r.role.ArgusTaskID == "T1" {
+			unPinnedInFree = true
+		}
+	}
+	if !unPinnedInFree {
+		t.Fatalf("unpinned freelancer must return to the Freelance section; kinds=%v", rowKinds(rl))
+	}
+}
+
+// BUG-024: The (F) freelance marker renders for freelance rows both in the
+// Freelance section and in the Pinned block.
+func TestRailList_FreelanceMarker_RendersOnFreelanceRows(t *testing.T) {
+	rl := newRailList()
+	rl.SetFreelance([]*freelanceProject{
+		{Project: "Hera", Tasks: []*roleEntry{
+			{RoleKind: "freelance", Name: "free-task", ArgusTaskID: "T1", Project: "Hera"},
+		}},
+	})
+
+	got := renderRail(t, rl, 40, 10)
+	// The iconFreelance glyph (U+F0229) must appear on the freelance row.
+	// We check for its presence in the rendered output.
+	if !strings.ContainsRune(got, iconFreelance) {
+		t.Fatalf("freelance marker (iconFreelance U+F0229) must render on freelance rows in Freelance section; got:\n%s", got)
+	}
+
+	// Pin the freelancer — marker must also render in the Pinned block.
+	rl.ToggleFreelancePin("T1")
+	got = renderRail(t, rl, 40, 10)
+	if !strings.ContainsRune(got, iconFreelance) {
+		t.Fatalf("freelance marker must also render on a pinned freelancer in the Pinned block; got:\n%s", got)
 	}
 }

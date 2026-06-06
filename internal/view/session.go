@@ -144,6 +144,7 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// when the overlay is dismissed.
 		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, app, log)
 		bridge.rowSel = app
+		bridge.fPinner = app
 
 		router := &KeyRouter{
 			Focus:      focus,

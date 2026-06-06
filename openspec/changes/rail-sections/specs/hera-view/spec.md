@@ -35,10 +35,15 @@ Pin state SHALL be persisted HERA-SIDE in a nullable `pinned_at` column on `orch
 - **WHEN** a pinned row is archived (via `a`)
 - **THEN** the row's `pinned_at` MUST be cleared so it leaves the Pinned section, AND it MUST render in its Archive section per the archive rules
 
-#### Scenario: `P` on a freelancer gives visible feedback
+#### Scenario: `P` on a freelancer pins it at root level (BUG-024)
 
 - **WHEN** focus is `RAIL` and the operator presses `P` against a freelance row
-- **THEN** hera MUST surface visible feedback that pinning is hera-side and the freelancer has no hera row to pin, AND MUST NOT write any DB row or call argus
+- **THEN** hera MUST toggle the freelancer's pinned state in the rail's in-memory `pinnedFreelance` map (persisted via `railViewState` to the config table), AND the pinned freelancer MUST float to the ROOT level of the Pinned block (depth 0, intermixed with pinned coordinators, no ancestry shown), AND MUST NOT also render in the Freelance section (no double-render), AND MUST NOT write any hera role DB row or call argus. Pressing `P` again MUST unpin and return the freelancer to the Freelance section.
+
+#### Scenario: Every freelance row carries the (F) marker (BUG-024)
+
+- **WHEN** a freelance task renders in the Freelance section OR in the Pinned block
+- **THEN** the row MUST display the `iconFreelance` marker (`nf-md-alpha_f_box`, U+F0229) after the status icon, so freelancers are visually distinct from managed agents and coordinators at a glance. The marker MUST render consistently at the same icon-column position in both sections.
 
 ### Requirement: Archived Hera tasks render in a navigable Archive section below Freelance
 

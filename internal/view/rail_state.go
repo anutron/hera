@@ -19,10 +19,14 @@ type railViewState struct {
 	Collapsed          map[int64]bool
 	FreelanceCollapsed map[string]bool
 	ArchiveExpanded    map[int64]bool
+	// PinnedFreelance tracks which freelance tasks (keyed by ArgusTaskID) the
+	// operator has pinned. Freelancers have no hera DB row, so their pin state
+	// lives here alongside FreelanceCollapsed rather than in the roles table.
+	PinnedFreelance map[string]bool
 }
 
 func (s railViewState) isEmpty() bool {
-	return len(s.Collapsed) == 0 && len(s.FreelanceCollapsed) == 0 && len(s.ArchiveExpanded) == 0
+	return len(s.Collapsed) == 0 && len(s.FreelanceCollapsed) == 0 && len(s.ArchiveExpanded) == 0 && len(s.PinnedFreelance) == 0
 }
 
 // railStateJSON is the JSON wire format. JSON objects require string keys, so
@@ -32,6 +36,7 @@ type railStateJSON struct {
 	Collapsed          map[string]bool `json:"collapsed,omitempty"`
 	FreelanceCollapsed map[string]bool `json:"freelance_collapsed,omitempty"`
 	ArchiveExpanded    map[string]bool `json:"archive_expanded,omitempty"`
+	PinnedFreelance    map[string]bool `json:"pinned_freelance,omitempty"`
 }
 
 func loadRailStateFromDB(ctx context.Context, cfg *db.ConfigDAO) (railViewState, error) {
@@ -48,6 +53,7 @@ func loadRailStateFromDB(ctx context.Context, cfg *db.ConfigDAO) (railViewState,
 	}
 	s := railViewState{
 		FreelanceCollapsed: j.FreelanceCollapsed,
+		PinnedFreelance:    j.PinnedFreelance,
 	}
 	if len(j.Collapsed) > 0 {
 		s.Collapsed = make(map[int64]bool, len(j.Collapsed))
@@ -71,6 +77,7 @@ func loadRailStateFromDB(ctx context.Context, cfg *db.ConfigDAO) (railViewState,
 func saveRailStateToDB(ctx context.Context, cfg *db.ConfigDAO, s railViewState) error {
 	j := railStateJSON{
 		FreelanceCollapsed: s.FreelanceCollapsed,
+		PinnedFreelance:    s.PinnedFreelance,
 	}
 	if len(s.Collapsed) > 0 {
 		j.Collapsed = make(map[string]bool, len(s.Collapsed))
