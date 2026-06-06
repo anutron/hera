@@ -1241,9 +1241,11 @@ func (a *App) OnRailSelectEnter() FocusState {
 			return FocusRAIL
 		}
 		a.applyRailSelection(ref)
-		if ref.Dead {
-			// Dead row: applyRailSelection cleared the agent pane to the
-			// placeholder. Stay in RAIL — never enter a pane with no live task.
+		if roleInputDead(ref) {
+			// Dead or dead-session row: the task's PTY returns HTTP 404 on /input.
+			// applyRailSelection already cleared Dead panes to their placeholder and
+			// forced focus to RAIL for any dead-session row. Stay in RAIL — never
+			// enter a pane whose PTY would freeze the view (BUG-014 + BUG-018).
 			return FocusRAIL
 		}
 		if ref.RoleKind == string(db.KindCoordinator) {
@@ -1528,6 +1530,38 @@ func (a *App) fireRailSelection() {
 	a.applyRailSelection(ref)
 }
 
+// roleInputDead reports whether the task bound to a rail row is unable to
+// accept PTY input — i.e., PostTaskInput would return HTTP 404. This covers:
+//   - Dead=true: the argus task RECORD is gone (the BUG-014 case);
+//   - HasState=true with a terminal status: argus reports the task is complete/
+//     failed/etc. but its record still exists (the BUG-018 "dead-session" case).
+//
+// When HasState=false the argus state cache has not yet observed this task; we
+// assume alive so a cold cache doesn't prematurely lock operators out.
+func roleInputDead(r *roleEntry) bool {
+	if r.Dead {
+		return true
+	}
+	return r.HasState && !taskStatusAlive(r.Status)
+}
+
+// applyDeadFocusGuard forces focus back to RAIL when r is a dead-session (or
+// Dead) row and focus is currently in AGENT or COORD. Without this, navigating
+// onto a row whose PTY returns 404 leaves focus stuck in a pane — the raw-input
+// layer forwards every subsequent keystroke to the dead PTY and swallows it from
+// tcell, making the view appear frozen (BUG-018). Must run on the tview event
+// loop (same requirement as applyRailSelection).
+func (a *App) applyDeadFocusGuard(r *roleEntry) {
+	if !roleInputDead(r) {
+		return
+	}
+	if a.focus == nil || a.focus.State() == FocusRAIL {
+		return
+	}
+	a.focus.ToRAIL()
+	a.OnFocusChanged(FocusRAIL)
+}
+
 // applyRailSelection re-composes the body into the mode the highlighted row
 // demands (D13's three modes) and rebinds the present panes' subscriptions.
 // Must run on the tview event loop when a.app != nil (the input pump or a
@@ -1573,6 +1607,10 @@ func (a *App) applyRailSelection(ref any) {
 				a.rebindAgent("")
 			}
 			a.setBodyMode(false, true)
+			// BUG-018: if the freelancer's PTY session is gone (dead-session),
+			// force focus back to RAIL so keystrokes drive rail navigation instead
+			// of being forwarded to a dead PTY that returns HTTP 404.
+			a.applyDeadFocusGuard(r)
 			return
 		}
 		if r.childOrch != nil {
@@ -1624,6 +1662,10 @@ func (a *App) applyRailSelection(ref any) {
 			a.rebindAgent("")
 		}
 		a.setBodyMode(true, true)
+		// BUG-018: if the worker's PTY session is gone (dead-session), force
+		// focus back to RAIL so keystrokes drive rail navigation instead of
+		// being forwarded to a dead PTY that returns HTTP 404.
+		a.applyDeadFocusGuard(r)
 	}
 }
 

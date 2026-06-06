@@ -1537,6 +1537,106 @@ func TestPopulateRail_CompletedCoordStillFeedsCoordTaskID(t *testing.T) {
 	}
 }
 
+// TestApp_OnRailSelectEnter_DeadSessionWorkerStaysInRAIL proves that pressing
+// Enter on a worker whose argus task is terminal (complete/failed/etc.) keeps
+// focus in RAIL — never enters an AGENT pane that would 404 on every
+// keystroke. This is the BUG-018 regression guard for the OnRailSelectEnter
+// path (complementing BUG-014's Dead=true guard).
+func TestApp_OnRailSelectEnter_DeadSessionWorkerStaysInRAIL(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "done-worker", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w.ID, ArgusTaskID: "t-done", WorktreePath: "/w"})
+
+	src := &aliveStatePaneSource{
+		alive:  map[string]bool{"t-done": false},
+		states: map[string]ArgusTaskState{"t-done": {Status: "complete"}},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	if !a.pieces.rail.SelectByRoleID(w.ID) {
+		t.Fatalf("could not select dead-session worker in rail")
+	}
+
+	got := a.OnRailSelectEnter()
+	if got != FocusRAIL {
+		t.Fatalf("Enter on dead-session worker: want FocusRAIL (PTY would 404), got %s", got)
+	}
+}
+
+// TestApp_ApplyRailSelection_DeadSessionAgentForcesRAIL proves that navigating
+// onto a dead-session agent row (the path j/k triggers via onRailSelectionChanged
+// → applyRailSelection) while focus is already in AGENT forces focus back to
+// RAIL. Without this guard the operator's keystrokes are forwarded to the dead
+// PTY (HTTP 404) and swallowed from tcell, making the view appear frozen.
+// This is the BUG-018 regression guard for the onRailSelectionChanged path.
+func TestApp_ApplyRailSelection_DeadSessionAgentForcesRAIL(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "live", Kind: db.KindWorker, ArgusProject: "proj"})
+	w2, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: orch.ID, Name: "done", Kind: db.KindWorker, ArgusProject: "proj"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "t-live", WorktreePath: "/1"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w2.ID, ArgusTaskID: "t-done", WorktreePath: "/2"})
+
+	src := &aliveStatePaneSource{
+		alive: map[string]bool{"t-live": true, "t-done": false},
+		states: map[string]ArgusTaskState{
+			"t-live": {Status: "in_progress"},
+			"t-done": {Status: "complete"},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+	a.selectDebounce = 0
+
+	// Land on the live worker and enter its AGENT pane — simulates an operator
+	// who has been actively viewing a live agent before navigating away.
+	if !a.pieces.rail.SelectByRoleID(w1.ID) {
+		t.Fatalf("could not select live worker")
+	}
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+	focus.JumpToAGENT()
+	if a.AgentTaskID() != "t-live" {
+		t.Fatalf("baseline agent: want t-live, got %q", a.AgentTaskID())
+	}
+	if focus.State() != FocusAGENT {
+		t.Fatalf("baseline focus: want AGENT, got %s", focus.State())
+	}
+
+	// Navigate onto the dead-session worker (debounced applyRailSelection path).
+	// Focus MUST be returned to RAIL so subsequent keystrokes drive the rail
+	// instead of being forwarded to a dead PTY that returns HTTP 404.
+	if !a.pieces.rail.SelectByRoleID(w2.ID) {
+		t.Fatalf("could not select dead-session worker")
+	}
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+
+	if focus.State() != FocusRAIL {
+		t.Fatalf("after navigating onto dead-session agent: want FocusRAIL, got %s", focus.State())
+	}
+	// The focus atomic read by rawInputConn on the WS goroutine must also
+	// reflect RAIL so raw bytes reach tcell/KeyRouter, not the dead PTY.
+	if got := FocusState(a.focusState.Load()); got != FocusRAIL {
+		t.Fatalf("focus atomic: want FocusRAIL, got %s", got)
+	}
+}
+
 // TestApp_OnRailSelectionChanged_RebindsBothPanes confirms that moving
 // the rail cursor onto an agent row drives a rebind of both COORD (to
 // the orchestrator's coord task) and AGENT (to the agent's task)
