@@ -1947,8 +1947,10 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	// and the Pinned block. The marker occupies the same slot as the PR
 	// indicator — PR state is never set on unmanaged tasks (no hera binding),
 	// so the two are mutually exclusive in practice.
+	// White (high-contrast) so the glyph is clearly readable; the previous
+	// dim variant was too faint against the dark background (BUG-031).
 	if r.RoleKind == string(db.KindFreelance) {
-		markerStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed)
+		markerStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite)
 		screen.SetContent(col, y, iconFreelance, nil, markerStyle)
 		col += 2
 	} else if prIcon, prStyle, ok := prGlyph(r.PRState); ok {

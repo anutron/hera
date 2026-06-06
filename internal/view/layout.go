@@ -34,11 +34,10 @@ const (
 // drive updates (rail refresh, pane swap) without recomposing the Flex
 // each time.
 type layoutPieces struct {
-	root   *tview.Flex
-	topBar *tview.TextView
-	rail   *railList
-	coord  *pinnedTerminalPane
-	agent  *pinnedTerminalPane
+	root  *tview.Flex
+	rail  *railList
+	coord *pinnedTerminalPane
+	agent *pinnedTerminalPane
 	// details is the coordinator Details pane. It is created once here but
 	// composed into the body only in coordinator mode (refreshBody), so the
 	// agent and freelance layouts are unchanged.
@@ -51,33 +50,24 @@ type layoutPieces struct {
 	pages *tview.Pages
 }
 
-// buildLayout composes the tview Flex tree (design.md D7, revised by D12):
+// buildLayout composes the tview Flex tree (design.md D7, revised by D12,
+// revised by BUG-031):
 //
-//	Flex (rows):
-//	  TopBar       (height 1, empty — no hera branding, BUG-004)
-//	  Body  (cols):
-//	    Rail       (width RailWidth)
-//	    CoordPane  (flex 1, title "Coord")
-//	    AgentPane  (flex 1, title "Agent")
+//	Body (cols):
+//	  Rail      (width RailWidth)
+//	  CoordPane (flex 1, title "Coord")
+//	  AgentPane (flex 1, title "Agent")
 //
-// Coord and agent panes split the remaining horizontal space evenly. The
-// TopBar is blank (the argus chrome already identifies the view, so a
-// hera-stamped "HERA" label here was redundant). Hera renders NO bottom-bar row of
+// Coord and agent panes split the remaining horizontal space evenly. There is
+// no top-bar row: the body fills the full terminal height so the layout is
+// flush (no internal margin) matching argus's own task view. The BUG-027
+// fullscreen indicator lives in the coord/agent pane-title slot (set by
+// OnFullscreenChanged), not a separate row. Hera renders NO bottom-bar row of
 // its own — under the argus key-surrender contract (D12) argus draws the
-// plugin-mode status bar (including the reserved `^Q^Q argus` exit hint) from
-// the focus-aware hotkey dictionary hera pushes over the WebSocket. The two
-// terminalpanes own their own border and title rendering, so this layer only
-// wires titles and arranges them in the Flex.
+// plugin-mode status bar from the focus-aware hotkey dictionary hera pushes
+// over the WebSocket. The two terminalpanes own their own border and title
+// rendering, so this layer only wires titles and arranges them in the Flex.
 func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
-	// No "HERA" branding in the top row: the argus chrome already identifies
-	// the view, so a hera-stamped label here is redundant (BUG-004). The 1-row
-	// TopBar is kept (empty) so the body's vertical geometry is unchanged.
-	top := tview.NewTextView()
-	top.SetText("")
-	top.SetTextAlign(tview.AlignLeft)
-	top.SetTextColor(tcell.ColorWhite)
-	top.SetBackgroundColor(heraBackground)
-
 	rail := newRailList()
 	rail.SetBackgroundColor(heraBackground)
 	details := newDetailsPane()
@@ -88,9 +78,6 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 	coord.SetBackgroundColor(heraBackground)
 	agent.SetBackgroundColor(heraBackground)
 
-	// Coord pane title reads "Coord" (parallel to the "Agent" pane), not the
-	// redundant "HERA" branding (BUG-004). The rail and agent keep their own
-	// functional titles ("Rail" / "Agent").
 	coord.SetTitle("Coord")
 	agent.SetTitle("Agent")
 
@@ -104,17 +91,11 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 	// child (the canvas between/around panes); pin it to the same black.
 	body.SetBackgroundColor(heraBackground)
 
-	root := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(top, 1, 0, false).
-		AddItem(body, 0, 1, false)
-	root.SetBackgroundColor(heraBackground)
-
 	pages := tview.NewPages().
-		AddPage(pageBase, root, true, true)
+		AddPage(pageBase, body, true, true)
 
 	return layoutPieces{
-		root:    root,
-		topBar:  top,
+		root:    body,
 		rail:    rail,
 		coord:   coord,
 		agent:   agent,
@@ -222,11 +203,15 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			// they are discoverable; the per-row applicability is surfaced by the
 			// op itself (a visible "not applicable" notice on a wrong row), matching
 			// how the other rail mutation keys (n/r/a) are always listed (BUG-007).
+			// J is placed immediately after w (both are "spawn/adopt" ops) so it
+			// appears in the bottom bar before the rename/delete/archive block —
+			// which are pushed past the bar's visible width at typical terminals
+			// (BUG-031).
 			{Key: "w", Label: "new agent", Bar: true},
+			{Key: "J", Label: "adopt", Bar: true},
 			{Key: "r", Label: "rename", Bar: true},
 			{Key: "^d", Label: "del", Bar: true},
 			{Key: "a", Label: "archive", Bar: true},
-			{Key: "J", Label: "adopt", Bar: true},
 			{Key: "l", Label: "listall", Bar: true},
 			// Help-overlay-only rail keys (Bar:false): kept off the bottom bar
 			// to avoid clutter but advertised so argus's `?` overlay lists them.

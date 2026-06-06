@@ -1224,8 +1224,11 @@ func (a *App) OnFocusChanged(state FocusState) {
 
 // OnFullscreenChanged satisfies the KeyRouter.FullscreenUpdater contract
 // (BUG-027). When active=true, the named pane fills the entire body area
-// (rail and the other pane are hidden) and the top indicator bar names the
-// pane. When active=false, the normal split is restored and the bar is cleared.
+// (rail and the other pane are hidden) and the pane's own title bracket-wraps
+// its name to signal fullscreen mode. When active=false, the normal split is
+// restored and both pane titles revert to their plain names. The indicator
+// lives in the coord/agent pane-title slot rather than a separate top bar row,
+// so the layout stays flush with zero internal margin (BUG-031).
 // Runs on the tview event loop (called from the key router's input pump).
 func (a *App) OnFullscreenChanged(pane FocusState, active bool) {
 	a.mu.Lock()
@@ -1234,13 +1237,14 @@ func (a *App) OnFullscreenChanged(pane FocusState, active bool) {
 	a.mu.Unlock()
 
 	if active {
-		label := "Agent"
 		if pane == FocusCOORD {
-			label = "Coord"
+			a.pieces.coord.SetTitle("[ Coord ]")
+		} else {
+			a.pieces.agent.SetTitle("[ Agent ]")
 		}
-		a.pieces.topBar.SetText("  [ " + label + " ]")
 	} else {
-		a.pieces.topBar.SetText("")
+		a.pieces.coord.SetTitle("Coord")
+		a.pieces.agent.SetTitle("Agent")
 	}
 	a.refreshBody()
 }
