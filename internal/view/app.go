@@ -701,6 +701,28 @@ func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
 	return out
 }
 
+// findOrchestratorByID returns the orchEntry with the given ID from the
+// orchestrator tree, recursing into childOrch entries nested under role rows.
+// resolveSubCoordinators removes child orchestrators from the top-level list
+// and attaches them as roleEntry.childOrch, so a top-level-only scan misses
+// any orchestrator that is the coordinator of a nested sub-orchestrator.
+// Returns nil when no match is found.
+func findOrchestratorByID(orchs []*orchEntry, id int64) *orchEntry {
+	for _, o := range orchs {
+		if o.ID == id {
+			return o
+		}
+		for _, role := range o.Roles {
+			if role.childOrch != nil {
+				if found := findOrchestratorByID([]*orchEntry{role.childOrch}, id); found != nil {
+					return found
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // buildFreelance partitions the live argus task list into the Freelance
 // section, grouped by argus project/repo "the same way Argus shows them". A
 // freelancer is a live argus task hera does not CURRENTLY manage: no LIVE
@@ -1539,14 +1561,14 @@ func (a *App) applyRailSelection(ref any) {
 			a.setBodyMode(true, false)
 			return
 		}
-		// Locate the orchestrator so we can rebind COORD to its coord task.
-		// orchestrators is the rail's source of truth so a linear walk is cheap.
+		// Locate the orchestrator that owns this role. resolveSubCoordinators
+		// removes child orchestrators from the top-level list and nests them
+		// under roleEntry.childOrch, so we must search the full tree rather
+		// than just a.pieces.rail.orchestrators.
+		orch := findOrchestratorByID(a.pieces.rail.orchestrators, r.OrchestratorID)
 		var coordTask string
-		for _, o := range a.pieces.rail.orchestrators {
-			if o.ID == r.OrchestratorID {
-				coordTask = o.CoordTaskID
-				break
-			}
+		if orch != nil {
+			coordTask = orch.CoordTaskID
 		}
 		// Always rebind COORD to the selected project's coord task — including
 		// "" when the project has no coord. Otherwise the HERA pane would keep
@@ -1558,11 +1580,8 @@ func (a *App) applyRailSelection(ref any) {
 			// Describe the orchestrator this coord role belongs to (childOrch
 			// was nil here — a degenerate coord row without its own child
 			// orchestrator).
-			for _, o := range a.pieces.rail.orchestrators {
-				if o.ID == r.OrchestratorID {
-					a.updateCoordDetails(o)
-					break
-				}
+			if orch != nil {
+				a.updateCoordDetails(orch)
 			}
 			a.setBodyMode(true, false)
 			return
