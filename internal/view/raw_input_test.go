@@ -205,6 +205,8 @@ func TestRawInput_TextEnvelopePassesThrough(t *testing.T) {
 // TestIsHeraChord_Matrix locks the chord predicate against the keys.go
 // interception logic: Ctrl-arrows (focus ladder / in-pane nav) and Shift-arrows
 // (scroll) and Ctrl-Q are chords; Alt-arrows and plain content are not.
+// BUG-029: Ctrl-Z (0x1a) must also be a chord — it must never be forwarded to
+// a pane PTY because that byte delivers SIGTSTP and suspends the pane's process.
 func TestIsHeraChord_Matrix(t *testing.T) {
 	cases := []struct {
 		name string
@@ -212,6 +214,7 @@ func TestIsHeraChord_Matrix(t *testing.T) {
 		want bool
 	}{
 		{"Ctrl-Q", []byte{0x11}, true},
+		{"Ctrl-Z", []byte{0x1a}, true}, // BUG-029: must be intercepted, never forwarded
 		{"Ctrl-Right", []byte("\x1b[1;5C"), true},
 		{"Ctrl-Left", []byte("\x1b[1;5D"), true},
 		{"CtrlAlt-Right(cmd)", []byte("\x1b[1;7C"), true},
@@ -232,6 +235,33 @@ func TestIsHeraChord_Matrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isHeraChord(tc.b); got != tc.want {
 				t.Fatalf("isHeraChord(%v) = %v, want %v", tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRawInput_CtrlZ_0x1a_PassesToParserNotForwardedInPane proves that the
+// raw SIGTSTP byte (0x1a, Ctrl-Z) is NEVER forwarded to a pane PTY when a
+// pane has focus. BUG-029: BUG-027 intercepted Ctrl-Z in HandleKey (the
+// keyenc/tcell path) but the raw-input forwarder was a second path to the PTY
+// that bypassed that interception — 0x1a reached the pane's process as SIGTSTP
+// and suspended it. The fix adds 0x1a to isHeraChord so the raw frame is
+// returned to the parser (where HandleKey consumes it) instead of being
+// forwarded verbatim.
+func TestRawInput_CtrlZ_0x1a_PassesToParserNotForwardedInPane(t *testing.T) {
+	for _, focus := range []FocusState{FocusCOORD, FocusAGENT} {
+		t.Run(focus.String(), func(t *testing.T) {
+			rc, fwd := newRawConn(focus, "coord-1", "agent-1", binFrame(0x1a))
+
+			mt, data := readOne(t, rc)
+
+			// Must pass to the tcell parser (so HandleKey can consume it).
+			if mt != websocket.MessageBinary || len(data) != 1 || data[0] != 0x1a {
+				t.Fatalf("0x1a must pass to parser unchanged; got typ=%v data=%v", mt, data)
+			}
+			// Must NOT be forwarded to the PTY (that would SIGTSTP the pane's process).
+			if calls := fwd.Calls(); len(calls) != 0 {
+				t.Fatalf("0x1a must NOT be forwarded to PTY; got %d forward call(s): %+v", len(calls), calls)
 			}
 		})
 	}

@@ -150,6 +150,9 @@ func isHeraChord(b []byte) bool {
 	if len(b) == 1 && b[0] == 0x11 { // Ctrl-Q
 		return true
 	}
+	if len(b) == 1 && b[0] == 0x1a { // Ctrl-Z (BUG-029: must never reach a PTY as SIGTSTP)
+		return true
+	}
 	// ESC [ 1 ; <param> <final>
 	if len(b) == 6 && b[0] == 0x1b && b[1] == '[' && b[2] == '1' && b[3] == ';' {
 		param := int(b[4] - '0')
