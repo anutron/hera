@@ -21,8 +21,11 @@ import (
 // Plugin-view registration parameters. Title is shown in argus's UI;
 // the hotkey is the argus-side keyboard shortcut the operator presses
 // to open hera-view (tentative `Ctrl-H` per design D8 / Open Questions).
+// viewTitle is empty so argus renders the plugin-view chrome with no label
+// (BUG-031: the "Hera" outer title was dropped; identity lives in the coord
+// pane-title slot instead).
 const (
-	viewTitle  = "Hera"
+	viewTitle  = ""
 	viewHotkey = "ctrl+h"
 )
 
