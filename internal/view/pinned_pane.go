@@ -65,6 +65,11 @@ type pinnedTerminalPane struct {
 	lastDesiredCols int
 	lastDesiredRows int
 
+	// paneTitle mirrors the title passed to SetTitle so GetTitle can return it.
+	// terminalpane.TerminalPane.SetTitle stores the title in an unexported field
+	// that tview.Box.GetTitle cannot reach; this field bridges that gap (BUG-031).
+	paneTitle string
+
 	// Scrollback state lives in the embedded SDK pane (argus-sdk ≥ v0.0.3):
 	// ScrollBy / ScrollOffset / ResetScroll are promoted from
 	// *terminalpane.TerminalPane, which clamps the offset to the emulator's
@@ -122,6 +127,20 @@ func newBoundPinnedTerminalPane(tp *terminalpane.TerminalPane, cols, rows int, t
 // tests.
 func (p *pinnedTerminalPane) PinnedSize() (int, int) {
 	return p.pinnedCols, p.pinnedRows
+}
+
+// SetTitle forwards to the embedded TerminalPane (which renders the title in
+// the pane border) and mirrors the value in p.paneTitle so GetTitle can return
+// it — terminalpane stores the title in an unexported field that tview.Box's
+// GetTitle cannot reach (BUG-031).
+func (p *pinnedTerminalPane) SetTitle(t string) {
+	p.paneTitle = t
+	p.TerminalPane.SetTitle(t)
+}
+
+// GetTitle returns the pane title last set by SetTitle.
+func (p *pinnedTerminalPane) GetTitle() string {
+	return p.paneTitle
 }
 
 // Focus implements tview.Primitive by explicitly forwarding to the embedded

@@ -102,10 +102,9 @@ func TestBuildApp_RejectsNilDB(t *testing.T) {
 	}
 }
 
-// The top row carries NO hera branding (BUG-004): the argus chrome already
-// identifies the view, so a hera-stamped "HERA" label in the top border was
-// redundant. The TopBar row is kept (empty) so the body geometry is unchanged.
-func TestBuildApp_TopBarHasNoHeraBranding(t *testing.T) {
+// The body fills the full terminal height — no internal top-bar margin (BUG-031).
+// Row 0 is the pane top border, and it must not contain any "HERA" branding.
+func TestBuildApp_NoHeraHeraBrandingInTopRow(t *testing.T) {
 	d := openTestDB(t)
 	a, err := BuildApp(d, nil)
 	if err != nil {
@@ -115,8 +114,8 @@ func TestBuildApp_TopBarHasNoHeraBranding(t *testing.T) {
 
 	got := renderApp(t, a, 80, 24)
 	firstRow := strings.SplitN(got, "\n", 2)[0]
-	if strings.Contains(firstRow, "HERA") || strings.Contains(firstRow, "Hera") {
-		t.Fatalf("top row must not stamp hera branding; got %q", firstRow)
+	if strings.Contains(firstRow, "HERA") {
+		t.Fatalf("top row must not stamp HERA branding; got %q", firstRow)
 	}
 }
 
@@ -128,27 +127,19 @@ func TestBuildApp_ThreeColumnsAndChrome(t *testing.T) {
 	}
 	defer a.Close()
 
-	// At 80x24 the rail is width RailWidth and the two panes split the
-	// remaining columns. Top bar = row 0; the body fills rows 1..23 — hera
-	// renders NO bottom-bar row of its own (D12: argus draws the plugin-mode
-	// status bar from hera's pushed hotkeys).
+	// At 80x24 the body fills all rows 0..23 (no internal top-bar margin,
+	// BUG-031). Hera renders NO bottom-bar row of its own (D12: argus draws the
+	// plugin-mode status bar from hera's pushed hotkeys).
 	got := renderApp(t, a, 80, 24)
 	rows := strings.Split(got, "\n")
 	if len(rows) < 24 {
 		t.Fatalf("expected at least 24 rows; got %d", len(rows))
 	}
 
-	// Top bar should NOT contain rail/pane border characters; it's a plain
-	// (now empty) text row, not a bordered box.
-	if strings.ContainsAny(rows[0][:RailWidth], "│┃") {
-		t.Errorf("top bar row should not include vertical border within rail column; row 0 = %q", rows[0])
-	}
-
-	// The rail should render its own bordered box; row 1 (just below
-	// the top bar) should show the rail border or title.
-	railSlice := rows[1][:RailWidth]
-	if !strings.ContainsAny(railSlice, "─┌┐└┘─Rail") {
-		t.Errorf("expected rail border characters on row 1 within rail column; got %q", railSlice)
+	// Row 0 is the rail top border (the body is flush — no blank row above it).
+	railSlice := rows[0][:RailWidth]
+	if !strings.ContainsAny(railSlice, "─┌┐└┘╔╗═") {
+		t.Errorf("expected rail top-border characters on row 0; got %q", railSlice)
 	}
 
 	// No internal bottom bar: hera advertises focus-aware hotkeys to argus
@@ -162,7 +153,7 @@ func TestBuildApp_ThreeColumnsAndChrome(t *testing.T) {
 
 	// The body's bottom pane border should reach the last row (row 23),
 	// proving the body — not a retired bottom bar — owns that row.
-	if !strings.ContainsAny(rows[23], "└┘─") {
+	if !strings.ContainsAny(rows[23], "└┘─╚╝═") {
 		t.Errorf("expected the body's bottom border on the last row; got %q", rows[23])
 	}
 }
@@ -234,14 +225,23 @@ func TestApp_OnFocusChanged_PushesFocusAwareHotkeys(t *testing.T) {
 	}
 
 	// `w` (spawn worker) and `J` (adopt) are advertised on the BOTTOM BAR
-	// (Bar:true) so both recently-added rail gestures are discoverable, not
-	// just in the `?` help overlay (BUG-007).
+	// (Bar:true) so both rail gestures are discoverable, not just in the `?`
+	// help overlay (BUG-007). J is positioned immediately after w so it is
+	// visible in the bar before the rename/delete/archive block that gets
+	// truncated at typical terminal widths (BUG-031).
 	railBar := barLabelsFor(items)
 	if !strings.Contains(railBar, "w:new agent") {
 		t.Fatalf("RAIL bottom bar must advertise w:new agent (Bar:true): %s", railBar)
 	}
 	if !strings.Contains(railBar, "J:adopt") {
 		t.Fatalf("RAIL bottom bar must advertise J:adopt (Bar:true): %s", railBar)
+	}
+	// J must appear immediately after w in the bar string so the argus bottom
+	// bar renders it before the rename/delete block hits the width limit.
+	wIdx := strings.Index(railBar, "w:new agent")
+	jIdx := strings.Index(railBar, "J:adopt")
+	if wIdx < 0 || jIdx < 0 || jIdx <= wIdx {
+		t.Fatalf("J:adopt must follow w:new agent in the bar string (BUG-031); bar=%s", railBar)
 	}
 
 	a.OnFocusChanged(FocusCOORD)
@@ -313,12 +313,13 @@ func TestApp_OnFocusChanged_PaintsArgusCyanBorders(t *testing.T) {
 }
 
 // TestBuildApp_AllChromeSurfacesUseHeraBackground proves the single-background
-// contract (BUG-001): every hera-rendered chrome surface — root, top bar, body,
-// rail, both panes, and the Details pane — paints the same heraBackground the
-// pane interiors use, so no grey-blue (tview's stock ColorBlack/Color0 or the
-// argus ColorStatusBG dark gray) bleeds through anywhere. A regression that
-// drops one of the explicit SetBackgroundColor calls (or reverts the global
-// tview.Styles repoint) trips here.
+// contract (BUG-001): every hera-rendered chrome surface — root/body, rail,
+// both panes, and the Details pane — paints the same heraBackground the pane
+// interiors use, so no grey-blue (tview's stock ColorBlack/Color0 or the argus
+// ColorStatusBG dark gray) bleeds through anywhere. A regression that drops one
+// of the explicit SetBackgroundColor calls (or reverts the global tview.Styles
+// repoint) trips here. The top-bar row is gone (BUG-031) so it is no longer a
+// checked surface.
 func TestBuildApp_AllChromeSurfacesUseHeraBackground(t *testing.T) {
 	d := openTestDB(t)
 	a, err := BuildApp(d, nil)
@@ -332,7 +333,6 @@ func TestBuildApp_AllChromeSurfacesUseHeraBackground(t *testing.T) {
 		bg   tcell.Color
 	}{
 		{"root", a.pieces.root.GetBackgroundColor()},
-		{"topBar", a.pieces.topBar.GetBackgroundColor()},
 		{"body", a.pieces.body.GetBackgroundColor()},
 		{"rail", a.pieces.rail.GetBackgroundColor()},
 		{"coord", a.pieces.coord.GetBackgroundColor()},
@@ -374,6 +374,60 @@ func TestBuildApp_RailHeaderRendered(t *testing.T) {
 	}
 	if !strings.Contains(got, "─") {
 		t.Fatalf("expected rail border rule characters in rendered app; got:\n%s", got)
+	}
+}
+
+// BUG-031: the fullscreen indicator lives in the pane title, not a top bar row.
+// OnFullscreenChanged must bracket-wrap the active pane's title ("[ Coord ]" or
+// "[ Agent ]") while fullscreen is active and revert both titles to plain names
+// on exit.
+func TestApp_OnFullscreenChanged_UpdatesPaneTitles(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Initial state: both panes carry their plain titles.
+	if got := a.pieces.coord.GetTitle(); got != "Coord" {
+		t.Errorf("initial coord title: want %q, got %q", "Coord", got)
+	}
+	if got := a.pieces.agent.GetTitle(); got != "Agent" {
+		t.Errorf("initial agent title: want %q, got %q", "Agent", got)
+	}
+
+	// Enter coord fullscreen: coord title brackets, agent unchanged.
+	a.OnFullscreenChanged(FocusCOORD, true)
+	if got := a.pieces.coord.GetTitle(); got != "[ Coord ]" {
+		t.Errorf("coord fullscreen: want %q, got %q", "[ Coord ]", got)
+	}
+	if got := a.pieces.agent.GetTitle(); got != "Agent" {
+		t.Errorf("coord fullscreen must not change agent title; got %q", got)
+	}
+
+	// Exit fullscreen: both revert to plain names.
+	a.OnFullscreenChanged(FocusCOORD, false)
+	if got := a.pieces.coord.GetTitle(); got != "Coord" {
+		t.Errorf("after exit: coord title: want %q, got %q", "Coord", got)
+	}
+	if got := a.pieces.agent.GetTitle(); got != "Agent" {
+		t.Errorf("after exit: agent title: want %q, got %q", "Agent", got)
+	}
+
+	// Enter agent fullscreen: agent title brackets, coord unchanged.
+	a.OnFullscreenChanged(FocusAGENT, true)
+	if got := a.pieces.agent.GetTitle(); got != "[ Agent ]" {
+		t.Errorf("agent fullscreen: want %q, got %q", "[ Agent ]", got)
+	}
+	if got := a.pieces.coord.GetTitle(); got != "Coord" {
+		t.Errorf("agent fullscreen must not change coord title; got %q", got)
+	}
+
+	// Exit again.
+	a.OnFullscreenChanged(FocusAGENT, false)
+	if got := a.pieces.agent.GetTitle(); got != "Agent" {
+		t.Errorf("after exit: agent title: want %q, got %q", "Agent", got)
 	}
 }
 
