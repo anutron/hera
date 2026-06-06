@@ -366,9 +366,14 @@ func TestBuildApp_RailHeaderRendered(t *testing.T) {
 	}
 	defer a.Close()
 
+	// BUG-026: the rail border renders without a "Rail" label (redundant title removed).
+	// Verify the border is present (horizontal rule appears) and "Rail" is absent.
 	got := renderApp(t, a, 80, 24)
-	if !strings.Contains(got, "Rail") {
-		t.Fatalf("expected rail title 'Rail' visible in border; got:\n%s", got)
+	if strings.Contains(got, "Rail") {
+		t.Fatalf("BUG-026: rail border must NOT contain 'Rail' label; got:\n%s", got)
+	}
+	if !strings.Contains(got, "─") {
+		t.Fatalf("expected rail border rule characters in rendered app; got:\n%s", got)
 	}
 }
 

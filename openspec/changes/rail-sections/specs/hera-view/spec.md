@@ -40,10 +40,10 @@ Pin state SHALL be persisted HERA-SIDE in a nullable `pinned_at` column on `orch
 - **WHEN** focus is `RAIL` and the operator presses `P` against a freelance row
 - **THEN** hera MUST toggle the freelancer's pinned state in the rail's in-memory `pinnedFreelance` map (persisted via `railViewState` to the config table), AND the pinned freelancer MUST float to the ROOT level of the Pinned block (depth 0, intermixed with pinned coordinators, no ancestry shown), AND MUST NOT also render in the Freelance section (no double-render), AND MUST NOT write any hera role DB row or call argus. Pressing `P` again MUST unpin and return the freelancer to the Freelance section.
 
-#### Scenario: Every freelance row carries the (F) marker (BUG-024)
+#### Scenario: Every freelance row carries the (F) marker (BUG-024 / BUG-026)
 
-- **WHEN** a freelance task renders in the Freelance section OR in the Pinned block
-- **THEN** the row MUST display the `iconFreelance` marker (`nf-md-alpha_f_box`, U+F0229) after the status icon, so freelancers are visually distinct from managed agents and coordinators at a glance. The marker MUST render consistently at the same icon-column position in both sections.
+- **WHEN** a freelance task renders in the Freelance section, in the Pinned block, OR in the consolidated bottom Archive's per-project sub-groups
+- **THEN** the row MUST display the `iconFreelance` marker (`nf-md-alpha_f_box_outline`, U+F0BFA — confirmed present in HackNerdFont-Regular v3 via post-table glyph name; the prior codepoint U+F0229 was `md-file_presentation_box`, not the intended alpha-f icon) after the status icon, so freelancers are visually distinct from managed agents and coordinators at a glance. The marker MUST render consistently at the same icon-column position in all sections.
 
 #### Scenario: Pinned managed sub-item renders as a stacked two-line breadcrumb (BUG-025)
 
@@ -61,38 +61,54 @@ Pin state SHALL be persisted HERA-SIDE in a nullable `pinned_at` column on `orch
 - **WHEN** the breadcrumb ancestry trail (e.g. `grandparent › parent › child › `) exceeds the available line-1 width
 - **THEN** the leftmost ancestors MUST be dropped and the trail replaced with `…` + the remaining suffix, keeping the nearest parent visible. The role name on line 2 MUST render in full with no truncation from the ancestry.
 
-### Requirement: Archived Hera tasks render in a navigable Archive section below Freelance
+### Requirement: Consolidated bottom Archive with sub-groups (BUG-026, supersedes BUG-019)
 
-The system SHALL render a bottom-of-rail `Archive (N)` section, below the Freelance section, holding archived Hera tasks that would otherwise vanish from the rail — archived freelancers (unmanaged argus tasks the operator archived with `a`) and archived root coordinators. This Archive section MUST be reachable by normal j/k navigation WITHOUT pressing `l`, and MUST be collapsed by default; `space` or `Enter` on its header toggles its fold. `N` is the count of archived items it holds.
+The system SHALL render ONE consolidated `Archive (N)` section at the bottom of the rail, holding ALL archived Hera tasks — archived freelancers AND archived root coordinators — in a single, navigable expando. This replaces the BUG-019 per-project Archive expandos inside the Freelance section. The Freelance section MUST show ONLY live (non-archived, non-pinned) freelancers; archived freelancers are NEVER shown inline in the Freelance section.
 
-Archived freelancers SHALL render ONLY inside this Archive section (as standalone rows), and MUST NOT render inline within their Freelance repo group — so there is NO double-render. A Freelance repo group's live-count and visibility MUST exclude archived tasks; a repo group whose only tasks are archived MUST NOT render an empty inline group. Pressing `a` on an archived freelancer row in the Archive section MUST unarchive it (issue the argus unarchive endpoint against its task id), returning it to its Freelance repo group on the next rebuild.
+The bottom Archive expando (collapsed by default, `archiveTopLevelOwner = 0`) contains TWO types of sub-groups (both also collapsed by default, fold state persisted via `railViewState.ArchiveGroupExpanded`):
 
-The `l` listall convenience MUST continue to work: it force-expands every Archive expando (the per-coordinator expandos AND this bottom Archive section) and reveals dead rows, but it is NOT required to make this Archive section reachable — the section and its fold are reachable in the default view.
+- **`Hera sessions` sub-group** — holds archived root coordinators (those archived from the active coordinator tree).
+- **Per-project sub-groups** (one per project name, mirroring the live Freelance grouping) — hold archived freelancers for that project. Each archived freelancer row carries the `iconFreelance` marker (`nf-md-alpha_f_box_outline`, U+F0BFA).
 
-#### Scenario: Archived freelancer renders in the bottom Archive, not vanished
+Per-coordinator Archive expandos (archived AGENTS inside a coordinator — e.g. `Archive (3)` under `kbtest`) remain exactly as-is, unchanged by this requirement.
+
+`N` on the bottom Archive header is the total count of all archived items (archived coords + archived freelancers). `N` on each sub-group header is the count within that sub-group.
+
+Sub-groups are selectable (`railRowArchiveGroup`). Space/Enter on a sub-group header toggles its fold. The `l` listall convenience force-expands both the Archive expando AND all sub-groups. An active search filter force-expands the Archive and sub-groups, narrowing each to matching items.
+
+Zone separators (plain horizontal rules, `railRowSectionRule`) appear between the active coordinator tree and the Freelance section, and between the Freelance section and the Archive section, visually delineating the four rail zones: Pinned | active coords | Freelance | Archive.
+
+The rail border title is EMPTY by default (BUG-026: the "Rail" label is redundant, removed). During an active search filter, the title shows only the query string (e.g. `/scout`).
+
+#### Scenario: Archived freelancer renders in the consolidated bottom Archive, not vanished
 
 - **WHEN** the operator presses `a` on a freelancer and its argus task becomes archived
-- **THEN** in the default view (without `l`) the rail MUST render the bottom `Archive (N)` section counting that freelancer, AND folding it open MUST reveal the freelancer as a selectable row
+- **THEN** in the default view (without `l`) the rail MUST render the bottom `Archive (N)` section counting that freelancer AND the Freelance section MUST NOT contain that freelancer. Expanding the Archive MUST reveal a per-project sub-group; expanding the sub-group MUST reveal the freelancer as a selectable row.
 
 #### Scenario: Archived freelancer does not double-render
 
 - **WHEN** a freelancer is archived
-- **THEN** it MUST NOT appear inline in its Freelance repo group (in either the default or the `l` view) — it renders only inside the bottom Archive section
+- **THEN** it MUST NOT appear inline in its Freelance repo group (in either the default or the `l` view) — it renders only inside the bottom Archive's per-project sub-group.
+
+#### Scenario: No per-project Archive expandos in the Freelance section
+
+- **WHEN** the Freelance section renders
+- **THEN** it MUST contain ONLY live (non-archived, non-pinned) freelancers grouped by project. There MUST be no `railRowArchiveExpando` or `railRowArchiveGroup` rows inside the Freelance section.
 
 #### Scenario: `a` on an archived freelancer in the Archive section unarchives it
 
 - **WHEN** the operator presses `a` against an archived freelancer row inside the bottom Archive section, whose argus task is `T9`
-- **THEN** hera MUST issue the argus unarchive endpoint for `T9` with no hera DB write, so the task returns to its Freelance repo group on the next rebuild
+- **THEN** hera MUST issue the argus unarchive endpoint for `T9` with no hera DB write, so the task returns to its Freelance repo group on the next rebuild.
 
-#### Scenario: Archived root coordinator reachable without `l`
+#### Scenario: Archived root coordinator reachable without `l` via "Hera sessions"
 
 - **WHEN** a root coordinator is archived
-- **THEN** in the default view (without `l`) the rail MUST render it inside the bottom `Archive (N)` section (collapsed by default), reachable by j/k
+- **THEN** in the default view (without `l`) the rail MUST render the bottom `Archive (N)` section. Expanding it MUST reveal a `Hera sessions (N)` sub-group. Expanding that sub-group MUST reveal the archived coordinator.
 
-#### Scenario: `l` force-expands the bottom Archive section
+#### Scenario: `l` force-expands the bottom Archive and all sub-groups
 
 - **WHEN** the operator presses `l`
-- **THEN** the bottom `Archive (N)` section MUST be force-expanded along with every per-coordinator Archive expando, AND dead rows MUST be revealed
+- **THEN** the bottom `Archive (N)` section MUST be force-expanded along with every per-coordinator Archive expando AND all Archive sub-groups (`Hera sessions`, per-project freelancer groups), AND dead rows MUST be revealed.
 
 ## MODIFIED Requirements
 

@@ -573,14 +573,19 @@ func TestRailList_TopLevelArchiveForArchivedRootCoordinators(t *testing.T) {
 		t.Fatalf("live project must render outside the Archive; got:\n%s", got)
 	}
 
-	// Open the top-level Archive (owner 0) and the archived root appears.
+	// BUG-026: archived root coordinators now live in a "Hera sessions" sub-group
+	// inside the bottom Archive. Expand the Archive, then the "Hera sessions" group.
 	if !rl.SelectByArchiveOwner(0) {
 		t.Fatalf("could not select the top-level Archive expando header")
 	}
-	rl.ToggleCollapse()
-	got = renderRail(t, rl, 30, 10)
+	rl.ToggleCollapse() // expand Archive → shows "Hera sessions" sub-group collapsed
+	if !rl.SelectByArchiveGroup("Hera sessions") {
+		t.Fatalf("could not select the 'Hera sessions' sub-group")
+	}
+	rl.ToggleCollapse() // expand "Hera sessions" → archived coord appears
+	got = renderRail(t, rl, 30, 14)
 	if !strings.Contains(got, "dead-proj") {
-		t.Fatalf("archived root coordinator must appear once the top-level Archive is open; got:\n%s", got)
+		t.Fatalf("archived root coordinator must appear once the 'Hera sessions' sub-group is open; got:\n%s", got)
 	}
 }
 

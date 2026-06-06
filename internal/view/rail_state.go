@@ -23,20 +23,28 @@ type railViewState struct {
 	// operator has pinned. Freelancers have no hera DB row, so their pin state
 	// lives here alongside FreelanceCollapsed rather than in the roles table.
 	PinnedFreelance map[string]bool
+	// ArchiveGroupExpanded tracks which sub-groups inside the consolidated bottom
+	// Archive are folded open, keyed by group name ("Hera sessions", "ARGUS", …).
+	// Default (zero value) is collapsed — sub-groups stay tucked until the
+	// operator expands them (BUG-026).
+	ArchiveGroupExpanded map[string]bool
 }
 
 func (s railViewState) isEmpty() bool {
-	return len(s.Collapsed) == 0 && len(s.FreelanceCollapsed) == 0 && len(s.ArchiveExpanded) == 0 && len(s.PinnedFreelance) == 0
+	return len(s.Collapsed) == 0 && len(s.FreelanceCollapsed) == 0 &&
+		len(s.ArchiveExpanded) == 0 && len(s.PinnedFreelance) == 0 &&
+		len(s.ArchiveGroupExpanded) == 0
 }
 
 // railStateJSON is the JSON wire format. JSON objects require string keys, so
 // the int64-keyed maps are serialised as map[string]bool and converted on
 // each side.
 type railStateJSON struct {
-	Collapsed          map[string]bool `json:"collapsed,omitempty"`
-	FreelanceCollapsed map[string]bool `json:"freelance_collapsed,omitempty"`
-	ArchiveExpanded    map[string]bool `json:"archive_expanded,omitempty"`
-	PinnedFreelance    map[string]bool `json:"pinned_freelance,omitempty"`
+	Collapsed            map[string]bool `json:"collapsed,omitempty"`
+	FreelanceCollapsed   map[string]bool `json:"freelance_collapsed,omitempty"`
+	ArchiveExpanded      map[string]bool `json:"archive_expanded,omitempty"`
+	PinnedFreelance      map[string]bool `json:"pinned_freelance,omitempty"`
+	ArchiveGroupExpanded map[string]bool `json:"archive_group_expanded,omitempty"`
 }
 
 func loadRailStateFromDB(ctx context.Context, cfg *db.ConfigDAO) (railViewState, error) {
@@ -52,8 +60,9 @@ func loadRailStateFromDB(ctx context.Context, cfg *db.ConfigDAO) (railViewState,
 		return railViewState{}, err
 	}
 	s := railViewState{
-		FreelanceCollapsed: j.FreelanceCollapsed,
-		PinnedFreelance:    j.PinnedFreelance,
+		FreelanceCollapsed:   j.FreelanceCollapsed,
+		PinnedFreelance:      j.PinnedFreelance,
+		ArchiveGroupExpanded: j.ArchiveGroupExpanded,
 	}
 	if len(j.Collapsed) > 0 {
 		s.Collapsed = make(map[int64]bool, len(j.Collapsed))
@@ -76,8 +85,9 @@ func loadRailStateFromDB(ctx context.Context, cfg *db.ConfigDAO) (railViewState,
 
 func saveRailStateToDB(ctx context.Context, cfg *db.ConfigDAO, s railViewState) error {
 	j := railStateJSON{
-		FreelanceCollapsed: s.FreelanceCollapsed,
-		PinnedFreelance:    s.PinnedFreelance,
+		FreelanceCollapsed:   s.FreelanceCollapsed,
+		PinnedFreelance:      s.PinnedFreelance,
+		ArchiveGroupExpanded: s.ArchiveGroupExpanded,
 	}
 	if len(s.Collapsed) > 0 {
 		j.Collapsed = make(map[string]bool, len(s.Collapsed))

@@ -79,11 +79,16 @@ type railList struct {
 
 	// archiveExpanded tracks which Archive expandos are folded open, keyed
 	// by owner: an orchestrator ID for a per-coordinator Archive expando, or
-	// archiveTopLevelOwner (0) for the bottom-of-rail Archive holding archived
-	// root coordinators. Default (zero value) is collapsed — archived items
-	// stay tucked away until the operator folds them open (D14). showArchived
-	// (`l`) is a show/hide-all convenience that forces every expando open.
+	// archiveTopLevelOwner (0) for the consolidated bottom Archive. Default
+	// (zero value) is collapsed — archived items stay tucked away until the
+	// operator folds them open (D14). showArchived (`l`) forces every expando open.
 	archiveExpanded map[int64]bool
+
+	// archiveGroupExpanded tracks which sub-groups inside the consolidated bottom
+	// Archive are folded open (BUG-026), keyed by group name ("Hera sessions",
+	// "ARGUS", "Hera", …). Default (zero value) is collapsed — sub-groups stay
+	// tucked until the operator expands them. Persisted via railViewState.
+	archiveGroupExpanded map[string]bool
 
 	// showArchived, when true, force-expands every Archive expando and reveals
 	// dead bindings — the `l` listall convenience. The per-owner expandos are
@@ -304,28 +309,27 @@ const (
 	// railRowRole with isBreadcrumbContinuation renders line 2 (the name +
 	// age) and is non-selectable — the two lines act as one unit for j/k.
 	railRowPinnedBreadcrumb
+	// railRowSectionRule is a non-selectable plain horizontal rule used to
+	// delineate rail sections (BUG-026): between the active coord tree and the
+	// Freelance section, and between the Freelance section and the consolidated
+	// Archive section. Renders identically to railRowPinnedEnd (plain rule, no
+	// label). Kept separate so tests can distinguish it from the Pinned closing rule.
+	railRowSectionRule
+	// railRowArchiveGroup is a SELECTABLE sub-group header inside the
+	// consolidated bottom Archive section (BUG-026): "Hera sessions" for archived
+	// root coordinators, and per-project groups for archived freelancers. Renders
+	// like a Freelance project header (chevron + name + count) but keyed by
+	// archiveGroup name rather than freelanceCollapsed.
+	railRowArchiveGroup
 	railRowEmpty
 )
 
-// archiveTopLevelOwner is the owner key for the bottom-of-rail Archive
-// expando that holds archived root coordinators. Per-coordinator Archive
-// expandos are keyed by their orchestrator's ID (always > 0). Freelance-project
-// Archive expandos use stable negative int64 keys (freelanceProjArchiveOwner).
+// archiveTopLevelOwner is the owner key for the consolidated bottom Archive
+// expando (BUG-026). Per-coordinator Archive expandos are keyed by their
+// orchestrator's ID (always > 0). The bottom Archive holds archived root
+// coordinators ("Hera sessions" sub-group) and archived freelancers
+// (per-project sub-groups keyed by archiveGroup name).
 const archiveTopLevelOwner int64 = 0
-
-// freelanceProjArchiveOwner returns a stable negative int64 owner key for a
-// freelance project's per-project Archive expando within the Freelance section.
-// Negative ensures no collision with orchestrator IDs (always positive > 0).
-// Uses an inline FNV-1a hash so no import is required.
-func freelanceProjArchiveOwner(project string) int64 {
-	var h uint64 = 14695981039346656037
-	for i := 0; i < len(project); i++ {
-		h ^= uint64(project[i])
-		h *= 1099511628211
-	}
-	v := int64(h>>1) | 1
-	return -v
-}
 
 // iconCoord marks a coordinator/orchestrator row, drawn between the chevron and
 // the name in addition to the status icon. A coordinator is a node that
@@ -337,10 +341,11 @@ const iconCoord = rune(0x0F0E7B) // 󰹻
 // iconFreelance is the (F)-in-a-box marker drawn on every freelance row (both
 // in the Freelance section and when pinned) so freelancers are visually
 // distinct from managed agents and coordinators at a glance. Uses
-// nf-md-alpha_f_box (U+F0229). NOTE: eyeball this in a real Nerd Font terminal
-// — the codepoint is correct per the Nerd Fonts v3 table but has not been
-// render-tested live.
-const iconFreelance = rune(0x0F0229) // 󰈩
+// nf-md-alpha_f_box_outline (U+F0BFA), sourced from the post-table glyph names
+// of HackNerdFont-Regular.ttf v3 (confirmed present; prior codepoint U+F0229
+// was md-file_presentation_box — wrong icon). The filled variant (alpha_f_box)
+// is at U+F0B0D in the same font.
+const iconFreelance = rune(0x0F0BFA)
 
 // iconCoordBroken is the mixed-coord repair cue: rendered at a coordinator
 // header's status-icon cell (in error red) when the orchestrator displays as
@@ -368,6 +373,11 @@ type railRow struct {
 	// is an orchestrator ID (per-coordinator) or archiveTopLevelOwner.
 	archiveOwner int64
 	archiveCount int
+
+	// archiveGroup is the sub-group name for railRowArchiveGroup rows (BUG-026):
+	// "Hera sessions" for archived root coordinators, or a project name for
+	// archived freelancers. Empty for all other row kinds.
+	archiveGroup string
 
 	// breadcrumb is the ancestry trail text for railRowPinnedBreadcrumb rows
 	// (BUG-025), e.g. "kbtest › nested-sub › ". Empty for all other row kinds.
@@ -409,18 +419,20 @@ const markerGutter = 2
 
 // newRailList constructs an empty rail widget. SetBorder is enabled so
 // OnFocusChanged's SetBorderColor still drives the focus-color paint.
+// The rail title is empty by default (BUG-026: "Rail" label removed); it only
+// shows the active filter query (e.g. "/scout") while a search is in progress.
 func newRailList() *railList {
 	rl := &railList{
-		Box:                tview.NewBox(),
-		collapsed:          map[int64]bool{},
-		freelanceCollapsed: map[string]bool{},
-		archiveExpanded:    map[int64]bool{},
-		pinnedFreelance:    map[string]bool{},
-		lastFiredCursor:    -1,
-		probeMarker:        probeMarkerFromEnv(),
+		Box:                  tview.NewBox(),
+		collapsed:            map[int64]bool{},
+		freelanceCollapsed:   map[string]bool{},
+		archiveExpanded:      map[int64]bool{},
+		archiveGroupExpanded: map[string]bool{},
+		pinnedFreelance:      map[string]bool{},
+		lastFiredCursor:      -1,
+		probeMarker:          probeMarkerFromEnv(),
 	}
 	rl.SetBorder(true)
-	rl.SetTitle("Rail")
 	return rl
 }
 
@@ -483,14 +495,16 @@ func (rl *railList) applyFilter() {
 	rl.maybeFireSelectionChanged()
 }
 
-// updateTitle reflects the active query in the rail title so the operator
-// always sees what is filtering the view (e.g. "Rail /scout").
+// updateTitle reflects the active query in the rail border title so the
+// operator always sees what is filtering the view (e.g. "/scout"). The title
+// is empty when no filter is active — the "Rail" label was removed (BUG-026:
+// redundant label, rail identity is self-evident from position and content).
 func (rl *railList) updateTitle() {
 	if rl.filter != "" {
-		rl.SetTitle("Rail /" + rl.filter)
+		rl.SetTitle("/" + rl.filter)
 		return
 	}
-	rl.SetTitle("Rail")
+	rl.SetTitle("")
 }
 
 // HandleFilterKey processes one key while in search input mode: Esc clears and
@@ -640,15 +654,17 @@ func (rl *railList) maybeFireStateChanged() {
 }
 
 // ViewState returns a snapshot of the rail's current fold choices (coordinator
-// collapse, freelance group collapse, archive expando). The maps are cloned so
-// the caller can hand them to a background goroutine without data races.
-// Called on the tview event loop (inside the onStateChanged callback).
+// collapse, freelance group collapse, archive expando, archive sub-group
+// expando). The maps are cloned so the caller can hand them to a background
+// goroutine without data races. Called on the tview event loop (inside the
+// onStateChanged callback).
 func (rl *railList) ViewState() railViewState {
 	return railViewState{
-		Collapsed:          maps.Clone(rl.collapsed),
-		FreelanceCollapsed: maps.Clone(rl.freelanceCollapsed),
-		ArchiveExpanded:    maps.Clone(rl.archiveExpanded),
-		PinnedFreelance:    maps.Clone(rl.pinnedFreelance),
+		Collapsed:            maps.Clone(rl.collapsed),
+		FreelanceCollapsed:   maps.Clone(rl.freelanceCollapsed),
+		ArchiveExpanded:      maps.Clone(rl.archiveExpanded),
+		PinnedFreelance:      maps.Clone(rl.pinnedFreelance),
+		ArchiveGroupExpanded: maps.Clone(rl.archiveGroupExpanded),
 	}
 }
 
@@ -668,6 +684,9 @@ func (rl *railList) RestoreViewState(s railViewState) {
 	}
 	if s.PinnedFreelance != nil {
 		rl.pinnedFreelance = s.PinnedFreelance
+	}
+	if s.ArchiveGroupExpanded != nil {
+		rl.archiveGroupExpanded = s.ArchiveGroupExpanded
 	}
 }
 
@@ -876,6 +895,20 @@ func (rl *railList) SelectByArchiveOwner(owner int64) bool {
 	return false
 }
 
+// SelectByArchiveGroup moves the cursor to the Archive sub-group header for
+// the given group name (BUG-026). Returns true on success.
+func (rl *railList) SelectByArchiveGroup(group string) bool {
+	for i, r := range rl.rows {
+		if r.kind == railRowArchiveGroup && r.archiveGroup == group {
+			rl.cursor = i
+			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
+			return true
+		}
+	}
+	return false
+}
+
 // CursorDown / CursorUp move selection by one selectable row and fire
 // the selection-changed callback when the cursor actually moves.
 func (rl *railList) CursorDown() { rl.move(1) }
@@ -957,14 +990,14 @@ func (rl *railList) selectable(i int) bool {
 	}
 	r := rl.rows[i]
 	switch r.kind {
-	case railRowOrch, railRowFreelanceProj, railRowArchiveExpando, railRowPinnedBreadcrumb:
+	case railRowOrch, railRowFreelanceProj, railRowArchiveExpando, railRowArchiveGroup, railRowPinnedBreadcrumb:
 		return true
 	case railRowRole:
 		// Breadcrumb-continuation rows are non-selectable: the cursor anchors
 		// on the preceding railRowPinnedBreadcrumb (BUG-025).
 		return !r.isBreadcrumbContinuation
 	}
-	return false // railRowPinnedSep, railRowPinnedEnd, railRowFreelanceSep, railRowEmpty
+	return false // railRowPinnedSep, railRowPinnedEnd, railRowSectionRule, railRowFreelanceSep, railRowEmpty
 }
 
 func (rl *railList) firstSelectableRow() int {
@@ -996,6 +1029,19 @@ func (rl *railList) ToggleCollapse() {
 		prev := rl.currentRef()
 		rl.buildRows()
 		rl.restoreCursorToArchiveOwner(r.archiveOwner, prev)
+		rl.maybeFireSelectionChanged()
+		rl.maybeFireStateChanged()
+		return
+	case railRowArchiveGroup:
+		// Toggle the Archive sub-group's fold (BUG-026) and rebuild.
+		group := r.archiveGroup
+		rl.archiveGroupExpanded[group] = !rl.archiveGroupExpanded[group]
+		if !rl.archiveGroupExpanded[group] {
+			delete(rl.archiveGroupExpanded, group) // compact: absent = collapsed
+		}
+		prev := rl.currentRef()
+		rl.buildRows()
+		rl.restoreCursorToArchiveGroup(group, prev)
 		rl.maybeFireSelectionChanged()
 		rl.maybeFireStateChanged()
 		return
@@ -1059,6 +1105,19 @@ func (rl *railList) ToggleCollapse() {
 func (rl *railList) restoreCursorToArchiveOwner(owner int64, prev any) {
 	for i, r := range rl.rows {
 		if r.kind == railRowArchiveExpando && r.archiveOwner == owner {
+			rl.cursor = i
+			rl.clampOffset()
+			return
+		}
+	}
+	rl.restoreCursor(prev)
+}
+
+// restoreCursorToArchiveGroup re-pins the cursor on an Archive sub-group header
+// (BUG-026) after its fold toggles. Falls back to the generic restore.
+func (rl *railList) restoreCursorToArchiveGroup(group string, prev any) {
+	for i, r := range rl.rows {
+		if r.kind == railRowArchiveGroup && r.archiveGroup == group {
 			rl.cursor = i
 			rl.clampOffset()
 			return
@@ -1183,6 +1242,14 @@ func (rl *railList) archiveOpen(owner int64) bool {
 	// An active filter force-expands archive expandos so matching archived
 	// rows are reachable without folding.
 	return rl.filterActive() || rl.showArchived || rl.archiveExpanded[owner]
+}
+
+// archiveGroupOpen reports whether a sub-group header inside the consolidated
+// bottom Archive (BUG-026) is folded open. Default is collapsed (zero value);
+// the operator toggles each group with Space/Enter. An active filter or
+// showArchived (`l`) force-expands sub-groups so matching items are reachable.
+func (rl *railList) archiveGroupOpen(group string) bool {
+	return rl.filterActive() || rl.showArchived || rl.archiveGroupExpanded[group]
 }
 
 // orchCollapsed resolves a coordinator's EFFECTIVE fold state. An explicit
@@ -1326,198 +1393,173 @@ func (rl *railList) buildRows() {
 		rl.rows = append(rl.rows, railRow{kind: railRowPinnedEnd})
 	}
 
+	hadActive := len(active) > 0
 	for _, o := range active {
 		appendOrch(o, 0)
 	}
 
-	// BUG-019: Group archived freelancers by project so they can be inserted
-	// into the Freelance section under per-project Archive expandos, instead
-	// of being flattened into the generic bottom Archive alongside archived
-	// root coordinators.
+	// Group archived freelancers by project (stable input order) for the
+	// consolidated bottom Archive. Each project name in archivedFreeProjects
+	// appears exactly once, in first-seen order from archivedFreelance.
 	archivedFreeByProject := map[string][]*roleEntry{}
+	var archivedFreeProjects []string
 	for _, t := range rl.archivedFreelance {
+		if _, exists := archivedFreeByProject[t.Project]; !exists {
+			archivedFreeProjects = append(archivedFreeProjects, t.Project)
+		}
 		archivedFreeByProject[t.Project] = append(archivedFreeByProject[t.Project], t)
 	}
 
-	// Freelance section: unmanaged argus tasks grouped by repo, rendered below
-	// all project rows and above the top-level Archive. The "Freelance"
-	// separator only appears when there is at least one visible group.
-	// Archived freelancers nest under their project's per-project Archive
-	// expando (BUG-019) rather than the bottom Archive.
+	// Freelance section (BUG-026): ONLY live (non-archived) freelancers grouped
+	// by project. No per-project Archive expandos here — archived freelancers
+	// live exclusively in the consolidated bottom Archive. A railRowSectionRule
+	// precedes the section when live coordinator rows were emitted above.
 	{
-		// Collect the set of all projects that should appear in this section:
-		// live-freelance projects always, archived-only projects when
-		// showArchived is on or a filter is active.
-		liveProjects := map[string]*freelanceProject{}
-		for _, fp := range rl.freelance {
-			liveProjects[fp.Project] = fp
-		}
-
-		// Archived-only projects: always surfaced (like per-coordinator Archive
-		// expandos, which are always reachable without `l`) so archived
-		// freelancers with no live siblings are never silently inaccessible.
-		var archivedOnlyProjects []string
-		for proj := range archivedFreeByProject {
-			if _, hasLive := liveProjects[proj]; !hasLive {
-				archivedOnlyProjects = append(archivedOnlyProjects, proj)
+		freelanceSepEmitted := false
+		emitFreelanceSep := func() {
+			if !freelanceSepEmitted {
+				if hadActive {
+					rl.rows = append(rl.rows, railRow{kind: railRowSectionRule})
+				}
+				rl.rows = append(rl.rows, railRow{kind: railRowFreelanceSep})
+				freelanceSepEmitted = true
 			}
 		}
 
 		if fActive {
-			// Filtered freelance: match tasks by name OR project (argus parity).
-			// Auto-expand (collapse ignored), section visible only when ≥1 match.
-			type freeGroup struct {
-				fp       *freelanceProject // nil for archived-only projects
-				project  string
-				live     []*roleEntry
-				archived []*roleEntry
-			}
-			var groups []freeGroup
-
+			// Filtered freelance: match live tasks by name OR project (argus
+			// parity). Auto-expand (collapse ignored). Archived freelancers are
+			// not shown in this section; they appear in the bottom Archive's
+			// filtered sub-groups instead.
 			for _, fp := range rl.freelance {
-				var live, arch []*roleEntry
+				var live []*roleEntry
 				for _, t := range fp.Tasks {
-					if roleArchived(t) {
+					if roleArchived(t) || rl.pinnedFreelance[t.ArgusTaskID] {
 						continue
-					}
-					if rl.pinnedFreelance[t.ArgusTaskID] {
-						continue // pinned freelancers float to the Pinned block (BUG-024)
 					}
 					if rl.matchesFilterFields(t.Name, fp.Project) {
 						live = append(live, t)
 					}
 				}
-				// BUG-022: filter archived freelancers for this project too.
-				for _, t := range archivedFreeByProject[fp.Project] {
-					if rl.matchesFilterFields(t.Name, fp.Project) {
-						arch = append(arch, t)
-					}
-				}
-				if len(live) > 0 || len(arch) > 0 {
-					groups = append(groups, freeGroup{fp: fp, project: fp.Project, live: live, archived: arch})
-				}
-			}
-			for _, proj := range archivedOnlyProjects {
-				var arch []*roleEntry
-				for _, t := range archivedFreeByProject[proj] {
-					if rl.matchesFilterFields(t.Name, proj) {
-						arch = append(arch, t)
-					}
-				}
-				if len(arch) > 0 {
-					groups = append(groups, freeGroup{project: proj, archived: arch})
-				}
-			}
-
-			if len(groups) > 0 {
-				rl.rows = append(rl.rows, railRow{kind: railRowFreelanceSep})
-				for _, g := range groups {
-					fp := g.fp
-					if fp == nil {
-						// Archived-only project: synthesise a freelanceProject
-						// header row so the group has a collapsible header.
-						fp = &freelanceProject{Project: g.project}
-					}
-					rl.rows = append(rl.rows, railRow{kind: railRowFreelanceProj, fproj: fp})
-					for _, t := range g.live {
-						rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
-					}
-					if len(g.archived) > 0 {
-						owner := freelanceProjArchiveOwner(g.project)
-						rl.rows = append(rl.rows, railRow{
-							kind:         railRowArchiveExpando,
-							archiveOwner: owner,
-							archiveCount: len(g.archived),
-						})
-						if rl.archiveOpen(owner) {
-							for _, t := range g.archived {
-								rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t, depth: 1})
-							}
-						}
-					}
-				}
-			}
-		} else if len(rl.freelance) > 0 || len(rl.archivedFreelance) > 0 {
-			rl.rows = append(rl.rows, railRow{kind: railRowFreelanceSep})
-			// Live-project groups.
-			for _, fp := range rl.freelance {
-				rl.rows = append(rl.rows, railRow{kind: railRowFreelanceProj, fproj: fp})
-				if rl.freelanceCollapsed[fp.Project] {
-					// Even when collapsed, still add the per-project Archive
-					// expando header so the operator can open it.
-					if arch := archivedFreeByProject[fp.Project]; len(arch) > 0 {
-						owner := freelanceProjArchiveOwner(fp.Project)
-						rl.rows = append(rl.rows, railRow{
-							kind:         railRowArchiveExpando,
-							archiveOwner: owner,
-							archiveCount: len(arch),
-						})
-						if rl.archiveOpen(owner) {
-							for _, t := range arch {
-								rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t, depth: 1})
-							}
-						}
-					}
+				if len(live) == 0 {
 					continue
 				}
-				for _, t := range fp.Tasks {
-					if roleArchived(t) {
-						continue // archived tasks live in the per-project expando
-					}
-					if rl.pinnedFreelance[t.ArgusTaskID] {
-						continue // pinned freelancers float to the Pinned block (BUG-024)
-					}
+				emitFreelanceSep()
+				rl.rows = append(rl.rows, railRow{kind: railRowFreelanceProj, fproj: fp})
+				for _, t := range live {
 					rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
 				}
-				// Per-project Archive expando for archived freelancers (BUG-019).
-				if arch := archivedFreeByProject[fp.Project]; len(arch) > 0 {
-					owner := freelanceProjArchiveOwner(fp.Project)
-					rl.rows = append(rl.rows, railRow{
-						kind:         railRowArchiveExpando,
-						archiveOwner: owner,
-						archiveCount: len(arch),
-					})
-					if rl.archiveOpen(owner) {
-						for _, t := range arch {
-							rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t, depth: 1})
-						}
-					}
-				}
 			}
-			// Archived-only project groups (showArchived=true).
-			for _, proj := range archivedOnlyProjects {
-				fp := &freelanceProject{Project: proj}
+		} else {
+			for _, fp := range rl.freelance {
+				// Collect non-archived, non-pinned tasks for this project.
+				var live []*roleEntry
+				for _, t := range fp.Tasks {
+					if roleArchived(t) || rl.pinnedFreelance[t.ArgusTaskID] {
+						continue
+					}
+					live = append(live, t)
+				}
+				if len(live) == 0 {
+					continue // no live tasks: skip this project in the Freelance section
+				}
+				emitFreelanceSep()
 				rl.rows = append(rl.rows, railRow{kind: railRowFreelanceProj, fproj: fp})
-				owner := freelanceProjArchiveOwner(proj)
-				arch := archivedFreeByProject[proj]
-				rl.rows = append(rl.rows, railRow{
-					kind:         railRowArchiveExpando,
-					archiveOwner: owner,
-					archiveCount: len(arch),
-				})
-				if rl.archiveOpen(owner) {
-					for _, t := range arch {
-						rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t, depth: 1})
+				if !rl.freelanceCollapsed[fp.Project] {
+					for _, t := range live {
+						rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t})
 					}
 				}
 			}
 		}
-	}
 
-	// Bottom-of-rail Archive section (below Freelance): archived ROOT
-	// COORDINATORS only — archived freelancers moved to their project
-	// groups in the Freelance section (BUG-019). Behind an always-reachable
-	// Archive (N) expando collapsed by default (D14); `l` force-expands via
-	// archiveOpen.
-	if len(archived) > 0 {
-		rl.rows = append(rl.rows, railRow{
-			kind:         railRowArchiveExpando,
-			archiveOwner: archiveTopLevelOwner,
-			archiveCount: len(archived),
-		})
-		if rl.archiveOpen(archiveTopLevelOwner) {
-			for _, o := range archived {
-				appendOrch(o, 0)
+		// Consolidated bottom Archive section (BUG-026): ONE archive below the
+		// Freelance section holding:
+		//   • "Hera sessions" sub-group — archived root coordinators
+		//   • per-project sub-groups    — archived freelancers (carry (F) marker)
+		// A railRowSectionRule precedes the Archive when any content was emitted
+		// above (active coords or Freelance section). Sub-groups default collapsed;
+		// the operator expands each independently (fold state persisted).
+		totalArchived := len(archived) + len(rl.archivedFreelance)
+		if totalArchived > 0 || (fActive && (len(archived) > 0 || len(rl.archivedFreelance) > 0)) {
+			// Compute filtered totals when a filter is active so the count
+			// shown on the Archive header reflects the visible subset.
+			archiveCount := 0
+			filteredArchived := archived
+			filteredFreeByProject := archivedFreeByProject
+			filteredFreeProjects := archivedFreeProjects
+			if fActive {
+				// Only count archived coords that match the filter.
+				filteredArchived = nil
+				for _, o := range archived {
+					if rl.orchMatches(o) {
+						filteredArchived = append(filteredArchived, o)
+					}
+				}
+				// Only count archived freelancers that match the filter.
+				filteredFreeByProject = map[string][]*roleEntry{}
+				filteredFreeProjects = nil
+				for _, proj := range archivedFreeProjects {
+					var match []*roleEntry
+					for _, t := range archivedFreeByProject[proj] {
+						if rl.matchesFilterFields(t.Name, proj) {
+							match = append(match, t)
+						}
+					}
+					if len(match) > 0 {
+						filteredFreeByProject[proj] = match
+						filteredFreeProjects = append(filteredFreeProjects, proj)
+					}
+				}
+				archiveCount = len(filteredArchived)
+				for _, tasks := range filteredFreeByProject {
+					archiveCount += len(tasks)
+				}
+			} else {
+				archiveCount = totalArchived
+			}
+
+			if archiveCount > 0 {
+				if hadActive || freelanceSepEmitted {
+					rl.rows = append(rl.rows, railRow{kind: railRowSectionRule})
+				}
+				rl.rows = append(rl.rows, railRow{
+					kind:         railRowArchiveExpando,
+					archiveOwner: archiveTopLevelOwner,
+					archiveCount: archiveCount,
+				})
+				if rl.archiveOpen(archiveTopLevelOwner) {
+					// "Hera sessions" sub-group: archived root coordinators.
+					if len(filteredArchived) > 0 {
+						const heraGroup = "Hera sessions"
+						rl.rows = append(rl.rows, railRow{
+							kind:         railRowArchiveGroup,
+							archiveGroup: heraGroup,
+							archiveCount: len(filteredArchived),
+							depth:        1,
+						})
+						if rl.archiveGroupOpen(heraGroup) {
+							for _, o := range filteredArchived {
+								appendOrch(o, 2)
+							}
+						}
+					}
+					// Per-project sub-groups: archived freelancers (carry (F) marker).
+					for _, proj := range filteredFreeProjects {
+						tasks := filteredFreeByProject[proj]
+						rl.rows = append(rl.rows, railRow{
+							kind:         railRowArchiveGroup,
+							archiveGroup: proj,
+							archiveCount: len(tasks),
+							depth:        1,
+						})
+						if rl.archiveGroupOpen(proj) {
+							for _, t := range tasks {
+								rl.rows = append(rl.rows, railRow{kind: railRowRole, role: t, depth: 2})
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1744,6 +1786,11 @@ func (rl *railList) Draw(screen tcell.Screen) {
 		case railRowPinnedEnd:
 			// Closing rule under the Pinned block — plain horizontal rule, no label.
 			rl.drawSeparator(screen, cx, y+i, cw, "")
+		case railRowSectionRule:
+			// Generic section-delineating rule (BUG-026) — plain rule, no label.
+			rl.drawSeparator(screen, cx, y+i, cw, "")
+		case railRowArchiveGroup:
+			rl.drawArchiveGroupRow(screen, cx, y+i, cw, row.archiveGroup, row.archiveCount, row.depth, cursor)
 		case railRowFreelanceSep:
 			rl.drawSeparator(screen, cx, y+i, cw, " Freelance ")
 		case railRowFreelanceProj:
@@ -2085,6 +2132,28 @@ func (rl *railList) drawArchiveExpando(screen tcell.Screen, x, y, w int, owner i
 		screen.SetContent(col, y, '─', nil, style)
 		col++
 	}
+}
+
+// drawArchiveGroupRow renders a sub-group header inside the consolidated bottom
+// Archive (BUG-026): chevron (\u25BE open / \u25B8 collapsed) + group name + count.
+// Mirrors drawFreelanceProjRow's layout at the given depth so the operator
+// reads the Archive sub-groups with the same vocabulary as Freelance project
+// headers.
+func (rl *railList) drawArchiveGroupRow(screen tcell.Screen, x, y, w int, group string, count, depth int, cursor bool) {
+	style := tcell.StyleDefault.Foreground(theme.ColorDimmed)
+	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
+	if cursor {
+		nameStyle = theme.StyleSelected
+	}
+	col := x + depth*indentStep
+	chevron := '\u25B8'
+	if rl.archiveGroupOpen(group) {
+		chevron = '\u25BE'
+	}
+	screen.SetContent(col, y, chevron, nil, style)
+	col += 2
+	label := fmt.Sprintf("%s (%d)", group, count)
+	widget.DrawText(screen, col, y, w-(col-x), label, nameStyle)
 }
 
 // spinnerFrames are argus's Nerd Font progress-spinner frames
