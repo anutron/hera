@@ -32,6 +32,46 @@ Items the spec-audit and ralph-review passes surfaced and we consciously chose t
 
 **Audit trail:** Originally flagged by a worker during hera-settings as "trailing-`\n` submit on idle did not auto-submit". The decode bug surfaced an error to the tool caller even though the POST succeeded, which made the send *look* failed; that is the most plausible cause of the original report. No second-source reproduction has materialized. If a fresh reproduction does appear, suspect: (1) the idle tracker reading a still-busy session as quieted (window-edge race), (2) a regression in `FormatBody` newline semantics.
 
+## Hera bugs (found in the 1.0 regression)
+
+### BUG-011 – doorbell loops until mark_read
+
+**Status:** Active bug. Found during 1.0 regression.
+
+**What:** The `DeliveryWatcher` re-nudges idle-submit messages whose `read_at` is null, repeating until the recipient reads. Calling `hera_inbox` (which only lists) does not set `read_at` – only `hera_mark_read` does – so a recipient who views but doesn't explicitly mark gets re-nudged indefinitely.
+
+**Fix options:** Have `hera_inbox` stamp `read_at` on the messages it returns, OR change the doorbell text to "call hera_inbox AND mark_read". Minor; the feature otherwise works.
+
+**Escalate when:** A recipient reports repeated doorbell nudges after reading.
+
+### BUG-012 – rail doesn't promote a new worker binding out of Freelance live
+
+**Status:** Active bug. Found during 1.0 regression.
+
+**What:** A task that calls `hera_join` as a worker after it was created (the self-join pattern) gets a live binding in the DB, but the rail keeps rendering it in the Freelance section (observed >1 minute, well past the ~2 s argus-state cache window) until a full reload. The new-binding broadcast → rail reclassification path isn't moving it under its coord live.
+
+**Why noted:** The `hera_spawn_worker` verb (see NEXT.md backlog) would sidestep this for coord-spawned workers since they'd be born bound. The self-join pattern still needs the live reclassification fix for tasks that genuinely freelance-join after creation.
+
+**Escalate when:** We add `hera_spawn_worker` (which reduces the blast radius to genuinely freelance-joining tasks only).
+
+## Substrate hand-offs (not hera – for the argus / iris owners)
+
+### BUG-009 (argus rerender-kick)
+
+**Owner:** drn / argus.
+
+**What:** Entering or resizing a task's pane (a PTY width-cross, e.g. 80×24 → 138×75) makes argus stop the session and restart it with `--resume` (logged as "runner: restarting after kick" in `~/.argus/daemon.log`). The `--resume` replays the transcript, so the PTY ends up containing the session twice. Surfaces in hera as a "duplicated agent" pane, but hera is faithfully rendering the two-session PTY – the defect is argus-side.
+
+**Fix direction:** Gate the rerender kick on `needs-input` only; don't kick a session that doesn't need re-prompting.
+
+### iris gaps
+
+**Owner:** iris.
+
+- **Stale-tip tag.** `iris_tag` tags the local `origin/main` without fetching first, so it can tag a stale pre-merge commit. This caused a dud `argus-sdk v0.0.5` tag (pointed at the pre-merge commit, missing the new constants). Fix: `iris_fetch` before tagging.
+
+- **No tag-delete or force-tag verb.** A bad tag can't be corrected via iris – we had to supersede it with `v0.0.6`. A force-tag or tag-delete verb would cover this.
+
 ## Architecture (deferred to v1.1+)
 
 ### Atomic role+binding insert across DAOs
@@ -83,6 +123,16 @@ The following items were resolved by documenting the existing behavior rather th
 - **`Roles.Create` write-once semantics** – documented in `internal/db/roles.go` doc-comment. Mission/constraints/argus_project on a re-Create are silently dropped; this is intentional (role identity is established at first creation, subsequent agents inherit). Spec design D1 says role identity outlives task lifecycle; this is part of that.
 - **Status meta-mirror best-effort** – spec amendment landed in the previous commit; `hera_status` returning success with `meta_mirrored: false` on argus failure is now explicit, not ambiguous.
 - **`StreamEvents` resync requirement** – doc-comment now tells callers they MUST handle resync events; previously this was implicit.
+
+## 1.0 closeout cleanup
+
+Items to clean up once the 1.0 regression is complete and the batch PR is merged.
+
+- **Retract dud `argus-sdk v0.0.5` tag.** Points at the pre-merge commit without the In Review / PR icon constants. Hera is the only consumer so it's harmless, but it should be removed or retracted in `go.mod`. Superseded by `v0.0.6`.
+
+- **Archive spent 1.0 release workers.** Once the regression confirms clean: archive `sdk-icons`, `inject-receipt`, `prune-finish`, `rail-icons`, `stateful-rail`, `sdk-cursor`, `pane-focus`, and `roadmap-scribe`. Also archive the regression fixtures (`kbtest` + its workers, `prune-me-coord`, `adopt-this-freelancer`, `archive-this-freelancer`) and the vestigial `hera-keyenc-consolidation` orchestrator.
+
+- **`openspec archive` the landed 1.0 change folders.** All change folders for shipped 1.0 work should be archived into `openspec/changes/archive/` so `openspec/changes/` reflects only in-flight work.
 
 ## Resolved this pass
 
