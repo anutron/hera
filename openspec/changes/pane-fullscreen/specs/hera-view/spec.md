@@ -39,6 +39,19 @@ SIGTSTP byte 0x1a to any PTY or widget).
 - **WHEN** the operator presses Ctrl-Z
 - **THEN** the event is consumed (not forwarded); no fullscreen state change occurs
 
+#### Scenario: Ctrl-Z raw byte is never forwarded to any pane PTY (BUG-029)
+
+- **GIVEN** focus is on the COORD or AGENT pane
+- **WHEN** the raw input forwarder receives the byte 0x1a (Ctrl-Z) from the argus host
+- **THEN** the byte is treated as a hera-owned chord and passed to the tcell parser
+- **AND** 0x1a is never written to the bound task's PTY input
+- **AND** the SIGTSTP signal is never delivered to the pane's process
+
+The raw-input forwarder (`rawInputConn`) is a second keystroke path — distinct from
+the keyenc/tcell path — that forwards raw bytes directly to the PTY when a pane has
+focus. 0x1a must be declared a hera chord (`isHeraChord`) so it is returned to the
+parser and handled by KeyRouter instead of being forwarded verbatim.
+
 ### Requirement: Focus ladder operates in fullscreen
 
 While fullscreen is active, the existing Ctrl-Left / Ctrl-Right focus-ladder keys SHALL
