@@ -257,10 +257,20 @@ CREATE TABLE config (
 
 // migrate runs every migration whose index exceeds the database's stored
 // user_version. user_version starts at 0 in a fresh database.
+// When there are pending migrations, a pre-migration backup is created first
+// so a destructive migration is always recoverable (see backup.go).
 func (d *DB) migrate() error {
 	var version int
 	if err := d.sqldb.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read user_version: %w", err)
+	}
+
+	if version >= len(migrations) {
+		return nil // already at latest version; nothing to do
+	}
+
+	if err := d.backupBeforeMigrate(len(migrations)); err != nil {
+		return fmt.Errorf("pre-migration backup: %w", err)
 	}
 
 	for i := version; i < len(migrations); i++ {
