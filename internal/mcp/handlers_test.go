@@ -29,6 +29,21 @@ type fakeArgusForHandlers struct {
 	mu       sync.Mutex
 	tasks    []argus.Task
 	metaPuts []struct{ taskID, key, value string }
+
+	// Extended for hera_spawn_worker tests.
+	// nextTaskID is returned as the ID of the next POST /api/tasks call.
+	// inputPosts records POST /api/tasks/{id}/input calls.
+	// taskGetWorktree maps task ID → worktree path for GET /api/tasks/{id}.
+	// taskGetFail, when true, makes GET /api/tasks/{id} return 500.
+	// inputFail, when true, makes POST /api/tasks/{id}/input return 500.
+	nextTaskID string
+	inputPosts []struct {
+		taskID string
+		body   []byte
+	}
+	taskGetWorktree map[string]string
+	taskGetFail     bool
+	inputFail       bool
 }
 
 func (f *fakeArgusForHandlers) addTask(task argus.Task) {
@@ -42,12 +57,32 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if r.Method == http.MethodPost {
+			// Create task: decode input, assign nextTaskID, add to task list.
+			var in argus.CreateTaskInput
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			id := f.nextTaskID
+			if id == "" {
+				id = "fake-task-id"
+			}
+			wtp := ""
+			if f.taskGetWorktree != nil {
+				wtp = f.taskGetWorktree[id]
+			}
+			f.tasks = append(f.tasks, argus.Task{
+				ID:           id,
+				Name:         id,
+				Project:      in.Project,
+				WorktreePath: wtp,
+			})
+			_ = json.NewEncoder(w).Encode(argus.CreatedTask{ID: id, Name: id, Status: "in_progress"})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(struct {
 			Tasks []argus.Task `json:"tasks"`
 		}{f.tasks})
 	})
 	mux.HandleFunc("/api/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		// support /api/tasks/{id}/meta PUT
 		rest := strings.TrimPrefix(r.URL.Path, "/api/tasks/")
 		segs := strings.SplitN(rest, "/", 2)
 		taskID := segs[0]
@@ -55,7 +90,8 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 		if len(segs) == 2 {
 			sub = segs[1]
 		}
-		if sub == "meta" && r.Method == "PUT" {
+
+		if sub == "meta" && r.Method == http.MethodPut {
 			var body argus.PutTaskMetaInput
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.mu.Lock()
@@ -64,6 +100,49 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+
+		if sub == "input" && r.Method == http.MethodPost {
+			f.mu.Lock()
+			if f.inputFail {
+				f.mu.Unlock()
+				http.Error(w, `{"error":"injected failure"}`, http.StatusInternalServerError)
+				return
+			}
+			b := make([]byte, r.ContentLength)
+			if r.ContentLength > 0 {
+				_, _ = r.Body.Read(b)
+			}
+			f.inputPosts = append(f.inputPosts, struct {
+				taskID string
+				body   []byte
+			}{taskID, b})
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(struct {
+				Status string `json:"status"`
+				Bytes  int    `json:"bytes"`
+			}{"ok", len(b)})
+			return
+		}
+
+		if sub == "" && r.Method == http.MethodGet {
+			f.mu.Lock()
+			if f.taskGetFail {
+				f.mu.Unlock()
+				http.Error(w, `{"error":"injected failure"}`, http.StatusInternalServerError)
+				return
+			}
+			wtp := ""
+			if f.taskGetWorktree != nil {
+				wtp = f.taskGetWorktree[taskID]
+			}
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(argus.Task{
+				ID:           taskID,
+				WorktreePath: wtp,
+			})
+			return
+		}
+
 		http.NotFound(w, r)
 	})
 	return mux

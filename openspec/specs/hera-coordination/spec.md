@@ -17,16 +17,18 @@ The system SHALL persist role identity, mission, constraints, and accumulated hi
 - **WHEN** a role's current binding is ended and a fresh argus task `T2` is created for the same role
 - **THEN** hera MUST insert a new binding row with `(role_id, T2, started_at)` while preserving the previous binding's history
 
-### Requirement: Six MCP tools exposed under the `hera_` prefix
+### Requirement: Seven MCP tools exposed under the `hera_` prefix
 
-The system SHALL register exactly six MCP tools with argus when the daemon starts: `hera_new_orchestrator`, `hera_join`, `hera_send`, `hera_inbox`, `hera_mark_read`, `hera_status`. Each tool MUST be force-prefixed `hera_` per the substrate's tool-name enforcement. Each tool's input schema MUST declare `cwd` as a required input parameter.
+The system SHALL register seven MCP tools with argus when the daemon starts: `hera_new_orchestrator`, `hera_join`, `hera_send`, `hera_inbox`, `hera_mark_read`, `hera_status`, `hera_spawn_worker`. Each tool MUST be force-prefixed `hera_` per the substrate's tool-name enforcement. Each tool's input schema MUST declare `cwd` as a required input parameter.
 
-The settings_save handler registered at the hera callback listener is NOT counted as one of the six MCP tools; it is a separate callback type addressed via the settings-section registration, not the MCP tool registration.
+Note: v1 shipped six tools ("Six MCP tools, no more no less"). `hera_spawn_worker` is a sanctioned v1.x addition for coordinator-initiated born-bound worker spawning.
 
-#### Scenario: Exactly six MCP tools registered on startup
+The settings_save handler registered at the hera callback listener is NOT counted as one of the seven MCP tools; it is a separate callback type addressed via the settings-section registration, not the MCP tool registration.
+
+#### Scenario: Seven MCP tools registered on startup
 
 - **WHEN** the hera daemon completes startup successfully
-- **THEN** an HTTP GET against argus's MCP registry MUST show exactly six tools scoped to `hera`, with names `hera_new_orchestrator`, `hera_join`, `hera_send`, `hera_inbox`, `hera_mark_read`, `hera_status`
+- **THEN** an HTTP GET against argus's MCP registry MUST show seven tools scoped to `hera`, with names `hera_new_orchestrator`, `hera_join`, `hera_send`, `hera_inbox`, `hera_mark_read`, `hera_status`, `hera_spawn_worker`
 
 #### Scenario: Settings_save callback present but not in MCP tool list
 

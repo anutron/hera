@@ -146,6 +146,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	mcpSrv.RegisterHandler("hera_inbox", mcp.NewInboxHandler(resolver, database))
 	mcpSrv.RegisterHandler("hera_mark_read", mcp.NewMarkReadHandler(resolver, database))
 	mcpSrv.RegisterHandler("hera_status", mcp.NewStatusHandler(resolver, database, client))
+	mcpSrv.RegisterHandler("hera_spawn_worker", mcp.NewSpawnWorkerHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("settings_save", mcp.NewSettingsSaveHandler(database.Config, tracker, injector))
 
 	// CallbackBaseURL is the actual bound address (honors :0).
@@ -392,7 +393,9 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	return nil
 }
 
-// toolDefinitions returns the six hera_* tool registrations.
+// toolDefinitions returns the seven hera_* tool registrations.
+// v1 shipped six tools; hera_spawn_worker is a sanctioned v1.x addition for
+// born-bound worker spawning (see openspec/changes/add-spawn-worker-verb/).
 func toolDefinitions() []mcp.ToolDefinition {
 	return []mcp.ToolDefinition{
 		{
@@ -478,6 +481,24 @@ func toolDefinitions() []mcp.ToolDefinition {
 					"orchestrator": map[string]any{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the calling role."},
 				},
 				"required": []string{"cwd", "status"},
+			},
+		},
+		{
+			Name:        "hera_spawn_worker",
+			Description: "Spawn a new worker agent under the calling coordinator's orchestrator. Creates the argus task, inserts a worker role + binding pre-bound (born bound — no hera_join needed in the worker), and auto-submits the prompt via CR so the agent starts immediately. Caller must hold a live coordinator binding.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"cwd":          map[string]any{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
+					"orchestrator": map[string]any{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+					"role_name":    map[string]any{"type": "string", "description": "(optional) Worker role name. Derived from prompt slug if omitted; made unique within the orchestrator automatically"},
+					"mission":      map[string]any{"type": "string", "description": "(optional) Worker mission stored on the role row, free-form prose"},
+					"prompt":       map[string]any{"type": "string", "description": "Full task prompt delivered to the new worker session. An orientation prefix naming the coordinator is prepended automatically"},
+					"project":      map[string]any{"type": "string", "description": "(optional) Override the argus project. Defaults to the coordinator's own project"},
+					"branch":       map[string]any{"type": "string", "description": "(optional) Branch passed to argus CreateTask. Defaults to project default"},
+					"backend":      map[string]any{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
+				},
+				"required": []string{"cwd", "prompt"},
 			},
 		},
 	}
