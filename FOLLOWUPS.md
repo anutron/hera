@@ -196,6 +196,70 @@ The coord-side `hera_archive_role` / `hera_mark_done` MCP verbs remain deferred 
 
 **Escalate when:** A Linux user reports the daemon lifecycle is unmanageable without a managed service.
 
+### New coordinator spawned via `n` has no live Coord pane — "(no coord selected)" (BUG-056)
+
+**Status:** Active. Found during post-1.0 QA (2026-06-07).
+
+**What:** Pressing `n`, filling in the modal, and submitting creates the orchestrator entry in hera's DB and appears in the rail. But the Coord pane shows "(no coord selected)" — there's no live binding from a running argus task to the coordinator role. The coord exists structurally but is unreachable.
+
+**Root cause hypothesis:** Unlike `hera_spawn_worker` (which programmatically creates the role + binding, born-bound), the `n` key likely spawns an argus task whose prompt is supposed to call `hera_new_orchestrator`. If the spawned task doesn't call it (wrong prompt, missing MCP tool access, task exits early), the binding is never established and the Coord pane has no PTY.
+
+**Fix direction:** Make `n` create the coordinator binding programmatically in hera — same pattern as `hera_spawn_worker`. The spawned argus task should be born-bound as coordinator, not required to call `hera_new_orchestrator` itself.
+
+**Escalate when:** Immediately — the primary coord-creation UX is broken.
+
+### New-coordinator modal: Enter doesn't submit, submit button hidden (BUG-055)
+
+**Status:** Active. Found during post-1.0 QA (2026-06-07).
+
+**What:** The `n` (new coordinator) modal shows Name, Project, Branch, Backend, and Prompt fields. The submit button is cut off below the visible modal area — users can't see it and don't know it exists. Pressing Enter in any field (including Prompt) does nothing; the only way to submit is to Tab past the Prompt field until focus reaches the hidden button.
+
+**Fix:** Two changes:
+1. Make Enter in any field submit the form (same as pressing the submit button). The Prompt field doesn't need multi-line input — Enter-to-submit is the right behavior.
+2. Ensure the submit button is always visible within the modal bounds (either reduce padding, scroll the form, or anchor the button at the bottom of the modal regardless of content height).
+
+**Escalate when:** Immediately — the form is unusable without knowing the Tab trick.
+
+### `^d` delete crashes with error modal when worktree already removed (BUG-054)
+
+**Status:** Active. Found during post-1.0 QA (2026-06-07).
+
+**What:** `^d` on a role whose argus worktree has already been cleaned up (no `.git` file at the path) shows an error modal: `ops.DeleteRole: worktree remove: git worktree remove <path>: exit status 128 (fatal: validation failed, cannot remove working tree: '.../.git' does not exist)`. The role should be deleted from hera's DB regardless of whether the git worktree still exists.
+
+**Fix direction:** In `ops.DeleteRole` (or wherever `git worktree remove` is called), check if the path exists and has a `.git` file before running `git worktree remove`. If the worktree is already gone, skip that step and proceed with the DB deletion.
+
+**Escalate when:** Immediately — shows a hard error modal on a common operation.
+
+### Cursor offset wrong after reattach until resize (BUG-053)
+
+**Status:** Active. Found during BUG-033 regression (2026-06-07).
+
+**What:** After Enter on a dead agent row triggers reattach (BUG-033 path), the new session's cursor appears at the wrong position in the agent pane until the terminal is resized. Same root cause as BUG-049: the reattached PTY starts at the default 80×24 before the pane gets a real resize event. The BUG-049 v2 fix (`makeViewportGuard` → `QueueUpdateDraw`) fires on WebSocket session start but likely doesn't cover the reattach path (which reconnects to an existing pane without going through the same session init).
+
+**Fix direction:** Apply the same `QueueUpdateDraw` trigger in the pane-rebind path — when a new PTY proxy connection is bound to an existing `pinnedTerminalPane`, schedule a forced redraw to recalculate cursor position and layout.
+
+**Escalate when:** Immediately — visible on every reattach.
+
+### Cmd-→ into dead pane doesn't trigger reattach (BUG-052)
+
+**Status:** Active UX gap. Found during BUG-033 regression (2026-06-07).
+
+**What:** `Cmd-→` (pane focus ladder) navigates into a dead agent pane without triggering the restart. `Enter` on the rail triggers the restart correctly. The focus-ladder path is pure navigation; it doesn't check whether the target pane has a live session.
+
+**Fix direction:** When the focus ladder lands on a dead pane (no live PTY binding), trigger the same restart path that Enter uses.
+
+**Escalate when:** The inconsistency causes confusion — both affordances should have the same effect.
+
+### Mouse wheel doesn't scroll coord (HERA) pane (BUG-051)
+
+**Status:** Active. Found during post-1.0 QA (2026-06-07).
+
+**What:** Mouse wheel scrolls the agent pane correctly but not the coord (HERA) pane. The wheel router hit-test probably doesn't register the coord pane rect, or `pinnedTerminalPane` for the coord isn't wired into `ScrollBy`.
+
+**Fix direction:** In `internal/view/app.go`, check the `RouteWheel` hit-test — confirm the coord pane rect is included alongside the agent pane rect. The coord pane uses the same `pinnedTerminalPane` type as the agent pane; both should route wheel events to `ScrollBy(±3)`.
+
+**Escalate when:** Immediately — this is a regression from the mouse-wheel feature.
+
 ### hera-view blank on first entry until resize (BUG-049)
 
 **Status:** Active. Observed on post-1.0 blank-slate daemon (2026-06-06).
