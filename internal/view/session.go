@@ -16,6 +16,41 @@ import (
 	"github.com/anutron/hera/internal/view/ops"
 )
 
+// minPluginViewCols / minPluginViewRows are the sentinel-size thresholds for
+// the viewport guard (BUG-049). Argus sends a small initial viewport (e.g.
+// 13×8) before it knows the real terminal dimensions; we skip draws until a
+// viewport larger than these values is confirmed.
+const (
+	minPluginViewCols = 20
+	minPluginViewRows = 5
+)
+
+// makeViewportGuard returns a tview SetBeforeDrawFunc handler that skips draw
+// cycles until the screen dimensions exceed the sentinel size argus sends when
+// it first opens the plugin view (BUG-049).
+//
+// The guard is one-shot: after the first draw at a real viewport size (w >
+// minPluginViewCols and h > minPluginViewRows), it allows all subsequent draws
+// unconditionally — including any at legitimately small terminal sizes. This
+// prevents the blank/garbled first frame without suppressing valid redraws.
+//
+// tview's draw() is called on the event loop's single goroutine while holding
+// the Application mutex, so the guard closure needs no locking of its own.
+func makeViewportGuard() func(tcell.Screen) bool {
+	passed := false
+	return func(screen tcell.Screen) bool {
+		if passed {
+			return false
+		}
+		w, h := screen.Size()
+		if w > minPluginViewCols && h > minPluginViewRows {
+			passed = true
+			return false // allow this draw and all subsequent ones
+		}
+		return true // skip — sentinel size
+	}
+}
+
 // NewSessionFunc returns a SessionFunc that drives one hera-view session
 // per accepted WebSocket connection. It composes the four substrates the
 // previous stages produced:
@@ -170,6 +205,11 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// frame.
 		app.OnFocusChanged(focus.State())
 		tApp.SetInputCapture(router.HandleKey)
+
+		// Guard against argus's initial sentinel viewport (e.g. 13×8): skip
+		// draws until a real-sized frame arrives so the first visible frame
+		// is correct, not garbled (BUG-049).
+		tApp.SetBeforeDrawFunc(makeViewportGuard())
 
 		// Bridge ctx cancellation into tview's event loop by queueing an
 		// EventError. tview's EventLoop handles EventError by calling
