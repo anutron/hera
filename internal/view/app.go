@@ -1294,6 +1294,55 @@ func (a *App) OnFocusChanged(state FocusState) {
 	if state == FocusCOORD || state == FocusAGENT {
 		a.maybeAutoReattachPane(state)
 	}
+
+	// BUG-010 (browse-archived case): when entering any pane, force a resize
+	// dispatch so the emulator clamps the cursor position from its snapshot to
+	// the current pane bounds. Without this, an archived task's PTY snapshot may
+	// position the cursor at coordinates that were valid in the old session but
+	// exceed the current pane allocation — the cursor then appears below the
+	// argus status line and keystrokes appear lost until the operator resizes.
+	//
+	// This mirrors the pattern App.OnTaskReattached uses for the reattach case
+	// (BUG-053): clear the ProxyManager's "already applied" dedup flag so the
+	// next ResizeTask dispatch reaches argus unconditionally, then queue a draw
+	// that reads the current pane size and calls ResizeTask. For archived tasks
+	// the resize 404s (no active session) but the QueueUpdateDraw still fires
+	// pinnedTerminalPane.Draw, which calls tp.Resize(innerCols, innerRows) and
+	// clamps the emulator cursor to within the current pane bounds.
+	if a.app != nil && (state == FocusCOORD || state == FocusAGENT) {
+		a.mu.Lock()
+		var taskID string
+		switch state {
+		case FocusCOORD:
+			taskID = a.coordTask
+		case FocusAGENT:
+			taskID = a.agentTask
+		}
+		a.mu.Unlock()
+		if taskID != "" {
+			if ri, ok := a.src.(paneResizeInvalidator); ok {
+				ri.InvalidateResize(taskID)
+			}
+			go a.app.QueueUpdateDraw(func() {
+				a.mu.Lock()
+				var cols, rows int
+				switch state {
+				case FocusCOORD:
+					if a.coordTask == taskID && a.pieces.coord != nil {
+						cols, rows = a.pieces.coord.PinnedSize()
+					}
+				case FocusAGENT:
+					if a.agentTask == taskID && a.pieces.agent != nil {
+						cols, rows = a.pieces.agent.PinnedSize()
+					}
+				}
+				a.mu.Unlock()
+				if cols > 0 && rows > 0 && a.src != nil {
+					a.src.ResizeTask(taskID, cols, rows)
+				}
+			})
+		}
+	}
 }
 
 // OnFullscreenChanged satisfies the KeyRouter.FullscreenUpdater contract
