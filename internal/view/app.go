@@ -42,13 +42,14 @@ type App struct {
 
 	// mu guards the binding bookkeeping (currently-bound task IDs, the
 	// proxy unsubscribe handles, and the bridges feeding each pane).
-	mu          sync.Mutex
-	coordTask   string
-	agentTask   string
-	coordUnsub  func()
-	agentUnsub  func()
-	coordBridge *paneBridge
-	agentBridge *paneBridge
+	mu               sync.Mutex
+	coordTask        string
+	agentTask        string
+	agentIsFreelancer bool // true when agentTask is bound to a freelancer row
+	coordUnsub       func()
+	agentUnsub       func()
+	coordBridge      *paneBridge
+	agentBridge      *paneBridge
 
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool
@@ -1195,6 +1196,14 @@ func (a *App) AgentTaskID() string {
 	return a.agentTask
 }
 
+// AgentIsFreelancer reports whether the agent pane is currently bound to a
+// freelancer task. Used in tests to verify the BUG-009 guard is set correctly.
+func (a *App) AgentIsFreelancer() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.agentIsFreelancer
+}
+
 // IsFiltering reports whether the rail is in search input mode, satisfying the
 // KeyRouter.RailFilter gate so the router yields keys to the rail while the
 // operator is typing a `/` query. Runs on the tview input pump (the rail's
@@ -1563,6 +1572,7 @@ func (a *App) rebindAgent(taskID string) {
 	pane, bridge, unsub := newBoundPane("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw)
 	pane.onReflow = a.makeAgentReflowCallback(taskID)
 	a.agentTask = taskID
+	a.agentIsFreelancer = false // reset; caller sets true for freelancer rows
 	a.agentBridge = bridge
 	a.agentUnsub = unsub
 	a.pieces.agent = pane
@@ -1902,6 +1912,15 @@ func (a *App) applyRailSelection(ref any) {
 				// 404-ing PTY is ever bound and keystrokes have nowhere to go.
 				a.rebindAgent("")
 			}
+			// Mark the agent pane as freelancer BEFORE setBodyMode calls
+			// OnFocusChanged, which may trigger maybeAutoReattachPane. The flag
+			// prevents auto-reattach on focus-bump (BUG-009): freelancers have no
+			// hera binding and the auto-reattach path can hang on them. The
+			// operator presses Enter to reattach a dead-session freelancer manually
+			// via OnReattach (the mutation bridge's Enter path).
+			a.mu.Lock()
+			a.agentIsFreelancer = true
+			a.mu.Unlock()
 			a.setBodyMode(false, true)
 			// BUG-018: if the freelancer's PTY session is gone (dead-session),
 			// force focus back to RAIL so keystrokes drive rail navigation instead
@@ -2274,6 +2293,9 @@ func (a *App) scheduleSubtitleUpdate(taskID string) {
 // dead session and, if so, shows the REATTACHING splash and fires a background
 // reattach (BUG-008 path 2: Ctrl+→ stepping into a dead pane). No-op when the
 // pane is already reattaching, the task is alive, or no trigger is wired.
+// Freelancer agent panes are skipped: they have no hera binding and the
+// auto-reattach goroutine can hang when navigating to a dead-session freelancer
+// row. The operator uses Enter (OnReattach) to manually reattach (BUG-009).
 // Must run on the tview event loop (called from OnFocusChanged).
 func (a *App) maybeAutoReattachPane(state FocusState) {
 	if a.onDeadPaneReattach == nil {
@@ -2282,15 +2304,24 @@ func (a *App) maybeAutoReattachPane(state FocusState) {
 	a.mu.Lock()
 	var taskID string
 	var pane *pinnedTerminalPane
+	var isFreelancer bool
 	if state == FocusCOORD {
 		taskID = a.coordTask
 		pane = a.pieces.coord
 	} else {
 		taskID = a.agentTask
 		pane = a.pieces.agent
+		isFreelancer = a.agentIsFreelancer
 	}
 	a.mu.Unlock()
 	if taskID == "" || pane == nil || pane.reattaching {
+		return
+	}
+	// BUG-009: freelancer rows have no hera binding; skip auto-reattach so
+	// navigating to a dead-session freelancer never hangs hera. The operator
+	// can still press Enter to trigger OnReattach (the mutation bridge's Enter
+	// path) which handles freelancers correctly.
+	if isFreelancer {
 		return
 	}
 	prov, ok := a.src.(TaskStateProvider)

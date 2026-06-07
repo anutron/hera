@@ -4290,3 +4290,184 @@ func TestApp_ApplyDeadPaneFocusGuard_AgentPane_NoopWhenNoTriggerWired(t *testing
 		t.Fatalf("after applyDeadPaneFocusGuard (no trigger), focus = %v; want AGENT (no kick)", focus.State())
 	}
 }
+
+// --- BUG-009: freelancer dead-session hang ---
+
+// TestApplyRailSelection_FreelancerSetsAgentIsFreelancer proves that
+// navigating to a freelancer row sets the agentIsFreelancer flag and that
+// navigating away (to a managed worker) resets it (BUG-009).
+func TestApplyRailSelection_FreelancerSetsAgentIsFreelancer(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: worker.ID, ArgusTaskID: "t-worker", WorktreePath: "/w",
+	})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Navigate to a freelancer row.
+	freelancer := &roleEntry{
+		RoleKind:    string(db.KindFreelance),
+		ArgusTaskID: "t-free",
+		Name:        "free-task",
+	}
+	a.applyRailSelection(freelancer)
+
+	if !a.AgentIsFreelancer() {
+		t.Errorf("agentIsFreelancer must be true after selecting a freelancer row; got false")
+	}
+	if a.AgentTaskID() != "t-free" {
+		t.Errorf("agent task must bind to freelancer; got %q", a.AgentTaskID())
+	}
+
+	// Navigate to a managed worker — flag must reset.
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+	if !a.pieces.rail.SelectByRoleID(worker.ID) {
+		t.Fatalf("could not select worker row")
+	}
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+
+	if a.AgentIsFreelancer() {
+		t.Errorf("agentIsFreelancer must be false after selecting a managed worker; got true")
+	}
+}
+
+// TestMaybeAutoReattachPane_FreelancerSkipsAutoReattach proves that
+// maybeAutoReattachPane does not fire onDeadPaneReattach when the agent pane
+// is bound to a freelancer task (BUG-009: navigating to a dead-session
+// freelancer must not hang hera).
+func TestMaybeAutoReattachPane_FreelancerSkipsAutoReattach(t *testing.T) {
+	d := openTestDB(t)
+
+	src := &aliveStatePaneSource{
+		alive: map[string]bool{"t-free": false},
+		states: map[string]ArgusTaskState{
+			"t-free": {Status: "complete"},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	var reattachCalled []string
+	a.onDeadPaneReattach = func(taskID string) { reattachCalled = append(reattachCalled, taskID) }
+
+	// Bind the agent pane to a dead-session freelancer task.
+	a.mu.Lock()
+	a.agentTask = "t-free"
+	a.agentIsFreelancer = true
+	a.mu.Unlock()
+
+	// Simulate focus landing on the AGENT pane (the trigger path from setBodyMode).
+	focus.JumpToAGENT()
+	a.maybeAutoReattachPane(FocusAGENT)
+
+	if len(reattachCalled) != 0 {
+		t.Errorf("onDeadPaneReattach must NOT fire for freelancer agent pane; got calls: %v", reattachCalled)
+	}
+}
+
+// TestMaybeAutoReattachPane_ManagedWorkerFiresAutoReattach confirms the
+// BUG-008 path still works for managed (non-freelancer) dead-session workers
+// after the BUG-009 guard is added.
+func TestMaybeAutoReattachPane_ManagedWorkerFiresAutoReattach(t *testing.T) {
+	d := openTestDB(t)
+
+	src := &aliveStatePaneSource{
+		alive: map[string]bool{"t-worker": false},
+		states: map[string]ArgusTaskState{
+			"t-worker": {Status: "complete"},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	var reattachCalled []string
+	a.onDeadPaneReattach = func(taskID string) { reattachCalled = append(reattachCalled, taskID) }
+
+	// Bind the agent pane to a dead-session managed worker (agentIsFreelancer = false).
+	a.mu.Lock()
+	a.agentTask = "t-worker"
+	a.agentIsFreelancer = false
+	a.mu.Unlock()
+
+	focus.JumpToAGENT()
+	a.maybeAutoReattachPane(FocusAGENT)
+
+	if len(reattachCalled) != 1 || reattachCalled[0] != "t-worker" {
+		t.Errorf("onDeadPaneReattach must fire for managed worker dead-session; got calls: %v", reattachCalled)
+	}
+}
+
+// TestApplyRailSelection_DeadSessionFreelancerSetsFlag proves that a
+// dead-session freelancer (HasState=true, terminal status, Dead=false) also
+// sets agentIsFreelancer when the cursor lands on the row, so
+// maybeAutoReattachPane cannot fire for it (BUG-009).
+func TestApplyRailSelection_DeadSessionFreelancerSetsFlag(t *testing.T) {
+	d := openTestDB(t)
+
+	src := &aliveStatePaneSource{
+		alive: map[string]bool{"t-free-dead": false},
+		states: map[string]ArgusTaskState{
+			"t-free-dead": {Status: "complete"},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Dead-session freelancer: Dead=false but HasState=true with terminal status.
+	deadSessionFreelancer := &roleEntry{
+		RoleKind:    string(db.KindFreelance),
+		ArgusTaskID: "t-free-dead",
+		Name:        "dead-session-free",
+		Dead:        false,
+		HasState:    true,
+		Status:      "complete",
+	}
+	a.applyRailSelection(deadSessionFreelancer)
+
+	if a.AgentTaskID() != "t-free-dead" {
+		t.Errorf("dead-session freelancer: agent must bind; got %q", a.AgentTaskID())
+	}
+	if !a.AgentIsFreelancer() {
+		t.Errorf("dead-session freelancer: agentIsFreelancer must be true; got false")
+	}
+
+	// Also verify a reattach trigger is not fired even with focus bumped.
+	var reattachCalled []string
+	a.onDeadPaneReattach = func(taskID string) { reattachCalled = append(reattachCalled, taskID) }
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+	focus.JumpToAGENT()
+	a.maybeAutoReattachPane(FocusAGENT)
+
+	if len(reattachCalled) != 0 {
+		t.Errorf("onDeadPaneReattach must not fire for dead-session freelancer; got calls: %v", reattachCalled)
+	}
+}
