@@ -937,6 +937,10 @@ func (a *App) CurrentRailSelection() railSelection {
 			// Child agents that `^d` will also destroy: the orchestrator's
 			// live (non-archived) child roles.
 			ChildCount: countLiveRoles(ref.Roles),
+			// Status carries the coord task's argus status for the optimistic
+			// render path (BUG-032): stepStatus computes the predicted next/prev
+			// status from this value without a separate cache lookup.
+			Status: ref.CoordStatus,
 		}
 	case *roleEntry:
 		pinned := ref.Pinned
@@ -967,6 +971,10 @@ func (a *App) CurrentRailSelection() railSelection {
 			Dead:          ref.Dead,
 			WorktreePath:  ref.WorktreePath,
 			Project:       ref.Project,
+			// Status carries the role's argus status for the optimistic render
+			// path (BUG-032): stepStatus computes the predicted next/prev status
+			// from this value without a separate cache lookup.
+			Status: ref.Status,
 		}
 		// A promoted sub-coordinator row (its own task coordinates a child
 		// orchestrator) is a coordinator TARGET in its own right: `w` spawns

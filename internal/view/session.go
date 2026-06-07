@@ -145,6 +145,9 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, app, log)
 		bridge.rowSel = app
 		bridge.fPinner = app
+		if states != nil {
+			bridge.optimizer = states // ArgusStateCache implements statusOptimizer
+		}
 
 		router := &KeyRouter{
 			Focus:      focus,

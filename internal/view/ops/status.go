@@ -21,6 +21,14 @@ func statusIndex(status string) int {
 	return -1
 }
 
+// NextStatus returns the next status one rung toward complete. Exported for
+// the view layer's optimistic-status overlay (BUG-032). Mirrors nextStatus.
+func NextStatus(status string) string { return nextStatus(status) }
+
+// PrevStatus returns the previous status one rung toward pending. Exported
+// for the view layer's optimistic-status overlay (BUG-032). Mirrors prevStatus.
+func PrevStatus(status string) string { return prevStatus(status) }
+
 // nextStatus / prevStatus clamp at the ends of the ladder (complete stays
 // complete; pending stays pending) — matching argus's Status.Next/Prev.
 func nextStatus(status string) string {

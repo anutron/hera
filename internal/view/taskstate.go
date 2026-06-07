@@ -85,6 +85,15 @@ type ArgusStateCache struct {
 	infos  []ArgusTaskInfo // full snapshot, render order = argus list order
 	ready  bool            // true after the first successful poll
 
+	// optimistic holds predicted statuses applied by the mutation bridge at the
+	// START of a status-step goroutine (BUG-032: optimistic render). Each entry
+	// overrides the polled status in Get until the next poll confirms the new
+	// value (poll auto-clears confirmed entries) or the mutation bridge clears it
+	// on write failure (ClearOptimistic). Guarded by optMu, separate from mu so
+	// poll reads and optimistic writes do not contend.
+	optMu      sync.RWMutex
+	optimistic map[string]string // taskID → predicted status
+
 	submu sync.Mutex
 	subs  map[chan struct{}]struct{}
 }
@@ -100,21 +109,59 @@ func NewArgusStateCache(lister argusLister, interval time.Duration, log *slog.Lo
 		log = slog.Default()
 	}
 	return &ArgusStateCache{
-		lister:   lister,
-		interval: interval,
-		log:      log,
-		states:   map[string]ArgusTaskState{},
-		subs:     map[chan struct{}]struct{}{},
+		lister:     lister,
+		interval:   interval,
+		log:        log,
+		states:     map[string]ArgusTaskState{},
+		optimistic: map[string]string{},
+		subs:       map[chan struct{}]struct{}{},
 	}
 }
 
 // Get returns the cached state for taskID. ok is false when the task is not
-// in the latest argus snapshot (unknown / not yet polled).
+// in the latest argus snapshot (unknown / not yet polled). When an optimistic
+// status override exists for the task (set by SetOptimistic), the returned
+// state's Status field reflects the predicted value rather than the polled one.
 func (c *ArgusStateCache) Get(taskID string) (ArgusTaskState, bool) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	st, ok := c.states[taskID]
-	return st, ok
+	c.mu.RUnlock()
+	if !ok {
+		return ArgusTaskState{}, false
+	}
+	c.optMu.RLock()
+	optStatus, hasOpt := c.optimistic[taskID]
+	c.optMu.RUnlock()
+	if hasOpt {
+		st.Status = optStatus
+	}
+	return st, true
+}
+
+// SetOptimistic stores an expected status for taskID so the rail reflects the
+// new status immediately while the argus write is still in flight (BUG-032).
+// Get returns this value in place of the polled status until the next poll
+// confirms the same value (auto-cleared by poll) or ClearOptimistic is called.
+// No-op for empty taskID.
+func (c *ArgusStateCache) SetOptimistic(taskID, status string) {
+	if taskID == "" {
+		return
+	}
+	c.optMu.Lock()
+	c.optimistic[taskID] = status
+	c.optMu.Unlock()
+}
+
+// ClearOptimistic removes the optimistic status override for taskID so the rail
+// reverts to the polled value on the next repopulate. Called by the mutation
+// bridge when the argus write fails. No-op for empty taskID.
+func (c *ArgusStateCache) ClearOptimistic(taskID string) {
+	if taskID == "" {
+		return
+	}
+	c.optMu.Lock()
+	delete(c.optimistic, taskID)
+	c.optMu.Unlock()
 }
 
 // List returns a copy of the full task snapshot from the latest poll, in
@@ -202,6 +249,21 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 	c.infos = infos
 	c.ready = true
 	c.mu.Unlock()
+
+	// Auto-clear optimistic entries that the poll has now confirmed, keeping
+	// the map compact. An entry whose polled status matches the predicted value
+	// is done — the optimistic is no longer needed. Entries whose polled status
+	// differs are either mid-flight (transient) or were never applied (failure
+	// cleared them already); leave them alone so the rail keeps showing the
+	// predicted icon until the write round-trip finishes.
+	c.optMu.Lock()
+	for taskID, optStatus := range c.optimistic {
+		if st, ok := next[taskID]; ok && st.Status == optStatus {
+			delete(c.optimistic, taskID)
+		}
+	}
+	c.optMu.Unlock()
+
 	if changed {
 		c.notify()
 	}

@@ -1770,6 +1770,337 @@ func TestBridge_OnStatus_OrchestratorNoCoord_Feedback(t *testing.T) {
 	}
 }
 
+// --- BUG-032: optimistic status render ---
+
+// fakeStatusOptimizer records SetOptimistic / ClearOptimistic calls so tests
+// can assert the optimistic overlay is applied (and reverted on failure) without
+// needing a real ArgusStateCache.
+type fakeStatusOptimizer struct {
+	mu     sync.Mutex
+	sets   []optimisticCall
+	clears []string
+	// setCh, when non-nil, is closed on the first SetOptimistic call so tests
+	// can block until the goroutine has applied the optimistic update.
+	setCh chan struct{}
+}
+
+type optimisticCall struct{ TaskID, Status string }
+
+func (f *fakeStatusOptimizer) SetOptimistic(taskID, status string) {
+	f.mu.Lock()
+	f.sets = append(f.sets, optimisticCall{taskID, status})
+	ch := f.setCh
+	f.mu.Unlock()
+	if ch != nil {
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
+	}
+}
+
+func (f *fakeStatusOptimizer) ClearOptimistic(taskID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clears = append(f.clears, taskID)
+}
+
+func (f *fakeStatusOptimizer) Sets() []optimisticCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]optimisticCall, len(f.sets))
+	copy(out, f.sets)
+	return out
+}
+
+func (f *fakeStatusOptimizer) Clears() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.clears))
+	copy(out, f.clears)
+	return out
+}
+
+// newBridgeWithOptimizer wires a bridge with a fakeStatusOptimizer so tests
+// can assert the optimistic path without a real ArgusStateCache.
+func newBridgeWithOptimizer() (*mutationBridge, *fakeModals, *fakeSelector, *fakeMutationService, *fakeRepopulator, *fakeStatusOptimizer) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	opt := &fakeStatusOptimizer{}
+	b.optimizer = opt
+	return b, m, sel, svc, rp, opt
+}
+
+// TestBridge_OnStatusAdvance_Optimistic_SetBeforeSvcCall verifies that
+// SetOptimistic is called at the START of the goroutine — before the argus
+// round-trip completes — so the rail icon updates without waiting for the write.
+func TestBridge_OnStatusAdvance_Optimistic_SetBeforeSvcCall(t *testing.T) {
+	b, _, sel, svc, rp, opt := newBridgeWithOptimizer()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "w",
+		RoleKind:    "worker",
+		ArgusTaskID: "T9",
+		Status:      "pending",
+	}
+	gate := make(chan struct{})
+	svc.advanceGate = gate
+	opt.setCh = make(chan struct{})
+
+	returnsWithin(t, "OnStatusAdvance", b.OnStatusAdvance)
+
+	// Wait for the goroutine to apply the optimistic update (happens before the
+	// argus round-trip, which is still blocked by the gate).
+	select {
+	case <-opt.setCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SetOptimistic was not called within 2s — optimistic update never fired")
+	}
+
+	sets := opt.Sets()
+	if len(sets) != 1 {
+		t.Fatalf("want 1 SetOptimistic call before gate; got %d", len(sets))
+	}
+	if sets[0] != (optimisticCall{"T9", "in_progress"}) {
+		t.Fatalf("SetOptimistic: want {T9, in_progress}; got %+v", sets[0])
+	}
+	// An immediate refresh was triggered by the optimistic update.
+	if rp.Count() < 1 {
+		t.Fatalf("want ≥1 refresh from optimistic update before gate; got %d", rp.Count())
+	}
+
+	close(gate)
+	b.waitIdle()
+
+	// No ClearOptimistic on success — the poll auto-clears confirmed entries.
+	if len(opt.Clears()) != 0 {
+		t.Fatalf("ClearOptimistic must not be called on success; got %v", opt.Clears())
+	}
+	// Post-mutation refresh fires in addition to the optimistic one.
+	if rp.Count() < 2 {
+		t.Fatalf("want ≥2 refreshes (optimistic + post-mutation); got %d", rp.Count())
+	}
+}
+
+// TestBridge_OnStatusRevert_Optimistic_SetBeforeSvcCall verifies the same
+// behaviour for the S (revert) path.
+func TestBridge_OnStatusRevert_Optimistic_SetBeforeSvcCall(t *testing.T) {
+	b, _, sel, svc, rp, opt := newBridgeWithOptimizer()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "w",
+		RoleKind:    "worker",
+		ArgusTaskID: "T9",
+		Status:      "in_progress",
+	}
+	opt.setCh = make(chan struct{})
+	// No gate: let it complete synchronously for brevity — the key assertion
+	// is the direction of the optimistic (prev step).
+	_ = svc
+
+	returnsWithin(t, "OnStatusRevert", b.OnStatusRevert)
+	b.waitIdle()
+
+	sets := opt.Sets()
+	if len(sets) != 1 {
+		t.Fatalf("want 1 SetOptimistic call; got %d", len(sets))
+	}
+	if sets[0] != (optimisticCall{"T9", "pending"}) {
+		t.Fatalf("SetOptimistic: want {T9, pending}; got %+v", sets[0])
+	}
+	if rp.Count() < 2 {
+		t.Fatalf("want ≥2 refreshes; got %d", rp.Count())
+	}
+}
+
+// TestBridge_OnStatusAdvance_Optimistic_ClearsOnFailure verifies that a write
+// failure clears the optimistic override so the rail reverts instead of showing
+// the wrong status indefinitely.
+func TestBridge_OnStatusAdvance_Optimistic_ClearsOnFailure(t *testing.T) {
+	b, _, sel, svc, rp, opt := newBridgeWithOptimizer()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "w",
+		RoleKind:    "worker",
+		ArgusTaskID: "T9",
+		Status:      "pending",
+	}
+	svc.advanceErr = errors.New("argus 503")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	// SetOptimistic must have been called (optimistic applied).
+	if len(opt.Sets()) != 1 {
+		t.Fatalf("SetOptimistic not called; got %v", opt.Sets())
+	}
+	// ClearOptimistic must have been called on failure (revert).
+	clears := opt.Clears()
+	if len(clears) != 1 || clears[0] != "T9" {
+		t.Fatalf("ClearOptimistic: want [T9]; got %v", clears)
+	}
+	// Two refreshes: one for the optimistic apply, one for the revert.
+	if rp.Count() < 2 {
+		t.Fatalf("want ≥2 refreshes (apply + revert); got %d", rp.Count())
+	}
+}
+
+// TestBridge_OnStatusAdvance_Optimistic_FreelancerPath verifies the optimistic
+// overlay on the task-direct (freelancer) path.
+func TestBridge_OnStatusAdvance_Optimistic_FreelancerPath(t *testing.T) {
+	b, _, sel, _, rp, opt := newBridgeWithOptimizer()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleKind:    "freelance",
+		RoleID:      0,
+		Name:        "feat",
+		ArgusTaskID: "T7",
+		Status:      "in_review",
+	}
+	opt.setCh = make(chan struct{})
+
+	returnsWithin(t, "OnStatusAdvance", b.OnStatusAdvance)
+	b.waitIdle()
+
+	sets := opt.Sets()
+	if len(sets) != 1 || sets[0] != (optimisticCall{"T7", "complete"}) {
+		t.Fatalf("want SetOptimistic(T7, complete); got %v", sets)
+	}
+	if rp.Count() < 2 {
+		t.Fatalf("want ≥2 refreshes; got %d", rp.Count())
+	}
+}
+
+// TestBridge_OnStatusAdvance_Optimistic_OrchestratorHeader verifies the
+// optimistic overlay for the orchestrator-header path (coord task).
+func TestBridge_OnStatusAdvance_Optimistic_OrchestratorHeader(t *testing.T) {
+	b, _, sel, _, rp, opt := newBridgeWithOptimizer()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    42,
+		CoordTaskID:    "Tcoord",
+		Name:           "foo",
+		Status:         "pending",
+	}
+	opt.setCh = make(chan struct{})
+
+	returnsWithin(t, "OnStatusAdvance", b.OnStatusAdvance)
+	b.waitIdle()
+
+	sets := opt.Sets()
+	if len(sets) != 1 || sets[0] != (optimisticCall{"Tcoord", "in_progress"}) {
+		t.Fatalf("want SetOptimistic(Tcoord, in_progress); got %v", sets)
+	}
+	if rp.Count() < 2 {
+		t.Fatalf("want ≥2 refreshes; got %d", rp.Count())
+	}
+}
+
+// TestBridge_OnStatusAdvance_Optimistic_Clamped_NoSet verifies that no
+// optimistic update is applied when the status is already at the clamp point
+// (advancing from "complete" is a no-op — the server skip path).
+func TestBridge_OnStatusAdvance_Optimistic_Clamped_NoSet(t *testing.T) {
+	b, _, sel, _, rp, opt := newBridgeWithOptimizer()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "w",
+		RoleKind:    "worker",
+		ArgusTaskID: "T9",
+		Status:      "complete", // already at the top
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(opt.Sets()) != 0 {
+		t.Fatalf("no optimistic update expected at clamp; got %v", opt.Sets())
+	}
+	// Only the post-mutation refresh fires (no optimistic refresh).
+	if rp.Count() != 1 {
+		t.Fatalf("want exactly 1 refresh (post-mutation); got %d", rp.Count())
+	}
+}
+
+// TestBridge_OnStatusAdvance_Optimistic_NoTaskID_NoSet verifies that the
+// optimistic path is skipped when ArgusTaskID is empty (no live binding or
+// cold cache), so no fabricated icon appears.
+func TestBridge_OnStatusAdvance_Optimistic_NoTaskID_NoSet(t *testing.T) {
+	b, _, sel, _, _, opt := newBridgeWithOptimizer()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "w",
+		RoleKind:    "worker",
+		ArgusTaskID: "", // no live binding
+		Status:      "pending",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(opt.Sets()) != 0 {
+		t.Fatalf("no optimistic expected without a task ID; got %v", opt.Sets())
+	}
+}
+
+// TestBridge_OnStatusAdvance_NilOptimizer_StillWorks verifies that a nil
+// optimizer doesn't break the mutation — the svc call still runs and the rail
+// still refreshes after, just without the optimistic pre-render.
+func TestBridge_OnStatusAdvance_NilOptimizer_StillWorks(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	// optimizer is nil in the standard newBridgeUnderTest helper.
+	sel.sel = railSelection{Kind: selRole, RoleID: 9, Name: "w", RoleKind: "worker"}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.advanceCalls) != 1 || svc.advanceCalls[0] != 9 {
+		t.Fatalf("want AdvanceStatus(9) with nil optimizer; got %v", svc.advanceCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("post-mutation refresh must still fire; got %d", rp.Count())
+	}
+}
+
+// TestBridge_OnStatusAdvance_InFlight_NoOptimistic verifies that the optimistic
+// update is NOT applied when the mutation is dropped (another mutation is already
+// in flight). The inFlight guard inside mutate prevents the op closure from
+// running, so SetOptimistic is never called.
+func TestBridge_OnStatusAdvance_InFlight_NoOptimistic(t *testing.T) {
+	b, _, sel, svc, _, opt := newBridgeWithOptimizer()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "w",
+		RoleKind:    "worker",
+		ArgusTaskID: "T9",
+		Status:      "pending",
+	}
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	svc.archiveRoleStarted = started
+	svc.archiveRoleGate = gate
+
+	// Start a blocking first mutation (archive).
+	b.OnArchive()
+	<-started // archive svc call is now executing; inFlight = true
+
+	// Attempt the status step while the first is in flight — must be dropped.
+	b.OnStatusAdvance()
+
+	close(gate)
+	b.waitIdle()
+
+	if len(opt.Sets()) != 0 {
+		t.Fatalf("SetOptimistic must not fire when mutation is dropped (inFlight); got %v", opt.Sets())
+	}
+}
+
 // --- Never silent: non-applicable keys give visible feedback ---
 
 func TestBridge_OnStatus_NoSelection_Feedback(t *testing.T) {
