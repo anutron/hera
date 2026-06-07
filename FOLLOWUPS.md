@@ -4,15 +4,9 @@ Items the spec-audit and ralph-review passes surfaced and we consciously chose t
 
 ## Dogfood loop reliability (surfaced during hera-settings)
 
-### `argus.PostTaskInput` response decode error
+### `argus.PostTaskInput` response decode error — RESOLVED
 
-**Status:** Active bug. Bit w1, w3, and coord during the hera-settings dogfood loop.
-
-**What:** `hera_send` to a worker via the coordinator returns the error `decode: json: cannot unmarshal string into Go struct field postTaskInputResponse.bytes of type int`. The POST itself succeeds — the bytes reach the recipient's PTY — but the response unmarshal fails on a schema mismatch between hera's `postTaskInputResponse` struct (defines `bytes int`) and argus's actual response (returns a stringified int). The error propagates back to the tool caller as a hera_send failure, so callers think the send failed even though it landed.
-
-**Why escalate now:** Combined with the "auto-execute doesn't seem to be working" report from one of the workers, this points at a real dogfood-blocker — the auto-execute inject side of hera_send is exactly the path the decode error sits on. Fix in `internal/argus/input.go` (field type, likely `json.Number` or `string` with parse) plus a regression test.
-
-**Escalate when:** Already — slated as the next change after `hera-settings` archive.
+**Status:** Fixed in commit `fb04c27`. Introduced `flexInt` type in `internal/argus/tasks.go` with a tolerant `UnmarshalJSON`. Regression test: `TestClient_PostTaskInput_BytesAsString` in `internal/argus/client_test.go`.
 
 ### Argus settings-callback proxy drops registered auth_header
 
@@ -34,15 +28,9 @@ Items the spec-audit and ralph-review passes surfaced and we consciously chose t
 
 ## Hera bugs (found in the 1.0 regression)
 
-### BUG-011 – doorbell loops until mark_read
+### BUG-011 – doorbell loops until mark_read — RESOLVED
 
-**Status:** Active bug. Found during 1.0 regression.
-
-**What:** The `DeliveryWatcher` re-nudges idle-submit messages whose `read_at` is null, repeating until the recipient reads. Calling `hera_inbox` (which only lists) does not set `read_at` – only `hera_mark_read` does – so a recipient who views but doesn't explicitly mark gets re-nudged indefinitely.
-
-**Fix options:** Have `hera_inbox` stamp `read_at` on the messages it returns, OR change the doorbell text to "call hera_inbox AND mark_read". Minor; the feature otherwise works.
-
-**Escalate when:** A recipient reports repeated doorbell nudges after reading.
+**Status:** Fixed in commit `1fa3628`. `hera_inbox` now stamps `read_at` on every message it returns, so a recipient who reads without explicitly calling `hera_mark_read` is still treated as read and the doorbell stops.
 
 ### BUG-012 – rail doesn't promote a new worker binding out of Freelance live
 
@@ -126,13 +114,75 @@ The following items were resolved by documenting the existing behavior rather th
 
 ## 1.0 closeout cleanup
 
-Items to clean up once the 1.0 regression is complete and the batch PR is merged.
+Remaining housekeeping from the 1.0 release cycle.
 
-- **Retract dud `argus-sdk v0.0.5` tag.** Points at the pre-merge commit without the In Review / PR icon constants. Hera is the only consumer so it's harmless, but it should be removed or retracted in `go.mod`. Superseded by `v0.0.6`.
+- **`openspec archive` the landed change folders.** All change folders for shipped work should be archived into `openspec/changes/archive/` so `openspec/changes/` reflects only genuinely in-flight work. Many 1.0-era folders (add-hera-view, rail-search, pane-fullscreen, rail-sections, etc.) are still in `openspec/changes/` unarchived.
 
-- **Archive spent 1.0 release workers.** Once the regression confirms clean: archive `sdk-icons`, `inject-receipt`, `prune-finish`, `rail-icons`, `stateful-rail`, `sdk-cursor`, `pane-focus`, and `roadmap-scribe`. Also archive the regression fixtures (`kbtest` + its workers, `prune-me-coord`, `adopt-this-freelancer`, `archive-this-freelancer`) and the vestigial `hera-keyenc-consolidation` orchestrator.
+- **Finish `add-multi-binding` archiving.** Code is merged on main. Three tasks remain: `iris_publish(reset=true, push=true)`, verify reload via `iris_status`, and `hera_status done` + `task_set_result`. Then `openspec archive add-multi-binding`.
 
-- **`openspec archive` the landed 1.0 change folders.** All change folders for shipped 1.0 work should be archived into `openspec/changes/archive/` so `openspec/changes/` reflects only in-flight work.
+## v1.x backlog (new deferred items)
+
+These items were explicitly considered for v1.0 and deferred. See also NEXT.md for the prioritized list.
+
+### Re-attach detached agents (top v1.x item)
+
+**Status:** Deferred. The session-vs-task identity gap means a restart leaves dead pane sessions with no clean re-attach path. Design tracked in `memory/session-vs-task-identity-gap.md`.
+
+**Escalate when:** A worker's pane goes dead mid-session and the operator needs to recover without restarting the whole daemon.
+
+### `hera_spawn_worker` MCP verb
+
+**Status:** Deferred. The operator-side spawn (`w` key → `ops.SpawnWorker`) is implemented; the MCP equivalent is not. The verb would call `ops.SpawnWorker` directly, creating a born-bound worker without the transient-freelancer window.
+
+**Escalate when:** Coordinators start spawning workers programmatically via MCP (the current task_create + hera_join dance is error-prone).
+
+### BUG-012 – rail doesn't promote self-joined worker out of Freelance live
+
+**Status:** Active. Found during 1.0 regression. The new-binding broadcast → rail reclassification path doesn't move a self-joined worker out of the Freelance section until a full reload. Adding `hera_spawn_worker` sidesteps this for coord-spawned workers; the self-join path still needs the live-reclassification fix.
+
+**Escalate when:** We add `hera_spawn_worker` (reduces blast radius to genuinely freelance-joining tasks only), or the UX regressions become frequent.
+
+### Status-step latency
+
+**Status:** Known UX gap. `s`/`S` incur ~0.5 s round-trip to argus; no optimistic update.
+
+**Escalate when:** The latency becomes disruptive in day-to-day use.
+
+### Remove the outer plugin-view border and "Hera" title
+
+**Status:** Deferred. `viewTitle = "Hera"` in `internal/daemon/run.go` causes argus to draw a title bar around the plugin view. Empty title = HTTP 400 + crash-loop (BUG-034 regression risk). Requires an argus-side fix first.
+
+**Escalate when:** argus is updated to allow an empty plugin-view title.
+
+### Coord-metadata auto-summary
+
+**Status:** Deferred. The Details pane live-refreshes agent count, activity, and status. The description/goal/scope auto-summary is a placeholder.
+
+**Escalate when:** We have a clear algorithm for inferring goal/scope from the role's message history and mission field.
+
+### Coord archive/mark-done/undo MCP verbs
+
+**Status:** Deferred. Coordinators currently have to drop to argus `task_archive` to close out agents. Coord-side verbs (`hera_archive_role`, `hera_mark_done`, undo) would make lifecycle management possible from the coordination layer.
+
+**Escalate when:** Orchestrators routinely need to close out completed workers from within a coordinator script.
+
+### Hera-aware skills
+
+**Status:** Deferred. Workers spawned via `/fixit` etc. need hand-supplied `hera_join` instructions. Three paths: (a) project CLAUDE.md snippet, (b) modify individual skills, (c) hera-prefixed wrapper skills. Approach (a) is lowest-touch.
+
+**Escalate when:** The repeated "remember to hera_join" instruction becomes a noticeable overhead.
+
+### Reliable-messaging redesign (email model)
+
+**Status:** Deferred. The minimal doorbell (re-nudge on unread `read_at`) shipped in 1.0. The full design stops injecting message bodies into the PTY and instead injects only a doorbell that triggers `hera_inbox`. Cleaner, idempotent, re-nudge-safe.
+
+**Escalate when:** Body-injection causes double-delivery or ordering issues under concurrent sends.
+
+### Install: Linux/systemd parity + programmatic install/uninstall
+
+**Status:** Deferred. setup.sh is macOS-only. Linux/systemd path and `hera install` / `hera uninstall` CLI subcommands are the natural extensions.
+
+**Escalate when:** A Linux user reports the daemon lifecycle is unmanageable without a managed service.
 
 ## Resolved this pass
 

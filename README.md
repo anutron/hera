@@ -2,7 +2,7 @@
 
 Coordinator/overlay daemon for [argus](https://github.com/drn/argus). Provides role-as-identity coordination over argus's plugin substrate: roles persist across argus task lifetimes, messages flow between roles via an idle-gated injection bus, and worker tasks spawned by a coordinator are auto-adopted into the orchestrator graph.
 
-**Status:** v1 in development. The OpenSpec change folder at `openspec/changes/hera-v1/` is the source of truth for the current design and implementation plan.
+**Status:** v1.0
 
 ## What hera does
 
@@ -10,12 +10,58 @@ Coordinator/overlay daemon for [argus](https://github.com/drn/argus). Provides r
 - **Message bus with auto-delivery.** `hera_send` injects messages directly into the recipient's PTY – with `\n` (auto-submit) when the recipient is idle, without `\n` (user submits) when the recipient is busy.
 - **Auto-adopted worker tasks.** Coordinators spawn workers via argus's existing `task_create`; hera watches the event stream and adopts new tasks into the orchestrator graph automatically.
 - **Cross-repo orchestration.** Roles can live in different argus projects; the orchestrator binds them logically without forcing co-location.
+- **TUI operator view.** `Ctrl+H` inside argus opens hera-view: a live three-panel terminal showing your coordinator and agent PTYs side by side, with a navigable rail of all orchestrators, agents, and freelancers.
 
-## What hera is not (in v1)
+## hera-view
 
-- **Not a chat surface for the user.** Users talk to coordinator agents; coordinators talk to hera via MCP tools.
-- **Not a plugin view yet.** The embedded-terminal split view is deferred to a follow-up change.
-- **Not a `hera install` CLI subcommand.** Daemon lifecycle is driven by `setup.sh` (which can install a per-user macOS LaunchAgent — see below). Linux/systemd is deferred.
+hera ships a built-in TUI launched from argus with **Ctrl+H**. It gives you a live view of all your coordinated agents without leaving argus.
+
+### Layout
+
+The view has three regions: a fixed-width left **rail** and two right panes. The right side adapts to what the rail has selected:
+
+- **Coordinator mode** (a coordinator row selected): rail + **HERA** pane (coordinator PTY) + **Details** pane (live agent roster, activity, status)
+- **Agent mode** (a worker row selected): rail + **HERA** pane (that agent's coordinator PTY) + **AGENT** pane (the agent's own PTY)
+- **Freelance mode** (an unmanaged argus task selected): rail + full-width **AGENT** pane
+
+The rail lists active orchestrators with their agents nested below each one. Sub-coordinators sort before leaf workers. Freelancers – argus tasks hera has never bound to a role – appear below all project rows in a "Freelance" section grouped by repo. Archived items collect in an "Archive" section at the bottom of the rail (hidden by default; `l` reveals them).
+
+### Focus and navigation
+
+Focus starts in RAIL on open. Move between regions with the focus ladder or stay in a pane to type directly into the agent's terminal.
+
+| Key | Where | What |
+|-----|-------|------|
+| `j` / `k` | RAIL | Move selection up / down |
+| `Enter` | RAIL | Enter the selection's primary pane (coordinator → HERA, agent or freelancer → AGENT) |
+| `Ctrl-→` | any | Advance focus ladder (RAIL → COORD → AGENT) |
+| `Ctrl-←` | any | Retreat focus ladder (AGENT → COORD → RAIL) |
+| `Ctrl-Q` | COORD or AGENT | Return focus to RAIL |
+| `Ctrl-Z` | COORD or AGENT | Toggle pane fullscreen |
+| `Shift-↑` / `Shift-↓` | COORD or AGENT | Scroll pane scrollback |
+| `Cmd/Ctrl-↑` / `Cmd/Ctrl-↓` | COORD or AGENT | Flip rail selection while staying in the pane |
+| `Esc` | RAIL | Hand keyboard back to argus |
+
+### Rail mutation keys (RAIL focus only)
+
+When focus is inside a pane, all keystrokes are forwarded verbatim to the bound task's PTY. The keys below only fire when focus is RAIL; in a pane they reach the agent as ordinary bytes.
+
+| Key | What |
+|-----|------|
+| `n` | New coordinator – modal with Name / Project / Branch / Backend / Prompt (prompt auto-runs on launch) |
+| `w` | Spawn worker under the selected coordinator |
+| `J` | Adopt a freelancer into a coordinator |
+| `r` | Rename the selected row |
+| `a` | Archive / unarchive (reversible, no confirmation needed) |
+| `P` | Pin / unpin |
+| `s` / `S` | Advance / revert the selected row's argus task status |
+| `/` | Search / filter the rail |
+| `Space` | Fold / unfold a coordinator or Archive section |
+| `l` | Toggle visibility of the Archive section |
+| `^d` | Delete the selection, removing its worktree and branch (shows confirmation) |
+| `^r` | Prune all done coords and agents (shows confirmation) |
+| `^p` | Open a GitHub PR for the selected row's worktree |
+| `?` | Open the argus help overlay with the full keyset |
 
 ## Getting started
 
@@ -100,6 +146,8 @@ internal/
   mcp/              # MCP tool registration + callback HTTP listener + handlers
   inject/           # message injection (idle gate, formatting)
   idle/             # session.idle tracking
+  settings/         # operator settings section (idle_debounce, auto_inject knobs)
+  view/             # hera-view TUI (WebSocket plugin view, rail, PTY panes, keyset)
   daemon/           # main loop wiring everything together
   log/              # structured logging helpers
 openspec/           # OpenSpec specs + change folders (source of truth for design)
