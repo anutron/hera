@@ -675,8 +675,8 @@ func TestDaemonStart_RegistersPluginViewAndUnregisters(t *testing.T) {
 		t.Fatalf("plugin view not registered, got %+v", gotReg)
 	}
 	got := gotReg[0]
-	if got.Title != "" {
-		t.Errorf("plugin view title = %q, want empty (BUG-031: Hera label dropped)", got.Title)
+	if got.Title != "Hera" {
+		t.Errorf("plugin view title = %q, want %q (BUG-034: empty title → argus HTTP 400 crash-loop)", got.Title, "Hera")
 	}
 	if !strings.HasSuffix(got.CallbackURL, "/view") {
 		t.Errorf("plugin view callback_url = %q, want suffix /view", got.CallbackURL)
