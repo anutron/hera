@@ -419,14 +419,14 @@ type renameRoleCall struct {
 	NewName string
 }
 
-func (s *fakeMutationService) NewOrchestrator(_ context.Context, in ops.NewOrchestratorInput) (*ops.CreatedTask, error) {
+func (s *fakeMutationService) NewOrchestrator(_ context.Context, in ops.NewOrchestratorInput) (*ops.NewOrchestratorResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.newCalls = append(s.newCalls, in)
 	if s.newErr != nil {
 		return nil, s.newErr
 	}
-	return &ops.CreatedTask{ID: "task-1", Name: in.Name + "-coord"}, nil
+	return &ops.NewOrchestratorResult{OrchestratorID: 1, RoleID: 2, ArgusTaskID: "task-1"}, nil
 }
 
 func (s *fakeMutationService) ListProjects(_ context.Context) ([]string, error) {

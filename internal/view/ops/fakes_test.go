@@ -167,6 +167,22 @@ func (f *fakeDB) ListOrchestrators(ctx context.Context) ([]*Orchestrator, error)
 	return out, nil
 }
 
+func (f *fakeDB) CreateOrchestrator(ctx context.Context, name string) (*Orchestrator, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Idempotent: return existing active row if name is already in use.
+	for _, o := range f.orchestrators {
+		if o.Name == name && !o.Archived {
+			cp := *o
+			return &cp, nil
+		}
+	}
+	f.nextOrchID++
+	o := &Orchestrator{ID: f.nextOrchID, Name: name}
+	f.orchestrators[o.ID] = o
+	return o, nil
+}
+
 func (f *fakeDB) ArchiveOrchestrator(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
