@@ -5,12 +5,12 @@ TBD - created by archiving change hera-v1. Update Purpose after archive.
 ## Requirements
 ### Requirement: Role identity outlives argus task lifecycle
 
-The system SHALL persist role identity, mission, constraints, and accumulated history (messages, role status) across argus task lifecycle events. Archiving an argus task that incarnates one or more roles MUST end every live binding for that task without deleting any role row or its associated messages.
+The system SHALL persist role identity, `prompt`, and accumulated history (messages, role status) across argus task lifecycle events. Archiving an argus task that incarnates a role MUST end that role's current binding without deleting the role row or its associated messages. The role's `prompt` (the only free-form field) MUST survive archive/resurrect intact.
 
-#### Scenario: Coordinator task archived, role survives
+#### Scenario: Coordinator task archived, role and prompt survive
 
-- **WHEN** a coordinator role is bound to argus task `T1` and `T1` is archived
-- **THEN** hera MUST set the binding's `ended_at` and `end_reason` columns and leave the role row, all messages addressed to the role, and the role's status row intact
+- **WHEN** a coordinator role with `prompt="ship the thing"` is bound to argus task `T1` and `T1` is archived
+- **THEN** hera MUST set the binding's `ended_at` and `end_reason` columns AND leave the role row with `prompt="ship the thing"` intact
 
 #### Scenario: Same role rebound across multiple incarnations
 
@@ -134,28 +134,28 @@ The system SHALL adopt a new argus task as a worker role of orchestrator X when 
 - **WHEN** argus emits `link.created` (`child=T6, parent=T1`) where `T1` has a worker binding under `foo` AND a coordinator binding under `bar`, AND `T6`'s `meta:hera.role=worker`
 - **THEN** hera MUST create a worker role under `bar` (NOT `foo`) AND insert a binding row linking the role to `T6`
 
-### Requirement: Auto-adopt copies mission and constraints from task meta
+### Requirement: Auto-adopt copies prompt from task meta
 
-The system SHALL read `meta:hera.mission` and `meta:hera.constraints` from the new task's metadata at adoption time and populate the role row's `mission` and `constraints` columns from those values. Both keys MUST be optional; absence MUST result in empty-string columns.
+The system SHALL read `meta:hera.prompt` from the new task's metadata at adoption time and populate the role row's `prompt` column from that value. `meta:hera.mission` and `meta:hera.constraints` are no longer recognized. The `prompt` key MUST be optional; absence MUST result in an empty-string `prompt` column.
 
-#### Scenario: Mission and constraints meta present
+#### Scenario: Prompt meta present
 
-- **WHEN** an auto-adopted task has `meta:hera.mission="implement schema migration"` and `meta:hera.constraints="must not block on F2"`
-- **THEN** the created role row's `mission` and `constraints` columns MUST contain those values verbatim
+- **WHEN** an auto-adopted task has `meta:hera.prompt="implement schema migration"`
+- **THEN** the created role row's `prompt` column MUST contain `"implement schema migration"` verbatim
 
-#### Scenario: Mission and constraints meta absent
+#### Scenario: Prompt meta absent
 
-- **WHEN** an auto-adopted task has `meta:hera.role=worker` but no `meta:hera.mission` or `meta:hera.constraints`
-- **THEN** the created role row's `mission` and `constraints` columns MUST be empty strings (not NULL)
+- **WHEN** an auto-adopted task has `meta:hera.role=worker` but no `meta:hera.prompt`
+- **THEN** the created role row's `prompt` column MUST be an empty string (not NULL)
 
 ### Requirement: New orchestrator bootstrap via `hera_new_orchestrator`
 
-The system SHALL provide `hera_new_orchestrator(cwd, name, coordinator_role_name, [mission], [constraints])` as the canonical "be an orchestrator" entry point. The call MUST create the orchestrator row (idempotent on name), the coordinator role under it (idempotent on (orchestrator, role_name) when the kind matches), a binding row tying the calling argus task to that coordinator role, AND mirror `meta:hera.role=coordinator` to the bound argus task. The call MUST reject if the calling argus task already has a live binding **to the orchestrator named in this call**; bindings to other orchestrators MUST NOT cause rejection.
+The system SHALL provide `hera_new_orchestrator(cwd, name, coordinator_role_name, [prompt])` as the canonical "be an orchestrator" entry point. The tool MUST accept a single optional `prompt` parameter (free-form prose) instead of the previous `mission` and `constraints` pair. The call MUST create the orchestrator row (idempotent on name), the coordinator role under it (idempotent on (orchestrator, role_name) when the kind matches), a binding row tying the calling argus task to that coordinator role, AND mirror `meta:hera.role=coordinator` to the bound argus task. The call MUST reject if the calling argus task already has a live binding **to the orchestrator named in this call**; bindings to other orchestrators MUST NOT cause rejection.
 
 #### Scenario: Fresh orchestrator and coordinator created
 
-- **WHEN** `hera_new_orchestrator(cwd=$PWD, name="foo", coordinator_role_name="coord", mission="ship F", constraints="land by friday")` is called from an unbound argus task
-- **THEN** hera MUST create orchestrator `foo`, create a coordinator role `coord` with the given mission and constraints, insert a live binding to the calling task, AND PUT `{key: "role", value: "coordinator"}` to the bound task's `/api/tasks/{id}/meta` endpoint
+- **WHEN** `hera_new_orchestrator(cwd=$PWD, name="foo", coordinator_role_name="coord", prompt="ship F by friday")` is called from an unbound argus task
+- **THEN** hera MUST create orchestrator `foo`, create a coordinator role `coord` with `prompt="ship F by friday"`, insert a live binding to the calling task, AND PUT `{key: "role", value: "coordinator"}` to the bound task's `/api/tasks/{id}/meta` endpoint
 
 #### Scenario: Existing orchestrator with no live coordinator binding resumed
 
@@ -179,12 +179,12 @@ The system SHALL provide `hera_new_orchestrator(cwd, name, coordinator_role_name
 
 ### Requirement: Worker and freelance attach via `hera_join`
 
-The system SHALL allow an existing argus task in any project to attach itself to an existing orchestrator post-hoc by calling `hera_join` with `orchestrator=<name>`, `role_name=<self-named>`, `kind="worker"` or `kind="freelance"`, and optional `mission`, `constraints`, `status`. Hera MUST create the role row + binding row atomically AND mirror `meta:hera.role=<kind>` to the bound argus task. The orchestrator named MUST already exist. Kind `coordinator` is NOT accepted by `hera_join`; bootstrap a coordinator via `hera_new_orchestrator`. The call MUST reject if the calling argus task already has a live binding **to the orchestrator named in this call**; bindings to other orchestrators MUST NOT cause rejection.
+The system SHALL allow an existing argus task in any project to attach itself to an existing orchestrator post-hoc by calling `hera_join` with `orchestrator=<name>`, `role_name=<self-named>`, `kind="worker"` or `kind="freelance"`, and optional `prompt`, `status`. Hera MUST create the role row + binding row atomically AND mirror `meta:hera.role=<kind>` to the bound argus task. The orchestrator named MUST already exist. Kind `coordinator` is NOT accepted by `hera_join`; bootstrap a coordinator via `hera_new_orchestrator`. The tool MUST NOT accept `mission` or `constraints` parameters. The call MUST reject if the calling argus task already has a live binding **to the orchestrator named in this call**; bindings to other orchestrators MUST NOT cause rejection.
 
 #### Scenario: Freelance attach with all attributes
 
-- **WHEN** `hera_join(cwd=$PWD, orchestrator="foo", role_name="refactor-sidebar", kind="freelance", mission="...", constraints="...", status="working")` is invoked from a worktree whose argus task has no prior hera binding
-- **THEN** hera MUST create a freelance role under `foo`, insert a binding row tying the calling task to it, populate mission/constraints from the call args, set role_status to `working`, mirror `meta:hera.role=freelance` to the bound argus task, AND return the role identity in the tool response
+- **WHEN** `hera_join(cwd=$PWD, orchestrator="foo", role_name="refactor-sidebar", kind="freelance", prompt="...", status="working")` is invoked from a worktree whose argus task has no prior hera binding
+- **THEN** hera MUST create a freelance role under `foo`, insert a binding row tying the calling task to it, populate `prompt` from the call arg, set role_status to `working`, mirror `meta:hera.role=freelance` to the bound argus task, AND return the role identity in the tool response
 
 #### Scenario: Freelance attach referencing unknown orchestrator
 
@@ -608,12 +608,12 @@ The system SHALL support renaming a role via a DAO `RenameRole(id, newName)` met
 
 ### Requirement: Orchestrators and roles may be archived
 
-The system SHALL support setting `archived_at` on an orchestrator via `ArchiveOrchestrator(id)` and on a role via `ArchiveRole(id)`. Archive MUST be a soft delete: the row, its mission, its constraints, its argus_project (for roles), and all related historical rows (messages, role_status, prior bindings) MUST survive. Conversely, `UnarchiveOrchestrator(id)` and `UnarchiveRole(id)` MUST clear `archived_at` to NULL. Archive timestamps MUST be RFC3339 UTC.
+The system SHALL support setting `archived_at` on an orchestrator via `ArchiveOrchestrator(id)` and on a role via `ArchiveRole(id)`. Archive MUST be a soft delete: the row, its `prompt`, its `argus_project` (for roles), and all related historical rows (messages, role_status, prior bindings) MUST survive. Conversely, `UnarchiveOrchestrator(id)` and `UnarchiveRole(id)` MUST clear `archived_at` to NULL. Archive timestamps MUST be RFC3339 UTC.
 
 #### Scenario: Archive role preserves identity columns
 
-- **WHEN** a role with `mission="ship F"`, `constraints="ship by friday"`, `argus_project="foo-frontend"` is archived
-- **THEN** the role row MUST have `archived_at` set to the current RFC3339 timestamp AND `mission`, `constraints`, `argus_project` MUST be unchanged AND all messages addressed to or from the role MUST remain in the `messages` table
+- **WHEN** a role with `prompt="ship F"` and `argus_project="foo-frontend"` is archived
+- **THEN** the role row MUST have `archived_at` set to the current RFC3339 timestamp AND `prompt` AND `argus_project` MUST be unchanged AND all messages addressed to or from the role MUST remain in the `messages` table
 
 #### Scenario: Unarchive role clears archived_at
 
@@ -627,17 +627,17 @@ The system SHALL support setting `archived_at` on an orchestrator via `ArchiveOr
 
 ### Requirement: Resurrect — fresh task in role's argus_project rebinds an archived role
 
-The system SHALL, when a new argus task is created in an archived role's stored `argus_project` AND that task calls `hera_join(cwd)`, treat the call as a rebind: clear the role's `archived_at` to NULL, create a new binding row linking the task to the role, AND mirror `meta:hera.role=<kind>` to the new task's metadata. The role's `mission`, `constraints`, and accumulated message history MUST survive the resurrect intact. If multiple archived roles in the same orchestrator share the same `argus_project`, hera MUST prefer the role whose most recent prior binding ended most recently; ties MUST resolve to the role with the lowest `id`.
+The system SHALL, when a new argus task is created in an archived role's stored `argus_project` AND that task calls `hera_join(cwd)`, treat the call as a rebind: clear the role's `archived_at` to NULL, create a new binding row linking the task to the role, AND mirror `meta:hera.role=<kind>` to the new task's metadata. The role's `prompt` and accumulated message history MUST survive the resurrect intact. If multiple archived roles in the same orchestrator share the same `argus_project`, hera MUST prefer the role whose most recent prior binding ended most recently; ties MUST resolve to the role with the lowest `id`.
 
 #### Scenario: Bare hera_join in archived role's argus_project resurrects
 
 - **WHEN** orchestrator `foo` has an archived coord role with `argus_project="foo-frontend"` AND a fresh argus task in project `foo-frontend` calls `hera_join(cwd=$PWD)` with no other arguments
 - **THEN** hera MUST clear the role's `archived_at` to NULL, insert a new binding row tying the calling task to the role, AND PUT `{key:"role", value:"coordinator"}` to the bound task's `/api/tasks/{id}/meta` endpoint
 
-#### Scenario: Resurrect preserves mission and constraints
+#### Scenario: Resurrect preserves prompt
 
-- **WHEN** an archived role with `mission="ship F"` and `constraints="ship by friday"` is resurrected by a fresh `hera_join` in its `argus_project`
-- **THEN** the role row's `mission` and `constraints` columns MUST remain `"ship F"` and `"ship by friday"` AND the response to `hera_join` MUST surface these values to the caller
+- **WHEN** an archived role with `prompt="ship F"` is resurrected by a fresh `hera_join` in its `argus_project`
+- **THEN** the role row's `prompt` column MUST remain `"ship F"` AND the response to `hera_join` MUST surface this value to the caller
 
 #### Scenario: Multiple archived candidates resolve by recency
 
@@ -720,4 +720,123 @@ The system SHALL declare the `orchestrator` field in the `input_schema.propertie
 
 - **WHEN** an HTTP GET against argus's MCP registry retrieves any of the four tools (`hera_send`, `hera_inbox`, `hera_mark_read`, `hera_status`)
 - **THEN** the returned `input_schema.properties` MUST contain an `orchestrator` entry of type `string` with a non-empty `description` AND the `required` array MUST NOT contain `orchestrator`
+
+### Requirement: task.deleted event ends live bindings
+
+The system SHALL handle the `task.deleted` argus event by ending every live binding
+whose `ArgusTaskID` matches the deleted task's ID, using `end_reason = "task_deleted"`.
+
+A deleted task with no live bindings MUST be silently ignored (no error).
+
+#### Scenario: task.deleted ends a live binding
+
+- **GIVEN** a task `T` has a live binding in hera
+- **WHEN** a `task.deleted` event arrives with `task_id = T`
+- **THEN** hera MUST call `Bindings.End(T, "task_deleted")` and log INFO `"binding ended on task.deleted"`
+
+#### Scenario: task.deleted with no binding is a no-op
+
+- **GIVEN** no live binding exists for task `T`
+- **WHEN** a `task.deleted` event arrives with `task_id = T`
+- **THEN** hera MUST return without error and without mutating any binding row
+
+### Requirement: task.archived preserves the binding
+
+The system MUST NOT end a binding when a `task.archived` event arrives. Archive is a
+reversible visibility change — the worktree still exists, the agent may still be live,
+and the role MUST remain resumable.
+
+Only `task.deleted` ends a live binding. `task.archived` MUST be a no-op with respect
+to binding lifecycle.
+
+#### Scenario: task.archived does NOT end the binding
+
+- **GIVEN** a task `T` has a live binding in hera
+- **WHEN** a `task.archived` event arrives with `task_id = T`
+- **THEN** hera MUST NOT end the binding — `T` remains resumable via `hera_join`
+
+#### Scenario: task.archived multi-binding task preserves all bindings
+
+- **GIVEN** a task `T` incarnates two roles (two live bindings)
+- **WHEN** a `task.archived` event arrives with `task_id = T`
+- **THEN** both bindings MUST remain live
+
+### Requirement: Coordinator-initiated atomic worker spawn
+
+The system SHALL provide a `hera_spawn_worker` MCP tool that allows a coordinator agent to create a new worker task and bind it to its orchestrator in one atomic operation. The calling task MUST hold a live coordinator binding; any other role kind MUST be rejected with an explanatory error.
+
+#### Scenario: Happy path – worker spawned and born bound
+
+- **WHEN** a coordinator calls `hera_spawn_worker(cwd, prompt="<worker instructions>")` with a valid coordinator binding
+- **THEN** hera MUST create a new argus task in the coordinator's `argus_project` with the prompt prefixed by an orientation sentence naming the coordinator
+- **AND** hera MUST insert a `worker` role under the calling coordinator's orchestrator with a name derived from the prompt (or `role_name` if supplied)
+- **AND** hera MUST insert a live binding tying the new argus task to the new worker role
+- **AND** hera MUST return `{ orchestrator, role_name, kind: "worker", prompt, binding_id, argus_task_id, prompt_auto_submitted }`
+
+#### Scenario: Auto-submit – prompt runs without manual Enter
+
+- **WHEN** `hera_spawn_worker` creates the argus task successfully
+- **THEN** hera MUST attempt `POST /api/tasks/{id}/input` with body `\r` (CR, byte 0x0D) to auto-run the prompt
+- **AND** the response MUST include `prompt_auto_submitted: true` when the POST succeeds, `false` when it fails
+- **AND** a POST failure MUST NOT cause `hera_spawn_worker` to return an error; the worker is already bound
+
+#### Scenario: Caller is not a coordinator – rejected
+
+- **WHEN** a worker or freelance role calls `hera_spawn_worker`
+- **THEN** hera MUST return `isError: true` with a message explaining that only coordinators may spawn workers
+
+#### Scenario: Prompt is empty – rejected
+
+- **WHEN** `hera_spawn_worker` is called with an empty or whitespace-only `prompt`
+- **THEN** hera MUST return `isError: true` with a message explaining that `prompt` is required
+
+#### Scenario: Project override
+
+- **WHEN** `hera_spawn_worker` is called with a non-empty `project` field
+- **THEN** the argus task MUST be created in the specified project rather than the coordinator's default `argus_project`
+
+#### Scenario: Role name derived from prompt when not supplied
+
+- **WHEN** `hera_spawn_worker` is called without a `role_name`
+- **THEN** the worker role name MUST be derived from the first 40 characters of `prompt` via slug normalization and uniqued within the orchestrator's existing non-archived roles
+
+#### Scenario: Explicit role name used when supplied
+
+- **WHEN** `hera_spawn_worker` is called with a non-empty `role_name`
+- **THEN** that name MUST be used as the base for uniqueness checking with suffix `-2`/`-3`/… appended if a sibling role with that name already exists
+
+#### Scenario: GetTask failure – binding inserted with empty worktree path
+
+- **WHEN** `hera_spawn_worker` successfully creates the argus task but `GET /api/tasks/{id}` fails
+- **THEN** the worker role and binding MUST still be inserted with an empty `worktree_path` and the spawn MUST complete successfully
+
+### Requirement: boot reconcile on daemon startup
+
+The system SHALL call `ResyncHandler.Reconcile` synchronously during daemon startup,
+after the `ResyncHandler` is constructed, to end bindings for tasks deleted while hera
+was offline.
+
+A failure from the reconcile (e.g., argus temporarily unreachable) MUST be logged at
+WARN and MUST NOT prevent the daemon from starting.
+
+Reconcile MUST include archived tasks in its "live" set (using the `archived=all`
+endpoint) so that merely-archived tasks do NOT have their bindings ended. Only tasks
+that are fully absent from argus (deleted/pruned) trigger binding termination.
+
+#### Scenario: boot reconcile runs at startup
+
+- **WHEN** the hera daemon starts successfully
+- **THEN** `GET /api/tasks` MUST have been called at least once synchronously within `Start()`
+
+#### Scenario: boot reconcile failure does not block startup
+
+- **WHEN** `GET /api/tasks` returns a non-200 response during `Start()`
+- **THEN** `Start()` MUST return `(daemon, nil)` — no error propagated
+
+#### Scenario: reconcile preserves bindings for archived tasks
+
+- **GIVEN** a task `T` is archived in argus (absent from the default task list but present in `?archived=all`)
+- **AND** `T` has a live binding in hera
+- **WHEN** reconcile runs
+- **THEN** hera MUST NOT end the binding for `T`
 
