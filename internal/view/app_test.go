@@ -4062,6 +4062,101 @@ func TestApp_OnTaskReattached_EmptyTaskID_NoOp(t *testing.T) {
 	}
 }
 
+// --- BUG-010 (browse-archived): OnFocusChanged resets resize state on pane entry ---
+
+// OnFocusChanged(FocusCOORD/AGENT) must call InvalidateResize for the bound task
+// (same pattern as OnTaskReattached) so the ProxyManager's "already applied" flag
+// is cleared and the next ResizeTask dispatch reaches argus. This ensures the
+// emulator clamps the cursor position from an archived task's snapshot to the
+// current pane bounds, preventing the cursor from appearing below the argus
+// status line when entering an archived task pane.
+//
+// The QueueUpdateDraw callback that calls ResizeTask is tested only at the
+// InvalidateResize seam — the async draw cannot be exercised synchronously
+// without a running tview event loop (same limitation as TestApp_OnTaskReattached).
+func TestApp_OnFocusChanged_CoordPane_CallsInvalidateResize(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Wire a coord task so OnFocusChanged has a non-empty taskID to invalidate.
+	a.mu.Lock()
+	a.coordTask = "archived-coord-task"
+	a.mu.Unlock()
+
+	a.OnFocusChanged(FocusCOORD)
+
+	if len(src.invalidated) != 1 || src.invalidated[0] != "archived-coord-task" {
+		t.Fatalf("InvalidateResize not called with archived-coord-task on FocusCOORD; got %v", src.invalidated)
+	}
+}
+
+func TestApp_OnFocusChanged_AgentPane_CallsInvalidateResize(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.mu.Lock()
+	a.agentTask = "archived-agent-task"
+	a.mu.Unlock()
+
+	a.OnFocusChanged(FocusAGENT)
+
+	if len(src.invalidated) != 1 || src.invalidated[0] != "archived-agent-task" {
+		t.Fatalf("InvalidateResize not called with archived-agent-task on FocusAGENT; got %v", src.invalidated)
+	}
+}
+
+// When the pane has no bound task, there is no session to resize — InvalidateResize
+// must not be called with an empty taskID.
+func TestApp_OnFocusChanged_EmptyTask_NoInvalidateResize(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// coordTask and agentTask default to "" — no task bound.
+	a.OnFocusChanged(FocusCOORD)
+	a.OnFocusChanged(FocusAGENT)
+
+	if len(src.invalidated) != 0 {
+		t.Fatalf("InvalidateResize must not be called when no task is bound; got %v", src.invalidated)
+	}
+}
+
+// RAIL focus must never trigger an InvalidateResize — RAIL has no PTY to resize.
+func TestApp_OnFocusChanged_Rail_NoInvalidateResize(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.mu.Lock()
+	a.coordTask = "some-task"
+	a.agentTask = "some-other-task"
+	a.mu.Unlock()
+
+	a.OnFocusChanged(FocusRAIL)
+
+	if len(src.invalidated) != 0 {
+		t.Fatalf("InvalidateResize must not be called on RAIL focus; got %v", src.invalidated)
+	}
+}
+
 // TestBuildAppRestoresLastSelectionFromDB verifies that BuildApp reads the
 // persisted last-selected rail row from the DB and positions the cursor there,
 // not at the bottom of the Freelance section (BUG-001).
