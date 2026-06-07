@@ -229,6 +229,12 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		spinnerStop:    make(chan struct{}),
 	}
 
+	// Wire reflow callbacks on the initial panes so dimension changes after
+	// startup (e.g. Ctrl-Z fullscreen) replay the ring snapshot at the new
+	// size, reflowing scrollback to the new width (BUG-038).
+	coordPane.onReflow = a.makeCoordReflowCallback(coordTask)
+	agentPane.onReflow = a.makeAgentReflowCallback(agentTask)
+
 	// Start the coalescing flush loop. Pane bytes ingested during BuildApp
 	// (the initial snapshot) have already armed the dirty flag via Schedule;
 	// the first tick paints that settled frame once the event loop runs.
@@ -1484,6 +1490,7 @@ func (a *App) rebindCoord(taskID string) {
 	oldBridge := a.coordBridge
 	oldPane := a.pieces.coord
 	pane, bridge, unsub := newBoundPane("Coord", "(no coord selected)", taskID, a.src, a.scheduleRedraw)
+	pane.onReflow = a.makeCoordReflowCallback(taskID)
 	a.coordTask = taskID
 	a.coordBridge = bridge
 	a.coordUnsub = unsub
@@ -1515,7 +1522,137 @@ func (a *App) rebindAgent(taskID string) {
 	oldBridge := a.agentBridge
 	oldPane := a.pieces.agent
 	pane, bridge, unsub := newBoundPane("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw)
+	pane.onReflow = a.makeAgentReflowCallback(taskID)
 	a.agentTask = taskID
+	a.agentBridge = bridge
+	a.agentUnsub = unsub
+	a.pieces.agent = pane
+	a.mu.Unlock()
+
+	if oldUnsub != nil {
+		oldUnsub()
+	}
+	if oldBridge != nil {
+		oldBridge.stop()
+	}
+	if oldPane != nil {
+		oldPane.Close()
+	}
+	a.refreshBody()
+}
+
+// makeCoordReflowCallback returns a pinnedTerminalPane.onReflow callback for
+// the COORD pane. When the pane's inner rect changes, the callback schedules
+// a forceRebindCoord via QueueUpdateDraw so the ring buffer snapshot is
+// replayed through a fresh emulator at the new dimensions, reflowing
+// scrollback to the new width (BUG-038). Returns nil for empty taskIDs
+// (placeholder panes never fire onReflow).
+//
+// The callback is debounced by the same defaultResizeDebounce window used for
+// PTY resize dispatches: the initial frames of a session draw at the SDK
+// default 80x24 surface (producing 20x21 pane inners) before the real
+// resize envelope arrives. Without debounce that transient size triggers a
+// useless reflow at 20x21 that is immediately superseded by the correct one;
+// with debounce only the settled final size reaches forceRebindCoord.
+//
+// The dispatch is wrapped in a goroutine so the timer callback does not
+// block the calling goroutine in tests where no event loop is running.
+func (a *App) makeCoordReflowCallback(taskID string) func(int, int) {
+	if taskID == "" {
+		return nil
+	}
+	var mu sync.Mutex
+	var timer *time.Timer
+	var latestCols, latestRows int
+	return func(cols, rows int) {
+		mu.Lock()
+		latestCols, latestRows = cols, rows
+		if timer != nil {
+			timer.Stop()
+		}
+		timer = time.AfterFunc(defaultResizeDebounce, func() {
+			mu.Lock()
+			c, r := latestCols, latestRows
+			mu.Unlock()
+			go a.app.QueueUpdateDraw(func() {
+				a.forceRebindCoord(taskID, c, r)
+			})
+		})
+		mu.Unlock()
+	}
+}
+
+// makeAgentReflowCallback is the AGENT-pane counterpart of makeCoordReflowCallback.
+func (a *App) makeAgentReflowCallback(taskID string) func(int, int) {
+	if taskID == "" {
+		return nil
+	}
+	var mu sync.Mutex
+	var timer *time.Timer
+	var latestCols, latestRows int
+	return func(cols, rows int) {
+		mu.Lock()
+		latestCols, latestRows = cols, rows
+		if timer != nil {
+			timer.Stop()
+		}
+		timer = time.AfterFunc(defaultResizeDebounce, func() {
+			mu.Lock()
+			c, r := latestCols, latestRows
+			mu.Unlock()
+			go a.app.QueueUpdateDraw(func() {
+				a.forceRebindAgent(taskID, c, r)
+			})
+		})
+		mu.Unlock()
+	}
+}
+
+// forceRebindCoord is like rebindCoord but bypasses the same-task guard.
+// It replays the ring buffer snapshot through a fresh emulator pre-sized to
+// (cols, rows), reflowing scrollback at the new dimensions (BUG-038). No-op
+// when the App is closed or the coord task has changed since the callback
+// was registered (stale closure).
+func (a *App) forceRebindCoord(taskID string, cols, rows int) {
+	a.mu.Lock()
+	if a.closed || a.coordTask != taskID {
+		a.mu.Unlock()
+		return
+	}
+	oldUnsub := a.coordUnsub
+	oldBridge := a.coordBridge
+	oldPane := a.pieces.coord
+	pane, bridge, unsub := newBoundPaneAt("Coord", "(no coord selected)", taskID, a.src, a.scheduleRedraw, cols, rows)
+	pane.onReflow = a.makeCoordReflowCallback(taskID)
+	a.coordBridge = bridge
+	a.coordUnsub = unsub
+	a.pieces.coord = pane
+	a.mu.Unlock()
+
+	if oldUnsub != nil {
+		oldUnsub()
+	}
+	if oldBridge != nil {
+		oldBridge.stop()
+	}
+	if oldPane != nil {
+		oldPane.Close()
+	}
+	a.refreshBody()
+}
+
+// forceRebindAgent is the AGENT-pane counterpart of forceRebindCoord.
+func (a *App) forceRebindAgent(taskID string, cols, rows int) {
+	a.mu.Lock()
+	if a.closed || a.agentTask != taskID {
+		a.mu.Unlock()
+		return
+	}
+	oldUnsub := a.agentUnsub
+	oldBridge := a.agentBridge
+	oldPane := a.pieces.agent
+	pane, bridge, unsub := newBoundPaneAt("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw, cols, rows)
+	pane.onReflow = a.makeAgentReflowCallback(taskID)
 	a.agentBridge = bridge
 	a.agentUnsub = unsub
 	a.pieces.agent = pane

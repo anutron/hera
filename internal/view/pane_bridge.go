@@ -125,12 +125,6 @@ func pumpPaneBridge(ctx context.Context, out chan []byte, snapshot []byte, upstr
 // or argus reports 404 / failure: the wider worker PTY just letterboxes
 // inside hera's narrower allocation.
 //
-// The call waits briefly for the terminalpane's consume goroutine to
-// ingest the first chunk (snapshot or placeholder) so the first Draw
-// after BuildApp sees the initial cells already painted. The wait is
-// bounded; if the terminalpane never catches up the function returns
-// anyway — Draw will simply show an empty grid until later frames land.
-//
 // redraw is wired to the terminalpane's OnNeedRedraw hook, which the SDK
 // fires once per non-empty inbound chunk AFTER the emulator has ingested
 // it. That is what makes the pane repaint live on PTY output independent
@@ -140,17 +134,35 @@ func pumpPaneBridge(ctx context.Context, out chan []byte, snapshot []byte, upstr
 // is gone, so output must drive its own repaint.) A nil redraw is tolerated
 // (detached panes, tests, the pre-app-loop window).
 func newBoundPane(title, placeholder, taskID string, src PaneSource, redraw func()) (*pinnedTerminalPane, *paneBridge, func()) {
+	var cols, rows int
+	if taskID != "" && src != nil {
+		cols, rows = src.TaskSize(taskID)
+	}
+	return newBoundPaneAt(title, placeholder, taskID, src, redraw, cols, rows)
+}
+
+// newBoundPaneAt is like newBoundPane but uses the caller-supplied cols/rows
+// for the initial emulator dimensions instead of querying src.TaskSize.
+// Used for scrollback reflow (BUG-038): when the pane dimensions change, the
+// App replays the ring buffer snapshot through a fresh emulator at the new
+// size so scrollback wraps at the new width rather than persisting
+// old narrow-terminal line wrapping.
+//
+// The call waits briefly for the terminalpane's consume goroutine to
+// ingest the first chunk (snapshot or placeholder) so the first Draw
+// after the pane is wired sees the initial cells already painted. The wait
+// is bounded; if the terminalpane never catches up the function returns
+// anyway — Draw will simply show an empty grid until later frames land.
+func newBoundPaneAt(title, placeholder, taskID string, src PaneSource, redraw func(), cols, rows int) (*pinnedTerminalPane, *paneBridge, func()) {
 	var snap []byte
 	var upstream <-chan []byte
 	unsub := func() {}
-	var cols, rows int
 	var resizer paneResizer
 	if taskID != "" && src != nil {
 		snap, upstream, unsub = src.SubscribeTask(taskID)
 		if unsub == nil {
 			unsub = func() {}
 		}
-		cols, rows = src.TaskSize(taskID)
 		resizer = src
 	}
 

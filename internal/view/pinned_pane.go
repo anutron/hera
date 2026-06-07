@@ -78,6 +78,15 @@ type pinnedTerminalPane struct {
 	// ⇧↑/⇧↓ keys (App.ScrollFocusedPane) and the mouse wheel (App.applyWheel)
 	// drive that engine. A rebind constructs a fresh pane (newBoundPane), so
 	// a newly bound task always starts at the live screen.
+
+	// onReflow, when non-nil, fires when the pane's inner rect dimensions
+	// change (different cols or rows from lastDesiredCols/lastDesiredRows).
+	// The App wires this to schedule a force-rebind that replays the ring
+	// buffer snapshot through a fresh emulator at the new dimensions, so
+	// scrollback wraps at the new width rather than keeping old
+	// narrow-terminal line wrapping (BUG-038). Only set for task-bound panes
+	// with a resizer wired; unbound placeholder panes leave it nil.
+	onReflow func(cols, rows int)
 }
 
 // newPinnedTerminalPane wraps tp and pins its emulator surface to
@@ -208,6 +217,12 @@ func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 			p.resizer.ResizeTask(p.taskID, innerCols, innerRows)
 			p.lastDesiredCols = innerCols
 			p.lastDesiredRows = innerRows
+			// Replay the ring buffer snapshot at the new dimensions so
+			// scrollback wraps at the new width instead of retaining the
+			// old narrow-terminal line wrapping (BUG-038).
+			if p.onReflow != nil {
+				p.onReflow(innerCols, innerRows)
+			}
 		}
 		p.pinnedCols = innerCols
 		p.pinnedRows = innerRows
