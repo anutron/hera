@@ -329,6 +329,25 @@ func (m *ProxyManager) runResizeDispatch(ctx context.Context, taskID string, st 
 	}
 }
 
+// ResetApplied clears the "already applied" flag for taskID, forcing the next
+// ResizeTask dispatch to reach argus even when the requested dimensions match
+// the size sent to the previous session. Called after an argus task session
+// restarts (BUG-053): the new session starts at the argus default (80×24) but
+// ProxyManager still thinks the previous session's allocation was in effect.
+// Without this reset the dedup guard silently skips the next resize call,
+// leaving the new session at the wrong size until the operator manually
+// resizes the terminal.
+func (m *ProxyManager) ResetApplied(taskID string) {
+	if m == nil || taskID == "" {
+		return
+	}
+	m.resizeMu.Lock()
+	if st, ok := m.resizes[taskID]; ok {
+		st.applied = false
+	}
+	m.resizeMu.Unlock()
+}
+
 // Close tears down every subscription. Safe to call multiple times; after
 // Close, the manager's subscription map is empty.
 func (m *ProxyManager) Close() {
