@@ -34,9 +34,15 @@ const (
 // unconditionally — including any at legitimately small terminal sizes. This
 // prevents the blank/garbled first frame without suppressing valid redraws.
 //
+// onFirstReal, if non-nil, is called in a fresh goroutine the first time the
+// guard transitions from "skip" to "allow". Callers use this to schedule a
+// second draw after the first real-sized frame lands so that tview's Flex
+// layout recalculates with the correct dimensions (BUG-049 take 2). The
+// goroutine avoids calling tApp methods from within the draw lock.
+//
 // tview's draw() is called on the event loop's single goroutine while holding
 // the Application mutex, so the guard closure needs no locking of its own.
-func makeViewportGuard() func(tcell.Screen) bool {
+func makeViewportGuard(onFirstReal func()) func(tcell.Screen) bool {
 	passed := false
 	return func(screen tcell.Screen) bool {
 		if passed {
@@ -45,6 +51,9 @@ func makeViewportGuard() func(tcell.Screen) bool {
 		w, h := screen.Size()
 		if w > minPluginViewCols && h > minPluginViewRows {
 			passed = true
+			if onFirstReal != nil {
+				go onFirstReal()
+			}
 			return false // allow this draw and all subsequent ones
 		}
 		return true // skip — sentinel size
@@ -208,8 +217,12 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 
 		// Guard against argus's initial sentinel viewport (e.g. 13×8): skip
 		// draws until a real-sized frame arrives so the first visible frame
-		// is correct, not garbled (BUG-049).
-		tApp.SetBeforeDrawFunc(makeViewportGuard())
+		// is correct, not garbled (BUG-049). The callback queues a second
+		// draw after the first real-sized frame so tview's Flex layout
+		// recalculates with the correct dimensions (BUG-049 take 2).
+		tApp.SetBeforeDrawFunc(makeViewportGuard(func() {
+			tApp.QueueUpdateDraw(func() {})
+		}))
 
 		// Bridge ctx cancellation into tview's event loop by queueing an
 		// EventError. tview's EventLoop handles EventError by calling

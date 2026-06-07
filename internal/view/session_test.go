@@ -3,6 +3,7 @@ package view
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func newTestSimScreen(t *testing.T, cols, rows int) tcell.SimulationScreen {
 // returns true (skip draw) for small sentinel viewports and false (allow draw)
 // once a real-sized viewport is seen (BUG-049).
 func TestMakeViewportGuard_SkipsSentinelSize(t *testing.T) {
-	guard := makeViewportGuard()
+	guard := makeViewportGuard(nil)
 
 	sentinel := newTestSimScreen(t, 13, 8)
 	defer sentinel.Fini()
@@ -63,7 +64,7 @@ func TestMakeViewportGuard_SkipsSentinelSize(t *testing.T) {
 // the minimum threshold (minPluginViewCols × minPluginViewRows) is still
 // treated as a sentinel (≤ not >).
 func TestMakeViewportGuard_BoundaryExactly(t *testing.T) {
-	guard := makeViewportGuard()
+	guard := makeViewportGuard(nil)
 
 	boundary := newTestSimScreen(t, minPluginViewCols, minPluginViewRows)
 	defer boundary.Fini()
@@ -81,6 +82,47 @@ func TestMakeViewportGuard_BoundaryExactly(t *testing.T) {
 	if guard(oneOver) {
 		t.Errorf("guard must allow draws at size %d×%d (one over threshold)",
 			minPluginViewCols+1, minPluginViewRows+1)
+	}
+}
+
+// TestMakeViewportGuard_OnFirstRealCallback verifies that onFirstReal is
+// called exactly once — when the guard first transitions from "skip" to
+// "allow" at a real viewport size — and never again on subsequent draws
+// (BUG-049 take 2).
+func TestMakeViewportGuard_OnFirstRealCallback(t *testing.T) {
+	var calls atomic.Int32
+	called := make(chan struct{}, 1)
+	guard := makeViewportGuard(func() {
+		calls.Add(1)
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+	})
+
+	sentinel := newTestSimScreen(t, 13, 8)
+	defer sentinel.Fini()
+	guard(sentinel) // skip — callback must not fire
+
+	real := newTestSimScreen(t, 120, 40)
+	defer real.Fini()
+	guard(real) // first real: callback fires in goroutine
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("onFirstReal not called within 1s of first real-viewport draw")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("onFirstReal called %d times; want 1", got)
+	}
+
+	// Subsequent draws (real or sentinel) must not retrigger the callback.
+	guard(real)
+	guard(sentinel)
+	time.Sleep(20 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("onFirstReal called %d times after subsequent draws; want still 1", got)
 	}
 }
 
