@@ -164,6 +164,13 @@ type ArgusClient interface {
 	// failure is logged but does not propagate as a NewOrchestrator error.
 	PostTaskInput(ctx context.Context, taskID string, bytes []byte) (int, error)
 
+	// RestartTask asks argus to restart the agent session for a task whose
+	// previous session has ended (the PTY exited). Argus re-spawns the agent
+	// backend (e.g. claude --resume <last-session-id>) and routes its output
+	// through the same task stream. Returns ErrNoTaskRestart when the daemon
+	// does not support the endpoint.
+	RestartTask(ctx context.Context, taskID string) error
+
 	// ListProjects returns the names of every configured argus project.
 	// Used to populate the Project dropdown in the new-coordinator form.
 	ListProjects(ctx context.Context) ([]string, error)

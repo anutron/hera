@@ -356,6 +356,8 @@ type fakeMutationService struct {
 	openPRWtErr      error
 	resurrectCalls   []int64
 	resurrectErr     error
+	reattachCalls    []string
+	reattachErr      error
 
 	// Task-direct verbs (freelance rows).
 	toggleArchiveTaskCalls []toggleTaskCall
@@ -610,6 +612,13 @@ func (s *fakeMutationService) ResurrectOrchestrator(_ context.Context, coordRole
 		return nil, s.resurrectErr
 	}
 	return &ops.CreatedTask{ID: "task-resurrect"}, nil
+}
+
+func (s *fakeMutationService) ReattachAgent(_ context.Context, argusTaskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reattachCalls = append(s.reattachCalls, argusTaskID)
+	return s.reattachErr
 }
 
 func (s *fakeMutationService) SpawnWorker(_ context.Context, in ops.SpawnWorkerInput) (*ops.SpawnWorkerResult, error) {
@@ -1504,6 +1513,176 @@ func TestBridge_OnResurrect_ArchivedWorker_NotHandled(t *testing.T) {
 	}
 	if len(svc.resurrectCalls) != 0 {
 		t.Fatalf("archived worker must not call resurrect; got %v", svc.resurrectCalls)
+	}
+}
+
+// --- Gap: OnReattach (Enter against a dead-session worker/freelancer) ---
+
+// OnReattach fires when the selection is a dead-session (not permanently Dead)
+// worker/freelancer: it calls ReattachAgent with the bound argus task id and
+// returns true so the router does not fall through to pane-entry.
+func TestBridge_OnReattach_DeadSession_Worker_Calls_ReattachAgent(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         7,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-dead-session",
+		HasDeadSession: true,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must return true for a dead-session worker")
+	}
+	if len(svc.reattachCalls) != 1 || svc.reattachCalls[0] != "task-dead-session" {
+		t.Fatalf("want ReattachAgent(task-dead-session); got %v", svc.reattachCalls)
+	}
+	if rp.Count() < 1 {
+		t.Fatalf("reattach success must trigger a rail refresh; got %d", rp.Count())
+	}
+}
+
+// A freelancer with HasDeadSession is also reattachable.
+func TestBridge_OnReattach_DeadSession_Freelancer_Calls_ReattachAgent(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         0,
+		Name:           "free-1",
+		RoleKind:       "freelance",
+		ArgusTaskID:    "task-free-dead",
+		HasDeadSession: true,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must return true for a dead-session freelancer")
+	}
+	if len(svc.reattachCalls) != 1 || svc.reattachCalls[0] != "task-free-dead" {
+		t.Fatalf("want ReattachAgent(task-free-dead); got %v", svc.reattachCalls)
+	}
+	if rp.Count() < 1 {
+		t.Fatalf("reattach success must trigger a rail refresh; got %d", rp.Count())
+	}
+}
+
+// A permanently Dead row (task record gone) is NOT a reattach target.
+func TestBridge_OnReattach_Dead_Row_Not_Handled(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      7,
+		ArgusTaskID: "task-gone",
+		Dead:        true,
+		// Dead rows may also have HasDeadSession via roleInputDead but Dead takes
+		// precedence — if the record is gone there's nothing to restart.
+		HasDeadSession: true,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if handled {
+		t.Fatalf("OnReattach must return false for a permanently Dead row")
+	}
+	if len(svc.reattachCalls) != 0 {
+		t.Fatalf("Dead row must not call ReattachAgent; got %v", svc.reattachCalls)
+	}
+}
+
+// A live (non-dead-session) worker is NOT a reattach target.
+func TestBridge_OnReattach_LiveWorker_Not_Handled(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         7,
+		ArgusTaskID:    "task-live",
+		HasDeadSession: false,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if handled {
+		t.Fatalf("OnReattach must return false for a live worker")
+	}
+	if len(svc.reattachCalls) != 0 {
+		t.Fatalf("live worker must not call ReattachAgent; got %v", svc.reattachCalls)
+	}
+}
+
+// A row with no ArgusTaskID is NOT a reattach target.
+func TestBridge_OnReattach_NoTaskID_Not_Handled(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         7,
+		ArgusTaskID:    "",
+		HasDeadSession: true,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if handled {
+		t.Fatalf("OnReattach must return false when ArgusTaskID is empty")
+	}
+	if len(svc.reattachCalls) != 0 {
+		t.Fatalf("empty task id must not call ReattachAgent; got %v", svc.reattachCalls)
+	}
+}
+
+// Orchestrator header selections are NOT reattach targets.
+func TestBridge_OnReattach_OrchestratorHeader_Not_Handled(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		ArgusTaskID:    "task-coord",
+		HasDeadSession: true,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if handled {
+		t.Fatalf("OnReattach must return false for an orchestrator header")
+	}
+	if len(svc.reattachCalls) != 0 {
+		t.Fatalf("orchestrator header must not call ReattachAgent; got %v", svc.reattachCalls)
+	}
+}
+
+// When argus does not support restart, the error is surfaced as a modal and
+// OnReattach still returns true (it owned the Enter).
+func TestBridge_OnReattach_NotSupported_ShowsError(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         7,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-dead",
+		HasDeadSession: true,
+	}
+	svc.reattachErr = ops.ErrRestartNotSupported
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must return true even when restart is not supported")
+	}
+	if len(m.errors) != 1 {
+		t.Fatalf("want 1 error modal; got %d", len(m.errors))
+	}
+	if !strings.Contains(m.errors[0], "agent-1") {
+		t.Fatalf("error modal must name the agent; got %q", m.errors[0])
 	}
 }
 

@@ -54,11 +54,16 @@ type fakeMutations struct {
 	pin                                                 int
 	adopt                                               int
 	resurrect                                           int
+	reattach                                            int
 
 	// resurrectHandled is what OnResurrect returns — true means it consumed
 	// the Enter (showed a resurrect confirm) so the router must NOT fall
 	// through to pane-entry.
 	resurrectHandled bool
+	// reattachHandled is what OnReattach returns — true means it consumed
+	// the Enter (fired a restart call) so the router must NOT fall through
+	// to pane-entry.
+	reattachHandled bool
 }
 
 func (f *fakeMutations) OnNew()           { f.new++ }
@@ -77,6 +82,10 @@ func (f *fakeMutations) OnAdopt()         { f.adopt++ }
 func (f *fakeMutations) OnResurrect() bool {
 	f.resurrect++
 	return f.resurrectHandled
+}
+func (f *fakeMutations) OnReattach() bool {
+	f.reattach++
+	return f.reattachHandled
 }
 
 type fakeBorder struct {
@@ -871,6 +880,82 @@ func TestKeyRouter_EnterInRAIL_Resurrect_Handled(t *testing.T) {
 	}
 	if r.Focus.State() != FocusRAIL {
 		t.Fatalf("focus must stay RAIL while the resurrect confirm is up; got %s", r.Focus.State())
+	}
+}
+
+// --- Gap: OnReattach checked after OnResurrect (BUG-033) ---
+
+// When OnReattach handles the Enter (dead-session worker/freelancer), the
+// router consumes the event and must NOT call OnRailSelectEnter.
+func TestKeyRouter_EnterInRAIL_Reattach_Handled(t *testing.T) {
+	r, _, m, _ := newRouter()
+	m.reattachHandled = true
+	sel := &fakeRailSelect{target: FocusAGENT}
+	r.RailSelect = sel
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if out != nil {
+		t.Fatalf("Enter handled by reattach must be consumed")
+	}
+	if m.reattach != 1 {
+		t.Fatalf("Enter must consult OnReattach once; got %d", m.reattach)
+	}
+	if sel.calls != 0 {
+		t.Fatalf("reattach-handled Enter must NOT enter a pane; OnRailSelectEnter called %d times", sel.calls)
+	}
+	if r.Focus.State() != FocusRAIL {
+		t.Fatalf("focus must stay RAIL while reattach is in progress; got %s", r.Focus.State())
+	}
+}
+
+// When OnReattach declines (returns false), Enter falls through to the
+// existing pane-entry handler (no regression on a live worker).
+func TestKeyRouter_EnterInRAIL_Reattach_NotHandled_EntersPane(t *testing.T) {
+	r, _, m, _ := newRouter()
+	m.reattachHandled = false
+	m.resurrectHandled = false
+	sel := &fakeRailSelect{target: FocusAGENT}
+	r.RailSelect = sel
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if out != nil {
+		t.Fatalf("Enter entering a pane must be consumed")
+	}
+	if m.reattach != 1 {
+		t.Fatalf("Enter must consult OnReattach once; got %d", m.reattach)
+	}
+	if sel.calls != 1 {
+		t.Fatalf("declined reattach must fall through to OnRailSelectEnter; got %d calls", sel.calls)
+	}
+	if r.Focus.State() != FocusAGENT {
+		t.Fatalf("live agent Enter must enter the AGENT pane; got %s", r.Focus.State())
+	}
+}
+
+// OnResurrect takes precedence over OnReattach so an archived-coord Enter
+// never also calls reattach.
+func TestKeyRouter_EnterInRAIL_Resurrect_Precedes_Reattach(t *testing.T) {
+	r, _, m, _ := newRouter()
+	m.resurrectHandled = true
+	m.reattachHandled = true // would also claim it, but resurrect wins
+	sel := &fakeRailSelect{target: FocusCOORD}
+	r.RailSelect = sel
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if out != nil {
+		t.Fatalf("resurrect-handled Enter must be consumed")
+	}
+	if m.resurrect != 1 {
+		t.Fatalf("OnResurrect must be called once; got %d", m.resurrect)
+	}
+	if m.reattach != 0 {
+		t.Fatalf("OnReattach must NOT be called when OnResurrect handled the Enter; got %d", m.reattach)
+	}
+	if sel.calls != 0 {
+		t.Fatalf("OnRailSelectEnter must NOT be called; got %d", sel.calls)
 	}
 }
 

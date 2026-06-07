@@ -10,6 +10,11 @@ import (
 // caller treats this as a signal to fall back to a default surface size.
 var ErrNoTaskSize = errors.New("argus: no PTY size for task")
 
+// ErrNoTaskRestart is returned by RestartTask when argus reports 404 or 405
+// — the endpoint does not exist on this daemon version. The caller surfaces
+// a human-readable "update argus" message rather than an opaque HTTP error.
+var ErrNoTaskRestart = errors.New("argus: restart not supported by this daemon")
+
 // HTTPError is the error type doJSON returns when argus responds with a
 // non-2xx status. Callers that need to discriminate by status code
 // (e.g., the MCP registrar's heartbeat-404 fallback to recovery) should

@@ -371,3 +371,10 @@ func (a *argusAdapter) ListBackends(ctx context.Context) ([]string, error) {
 	}
 	return names, nil
 }
+
+func (a *argusAdapter) RestartTask(ctx context.Context, taskID string) error {
+	if a.c == nil {
+		return fmt.Errorf("argusAdapter: nil client")
+	}
+	return a.c.RestartTask(ctx, taskID)
+}

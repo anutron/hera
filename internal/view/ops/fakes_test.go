@@ -513,6 +513,10 @@ type fakeArgus struct {
 	listProjectsErr  error
 	listBackendsResp []string
 	listBackendsErr  error
+
+	// RestartTask tracking.
+	restartCalls []string
+	restartErr   error
 }
 
 func (a *fakeArgus) PutTaskMeta(ctx context.Context, taskID, key, value string) error {
@@ -641,6 +645,13 @@ func (a *fakeArgus) ListBackends(_ context.Context) ([]string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.listBackendsResp, a.listBackendsErr
+}
+
+func (a *fakeArgus) RestartTask(_ context.Context, taskID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.restartCalls = append(a.restartCalls, taskID)
+	return a.restartErr
 }
 
 // fakePRCreator records CreatePR invocations. url / err are returned on
