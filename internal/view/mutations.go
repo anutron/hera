@@ -309,6 +309,14 @@ type freelancePinner interface {
 	ToggleFreelancePin(argusTaskID string)
 }
 
+// paneReattachNotifier is notified after an argus task session is successfully
+// restarted (BUG-053 reattach). The implementation resets the ProxyManager's
+// applied resize state and dispatches a fresh resize with the current pane
+// dimensions so the new session is sized correctly. nil is safe (no-op).
+type paneReattachNotifier interface {
+	OnTaskReattached(taskID string)
+}
+
 // rowSelector stashes a role id to auto-select on the NEXT broadcaster-driven
 // rail repopulate. Because role/binding inserts trigger an async (~100ms) rail
 // refresh, the new row does not exist at the instant SpawnWorker returns — an
@@ -342,7 +350,8 @@ type mutationBridge struct {
 	help      helpFrameSender
 	rowSel    rowSelector
 	fPinner   freelancePinner
-	optimizer statusOptimizer // optional: nil is safe (no optimistic render)
+	optimizer statusOptimizer  // optional: nil is safe (no optimistic render)
+	reattach  paneReattachNotifier // optional: nil is safe (BUG-053)
 	log       *slog.Logger
 
 	// inFlight guards the blocking phase of a mutation: while a svc call is
@@ -964,6 +973,16 @@ func (b *mutationBridge) OnReattach() bool {
 			// Surface a human-readable message: distinguish "not supported"
 			// (update argus) from other failures (e.g. network error).
 			return fmt.Errorf("re-attach %q: %s", name, err.Error())
+		}
+		// Notify the App to resize the new session to the current pane
+		// dimensions. The new argus session starts at 80×24 (the argus
+		// default) regardless of what the previous session's size was.
+		// Without this, the resize dedup guard in ProxyManager silently
+		// skips the next dispatch (it thinks the previous session's size is
+		// still applied), leaving the cursor layout wrong until the operator
+		// manually resizes the terminal (BUG-053).
+		if b.reattach != nil {
+			b.reattach.OnTaskReattached(taskID)
 		}
 		// Success: argus is restarting the session. The proxy subscription's
 		// reconnect loop picks up the new output automatically. No explicit

@@ -549,6 +549,51 @@ func TestProxyManager_ResizeTaskIgnoresBadInputs(t *testing.T) {
 	}
 }
 
+// TestProxyManager_ResetApplied pins that calling ResetApplied clears the
+// "already applied" flag, causing the next ResizeTask call with the same
+// dimensions to dispatch to argus instead of being deduped. This is the fix
+// for BUG-053: after an argus task session restarts (reattach), the new session
+// is at 80×24 but the manager still thinks the previous session's size was
+// applied; ResetApplied lets the pane re-size the new session.
+func TestProxyManager_ResetApplied(t *testing.T) {
+	ff := &fakeFetcher{}
+	m := newResizeTestManager(ff)
+	defer m.Close()
+
+	// First dispatch: establish applied=true at (100, 40).
+	m.ResizeTask(context.Background(), "task-A", 100, 40)
+	if got := waitForResizeCalls(t, ff, 1, time.Second); len(got) < 1 {
+		t.Fatal("first resize not dispatched")
+	}
+	n := ff.resizeCallCount()
+
+	// Same dims again — normally deduped.
+	m.ResizeTask(context.Background(), "task-A", 100, 40)
+	time.Sleep(50 * time.Millisecond)
+	if got := ff.resizeCallCount(); got != n {
+		t.Fatalf("same-dims call must be deduped before ResetApplied; calls = %d, want %d", got, n)
+	}
+
+	// Reset the applied flag, then retry same dims — must dispatch.
+	m.ResetApplied("task-A")
+	m.ResizeTask(context.Background(), "task-A", 100, 40)
+	if got := waitForResizeCalls(t, ff, n+1, time.Second); len(got) < n+1 {
+		t.Fatalf("after ResetApplied, same-dims call must dispatch; calls = %d, want >= %d", len(got), n+1)
+	}
+}
+
+// TestProxyManager_ResetApplied_UnknownTaskID pins that ResetApplied is a
+// no-op for a task id that has never had a resize dispatched.
+func TestProxyManager_ResetApplied_UnknownTaskID(t *testing.T) {
+	ff := &fakeFetcher{}
+	m := newResizeTestManager(ff)
+	defer m.Close()
+
+	// Must not panic for a task id that has no resize state.
+	m.ResetApplied("task-never-seen")
+	m.ResetApplied("")
+}
+
 // TestProxyManager_CloseClearsAndReleases pins Close: every subscription is
 // closed and the manager's internal map is empty afterward.
 func TestProxyManager_CloseClearsAndReleases(t *testing.T) {

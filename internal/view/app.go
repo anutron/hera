@@ -1973,6 +1973,54 @@ func (a *App) updateCoordDetails(orch *orchEntry) {
 	a.pieces.details.SetDetails(cd)
 }
 
+// OnTaskReattached is called after an argus task session is successfully
+// restarted (BUG-053 reattach). The new session starts at the argus default
+// (80×24); without intervention, ProxyManager's "already applied" resize flag
+// silently skips the next ResizeTask dispatch (it thinks the previous session's
+// size is already in effect), leaving cursor positions wrong until the operator
+// manually resizes the terminal.
+//
+// This method:
+//  1. Resets ProxyManager's applied flag via the paneResizeInvalidator optional
+//     interface so the next dispatch reaches argus.
+//  2. Queues a non-blocking resize dispatch on the tview event loop via a
+//     goroutine wrapper (same pattern as the reflow callbacks). The goroutine
+//     reads the current pane dimensions race-safely on the event loop and calls
+//     ResizeTask so the new session is sized to the current pane allocation.
+//
+// Satisfies the paneReattachNotifier interface used by the mutation bridge.
+func (a *App) OnTaskReattached(taskID string) {
+	if taskID == "" {
+		return
+	}
+	// Step 1: clear the ProxyManager's applied flag so the next resize
+	// dispatch reaches argus instead of being short-circuited. Synchronous.
+	if ri, ok := a.src.(paneResizeInvalidator); ok {
+		ri.InvalidateResize(taskID)
+	}
+	if a.app == nil {
+		return
+	}
+	// Step 2: schedule a resize on the event loop. The goroutine wrapper is
+	// non-blocking (same pattern as makeCoordReflowCallback / makeAgentReflowCallback):
+	// it does not block the mutation bridge's goroutine while the tview queue
+	// drains, and it reads pinnedCols/pinnedRows on the event loop where Draw
+	// also writes them — no race.
+	go a.app.QueueUpdateDraw(func() {
+		a.mu.Lock()
+		var cols, rows int
+		if a.coordTask == taskID && a.pieces.coord != nil {
+			cols, rows = a.pieces.coord.PinnedSize()
+		} else if a.agentTask == taskID && a.pieces.agent != nil {
+			cols, rows = a.pieces.agent.PinnedSize()
+		}
+		a.mu.Unlock()
+		if cols > 0 && rows > 0 && a.src != nil {
+			a.src.ResizeTask(taskID, cols, rows)
+		}
+	})
+}
+
 // refreshDetailsForCurrentSelection re-derives the Details pane from whatever
 // coordinator the rail currently shows. Called at the tail of populateRail so
 // a DAO-driven repopulate (joining worker, status change) reflects in the pane

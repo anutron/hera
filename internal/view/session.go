@@ -189,6 +189,7 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, app, log)
 		bridge.rowSel = app
 		bridge.fPinner = app
+		bridge.reattach = app // App.OnTaskReattached resizes the new session (BUG-053)
 		if states != nil {
 			bridge.optimizer = states // ArgusStateCache implements statusOptimizer
 		}
@@ -314,6 +315,18 @@ func (p managerPaneSource) ResizeTask(taskID string, cols, rows int) {
 		return
 	}
 	p.mgr.ResizeTask(p.ctx, taskID, cols, rows)
+}
+
+// InvalidateResize clears the ProxyManager's "already applied" resize flag
+// for taskID so the next ResizeTask dispatch reaches argus unconditionally.
+// Called after an argus task session restarts (BUG-053) so the new session is
+// sized to the current pane allocation, not the previous session's last size.
+// Satisfies the paneResizeInvalidator optional interface.
+func (p managerPaneSource) InvalidateResize(taskID string) {
+	if p.mgr == nil || taskID == "" {
+		return
+	}
+	p.mgr.ResetApplied(taskID)
 }
 
 // IsTaskAlive delegates to the proxy manager, which calls argus's

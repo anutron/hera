@@ -31,6 +31,15 @@ type PaneSource interface {
 	ResizeTask(taskID string, cols, rows int)
 }
 
+// paneResizeInvalidator is an optional capability some PaneSource values
+// implement. When present, InvalidateResize clears the "already applied"
+// resize state for taskID so the next ResizeTask dispatch unconditionally
+// reaches argus. Used after an argus task session restarts (BUG-053) to
+// ensure the new session is sized to the current pane allocation.
+type paneResizeInvalidator interface {
+	InvalidateResize(taskID string)
+}
+
 // TaskAliveChecker is an optional capability some PaneSource (or other)
 // values may also implement. When the runtime PaneSource passed to
 // BuildApp satisfies it, findInitialSelection filters worker bindings to

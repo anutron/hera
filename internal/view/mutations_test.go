@@ -689,6 +689,13 @@ func (f *fakeFreelancePinner) ToggleFreelancePin(argusTaskID string) {
 	f.toggled = append(f.toggled, argusTaskID)
 }
 
+// fakeReattachNotifier records OnTaskReattached calls for bridge tests (BUG-053).
+type fakeReattachNotifier struct{ notified []string }
+
+func (f *fakeReattachNotifier) OnTaskReattached(taskID string) {
+	f.notified = append(f.notified, taskID)
+}
+
 func newBridgeUnderTestWithHelp() (*mutationBridge, *fakeModals, *fakeSelector, *fakeMutationService, *fakeListAll, *fakeRepopulator, *fakeHelpSender) {
 	m := &fakeModals{}
 	sel := &fakeSelector{}
@@ -1666,6 +1673,58 @@ func TestBridge_OnReattach_OrchestratorHeader_Not_Handled(t *testing.T) {
 	}
 	if len(svc.reattachCalls) != 0 {
 		t.Fatalf("orchestrator header must not call ReattachAgent; got %v", svc.reattachCalls)
+	}
+}
+
+// After a successful reattach the bridge must notify the paneReattachNotifier
+// (BUG-053) with the reattached task's id so the App can resize the new session.
+func TestBridge_OnReattach_Success_NotifiesReattachNotifier(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	notifier := &fakeReattachNotifier{}
+	b.reattach = notifier
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         7,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-reattach-notify",
+		HasDeadSession: true,
+	}
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if len(notifier.notified) != 1 || notifier.notified[0] != "task-reattach-notify" {
+		t.Fatalf("paneReattachNotifier.OnTaskReattached not called with correct task; got %v", notifier.notified)
+	}
+	// Rail refresh must still happen after the notify.
+	if rp.Count() < 1 {
+		t.Fatalf("rail refresh must still be triggered after reattach; got %d refreshes", rp.Count())
+	}
+	_ = svc
+}
+
+// On reattach failure the paneReattachNotifier must NOT be called (argus error
+// means no new session was created, so there is nothing to resize).
+func TestBridge_OnReattach_Failure_DoesNotNotifyReattachNotifier(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	notifier := &fakeReattachNotifier{}
+	b.reattach = notifier
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         7,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-fail",
+		HasDeadSession: true,
+	}
+	svc.reattachErr = ops.ErrRestartNotSupported
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if len(notifier.notified) != 0 {
+		t.Fatalf("paneReattachNotifier must not be called on failure; got %v", notifier.notified)
 	}
 }
 
