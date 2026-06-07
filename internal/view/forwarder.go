@@ -2,8 +2,11 @@ package view
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
+
+	"github.com/anutron/hera/internal/argus"
 )
 
 // PaneForwarder decouples pane-focus keystroke typing from the HTTP round-trip
@@ -18,6 +21,13 @@ import (
 // cutting round-trips for fast typing / paste. Items for DIFFERENT taskIDs are
 // never merged — a focus change mid-stream still flushes the earlier task's
 // bytes to the earlier task before the new target's bytes go out.
+//
+// DEAD-SESSION DETECTION: when PostTaskInput returns ErrNoTaskInput (HTTP 404)
+// the forwarder calls onDead exactly once per task so the view layer can force
+// focus back to RAIL. This covers the case where a session ends while the
+// operator is actively typing in the pane — applyDeadFocusGuard only fires on
+// rail selection changes, so without this signal keystrokes are silently dropped
+// until the operator manually presses Ctrl-Q (BUG-006).
 type PaneForwarder struct {
 	ch     chan forwardItem
 	poster InputPoster
@@ -26,6 +36,16 @@ type PaneForwarder struct {
 	stopOnce sync.Once
 	done     chan struct{} // closed when the sender goroutine has exited
 	quit     chan struct{} // closed by Stop to ask the sender to drain + exit
+
+	// onDead, if set, is called exactly once per dead task (identified by HTTP
+	// 404 from PostTaskInput). Invoked from the sender goroutine; implementations
+	// MUST be goroutine-safe and MUST NOT block (they typically bounce to the
+	// tview event loop via QueueUpdateDraw).
+	onDead func(taskID string)
+
+	// deadSeen tracks which task IDs have already triggered an onDead call so the
+	// callback fires at most once per task per session (not on every failing POST).
+	deadSeen sync.Map
 }
 
 type forwardItem struct {
@@ -53,6 +73,18 @@ func NewPaneForwarder(ctx context.Context, poster InputPoster, log *slog.Logger,
 	}
 	go f.run(ctx)
 	return f
+}
+
+// SetOnDead registers a callback invoked exactly once when a task's PTY returns
+// HTTP 404 (argus.ErrNoTaskInput) — indicating the session ended while the
+// operator was in the pane. fn must be goroutine-safe and non-blocking; it
+// typically bounces to the tview event loop via QueueUpdateDraw. Setting nil
+// clears the callback. Must be called before the first Enqueue (no locking).
+func (f *PaneForwarder) SetOnDead(fn func(taskID string)) {
+	if f == nil {
+		return
+	}
+	f.onDead = fn
 }
 
 // Enqueue queues bytes for delivery to taskID's PTY. It NEVER blocks the
@@ -150,12 +182,26 @@ coalesce:
 // a failed forward logs a warning carrying the task id, byte count, and error,
 // so a keystroke that never reached the pane's PTY is diagnosable. Context
 // cancellation during teardown is not logged as a failure.
+//
+// Dead-session detection: when PostTaskInput returns ErrNoTaskInput (HTTP 404),
+// onDead is called exactly once per task so the view layer can force focus back
+// to RAIL (BUG-006). Subsequent 404s for the same task are silently swallowed
+// after the first notification — the operator is already being guided back to RAIL.
 func (f *PaneForwarder) post(ctx context.Context, taskID string, payload []byte) {
 	if f.poster == nil || len(payload) == 0 {
 		return
 	}
-	if _, err := f.poster.PostTaskInput(ctx, taskID, payload); err != nil && ctx.Err() == nil {
-		f.log.Warn("view.forwarder: forward keystroke to pane PTY failed",
-			"task_id", taskID, "bytes", len(payload), "err", err)
+	_, err := f.poster.PostTaskInput(ctx, taskID, payload)
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	f.log.Warn("view.forwarder: forward keystroke to pane PTY failed",
+		"task_id", taskID, "bytes", len(payload), "err", err)
+	if errors.Is(err, argus.ErrNoTaskInput) {
+		if _, alreadyNotified := f.deadSeen.LoadOrStore(taskID, struct{}{}); !alreadyNotified {
+			if f.onDead != nil {
+				f.onDead(taskID)
+			}
+		}
 	}
 }

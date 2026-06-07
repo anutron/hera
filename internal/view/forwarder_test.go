@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/anutron/hera/internal/argus"
 )
 
 // recordingPoster records every PostTaskInput call (taskID + payload) so the
@@ -246,6 +248,112 @@ func TestPaneForwarder_FailureLogged(t *testing.T) {
 	mu.Unlock()
 	if !strings.Contains(out, "agent-1") || !strings.Contains(out, "argus down") {
 		t.Fatalf("failure log must carry task id + error; log was: %q", out)
+	}
+}
+
+// TestPaneForwarder_DeadCallbackFiredOnErrNoTaskInput proves that SetOnDead
+// callback fires when PostTaskInput returns ErrNoTaskInput (the HTTP 404 that
+// argus returns when a task's PTY session has ended). This is the BUG-006
+// dead-session detection path: the callback lets OnPaneDead force focus back
+// to RAIL so keystrokes stop being silently swallowed.
+func TestPaneForwarder_DeadCallbackFiredOnErrNoTaskInput(t *testing.T) {
+	p := &failingForwardPoster{err: argus.ErrNoTaskInput}
+	f := NewPaneForwarder(context.Background(), p, slog.Default(), 64)
+	defer f.Stop()
+
+	var deadMu sync.Mutex
+	var deadCalls []string
+	f.SetOnDead(func(taskID string) {
+		deadMu.Lock()
+		deadCalls = append(deadCalls, taskID)
+		deadMu.Unlock()
+	})
+
+	f.Enqueue("task-dead", []byte("hello"))
+
+	if !waitForCond(2*time.Second, func() bool {
+		deadMu.Lock()
+		defer deadMu.Unlock()
+		return len(deadCalls) > 0
+	}) {
+		t.Fatalf("onDead callback must fire when PostTaskInput returns ErrNoTaskInput")
+	}
+	deadMu.Lock()
+	got := deadCalls[0]
+	deadMu.Unlock()
+	if got != "task-dead" {
+		t.Fatalf("onDead must receive the dead task ID; got %q", got)
+	}
+}
+
+// TestPaneForwarder_DeadCallbackFiresOncePerTask proves the onDead callback
+// fires at most once per task even when many keystrokes return ErrNoTaskInput.
+// Subsequent 404s for the same task are silently swallowed so the callback
+// (which triggers focus-to-RAIL) does not spam the tview event loop.
+func TestPaneForwarder_DeadCallbackFiresOncePerTask(t *testing.T) {
+	p := &failingForwardPoster{err: argus.ErrNoTaskInput}
+	f := NewPaneForwarder(context.Background(), p, slog.Default(), 64)
+	defer f.Stop()
+
+	var mu sync.Mutex
+	var calls int
+	f.SetOnDead(func(_ string) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+
+	// Send many keystrokes — all will 404.
+	for i := 0; i < 20; i++ {
+		f.Enqueue("task-dead", []byte("x"))
+	}
+
+	// Wait for at least one dead callback.
+	if !waitForCond(2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls > 0
+	}) {
+		t.Fatalf("onDead callback must fire at least once")
+	}
+	// Give a moment for any extra calls to land.
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	n := calls
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("onDead must fire exactly once per task; got %d calls", n)
+	}
+}
+
+// TestPaneForwarder_DeadCallbackNotFiredOnOtherErrors proves the onDead
+// callback is NOT triggered for non-404 failures — only ErrNoTaskInput
+// (dead-session 404) should force focus to RAIL.
+func TestPaneForwarder_DeadCallbackNotFiredOnOtherErrors(t *testing.T) {
+	p := &failingForwardPoster{err: errors.New("network timeout")}
+	f := NewPaneForwarder(context.Background(), p, slog.Default(), 64)
+	defer f.Stop()
+
+	var mu sync.Mutex
+	var calls int
+	f.SetOnDead(func(_ string) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+
+	f.Enqueue("task-1", []byte("x"))
+
+	// Wait until the poster was called.
+	if !waitForCond(2*time.Second, func() bool { return p.Calls() > 0 }) {
+		t.Fatalf("poster was never called")
+	}
+	time.Sleep(20 * time.Millisecond)
+	mu.Lock()
+	n := calls
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("onDead must NOT fire for non-404 errors; got %d calls", n)
 	}
 }
 

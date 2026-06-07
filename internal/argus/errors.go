@@ -15,6 +15,12 @@ var ErrNoTaskSize = errors.New("argus: no PTY size for task")
 // a human-readable "update argus" message rather than an opaque HTTP error.
 var ErrNoTaskRestart = errors.New("argus: restart not supported by this daemon")
 
+// ErrNoTaskInput is returned by PostTaskInput when argus reports 404 for the
+// task's PTY input endpoint. This means the task's session has ended (the agent
+// exited), the task was deleted, or argus has no active PTY for it. Callers use
+// this to detect a dead PTY rather than silently swallowing keystrokes.
+var ErrNoTaskInput = errors.New("argus: task PTY input unavailable")
+
 // HTTPError is the error type doJSON returns when argus responds with a
 // non-2xx status. Callers that need to discriminate by status code
 // (e.g., the MCP registrar's heartbeat-404 fallback to recovery) should

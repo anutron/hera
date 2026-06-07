@@ -418,6 +418,9 @@ func (c *Client) PostTaskInput(ctx context.Context, taskID string, payload []byt
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == 404 {
+		return 0, ErrNoTaskInput
+	}
 	if resp.StatusCode >= 400 {
 		return 0, fmt.Errorf("argus.PostTaskInput: HTTP %d", resp.StatusCode)
 	}
