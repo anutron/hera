@@ -9,9 +9,26 @@ package proxy
 
 import "sync"
 
-// DefaultRingCapacity matches argus's own per-session ring buffer cap
-// (256 KiB). See design.md D3.
-const DefaultRingCapacity = 256 * 1024
+// DefaultRingCapacity is the per-task in-memory ring buffer cap.
+//
+// Sized at 4 MiB — 16× argus's own 256 KiB on-disk snapshot cap. The larger
+// ring retains more frames when a pane is viewed after a task has been running
+// for a while; the seeded SSE subscription accumulates output continuously, so
+// long-lived tasks keep up to 4 MiB of recent history in the ring regardless
+// of what the argus snapshot size allows on reconnect.
+//
+// The practical motivation: the argus-sdk terminalpane captures alt-screen
+// frames to the main scrollback by intercepting \033[2J (ED2). Each Bubble Tea
+// / Claude Code frame is ~20–50 KiB of raw terminal bytes, so the old 256 KiB
+// ring only held ~9 frames. After those 9 frames the \033[?1049h alt-screen
+// entry sequence was pushed out; replaying the snapshot through a fresh
+// emulator left it in main-screen mode, causing the ED2 capture guard
+// (IsAltScreen) to skip every frame and produce zero scrollback. 4 MiB holds
+// ~80–200 frames — enough for typical usage sessions. The companion fix in
+// argus-sdk removes the IsAltScreen guard entirely (blank-frame skipping is
+// the correct safety valve), which eliminates the problem regardless of ring
+// size. Until that SDK bump lands, the larger ring is the active mitigation.
+const DefaultRingCapacity = 4 * 1024 * 1024
 
 // ring is a single-task circular byte buffer. Newest bytes overwrite oldest
 // once cap is reached. Total tracks the cumulative byte count ever written

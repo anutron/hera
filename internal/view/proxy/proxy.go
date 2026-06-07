@@ -20,11 +20,11 @@ type Fetcher interface {
 }
 
 // DefaultListenerBufferSize is the per-listener channel depth used when no
-// override is supplied. Bursty PTY output can dump up to ~256 KiB during the
-// snapshot replay; 128 chunks at ~2-4 KiB/chunk keeps the channel from
-// dropping under normal load. When full, new bytes are dropped on the floor
-// rather than blocking the upstream — the listener can resync via a fresh
-// Subscribe() if it falls far behind.
+// override is supplied. Snapshot replays can burst up to DefaultRingCapacity
+// bytes; 128 chunks at ~2-4 KiB/chunk covers typical snapshot sizes and keeps
+// the channel from dropping under normal load. When full, new bytes are dropped
+// on the floor rather than blocking the upstream — the listener can resync via
+// a fresh Subscribe() if it falls far behind.
 const DefaultListenerBufferSize = 128
 
 // reconnectBackoffInitial / Max bound the SSE reconnect cadence. The proxy
