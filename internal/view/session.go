@@ -193,9 +193,31 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, app, log)
 		bridge.rowSel = app
 		bridge.fPinner = app
-		bridge.reattach = app // App.OnTaskReattached resizes the new session (BUG-053)
+		bridge.reattach = app    // App.OnTaskReattached clears splash + resizes (BUG-053)
+		bridge.splashStart = app // App.StartPaneReattach shows splash + enters pane (BUG-008)
 		if states != nil {
 			bridge.optimizer = states // ArgusStateCache implements statusOptimizer
+		}
+
+		// BUG-008 paths 2/3: wire the auto-reattach trigger so the App can fire a
+		// background session restart when Ctrl+→ steps into a dead pane or a
+		// session dies while the operator is already focused in the pane. The
+		// closure captures the session ctx so an in-flight restart is cancelled
+		// if the hera-view session ends. On success the splash clears via
+		// OnTaskReattached; on failure we snap back to RAIL.
+		app.onDeadPaneReattach = func(taskID string) {
+			go func() {
+				if err := opsService.ReattachAgent(ctx, taskID); err != nil {
+					log.Warn("view: auto-reattach failed", "task_id", taskID, "err", err)
+					if tApp := app.Application(); tApp != nil {
+						go tApp.QueueUpdateDraw(func() {
+							app.snapToRAILFromReattach(taskID)
+						})
+					}
+					return
+				}
+				app.OnTaskReattached(taskID)
+			}()
 		}
 
 		router := &KeyRouter{

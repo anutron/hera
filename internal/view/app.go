@@ -148,6 +148,12 @@ type App struct {
 	// much-later unrelated repopulate. Guarded by selectMu.
 	pendingSelectMisses int
 
+	// onDeadPaneReattach, when non-nil, is called by the App when a dead pane
+	// receives focus (Ctrl+→ into a dead pane or session dying while in the
+	// pane). The callback fires the background argus restart call from its own
+	// goroutine. Wired in session.go (nil in tests without rendering).
+	onDeadPaneReattach func(taskID string)
+
 	// modalSync (tests only) makes queueModal run its body synchronously
 	// instead of bouncing through QueueUpdateDraw — which blocks forever
 	// when the tview event loop is not running, as in unit tests.
@@ -1270,6 +1276,15 @@ func (a *App) OnFocusChanged(state FocusState) {
 			a.app.SetFocus(a.pieces.agent)
 		}
 	}
+
+	// BUG-008 path 2: when focus lands on a pane (Ctrl+→ focus ladder), check
+	// whether its bound task is dead-session and auto-trigger reattach if so.
+	// Guard: only fires when entering a pane, and StartPaneReattach already sets
+	// pane.reattaching=true before calling OnFocusChanged, so the check is
+	// idempotent — no recursive trigger.
+	if state == FocusCOORD || state == FocusAGENT {
+		a.maybeAutoReattachPane(state)
+	}
 }
 
 // OnFullscreenChanged satisfies the KeyRouter.FullscreenUpdater contract
@@ -2073,10 +2088,17 @@ func (a *App) OnPaneDead(taskID string) {
 	go a.app.QueueUpdateDraw(func() { a.applyDeadPaneFocusGuard(taskID) })
 }
 
-// applyDeadPaneFocusGuard forces focus back to RAIL when taskID is currently
-// the focused pane's bound task and that task's PTY has died. This is the
-// event-loop half of OnPaneDead (extracted for testability). Must run on the
-// tview event loop.
+// applyDeadPaneFocusGuard handles a pane's PTY session dying while the operator
+// is actively focused on it (BUG-006, extended by BUG-008). This is the
+// event-loop half of OnPaneDead (extracted for testability).
+//
+// BUG-008 behavior: when a reattach trigger is wired (production), show the
+// REATTACHING splash and auto-trigger a background restart instead of snapping
+// to RAIL. The operator stays in the pane and sees progress feedback. Fallback
+// to the original RAIL snap when no trigger is wired (tests) or the pane is
+// already reattaching (avoids re-triggering a concurrent restart).
+//
+// Must run on the tview event loop.
 func (a *App) applyDeadPaneFocusGuard(taskID string) {
 	if a.focus == nil || a.focus.State() == FocusRAIL {
 		return // already at RAIL (user may have already pressed Ctrl-Q)
@@ -2088,12 +2110,29 @@ func (a *App) applyDeadPaneFocusGuard(taskID string) {
 	a.mu.Lock()
 	focusedTaskDead := (state == FocusCOORD && a.coordTask == taskID) ||
 		(state == FocusAGENT && a.agentTask == taskID)
+	var pane *pinnedTerminalPane
+	if state == FocusCOORD {
+		pane = a.pieces.coord
+	} else if state == FocusAGENT {
+		pane = a.pieces.agent
+	}
 	a.mu.Unlock()
 	if !focusedTaskDead {
 		return
 	}
-	a.focus.ToRAIL()
-	a.OnFocusChanged(FocusRAIL)
+	// BUG-008: show splash + trigger reattach when a trigger is wired and
+	// the pane is not already reattaching.
+	if pane != nil && !pane.reattaching && a.onDeadPaneReattach != nil {
+		pane.SetReattaching(true, "connecting to agent...")
+		a.scheduleSubtitleUpdate(taskID)
+		a.onDeadPaneReattach(taskID)
+		return
+	}
+	// Original BUG-006 fallback: snap to RAIL (tests or already reattaching).
+	if pane == nil || !pane.reattaching {
+		a.focus.ToRAIL()
+		a.OnFocusChanged(FocusRAIL)
+	}
 }
 
 // OnTaskReattached is called after an argus task session is successfully
@@ -2131,17 +2170,171 @@ func (a *App) OnTaskReattached(taskID string) {
 	// also writes them — no race.
 	go a.app.QueueUpdateDraw(func() {
 		a.mu.Lock()
+		var pane *pinnedTerminalPane
 		var cols, rows int
 		if a.coordTask == taskID && a.pieces.coord != nil {
+			pane = a.pieces.coord
 			cols, rows = a.pieces.coord.PinnedSize()
 		} else if a.agentTask == taskID && a.pieces.agent != nil {
+			pane = a.pieces.agent
 			cols, rows = a.pieces.agent.PinnedSize()
 		}
 		a.mu.Unlock()
+		// BUG-008: clear the REATTACHING splash so live PTY content streams in.
+		if pane != nil {
+			pane.SetReattaching(false, "")
+		}
 		if cols > 0 && rows > 0 && a.src != nil {
 			a.src.ResizeTask(taskID, cols, rows)
 		}
 	})
+}
+
+// StartPaneReattach shows the REATTACHING splash on the pane bound to taskID,
+// enters that pane (moves focus there), and schedules the subtitle animation.
+// Called by the mutation bridge when the operator presses Enter on a dead-session
+// row (BUG-008 path 1). Satisfies the reattachPaneStarter interface. Runs on
+// the tview event loop.
+func (a *App) StartPaneReattach(taskID string) {
+	if taskID == "" {
+		return
+	}
+	a.mu.Lock()
+	var pane *pinnedTerminalPane
+	var focusTarget FocusState
+	switch {
+	case a.agentTask == taskID:
+		pane = a.pieces.agent
+		focusTarget = FocusAGENT
+	case a.coordTask == taskID:
+		pane = a.pieces.coord
+		focusTarget = FocusCOORD
+	}
+	a.mu.Unlock()
+	if pane == nil {
+		return
+	}
+	pane.SetReattaching(true, "connecting to agent...")
+	a.scheduleSubtitleUpdate(taskID)
+	// Enter the pane so the operator sees the splash with focus.
+	if a.focus != nil {
+		switch focusTarget {
+		case FocusAGENT:
+			a.focus.JumpToAGENT()
+		case FocusCOORD:
+			a.focus.JumpToCOORD()
+		}
+	}
+	a.OnFocusChanged(focusTarget)
+}
+
+// ClearPaneReattach hides the REATTACHING splash on the pane bound to taskID.
+// Called by the mutation bridge when a background reattach fails (BUG-008 path
+// 1) so the operator is not stuck looking at a frozen splash. Thread-safe:
+// schedules the update via QueueUpdateDraw. Satisfies reattachPaneStarter.
+func (a *App) ClearPaneReattach(taskID string) {
+	if taskID == "" || a.app == nil {
+		return
+	}
+	go a.app.QueueUpdateDraw(func() {
+		a.mu.Lock()
+		var pane *pinnedTerminalPane
+		switch {
+		case a.coordTask == taskID:
+			pane = a.pieces.coord
+		case a.agentTask == taskID:
+			pane = a.pieces.agent
+		}
+		a.mu.Unlock()
+		if pane != nil {
+			pane.SetReattaching(false, "")
+		}
+	})
+}
+
+// scheduleSubtitleUpdate fires a subtitle change from "connecting to agent..."
+// to "waiting for session..." on the reattaching splash after a 2-second delay.
+// The update is a no-op if the pane has already finished reattaching by then.
+func (a *App) scheduleSubtitleUpdate(taskID string) {
+	if a.app == nil {
+		return
+	}
+	taskIDCopy := taskID
+	time.AfterFunc(2*time.Second, func() {
+		go a.app.QueueUpdateDraw(func() {
+			a.mu.Lock()
+			var pane *pinnedTerminalPane
+			switch {
+			case a.agentTask == taskIDCopy:
+				pane = a.pieces.agent
+			case a.coordTask == taskIDCopy:
+				pane = a.pieces.coord
+			}
+			a.mu.Unlock()
+			if pane != nil {
+				pane.SetReattachingSubtitle("waiting for session...")
+			}
+		})
+	})
+}
+
+// maybeAutoReattachPane checks whether the pane that just received focus has a
+// dead session and, if so, shows the REATTACHING splash and fires a background
+// reattach (BUG-008 path 2: Ctrl+→ stepping into a dead pane). No-op when the
+// pane is already reattaching, the task is alive, or no trigger is wired.
+// Must run on the tview event loop (called from OnFocusChanged).
+func (a *App) maybeAutoReattachPane(state FocusState) {
+	if a.onDeadPaneReattach == nil {
+		return
+	}
+	a.mu.Lock()
+	var taskID string
+	var pane *pinnedTerminalPane
+	if state == FocusCOORD {
+		taskID = a.coordTask
+		pane = a.pieces.coord
+	} else {
+		taskID = a.agentTask
+		pane = a.pieces.agent
+	}
+	a.mu.Unlock()
+	if taskID == "" || pane == nil || pane.reattaching {
+		return
+	}
+	prov, ok := a.src.(TaskStateProvider)
+	if !ok {
+		return
+	}
+	st, ok := prov.TaskState(taskID)
+	if !ok || taskStatusAlive(st.Status) {
+		return
+	}
+	pane.SetReattaching(true, "connecting to agent...")
+	a.scheduleSubtitleUpdate(taskID)
+	a.onDeadPaneReattach(taskID)
+}
+
+// snapToRAILFromReattach clears the REATTACHING splash on taskID's pane and
+// snaps focus to RAIL. Called on auto-reattach failure (paths 2/3) so the
+// operator is not stuck in a pane with a frozen splash. Runs on the tview
+// event loop.
+func (a *App) snapToRAILFromReattach(taskID string) {
+	a.mu.Lock()
+	var pane *pinnedTerminalPane
+	switch {
+	case a.coordTask == taskID:
+		pane = a.pieces.coord
+	case a.agentTask == taskID:
+		pane = a.pieces.agent
+	}
+	a.mu.Unlock()
+	if pane != nil {
+		pane.SetReattaching(false, "")
+	}
+	if a.focus != nil && a.focus.State() != FocusRAIL {
+		a.focus.ToRAIL()
+		a.OnFocusChanged(FocusRAIL)
+	}
 }
 
 // refreshDetailsForCurrentSelection re-derives the Details pane from whatever

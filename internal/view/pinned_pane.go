@@ -87,6 +87,16 @@ type pinnedTerminalPane struct {
 	// narrow-terminal line wrapping (BUG-038). Only set for task-bound panes
 	// with a resizer wired; unbound placeholder panes leave it nil.
 	onReflow func(cols, rows int)
+
+	// reattaching is true while the pane's dead session is being restarted
+	// (BUG-008). Draw renders the REATTACHING splash instead of PTY content.
+	// Must be read/written only on the tview event loop.
+	reattaching bool
+
+	// reattachingSubtitle is the status line shown below "REATTACHING" in the
+	// splash. Updated from "connecting to agent..." to "waiting for session..."
+	// after a 2-second delay by the App.
+	reattachingSubtitle string
 }
 
 // newPinnedTerminalPane wraps tp and pins its emulator surface to
@@ -152,6 +162,22 @@ func (p *pinnedTerminalPane) GetTitle() string {
 	return p.paneTitle
 }
 
+// SetReattaching shows or hides the REATTACHING splash. When visible is true,
+// subtitle is shown below the gradient title. When false, the pane reverts to
+// normal PTY rendering. Must be called on the tview event loop (BUG-008).
+func (p *pinnedTerminalPane) SetReattaching(visible bool, subtitle string) {
+	p.reattaching = visible
+	p.reattachingSubtitle = subtitle
+}
+
+// SetReattachingSubtitle updates the splash subtitle. No-op when the splash is
+// not active. Must be called on the tview event loop.
+func (p *pinnedTerminalPane) SetReattachingSubtitle(subtitle string) {
+	if p.reattaching {
+		p.reattachingSubtitle = subtitle
+	}
+}
+
 // Focus implements tview.Primitive by explicitly forwarding to the embedded
 // TerminalPane. Without this override, Go's promotion would forward to
 // TerminalPane.Box.Focus, which is the same underlying Box — but the explicit
@@ -191,6 +217,27 @@ func (p *pinnedTerminalPane) Focus(delegate func(tview.Primitive)) {
 func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 	x, y, w, h := p.GetRect()
 	if w <= 0 || h <= 0 {
+		return
+	}
+
+	// Build the clipping screen once from the original allocated rect (before
+	// any SetRect manipulation below). Both the splash and the PTY paths clip
+	// writes to this boundary so neither overpaints adjacent Flex items.
+	clipped := &clippingScreen{
+		Screen: screen,
+		minX:   x,
+		minY:   y,
+		maxX:   x + w,
+		maxY:   y + h,
+	}
+
+	// BUG-008: while a dead session is being restarted, render the
+	// REATTACHING splash instead of PTY content.
+	if p.reattaching {
+		p.drawReattachSplash(clipped, x, y, w, h)
+		if p.HasFocus() {
+			widget.DrawBorder(clipped, x, y, w, h, theme.StyleFocusedBorder)
+		}
 		return
 	}
 
@@ -247,13 +294,6 @@ func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 	p.SetRect(x, y, p.pinnedCols+2, p.pinnedRows+2)
 	defer p.SetRect(x, y, w, h)
 
-	clipped := &clippingScreen{
-		Screen: screen,
-		minX:   x,
-		minY:   y,
-		maxX:   x + w,
-		maxY:   y + h,
-	}
 	p.TerminalPane.Draw(clipped)
 
 	// The SDK terminalpane hardcodes a white (tcell.StyleDefault) border when
@@ -264,6 +304,107 @@ func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 	// the allocation, so the cyan lines land exactly on the SDK's border cells.
 	if p.HasFocus() {
 		widget.DrawBorder(clipped, x, y, w, h, theme.StyleFocusedBorder)
+	}
+}
+
+// drawReattachSplash renders the REATTACHING splash centered in the pane rect.
+// Layout (7 content rows centered vertically in the inner area):
+//
+//	- - - - - ○ - - - - - - - - - - - - - - -   (dashes, cyan)
+//
+//	        REATTACHING                           (cyan→pink gradient, bold)
+//
+//	        connecting to agent...                (dim gray)
+//
+//	- - - - - ○ - - - - - - - - - - - - - - -
+func (p *pinnedTerminalPane) drawReattachSplash(screen tcell.Screen, x, y, w, h int) {
+	// Clear the allocated rect to erase any PTY residue behind the splash.
+	for row := y; row < y+h; row++ {
+		for col := x; col < x+w; col++ {
+			screen.SetContent(col, row, ' ', nil, tcell.StyleDefault)
+		}
+	}
+
+	// Content lives in the inner area (inside the 1-cell border).
+	ix, iy := x+1, y+1
+	iw, ih := w-2, h-2
+	if iw < 3 || ih < 3 {
+		return
+	}
+
+	// Center the 7-row content block vertically.
+	const contentRows = 7
+	startRow := iy + (ih-contentRows)/2
+	if startRow < iy {
+		startRow = iy
+	}
+
+	dashStyle := tcell.StyleDefault.Foreground(tcell.NewRGBColor(0, 200, 200))
+
+	// Top dash line.
+	if r := startRow; r >= iy && r < iy+ih {
+		drawSplashDashLine(screen, ix, r, iw, dashStyle)
+	}
+
+	// "REATTACHING" — cyan (#00CCCC) to pink (#FF69B4) gradient, bold.
+	if r := startRow + 2; r >= iy && r < iy+ih {
+		const title = "REATTACHING"
+		const n = len(title)
+		startCol := ix + (iw-n)/2
+		for i, ch := range title {
+			col := startCol + i
+			if col < ix || col >= ix+iw {
+				continue
+			}
+			t := float64(i) / float64(n-1)
+			gr := int32(float64(255) * t)
+			gg := int32(float64(200)*(1-t) + float64(105)*t)
+			gb := int32(float64(200)*(1-t) + float64(180)*t)
+			style := tcell.StyleDefault.
+				Foreground(tcell.NewRGBColor(gr, gg, gb)).
+				Bold(true)
+			screen.SetContent(col, r, ch, nil, style)
+		}
+	}
+
+	// Subtitle — dim gray.
+	if r := startRow + 4; r >= iy && r < iy+ih {
+		sub := p.reattachingSubtitle
+		if sub == "" {
+			sub = "connecting to agent..."
+		}
+		startCol := ix + (iw-len(sub))/2
+		dimStyle := tcell.StyleDefault.Foreground(tcell.NewRGBColor(140, 140, 140))
+		for i, ch := range sub {
+			col := startCol + i
+			if col < ix || col >= ix+iw {
+				continue
+			}
+			screen.SetContent(col, r, ch, nil, dimStyle)
+		}
+	}
+
+	// Bottom dash line.
+	if r := startRow + 6; r >= iy && r < iy+ih {
+		drawSplashDashLine(screen, ix, r, iw, dashStyle)
+	}
+}
+
+// drawSplashDashLine fills a horizontal row with a `- ` dash pattern,
+// placing a `○` at the horizontal center.
+func drawSplashDashLine(screen tcell.Screen, x, y, w int, style tcell.Style) {
+	center := x + w/2
+	for col := x; col < x+w; col++ {
+		var ch rune
+		switch {
+		case col == center:
+			ch = '○'
+		case (col-x)%2 == 0:
+			ch = '-'
+		default:
+			ch = ' '
+		}
+		screen.SetContent(col, y, ch, nil, style)
 	}
 }
 
