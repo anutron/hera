@@ -4166,3 +4166,124 @@ func TestBuildAppNoSavedSelectionLandsAtCoordinatorSection(t *testing.T) {
 		t.Errorf("cursor on unexpected ref type %T; should be orchestrator or worker, not freelance/separator", rail.CurrentRef())
 	}
 }
+
+// TestApp_ApplyDeadPaneFocusGuard_ForcesRAILWhenFocusedPaneDied proves that
+// applyDeadPaneFocusGuard moves focus to RAIL when the dead task ID matches the
+// currently-focused pane's bound task (BUG-006 dead-session mid-pane fix).
+func TestApp_ApplyDeadPaneFocusGuard_ForcesRAILWhenFocusedPaneDied(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Simulate a coord pane bound to "dead-task" with COORD focus.
+	a.mu.Lock()
+	a.coordTask = "dead-task"
+	a.mu.Unlock()
+	focus.JumpToCOORD()
+	a.OnFocusChanged(FocusCOORD)
+
+	if focus.State() != FocusCOORD {
+		t.Fatalf("precondition: focus must be COORD; got %v", focus.State())
+	}
+
+	// The dead pane's task matches the focused coord pane — focus should go to RAIL.
+	a.applyDeadPaneFocusGuard("dead-task")
+
+	if focus.State() != FocusRAIL {
+		t.Fatalf("after applyDeadPaneFocusGuard, focus = %v; want RAIL", focus.State())
+	}
+	if a.CurrentFocus() != FocusRAIL {
+		t.Fatalf("after applyDeadPaneFocusGuard, CurrentFocus = %v; want RAIL", a.CurrentFocus())
+	}
+}
+
+// TestApp_ApplyDeadPaneFocusGuard_NoopForUnfocusedPane proves that a 404 for
+// a task not currently focused (e.g., agent pane 404 while COORD has focus)
+// does NOT disturb focus.
+func TestApp_ApplyDeadPaneFocusGuard_NoopForUnfocusedPane(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Coord pane is focused; agent pane is dead.
+	a.mu.Lock()
+	a.coordTask = "live-coord"
+	a.agentTask = "dead-agent"
+	a.mu.Unlock()
+	focus.JumpToCOORD()
+	a.OnFocusChanged(FocusCOORD)
+
+	// Dead task is the agent pane (not focused) — focus must not change.
+	a.applyDeadPaneFocusGuard("dead-agent")
+
+	if focus.State() != FocusCOORD {
+		t.Fatalf("focus must stay COORD when dead task is the non-focused pane; got %v", focus.State())
+	}
+}
+
+// TestApp_ApplyDeadPaneFocusGuard_NoopWhenAlreadyRAIL proves that calling
+// applyDeadPaneFocusGuard when focus is already RAIL is a safe no-op.
+func TestApp_ApplyDeadPaneFocusGuard_NoopWhenAlreadyRAIL(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+	a.mu.Lock()
+	a.coordTask = "dead-task"
+	a.mu.Unlock()
+	// Focus is already RAIL.
+	a.OnFocusChanged(FocusRAIL)
+
+	a.applyDeadPaneFocusGuard("dead-task")
+
+	if focus.State() != FocusRAIL {
+		t.Fatalf("focus must stay RAIL; got %v", focus.State())
+	}
+}
+
+// TestApp_ApplyDeadPaneFocusGuard_AgentPaneDied proves the guard works for the
+// AGENT pane too (not just COORD).
+func TestApp_ApplyDeadPaneFocusGuard_AgentPaneDied(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	a.mu.Lock()
+	a.agentTask = "dead-agent"
+	a.mu.Unlock()
+	focus.JumpToAGENT()
+	a.OnFocusChanged(FocusAGENT)
+
+	if focus.State() != FocusAGENT {
+		t.Fatalf("precondition: focus must be AGENT; got %v", focus.State())
+	}
+
+	a.applyDeadPaneFocusGuard("dead-agent")
+
+	if focus.State() != FocusRAIL {
+		t.Fatalf("after applyDeadPaneFocusGuard, focus = %v; want RAIL", focus.State())
+	}
+}

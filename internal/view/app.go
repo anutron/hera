@@ -2049,6 +2049,53 @@ func (a *App) updateCoordDetails(orch *orchEntry) {
 	a.pieces.details.SetDetails(cd)
 }
 
+// OnPaneDead is called by PaneForwarder when PostTaskInput returns
+// ErrNoTaskInput (HTTP 404) — the task's PTY session ended while the operator
+// was actively typing in the pane. If the dead task is currently the focused
+// pane's target, this forces focus back to RAIL so rawInputConn stops
+// forwarding keystrokes to the dead PTY and they are no longer silently dropped
+// (BUG-006: the applyDeadFocusGuard only fires on rail selection changes, not
+// when a session ends mid-pane).
+//
+// Runs from the forwarder's sender goroutine; bounces to the tview event loop
+// via QueueUpdateDraw. Satisfies paneDeadNotifier.
+func (a *App) OnPaneDead(taskID string) {
+	if taskID == "" {
+		return
+	}
+	// Fast check outside event loop: is this task even bound to a pane?
+	a.mu.Lock()
+	boundToPane := a.coordTask == taskID || a.agentTask == taskID
+	a.mu.Unlock()
+	if !boundToPane || a.app == nil {
+		return
+	}
+	go a.app.QueueUpdateDraw(func() { a.applyDeadPaneFocusGuard(taskID) })
+}
+
+// applyDeadPaneFocusGuard forces focus back to RAIL when taskID is currently
+// the focused pane's bound task and that task's PTY has died. This is the
+// event-loop half of OnPaneDead (extracted for testability). Must run on the
+// tview event loop.
+func (a *App) applyDeadPaneFocusGuard(taskID string) {
+	if a.focus == nil || a.focus.State() == FocusRAIL {
+		return // already at RAIL (user may have already pressed Ctrl-Q)
+	}
+	// Re-check while on the event loop: the pane may have been rebound since
+	// the 404 fired (j/k navigation away), in which case the dead task is no
+	// longer the focused target and we must not disrupt focus.
+	state := a.focus.State()
+	a.mu.Lock()
+	focusedTaskDead := (state == FocusCOORD && a.coordTask == taskID) ||
+		(state == FocusAGENT && a.agentTask == taskID)
+	a.mu.Unlock()
+	if !focusedTaskDead {
+		return
+	}
+	a.focus.ToRAIL()
+	a.OnFocusChanged(FocusRAIL)
+}
+
 // OnTaskReattached is called after an argus task session is successfully
 // restarted (BUG-053 reattach). The new session starts at the argus default
 // (80×24); without intervention, ProxyManager's "already applied" resize flag
