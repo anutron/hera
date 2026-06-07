@@ -401,10 +401,12 @@ func TestShowForm2_EnterSubmits(t *testing.T) {
 
 // TestFormFieldWidth_FitsInsideFrame asserts the derived field width keeps a
 // labeled field inside the modal frame: label + ": " + field must not exceed
-// the inner content width (modalWidth minus the two border columns), and the
-// longest label drives the shared width (BUG-002).
+// the inner content width (modalWidth minus the two border columns and two
+// horizontal padding columns), and the longest label drives the shared width
+// (BUG-002).
 func TestFormFieldWidth_FitsInsideFrame(t *testing.T) {
-	const inner = modalWidth - 2
+	// inner = modalWidth - 2 (border) - 2*formHorizPad (padding).
+	const inner = modalWidth - 2 - 2*formHorizPad
 	cases := [][]string{
 		{"New name"},
 		{"Name", "Mission (optional)"},
@@ -557,9 +559,9 @@ func TestShowNewCoordForm_SubmitFiresCallback(t *testing.T) {
 		t.Fatalf("form must have at least 5 items (Name, Project, Branch, Backend, Prompt); got %d", form.GetFormItemCount())
 	}
 
-	nameField, ok := form.GetFormItem(0).(*tview.InputField)
+	nameField, ok := form.GetFormItem(0).(*styledInputField)
 	if !ok {
-		t.Fatalf("first form item must be InputField for Name")
+		t.Fatalf("first form item must be styledInputField for Name")
 	}
 	nameField.SetText("my-coord")
 
@@ -612,15 +614,16 @@ func TestShowNewCoordForm_EmptyNameDoesNotSubmit(t *testing.T) {
 }
 
 // TestShowNewCoordForm_PromptIsInputField verifies the Prompt field (item 4) is
-// a single-line InputField, not a multi-line TextArea (BUG-055). This is what
-// makes Enter-to-submit work and keeps the modal height correct.
+// a single-line styledInputField (backed by tview.InputField), not a
+// multi-line TextArea (BUG-055). This is what makes Enter-to-submit work and
+// keeps the modal height correct.
 func TestShowNewCoordForm_PromptIsInputField(t *testing.T) {
 	a := newModalTestApp(t)
 	a.ShowNewCoordForm("New coordinator", []string{"p1"}, []string{"claude"}, nil, nil)
 
 	form := frontForm(t, a)
-	if _, ok := form.GetFormItem(4).(*tview.InputField); !ok {
-		t.Fatalf("form item 4 (Prompt) must be *tview.InputField (BUG-055)")
+	if _, ok := form.GetFormItem(4).(*styledInputField); !ok {
+		t.Fatalf("form item 4 (Prompt) must be *styledInputField (BUG-055)")
 	}
 }
 
@@ -636,15 +639,15 @@ func TestShowNewCoordForm_EnterOnPromptSubmits(t *testing.T) {
 		func(in NewCoordFormInput) { got = in; submitted = true }, nil)
 
 	form := frontForm(t, a)
-	nameField, ok := form.GetFormItem(0).(*tview.InputField)
+	nameField, ok := form.GetFormItem(0).(*styledInputField)
 	if !ok {
-		t.Fatalf("item 0 must be InputField for Name")
+		t.Fatalf("item 0 must be styledInputField for Name")
 	}
 	nameField.SetText("my-coord")
 
-	promptField, ok := form.GetFormItem(4).(*tview.InputField)
+	promptField, ok := form.GetFormItem(4).(*styledInputField)
 	if !ok {
-		t.Fatalf("item 4 must be InputField for Prompt")
+		t.Fatalf("item 4 must be styledInputField for Prompt")
 	}
 	promptField.SetText("some prompt text")
 	a.app.SetFocus(promptField)
@@ -668,7 +671,8 @@ func TestShowNewCoordForm_EnterOnPromptSubmits(t *testing.T) {
 // TestShowNewCoordForm_FieldsContainedInFrame verifies field widths keep all
 // inputs inside the modal frame (BUG-002 compliance).
 func TestShowNewCoordForm_FieldsContainedInFrame(t *testing.T) {
-	const inner = modalWidth - 2
+	// inner = modalWidth - 2 (border) - 2*formHorizPad (padding).
+	const inner = modalWidth - 2 - 2*formHorizPad
 	labels := []string{"Name", "Project", "Branch", "Backend", "Prompt"}
 	fw := formFieldWidth(labels...)
 	if fw < 1 {
@@ -684,6 +688,55 @@ func TestShowNewCoordForm_FieldsContainedInFrame(t *testing.T) {
 	used := longest + 2 + 1 + fw
 	if used > inner {
 		t.Fatalf("labels %v overflow frame: used=%d inner=%d (fw=%d)", labels, used, inner, fw)
+	}
+}
+
+// TestShowNewCoordForm_NameFieldCursorVisible verifies that after opening the
+// new-coord form, the terminal cursor is visible inside the Name field's text
+// area (BUG-002). The cursor is positioned by tview's TextArea.Draw via
+// screen.ShowCursor; the simulation screen records this position.
+func TestShowNewCoordForm_NameFieldCursorVisible(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"}, nil, nil)
+
+	sim := renderPages(t, a, 80, 24)
+
+	x, y, visible := sim.GetCursor()
+	if !visible {
+		t.Fatalf("cursor must be visible in the focused Name field after ShowNewCoordForm (BUG-002); got hidden cursor")
+	}
+	// Sanity check: cursor must be somewhere within the modal area (not at 0,0
+	// or outside the screen).
+	if x <= 0 || y <= 0 {
+		t.Fatalf("cursor position (%d,%d) is outside the modal area — focus may not have reached the Name field", x, y)
+	}
+}
+
+// TestShowNewCoordForm_FocusedFieldHasCyanBackground verifies that the focused
+// Name field renders with the cyan (theme.ColorTitle) background that
+// distinguishes the active input from the rest of the form (BUG-002).
+// styledInputField.SetFormAttributes re-applies fieldFocusedStyle after
+// Form.Draw() resets textStyle; this test proves that mechanism works.
+func TestShowNewCoordForm_FocusedFieldHasCyanBackground(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"}, nil, nil)
+
+	sim := renderPages(t, a, 80, 24)
+	w, h := sim.Size()
+
+	found := false
+	for y := 0; y < h && !found; y++ {
+		for x := 0; x < w; x++ {
+			_, style, _ := sim.Get(x, y)
+			_, bg, _ := style.Decompose()
+			if bg == theme.ColorTitle {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("focused Name field must render with theme.ColorTitle (cyan) background (BUG-002); styledInputField.SetFormAttributes may not be re-applying fieldFocusedStyle")
 	}
 }
 
@@ -733,9 +786,9 @@ func TestShowNewCoordForm_BranchDefaultsToOriginMain(t *testing.T) {
 	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"}, nil, nil)
 
 	form := frontForm(t, a)
-	branchField, ok := form.GetFormItem(2).(*tview.InputField)
+	branchField, ok := form.GetFormItem(2).(*styledInputField)
 	if !ok {
-		t.Fatalf("form item 2 must be InputField for Branch")
+		t.Fatalf("form item 2 must be styledInputField for Branch")
 	}
 	if got := branchField.GetText(); got != "origin/main" {
 		t.Fatalf("Branch field must default to %q, got %q", "origin/main", got)
@@ -829,9 +882,9 @@ func TestShowNewCoordForm_SubmitPassesCyclerValues(t *testing.T) {
 		func(in NewCoordFormInput) { got = in; submitted = true }, nil)
 
 	form := frontForm(t, a)
-	nameField, ok := form.GetFormItem(0).(*tview.InputField)
+	nameField, ok := form.GetFormItem(0).(*styledInputField)
 	if !ok {
-		t.Fatalf("item 0 must be InputField for Name")
+		t.Fatalf("item 0 must be styledInputField for Name")
 	}
 	nameField.SetText("my-coord")
 

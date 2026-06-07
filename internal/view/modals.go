@@ -28,18 +28,24 @@ const (
 // frame.
 const modalWidth = 60
 
+// formHorizPad is the horizontal padding (in columns) added inside each side
+// of the form border via SetBorderPadding, giving visible inset between the
+// border and the field content (BUG-002).
+const formHorizPad = 1
+
 // formFieldWidth returns the input field width that keeps a labeled field
 // fully inside a modalWidth-wide form. tview lays a vertical form's field out
 // at x = innerLeft + labelWidth and draws the input's text area
 // labelWidth+fieldWidth wide; with no clamp the box runs past the right
-// border (BUG-002). The inner content width is modalWidth minus the form's
-// two border columns; reserving the longest label (plus tview's one-space
-// label gap) leaves the width an input may safely occupy. labels are the
-// raw label strings WITHOUT the trailing ": " that callers append.
+// border (BUG-002). The inner content width is modalWidth minus the two
+// border columns and the two horizontal padding columns; reserving the
+// longest label (plus tview's one-space label gap) leaves the width an input
+// may safely occupy. labels are the raw label strings WITHOUT the trailing
+// ": " that callers append.
 func formFieldWidth(labels ...string) int {
 	const borderCols = 2  // left+right form border
 	const labelSuffix = 2 // ": " appended to every label below
-	inner := modalWidth - borderCols
+	inner := modalWidth - borderCols - 2*formHorizPad
 	maxLabel := 0
 	for _, l := range labels {
 		// +labelSuffix for the ": " each caller appends, +1 for tview's
@@ -101,6 +107,9 @@ func themeFormStyle(form *tview.Form, title string) {
 	form.SetBorder(true)
 	form.SetBorderColor(theme.ColorTitle)
 	form.SetTitleColor(theme.ColorTitle)
+	// Horizontal padding keeps fields from running edge-to-edge against the
+	// border; formFieldWidth accounts for these columns (BUG-002).
+	form.SetBorderPadding(0, 0, formHorizPad, formHorizPad)
 	if title != "" {
 		form.SetTitle(" " + title + " ").SetTitleAlign(tview.AlignCenter)
 	}
@@ -124,13 +133,37 @@ var (
 				Bold(true)
 )
 
-// wireFieldFocusStyle gives an input field a visible focus indicator by
-// swapping its field style on focus/blur. Returns the field for chaining.
-func wireFieldFocusStyle(in *tview.InputField) *tview.InputField {
-	in.SetFieldStyle(fieldBlurredStyle)
-	in.SetFocusFunc(func() { in.SetFieldStyle(fieldFocusedStyle) })
-	in.SetBlurFunc(func() { in.SetFieldStyle(fieldBlurredStyle) })
-	return in
+// styledInputField wraps tview.InputField and overrides SetFormAttributes so
+// that the focused/blurred field style survives the form's per-draw attribute
+// reset (BUG-002). tview's Form.Draw() calls SetFormAttributes on every item
+// before drawing, overwriting any SetFieldStyle set via FocusFunc. The
+// override re-applies the correct style immediately after the form resets it,
+// so the cursor (and the cyan focus highlight) is visible.
+type styledInputField struct {
+	*tview.InputField
+}
+
+// newStyledInputField returns a new styledInputField with the blurred style
+// applied as its initial appearance.
+func newStyledInputField() *styledInputField {
+	f := &styledInputField{InputField: tview.NewInputField()}
+	f.InputField.SetFieldStyle(fieldBlurredStyle)
+	return f
+}
+
+// SetFormAttributes implements tview.FormItem. It delegates to the embedded
+// InputField then re-applies whichever style (focused or blurred) matches the
+// current focus state. This hook fires inside Form.Draw()'s position loop,
+// before the draw loop, so the correct textStyle is in place when the field
+// is rendered.
+func (f *styledInputField) SetFormAttributes(labelWidth int, labelColor, bgColor, fieldTextColor, fieldBgColor tcell.Color) tview.FormItem {
+	f.InputField.SetFormAttributes(labelWidth, labelColor, bgColor, fieldTextColor, fieldBgColor)
+	if f.InputField.HasFocus() {
+		f.InputField.SetFieldStyle(fieldFocusedStyle)
+	} else {
+		f.InputField.SetFieldStyle(fieldBlurredStyle)
+	}
+	return f
 }
 
 // submitOnEnter installs an input capture so that pressing Enter while an
@@ -177,11 +210,10 @@ func (a *App) captureFocus() {
 // app.QueueUpdateDraw so it lands on the tview event loop.
 func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onCancel func()) {
 	a.queueModal(func() {
-		input := tview.NewInputField().
-			SetLabel(label + ": ").
-			SetText(initial).
-			SetFieldWidth(formFieldWidth(label))
-		wireFieldFocusStyle(input)
+		input := newStyledInputField()
+		input.SetLabel(label + ": ")
+		input.SetText(initial)
+		input.SetFieldWidth(formFieldWidth(label))
 
 		form := tview.NewForm().
 			AddFormItem(input).
@@ -227,16 +259,14 @@ func (a *App) ShowForm2(title, label1, initial1, label2, initial2 string, onSubm
 		// Both fields share the longest label's reserved width so they align
 		// and neither overflows the frame (BUG-002).
 		fw := formFieldWidth(label1, label2)
-		field1 := tview.NewInputField().
-			SetLabel(label1 + ": ").
-			SetText(initial1).
-			SetFieldWidth(fw)
-		field2 := tview.NewInputField().
-			SetLabel(label2 + ": ").
-			SetText(initial2).
-			SetFieldWidth(fw)
-		wireFieldFocusStyle(field1)
-		wireFieldFocusStyle(field2)
+		field1 := newStyledInputField()
+		field1.SetLabel(label1 + ": ")
+		field1.SetText(initial1)
+		field1.SetFieldWidth(fw)
+		field2 := newStyledInputField()
+		field2.SetLabel(label2 + ": ")
+		field2.SetText(initial2)
+		field2.SetFieldWidth(fw)
 
 		form := tview.NewForm().
 			AddFormItem(field1).
@@ -469,10 +499,9 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 	a.queueModal(func() {
 		fw := formFieldWidth("Name", "Project", "Branch", "Backend", "Prompt")
 
-		nameField := tview.NewInputField().
-			SetLabel("Name: ").
-			SetFieldWidth(fw)
-		wireFieldFocusStyle(nameField)
+		nameField := newStyledInputField()
+		nameField.SetLabel("Name: ")
+		nameField.SetFieldWidth(fw)
 
 		projOptions := projects
 		if len(projOptions) == 0 {
@@ -483,11 +512,10 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		// Branch defaults to "origin/main" — argus uses the project's configured
 		// default branch when the field is empty, but pre-filling gives the operator
 		// a useful starting point without an extra API call.
-		branchField := tview.NewInputField().
-			SetLabel("Branch: ").
-			SetText("origin/main").
-			SetFieldWidth(fw)
-		wireFieldFocusStyle(branchField)
+		branchField := newStyledInputField()
+		branchField.SetLabel("Branch: ")
+		branchField.SetText("origin/main")
+		branchField.SetFieldWidth(fw)
 
 		backendOptions := backends
 		if len(backendOptions) == 0 {
@@ -495,10 +523,9 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		}
 		backendCycler := newInlineCycler("Backend: ", backendOptions, 0, fw)
 
-		promptField := tview.NewInputField().
-			SetLabel("Prompt: ").
-			SetFieldWidth(fw)
-		wireFieldFocusStyle(promptField)
+		promptField := newStyledInputField()
+		promptField.SetLabel("Prompt: ")
+		promptField.SetFieldWidth(fw)
 
 		form := tview.NewForm().
 			AddFormItem(nameField).
