@@ -39,7 +39,7 @@ After a hera daemon restart, or after a worker task is archived and resurected, 
 
 ### `hera_spawn_worker` MCP verb
 
-A coordinator today spawns a worker via raw `task_create` + the worker self-joins via `hera_join`. This creates a transient "freelancer-then-joins" window and relies on the worker calling `hera_join` itself. The fix: a 7th MCP verb `hera_spawn_worker(cwd, prompt, [role_name], [mission])` that wraps `ops.SpawnWorker` (already exists in `internal/view/ops/spawn_worker.go`, reachable via the `w` rail key) — the worker is born bound, never a freelancer, and its prompt can just call `hera_inbox` to read its mission. This also sidesteps BUG-012.
+A coordinator today spawns a worker via raw `task_create` + the worker self-joins via `hera_join`. This creates a transient "freelancer-then-joins" window and relies on the worker calling `hera_join` itself. The fix: a 7th MCP verb `hera_spawn_worker(cwd, prompt, [role_name])` that wraps `ops.SpawnWorker` (already exists in `internal/view/ops/spawn_worker.go`, reachable via the `w` rail key) — the worker is born bound, never a freelancer, and its prompt can just call `hera_inbox` to read its instructions. This also sidesteps BUG-012.
 
 ### Status-step latency
 
@@ -89,7 +89,7 @@ Once hera is running:
 1. **Bootstrap an orchestrator.** From any argus task with MCP access to hera, call:
 
    ```
-   hera_new_orchestrator(cwd=$PWD, name="<project-name>", coordinator_role_name="coord", mission="...")
+   hera_new_orchestrator(cwd=$PWD, name="<project-name>", coordinator_role_name="coord", prompt="...")
    ```
 
    This creates the orchestrator + a coordinator role + a binding tying the calling argus task to that role.
@@ -106,7 +106,7 @@ Once hera is running:
 
 4. **Resume across incarnations.** When a worker task is archived, its binding ends but the role survives. Re-incarnate by spawning a new argus task in the role's `argus_project`, then `hera_join(cwd)` to claim it.
 
-5. **Coord discipline for spawning workers.** Always pass `meta:hera.role=worker` and `meta:hera.mission="..."` so hera auto-adopts the new task as a worker under the calling coord's orchestrator. Without the meta, the worker has no hera identity until it explicitly `hera_join`s.
+5. **Coord discipline for spawning workers.** Always pass `meta:hera.role=worker` so hera auto-adopts the new task as a worker under the calling coord's orchestrator. Without the meta, the worker has no hera identity until it explicitly `hera_join`s.
 
 ## Where everything lives
 

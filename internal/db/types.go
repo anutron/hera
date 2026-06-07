@@ -44,17 +44,16 @@ type Orchestrator struct {
 	PinnedAt   *time.Time
 }
 
-// Role is a participant in an orchestrator. Mission and Constraints are
-// optional; both default to empty strings. ArchivedAt is non-nil for
-// archived roles.
+// Role is a participant in an orchestrator. Prompt is the only free-form
+// field; it defaults to an empty string. ArchivedAt is non-nil for archived
+// roles.
 type Role struct {
 	ID             int64
 	OrchestratorID int64
 	Name           string
 	Kind           RoleKind
 	ArgusProject   string
-	Mission        string
-	Constraints    string
+	Prompt         string
 	CreatedAt      time.Time
 	ArchivedAt     *time.Time
 	PinnedAt       *time.Time

@@ -65,8 +65,7 @@ func (a *dbAdapter) CreateRole(ctx context.Context, in ops.CreateRoleInput) (*op
 		Name:           in.Name,
 		Kind:           db.RoleKind(in.Kind),
 		ArgusProject:   in.ArgusProject,
-		Mission:        in.Mission,
-		Constraints:    in.Constraints,
+		Prompt:         in.Prompt,
 	})
 	if err != nil {
 		return nil, translateDBErr(err)
@@ -216,8 +215,7 @@ func adaptRole(r *db.Role) *ops.Role {
 		Name:           r.Name,
 		Kind:           ops.RoleKind(r.Kind),
 		ArgusProject:   r.ArgusProject,
-		Mission:        r.Mission,
-		Constraints:    r.Constraints,
+		Prompt:         r.Prompt,
 		Archived:       r.ArchivedAt != nil,
 		Pinned:         r.PinnedAt != nil,
 	}

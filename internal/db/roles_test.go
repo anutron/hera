@@ -22,8 +22,7 @@ func roleFixture(t *testing.T, d *DB, orchName, roleName string, kind RoleKind, 
 		Name:           roleName,
 		Kind:           kind,
 		ArgusProject:   project,
-		Mission:        "ship F",
-		Constraints:    "ship by friday",
+		Prompt:         "ship F",
 	})
 	if err != nil {
 		t.Fatalf("Roles.Create: %v", err)
@@ -51,7 +50,7 @@ func TestRoles_Archive_SetsArchivedAtAndPreservesIdentity(t *testing.T) {
 	if got.ArchivedAt.Before(before.Add(-time.Second)) || got.ArchivedAt.After(time.Now().UTC().Add(time.Second)) {
 		t.Fatalf("archived_at = %v, expected near now", got.ArchivedAt)
 	}
-	if got.Mission != "ship F" || got.Constraints != "ship by friday" || got.ArgusProject != "foo-frontend" {
+	if got.Prompt != "ship F" || got.ArgusProject != "foo-frontend" {
 		t.Fatalf("identity columns mutated: %+v", got)
 	}
 }
@@ -131,7 +130,7 @@ func TestRoles_Rename_UpdatesNameOnly(t *testing.T) {
 	if !got.CreatedAt.Equal(originalCreated) {
 		t.Fatalf("created_at changed: was %v, now %v", originalCreated, got.CreatedAt)
 	}
-	if got.Mission != "ship F" || got.Constraints != "ship by friday" || got.ArgusProject != "p" {
+	if got.Prompt != "ship F" || got.ArgusProject != "p" {
 		t.Fatalf("identity columns mutated: %+v", got)
 	}
 }

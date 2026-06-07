@@ -100,7 +100,7 @@ func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnW
 		Name:           uniqueName,
 		Kind:           KindWorker,
 		ArgusProject:   coordRole.ArgusProject,
-		Mission:        prompt, // mission = operator's text verbatim (not the prefixed version)
+		Prompt:         prompt,
 	})
 	if err != nil {
 		s.Logger.Printf("ops.SpawnWorker: CreateRole failed for argus task %s — task is orphaned: %v", created.ID, err)

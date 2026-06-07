@@ -217,7 +217,7 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 // ShowForm2 opens a two-field input modal centered over the base layout.
 // onSubmit fires with both trimmed values when the operator hits OK; onCancel
 // fires on Cancel or Esc. Mirrors ShowInput's idiom (tview.Form), adding a
-// second field — used by the new-project flow (name required, mission
+// second field — used by the new-project flow (name required, prompt
 // optional).
 //
 // Safe to call from any goroutine — the body runs through app.QueueUpdateDraw

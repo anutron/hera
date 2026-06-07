@@ -108,7 +108,7 @@ Items the spec-audit and ralph-review passes surfaced and we consciously chose t
 
 The following items were resolved by documenting the existing behavior rather than changing the code:
 
-- **`Roles.Create` write-once semantics** – documented in `internal/db/roles.go` doc-comment. Mission/constraints/argus_project on a re-Create are silently dropped; this is intentional (role identity is established at first creation, subsequent agents inherit). Spec design D1 says role identity outlives task lifecycle; this is part of that.
+- **`Roles.Create` write-once semantics** – documented in `internal/db/roles.go` doc-comment. Prompt/argus_project on a re-Create are silently dropped; this is intentional (role identity is established at first creation, subsequent agents inherit). Spec design D1 says role identity outlives task lifecycle; this is part of that.
 - **Status meta-mirror best-effort** – spec amendment landed in the previous commit; `hera_status` returning success with `meta_mirrored: false` on argus failure is now explicit, not ambiguous.
 - **`StreamEvents` resync requirement** – doc-comment now tells callers they MUST handle resync events; previously this was implicit.
 
@@ -158,7 +158,7 @@ These items were explicitly considered for v1.0 and deferred. See also NEXT.md f
 
 **Status:** Deferred. The Details pane live-refreshes agent count, activity, and status. The description/goal/scope auto-summary is a placeholder.
 
-**Escalate when:** We have a clear algorithm for inferring goal/scope from the role's message history and mission field.
+**Escalate when:** We have a clear algorithm for inferring goal/scope from the role's message history and prompt.
 
 ### Coord archive/mark-done/undo MCP verbs
 

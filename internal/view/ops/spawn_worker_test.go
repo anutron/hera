@@ -116,8 +116,8 @@ func TestSpawnWorker_InsertsRoleAndBindingWithWorktreePath(t *testing.T) {
 	if newRole.ArgusProject != "foo-frontend" {
 		t.Fatalf("role.ArgusProject: want %q, got %q", "foo-frontend", newRole.ArgusProject)
 	}
-	if newRole.Mission != "build the sidebar" {
-		t.Fatalf("role.Mission: want %q, got %q", "build the sidebar", newRole.Mission)
+	if newRole.Prompt != "build the sidebar" {
+		t.Fatalf("role.Prompt: want %q, got %q", "build the sidebar", newRole.Prompt)
 	}
 
 	// Verify the binding was inserted with the worktree path.
@@ -143,9 +143,9 @@ func TestSpawnWorker_InsertsRoleAndBindingWithWorktreePath(t *testing.T) {
 	}
 }
 
-// TestSpawnWorker_MissionSetToPrompt asserts that the worker role's mission is
-// set to the operator's prompt text (not the orientation-prefixed version).
-func TestSpawnWorker_MissionSetToPrompt(t *testing.T) {
+// TestSpawnWorker_PromptSetFromOperatorText asserts that the worker role's prompt
+// is set to the operator's prompt text (not the orientation-prefixed version).
+func TestSpawnWorker_PromptSetFromOperatorText(t *testing.T) {
 	s, db, argus, _, _ := newTestService()
 	orch := db.seedOrchestrator("foo", false)
 	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "foo-frontend", false)
@@ -174,8 +174,8 @@ func TestSpawnWorker_MissionSetToPrompt(t *testing.T) {
 	if workerRole == nil {
 		t.Fatal("expected worker role")
 	}
-	if workerRole.Mission != "migrate the schema" {
-		t.Fatalf("Mission: want %q, got %q", "migrate the schema", workerRole.Mission)
+	if workerRole.Prompt != "migrate the schema" {
+		t.Fatalf("Prompt: want %q, got %q", "migrate the schema", workerRole.Prompt)
 	}
 }
 

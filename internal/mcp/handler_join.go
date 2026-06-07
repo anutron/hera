@@ -45,8 +45,7 @@ type JoinInput struct {
 	Orchestrator string `json:"orchestrator,omitempty"`
 	RoleName     string `json:"role_name,omitempty"`
 	Kind         string `json:"kind,omitempty"`
-	Mission      string `json:"mission,omitempty"`
-	Constraints  string `json:"constraints,omitempty"`
+	Prompt       string `json:"prompt,omitempty"`
 	Status       string `json:"status,omitempty"`
 }
 
@@ -55,8 +54,7 @@ type JoinOutput struct {
 	Orchestrator       string `json:"orchestrator"`
 	RoleName           string `json:"role_name"`
 	Kind               string `json:"kind"`
-	Mission            string `json:"mission"`
-	Constraints        string `json:"constraints"`
+	Prompt             string `json:"prompt"`
 	Status             string `json:"status,omitempty"`
 	UnreadMessageCount int    `json:"unread_message_count"`
 	BindingID          int64  `json:"binding_id"`
@@ -127,7 +125,7 @@ func (h *JoinHandler) claim(ctx context.Context, taskID, orchestrator string) Re
 	case 0:
 		return ErrorResponse(
 			"hera_join: this argus task is not bound to any hera role. " +
-				"To attach as a freelance, call hera_join with explicit orchestrator, role_name, kind=\"freelance\", and (optional) mission/constraints/status. " +
+				"To attach as a freelance, call hera_join with explicit orchestrator, role_name, kind=\"freelance\", and (optional) prompt/status. " +
 				"To bootstrap a new orchestrator, call hera_new_orchestrator.",
 		)
 	case 1:
@@ -160,8 +158,7 @@ func (h *JoinHandler) identityResponse(ctx context.Context, bnd *db.Binding) Res
 		Orchestrator:       orch.Name,
 		RoleName:           role.Name,
 		Kind:               string(role.Kind),
-		Mission:            role.Mission,
-		Constraints:        role.Constraints,
+		Prompt:             role.Prompt,
 		Status:             statusVal,
 		UnreadMessageCount: unread,
 		BindingID:          bnd.ID,
@@ -217,8 +214,7 @@ func (h *JoinHandler) attach(ctx context.Context, argusTaskID, project, worktree
 		Name:           in.RoleName,
 		Kind:           kind,
 		ArgusProject:   project,
-		Mission:        in.Mission,
-		Constraints:    in.Constraints,
+		Prompt:         in.Prompt,
 	})
 	if err != nil {
 		return ErrorResponse("hera_join: create role: " + err.Error())
@@ -254,8 +250,7 @@ func (h *JoinHandler) attach(ctx context.Context, argusTaskID, project, worktree
 		Orchestrator: orch.Name,
 		RoleName:     role.Name,
 		Kind:         string(role.Kind),
-		Mission:      role.Mission,
-		Constraints:  role.Constraints,
+		Prompt:       role.Prompt,
 		Status:       in.Status,
 		BindingID:    bnd.ID,
 		ArgusTaskID:  argusTaskID,

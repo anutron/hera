@@ -201,15 +201,15 @@ func TestJoin_FreelanceAttach_HappyPath(t *testing.T) {
 	h := NewJoinHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{
 		Cwd: "/tmp/free", Orchestrator: "foo", RoleName: "refactor-x",
-		Kind: "freelance", Mission: "extract X", Constraints: "do not change keybindings",
+		Kind: "freelance", Prompt: "extract X",
 		Status: "working",
 	}))
 	out := decodeJoinOutput(t, resp)
 	if out.RoleName != "refactor-x" {
 		t.Fatalf("out = %+v", out)
 	}
-	if out.Mission != "extract X" {
-		t.Fatalf("mission = %q", out.Mission)
+	if out.Prompt != "extract X" {
+		t.Fatalf("prompt = %q", out.Prompt)
 	}
 
 	// Confirm DB rows are real.
@@ -280,7 +280,7 @@ func TestJoin_BareReincarnation_HappyPath(t *testing.T) {
 	orch, _ := e.db.Orchestrators.Create(ctx, "foo")
 	role, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator,
-		ArgusProject: "p", Mission: "build it",
+		ArgusProject: "p", Prompt: "build it",
 	})
 	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
 		RoleID: role.ID, ArgusTaskID: "t-1", WorktreePath: "/tmp/coord",
@@ -290,7 +290,7 @@ func TestJoin_BareReincarnation_HappyPath(t *testing.T) {
 	h := NewJoinHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, JoinInput{Cwd: "/tmp/coord"}))
 	out := decodeJoinOutput(t, resp)
-	if out.RoleName != "coord" || out.Mission != "build it" {
+	if out.RoleName != "coord" || out.Prompt != "build it" {
 		t.Fatalf("out = %+v", out)
 	}
 }

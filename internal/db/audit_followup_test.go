@@ -17,7 +17,7 @@ func TestBindings_CoordinatorTaskArchived_RoleSurvives(t *testing.T) {
 	orch, _ := d.Orchestrators.Create(ctx, "foo")
 	coord, _ := d.Roles.Create(ctx, CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "c", Kind: KindCoordinator, ArgusProject: "p",
-		Mission: "build it", Constraints: "by friday",
+		Prompt: "build it",
 	})
 	worker, _ := d.Roles.Create(ctx, CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "w", Kind: KindWorker, ArgusProject: "p",
@@ -42,7 +42,7 @@ func TestBindings_CoordinatorTaskArchived_RoleSurvives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Roles.GetByID: %v", err)
 	}
-	if gotRole.Mission != "build it" || gotRole.Constraints != "by friday" {
+	if gotRole.Prompt != "build it" {
 		t.Fatalf("role attributes wiped: %+v", gotRole)
 	}
 

@@ -19,7 +19,7 @@ func withCapturedLog() (*slog.Logger, *bytes.Buffer) {
 	return slog.New(h), &buf
 }
 
-func TestAdopt_MissionConstraintsAbsent_EmptyStrings(t *testing.T) {
+func TestAdopt_PromptAbsent_EmptyString(t *testing.T) {
 	ctx := context.Background()
 	e := setupAdopt(t)
 	parentTask := "task-coord"
@@ -27,7 +27,7 @@ func TestAdopt_MissionConstraintsAbsent_EmptyStrings(t *testing.T) {
 	fixtureCoordinator(t, e, parentTask)
 	e.fake.addTask(argus.Task{ID: childTask, Name: "bare-worker", Project: "frontend", WorktreePath: "/tmp/bare"})
 	e.fake.setMeta(childTask, MetaKeyRole, string(db.KindWorker))
-	// NO mission / constraints meta set.
+	// NO prompt meta set.
 
 	e.handler.HandleEvent(ctx, linkCreatedEvent(parentTask, childTask, 200))
 
@@ -36,11 +36,8 @@ func TestAdopt_MissionConstraintsAbsent_EmptyStrings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("role lookup: %v", err)
 	}
-	if role.Mission != "" {
-		t.Fatalf("mission = %q, want empty string (not NULL)", role.Mission)
-	}
-	if role.Constraints != "" {
-		t.Fatalf("constraints = %q, want empty string (not NULL)", role.Constraints)
+	if role.Prompt != "" {
+		t.Fatalf("prompt = %q, want empty string (not NULL)", role.Prompt)
 	}
 }
 

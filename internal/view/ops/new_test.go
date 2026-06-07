@@ -79,9 +79,9 @@ func TestNewOrchestrator_SpawnsTaskWithBootstrapPrompt(t *testing.T) {
 	if !strings.Contains(req.Prompt, `name="foo"`) {
 		t.Fatalf("prompt missing name: %q", req.Prompt)
 	}
-	// mission is always empty in the bootstrap call
-	if !strings.Contains(req.Prompt, `mission=""`) {
-		t.Fatalf("prompt must contain mission=\"\": %q", req.Prompt)
+	// prompt is always empty in the bootstrap call
+	if !strings.Contains(req.Prompt, `prompt=""`) {
+		t.Fatalf("prompt must contain prompt=\"\": %q", req.Prompt)
 	}
 	if !strings.Contains(req.Prompt, `coord_role_name="coord"`) {
 		t.Fatalf("prompt missing coord_role_name: %q", req.Prompt)
@@ -92,7 +92,7 @@ func TestNewOrchestrator_SpawnsTaskWithBootstrapPrompt(t *testing.T) {
 	}
 }
 
-func TestNewOrchestrator_EmptyPromptRendersEmptyMission(t *testing.T) {
+func TestNewOrchestrator_EmptyPromptRendersEmptyPromptField(t *testing.T) {
 	s, _, argus, _, _ := newTestService()
 	_, err := s.NewOrchestrator(context.Background(), NewOrchestratorInput{Name: "foo", Project: "my-project"})
 	if err != nil {
@@ -102,8 +102,8 @@ func TestNewOrchestrator_EmptyPromptRendersEmptyMission(t *testing.T) {
 		t.Fatalf("expected 1 CreateTask call")
 	}
 	req := argus.createCalls[0]
-	if !strings.Contains(req.Prompt, `mission=""`) {
-		t.Fatalf("expected empty mission rendering, got %q", req.Prompt)
+	if !strings.Contains(req.Prompt, `prompt=""`) {
+		t.Fatalf("expected empty prompt rendering, got %q", req.Prompt)
 	}
 	// no user-prompt appended: there should be no double-newline
 	if strings.Contains(req.Prompt, "\n\n") {

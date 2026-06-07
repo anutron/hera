@@ -12,8 +12,8 @@ import (
 //  2. Clears archived_at on the orchestrator and the coord role.
 //  3. Spawns a fresh argus task in the role's stored argus_project with
 //     a prompt invoking hera_join(cwd=$PWD). The new task's worktree is
-//     brand new; the role's mission + constraints are inherited when
-//     the rebinding hera_join resolves to the dormant role.
+//     brand new; the role's prompt is inherited when the rebinding
+//     hera_join resolves to the dormant role.
 //
 // argusProject MUST be non-empty on the role row — it's a write-once
 // field captured at first creation. A role with an empty argus_project
@@ -61,7 +61,7 @@ func (s *Service) ResurrectOrchestrator(ctx context.Context, coordRoleID int64) 
 // task. The prompt's first action is a bare hera_join(cwd=$PWD); hera's
 // existing rebind logic (hera-coordination delta spec, scenario "Bare
 // hera_join in archived role's argus_project resurrects") resolves the
-// cwd to the dormant role's binding-slot and inherits mission + constraints.
+// cwd to the dormant role's binding-slot and inherits the role's prompt.
 //
 // Project is included in the prose for the human operator's benefit
 // when they peek into the new task's PTY; the MCP call ignores it.

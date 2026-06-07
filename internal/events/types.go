@@ -31,8 +31,7 @@ const (
 // Meta keys hera reads from argus task metadata.
 const (
 	MetaKeyRole         = "role"
-	MetaKeyMission      = "mission"
-	MetaKeyConstraints  = "constraints"
+	MetaKeyPrompt       = "prompt"
 	MetaKeyThreadStatus = "thread_status"
 
 	// Namespace used when fetching task meta. Hera's writes are

@@ -120,8 +120,7 @@ func TestRoles_CreateAndGet(t *testing.T) {
 		Name:           "coordinator",
 		Kind:           KindCoordinator,
 		ArgusProject:   "argus",
-		Mission:        "build the substrate",
-		Constraints:    "land 8 PRs",
+		Prompt:         "build the substrate",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -129,8 +128,8 @@ func TestRoles_CreateAndGet(t *testing.T) {
 	if role.Kind != KindCoordinator {
 		t.Fatalf("kind = %s", role.Kind)
 	}
-	if role.Mission != "build the substrate" {
-		t.Fatalf("mission = %q", role.Mission)
+	if role.Prompt != "build the substrate" {
+		t.Fatalf("prompt = %q", role.Prompt)
 	}
 }
 

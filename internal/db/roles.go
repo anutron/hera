@@ -20,8 +20,7 @@ type CreateRoleInput struct {
 	Name           string
 	Kind           RoleKind
 	ArgusProject   string
-	Mission        string
-	Constraints    string
+	Prompt         string
 }
 
 // Create inserts a new active role under the given orchestrator. Returns
@@ -30,12 +29,12 @@ type CreateRoleInput struct {
 // archived role with the same (orchestrator_id, name) does NOT block
 // creation — a fresh active row is inserted in that case.
 //
-// Roles are write-once on mission/constraints/argus_project: if an active
-// role with the same (orchestrator_id, name) already exists, the supplied
-// Mission, Constraints, and ArgusProject inputs are SILENTLY IGNORED and
-// the existing row's values are preserved. A role is a durable identity
-// established at first creation; subsequent agents claiming the same role
-// inherit the original mission.
+// Roles are write-once on prompt/argus_project: if an active role with the
+// same (orchestrator_id, name) already exists, the supplied Prompt and
+// ArgusProject inputs are SILENTLY IGNORED and the existing row's values
+// are preserved. A role is a durable identity established at first
+// creation; subsequent agents claiming the same role inherit the original
+// prompt.
 func (r *RolesDAO) Create(ctx context.Context, in CreateRoleInput) (*Role, error) {
 	existing, err := r.findActiveByOrchestratorAndName(ctx, in.OrchestratorID, in.Name)
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -50,9 +49,9 @@ func (r *RolesDAO) Create(ctx context.Context, in CreateRoleInput) (*Role, error
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO roles (orchestrator_id, name, kind, argus_project, mission, constraints, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		in.OrchestratorID, in.Name, string(in.Kind), in.ArgusProject, in.Mission, in.Constraints, now,
+		`INSERT INTO roles (orchestrator_id, name, kind, argus_project, prompt, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		in.OrchestratorID, in.Name, string(in.Kind), in.ArgusProject, in.Prompt, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("roles.Create: %w", err)
@@ -71,8 +70,7 @@ func (r *RolesDAO) Create(ctx context.Context, in CreateRoleInput) (*Role, error
 		Name:           in.Name,
 		Kind:           in.Kind,
 		ArgusProject:   in.ArgusProject,
-		Mission:        in.Mission,
-		Constraints:    in.Constraints,
+		Prompt:         in.Prompt,
 		CreatedAt:      t,
 	}, nil
 }
@@ -81,7 +79,7 @@ func (r *RolesDAO) Create(ctx context.Context, in CreateRoleInput) (*Role, error
 // lookups are not filtered on archived_at.
 func (r *RolesDAO) GetByID(ctx context.Context, id int64) (*Role, error) {
 	return r.scanOne(ctx,
-		`SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at, pinned_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at
 		 FROM roles WHERE id = ?`, id)
 }
 
@@ -94,7 +92,7 @@ func (r *RolesDAO) GetByOrchestratorAndName(ctx context.Context, orchID int64, n
 
 func (r *RolesDAO) findActiveByOrchestratorAndName(ctx context.Context, orchID int64, name string) (*Role, error) {
 	return r.scanOne(ctx,
-		`SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at, pinned_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at
 		 FROM roles WHERE orchestrator_id = ? AND name = ? AND archived_at IS NULL`,
 		orchID, name)
 }
@@ -113,7 +111,7 @@ func (r *RolesDAO) ListByOrchestratorInclusive(ctx context.Context, orchID int64
 }
 
 func (r *RolesDAO) listByOrchestrator(ctx context.Context, orchID int64, includeArchived bool) ([]*Role, error) {
-	query := `SELECT id, orchestrator_id, name, kind, argus_project, mission, constraints, created_at, archived_at, pinned_at
+	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at
 	          FROM roles WHERE orchestrator_id = ?`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
@@ -286,7 +284,7 @@ func (r *RolesDAO) scanOne(ctx context.Context, query string, args ...any) (*Rol
 	var kind, createdAt string
 	var archivedAt, pinnedAt sql.NullString
 	if err := row.Scan(&role.ID, &role.OrchestratorID, &role.Name, &kind,
-		&role.ArgusProject, &role.Mission, &role.Constraints, &createdAt, &archivedAt, &pinnedAt); err != nil {
+		&role.ArgusProject, &role.Prompt, &createdAt, &archivedAt, &pinnedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -310,7 +308,7 @@ func (r *RolesDAO) scanFromRows(rows *sql.Rows) (*Role, error) {
 	var kind, createdAt string
 	var archivedAt, pinnedAt sql.NullString
 	if err := rows.Scan(&role.ID, &role.OrchestratorID, &role.Name, &kind,
-		&role.ArgusProject, &role.Mission, &role.Constraints, &createdAt, &archivedAt, &pinnedAt); err != nil {
+		&role.ArgusProject, &role.Prompt, &createdAt, &archivedAt, &pinnedAt); err != nil {
 		return nil, err
 	}
 	role.Kind = RoleKind(kind)

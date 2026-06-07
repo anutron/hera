@@ -117,7 +117,7 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 		a.log.Warn("link.created: fetch child meta", "child", link.Child, "err", err)
 		return
 	}
-	roleVal, missionVal, constraintsVal := pickAdoptMeta(meta)
+	roleVal, promptVal := pickAdoptMeta(meta)
 
 	if roleVal == "" {
 		a.log.Info("link.created: skipped adoption (no meta:hera.role)",
@@ -143,8 +143,7 @@ func (a *AdoptHandler) handleLinkCreated(ctx context.Context, ev argus.Event) {
 		Name:           child.Name,
 		Kind:           db.KindWorker,
 		ArgusProject:   child.Project,
-		Mission:        missionVal,
-		Constraints:    constraintsVal,
+		Prompt:         promptVal,
 	})
 	if err != nil {
 		a.log.Warn("adoption: create role", "child", link.Child, "err", err)
@@ -203,9 +202,8 @@ func (a *AdoptHandler) handleTaskDeleted(ctx context.Context, ev argus.Event) {
 	}
 }
 
-// pickAdoptMeta extracts the role/mission/constraints values from a
-// GetTaskMeta response.
-func pickAdoptMeta(entries []argus.MetaEntry) (role, mission, constraints string) {
+// pickAdoptMeta extracts the role/prompt values from a GetTaskMeta response.
+func pickAdoptMeta(entries []argus.MetaEntry) (role, prompt string) {
 	for _, e := range entries {
 		if e.Namespace != MetaNamespace {
 			continue
@@ -213,10 +211,8 @@ func pickAdoptMeta(entries []argus.MetaEntry) (role, mission, constraints string
 		switch e.Key {
 		case MetaKeyRole:
 			role = e.Value
-		case MetaKeyMission:
-			mission = e.Value
-		case MetaKeyConstraints:
-			constraints = e.Value
+		case MetaKeyPrompt:
+			prompt = e.Value
 		}
 	}
 	return
