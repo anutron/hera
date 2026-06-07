@@ -655,17 +655,33 @@ func (rl *railList) maybeFireStateChanged() {
 
 // ViewState returns a snapshot of the rail's current fold choices (coordinator
 // collapse, freelance group collapse, archive expando, archive sub-group
-// expando). The maps are cloned so the caller can hand them to a background
-// goroutine without data races. Called on the tview event loop (inside the
-// onStateChanged callback).
+// expando) and the last-selected row identity (BUG-001). The maps are cloned
+// so the caller can hand them to a background goroutine without data races.
+// Called on the tview event loop (inside the onStateChanged / selection-save
+// callbacks).
 func (rl *railList) ViewState() railViewState {
-	return railViewState{
+	s := railViewState{
 		Collapsed:            maps.Clone(rl.collapsed),
 		FreelanceCollapsed:   maps.Clone(rl.freelanceCollapsed),
 		ArchiveExpanded:      maps.Clone(rl.archiveExpanded),
 		PinnedFreelance:      maps.Clone(rl.pinnedFreelance),
 		ArchiveGroupExpanded: maps.Clone(rl.archiveGroupExpanded),
 	}
+	// Capture the current cursor identity so the next hera-view open can
+	// restore the operator to the same row (BUG-001). FreelanceProject headers
+	// carry no stable ID, so they fall back to zero (topmost item on restore).
+	switch ref := rl.currentRef().(type) {
+	case *roleEntry:
+		if ref != nil {
+			s.LastSelection.RoleID = ref.RoleID
+			s.LastSelection.ArgusTaskID = ref.ArgusTaskID
+		}
+	case *orchEntry:
+		if ref != nil {
+			s.LastSelection.OrchID = ref.ID
+		}
+	}
+	return s
 }
 
 // RestoreViewState applies a previously-saved fold state. Only non-nil maps

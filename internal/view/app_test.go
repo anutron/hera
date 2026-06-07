@@ -4005,3 +4005,108 @@ func TestApp_OnTaskReattached_EmptyTaskID_NoOp(t *testing.T) {
 		t.Fatalf("empty task id must not call InvalidateResize; got %v", src.invalidated)
 	}
 }
+
+// TestBuildAppRestoresLastSelectionFromDB verifies that BuildApp reads the
+// persisted last-selected rail row from the DB and positions the cursor there,
+// not at the bottom of the Freelance section (BUG-001).
+func TestBuildAppRestoresLastSelectionFromDB(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	// Seed an orchestrator with a coordinator and a worker role/binding.
+	orch, err := d.Orchestrators.Create(ctx, "alpha")
+	if err != nil {
+		t.Fatalf("create orch: %v", err)
+	}
+	if _, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "alpha",
+	}); err != nil {
+		t.Fatalf("create coord role: %v", err)
+	}
+	worker, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "alpha",
+	})
+	if err != nil {
+		t.Fatalf("create worker role: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: worker.ID, ArgusTaskID: "task-w1", WorktreePath: "/w1",
+	}); err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+
+	// Persist a last-selection pointing at the worker role.
+	if err := saveRailStateToDB(ctx, d.Config, railViewState{
+		LastSelection: railLastSelection{
+			RoleID:      worker.ID,
+			ArgusTaskID: "task-w1",
+		},
+	}); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	// Build the app — cursor should restore to the worker row, not freelancers.
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	ref, ok := a.pieces.rail.CurrentRef().(*roleEntry)
+	if !ok {
+		t.Fatalf("CurrentRef is not *roleEntry after restore; got %T", a.pieces.rail.CurrentRef())
+	}
+	if ref.RoleID != worker.ID {
+		t.Errorf("cursor on RoleID %d, want %d", ref.RoleID, worker.ID)
+	}
+}
+
+// TestBuildAppNoSavedSelectionLandsAtCoordinatorSection verifies that when no
+// prior selection is saved, BuildApp places the cursor within the coordinator
+// section rather than tracking a freelancer to the bottom (BUG-001). With no
+// saved memory the cursor follows the findInitialSelection agentTask alignment,
+// landing on the live worker row.
+func TestBuildAppNoSavedSelectionLandsAtCoordinatorSection(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	// Seed one orchestrator with a worker so there is a live item at the top.
+	orch, err := d.Orchestrators.Create(ctx, "alpha")
+	if err != nil {
+		t.Fatalf("create orch: %v", err)
+	}
+	w, err := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w1", Kind: db.KindWorker, ArgusProject: "alpha",
+	})
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	if _, err := d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: w.ID, ArgusTaskID: "task-w1", WorktreePath: "/w",
+	}); err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+
+	// No saved selection in the DB.
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// The cursor must be on a row within the coordinator section (orch header or
+	// managed role), NOT on a freelance row. It must not have drifted to the
+	// bottom Freelance section due to the Set* ordering (the pre-fix bug).
+	rail := a.pieces.rail
+	switch ref := rail.CurrentRef().(type) {
+	case *orchEntry:
+		// Good: landed on the orchestrator header.
+		_ = ref
+	case *roleEntry:
+		if ref.OrchestratorID == 0 {
+			t.Errorf("cursor landed on a freelance row (OrchestratorID=0) when a coordinator section is present")
+		}
+	default:
+		t.Errorf("cursor on unexpected ref type %T; should be orchestrator or worker, not freelance/separator", rail.CurrentRef())
+	}
+}

@@ -260,13 +260,17 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		}
 	}(pieces.rail, a.spinnerStop)
 
-	// Restore persisted fold state before the initial rail populate so
-	// buildRows honours the operator's prior coordinator/archive choices.
-	// Errors are non-fatal: a fresh DB returns ErrNotFound, a corrupt entry
-	// resets silently, and neither prevents hera from starting.
+	// Restore persisted fold state and last selection before the initial rail
+	// populate so buildRows honours the operator's prior coordinator/archive
+	// choices. Errors are non-fatal: a fresh DB returns ErrNotFound, a corrupt
+	// entry resets silently, and neither prevents hera from starting.
+	var savedLastSel railLastSelection
 	if database.Config != nil {
-		if s, err := loadRailStateFromDB(context.Background(), database.Config); err == nil && !s.isEmpty() {
-			a.pieces.rail.RestoreViewState(s)
+		if s, err := loadRailStateFromDB(context.Background(), database.Config); err == nil {
+			if !s.isEmpty() {
+				a.pieces.rail.RestoreViewState(s)
+			}
+			savedLastSel = s.LastSelection // remember for post-populate cursor restore
 		}
 		cfg := database.Config
 		a.pieces.rail.SetOnStateChanged(func() {
@@ -284,16 +288,36 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		return nil, fmt.Errorf("view.BuildApp: populate rail: %w", err)
 	}
 
-	// Align the rail cursor with the pane selection findInitialSelection
-	// just picked, so the operator's mental model (cursor row → pane
-	// content) is consistent from the first frame. Done BEFORE the
-	// selection-changed callback wires up so this positional sync does
-	// not trigger a spurious rebind.
-	if agentTask != "" {
-		for _, o := range a.pieces.rail.orchestrators {
-			for _, r := range o.Roles {
-				if r.ArgusTaskID == agentTask {
-					a.pieces.rail.SelectByRoleID(r.RoleID)
+	// Restore the cursor to the operator's last selected row (BUG-001). The
+	// three populateRail Set* calls each attempt restoreCursor on their own, but
+	// their ordering (SetFreelance → SetArchivedFreelance → SetOrchestrators)
+	// lets the cursor trail a freelancer to the bottom when no prior identity is
+	// anchored. One final authoritative restore — after all three sets have
+	// settled the row list — places the cursor at the right position.
+	//
+	// Three cases:
+	//  1. savedLastSel non-zero AND found in current rows → restore. Done.
+	//  2. savedLastSel non-zero but row no longer visible (archived/deleted) →
+	//     fall to the topmost live item (firstSelectableRow).
+	//  3. savedLastSel zero (first ever open, no prior session) → fall back to
+	//     the original agentTask alignment so the initial pane content and the
+	//     cursor row agree, preserving the pre-BUG-001 first-open experience.
+	if !a.tryRestoreLastSelection(savedLastSel) {
+		if !savedLastSel.isZero() {
+			// Case 2: had a saved row but it's gone — land at topmost live item.
+			a.pieces.rail.cursor = a.pieces.rail.firstSelectableRow()
+			a.pieces.rail.clampOffset()
+		} else {
+			// Case 3: no prior memory — align cursor with the initial pane
+			// selection findInitialSelection picked, so the first frame is
+			// consistent with the pane content. Mirrors the pre-BUG-001 behavior.
+			if agentTask != "" {
+				for _, o := range a.pieces.rail.orchestrators {
+					for _, r := range o.Roles {
+						if r.ArgusTaskID == agentTask {
+							a.pieces.rail.SelectByRoleID(r.RoleID)
+						}
+					}
 				}
 			}
 		}
@@ -1716,7 +1740,9 @@ func (a *App) onRailSelectionChanged(ref any) {
 
 // fireRailSelection runs from the debounce timer's goroutine. It reads
 // the latest pending ref and bounces the actual pane rebind onto the
-// tview event loop so primitive mutation stays single-threaded.
+// tview event loop so primitive mutation stays single-threaded. After
+// applying the selection it persists the new cursor identity to the DB
+// so the next hera-view open can restore it (BUG-001).
 func (a *App) fireRailSelection() {
 	a.selectMu.Lock()
 	if !a.selectHasRef || a.closed {
@@ -1729,10 +1755,60 @@ func (a *App) fireRailSelection() {
 	a.selectMu.Unlock()
 
 	if a.app != nil {
-		a.app.QueueUpdateDraw(func() { a.applyRailSelection(ref) })
+		a.app.QueueUpdateDraw(func() {
+			a.applyRailSelection(ref)
+			a.saveSelectionState()
+		})
 		return
 	}
 	a.applyRailSelection(ref)
+	a.saveSelectionState()
+}
+
+// tryRestoreLastSelection moves the rail cursor to the row described by sel
+// (BUG-001). Tries three stable identifiers in order:
+//
+//  1. RoleID — the DB primary key for managed (non-freelance) roles.
+//  2. ArgusTaskID — stable for freelancers (RoleID==0) and as a fallback for
+//     managed roles whose binding might have been updated since the save.
+//  3. OrchID — for orchestrator header rows.
+//
+// Returns true when the cursor lands on the target row, false when sel is
+// zero or none of the identifiers resolve to a visible row (row archived,
+// deleted, or filtered out). On false the caller should fall back to
+// firstSelectableRow to land at the topmost live item.
+func (a *App) tryRestoreLastSelection(sel railLastSelection) bool {
+	if sel.isZero() || a.pieces.rail == nil {
+		return false
+	}
+	if sel.RoleID > 0 && a.pieces.rail.SelectByRoleID(sel.RoleID) {
+		return true
+	}
+	if sel.ArgusTaskID != "" && a.pieces.rail.SelectByArgusTaskID(sel.ArgusTaskID) {
+		return true
+	}
+	if sel.OrchID > 0 && a.pieces.rail.SelectByOrchID(sel.OrchID) {
+		return true
+	}
+	return false
+}
+
+// saveSelectionState snapshots the current rail fold choices and cursor
+// identity and writes them to the DB so the next hera-view open can restore
+// the operator to the same row (BUG-001). No-op when no DB config is wired
+// (tests that don't exercise persistence). Runs on the tview event loop (called
+// from fireRailSelection via QueueUpdateDraw) or synchronously in the zero-
+// debounce test path — both are safe since rails state is always accessed on a
+// single goroutine at a time in each context.
+func (a *App) saveSelectionState() {
+	if a.database == nil || a.database.Config == nil || a.pieces.rail == nil {
+		return
+	}
+	s := a.pieces.rail.ViewState()
+	cfg := a.database.Config
+	go func() {
+		_ = saveRailStateToDB(context.Background(), cfg, s)
+	}()
 }
 
 // roleInputDead reports whether the task bound to a rail row is unable to
