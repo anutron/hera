@@ -166,6 +166,35 @@ func (f *styledInputField) SetFormAttributes(labelWidth int, labelColor, bgColor
 	return f
 }
 
+// styledTextArea wraps tview.TextArea and overrides SetFormAttributes so that
+// the focused/blurred text style survives the form's per-draw attribute reset
+// (BUG-002). Same mechanism as styledInputField but for a multi-line field.
+type styledTextArea struct {
+	*tview.TextArea
+}
+
+// newStyledTextArea returns a new styledTextArea with 3 visible rows (enough
+// for multi-line coordinator prompts), word-wrap on by default.
+func newStyledTextArea() *styledTextArea {
+	ta := &styledTextArea{TextArea: tview.NewTextArea()}
+	ta.TextArea.SetSize(3, 0) // 3 visible rows, auto width
+	ta.TextArea.SetTextStyle(fieldBlurredStyle)
+	return ta
+}
+
+// SetFormAttributes implements tview.FormItem. It delegates to the embedded
+// TextArea then re-applies the correct focused/blurred text style so the cyan
+// highlight is visible even after Form.Draw() resets it.
+func (ta *styledTextArea) SetFormAttributes(labelWidth int, labelColor, bgColor, fieldTextColor, fieldBgColor tcell.Color) tview.FormItem {
+	ta.TextArea.SetFormAttributes(labelWidth, labelColor, bgColor, fieldTextColor, fieldBgColor)
+	if ta.TextArea.HasFocus() {
+		ta.TextArea.SetTextStyle(fieldFocusedStyle)
+	} else {
+		ta.TextArea.SetTextStyle(fieldBlurredStyle)
+	}
+	return ta
+}
+
 // submitOnEnter installs an input capture so that pressing Enter while an
 // input field is focused activates OK (BUG-006). Without it, tview's Form
 // treats Enter like Tab (advance to the next element) and only submits when
@@ -523,9 +552,8 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		}
 		backendCycler := newInlineCycler("Backend: ", backendOptions, 0, fw)
 
-		promptField := newStyledInputField()
+		promptField := newStyledTextArea()
 		promptField.SetLabel("Prompt: ")
-		promptField.SetFieldWidth(fw)
 
 		form := tview.NewForm().
 			AddFormItem(nameField).
@@ -566,7 +594,9 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 
 		// Enter on an InputField submits the form. On an inlineCycler it must
 		// NOT — the cycler passes Enter through to its own InputHandler, which
-		// calls finishedFunc(KeyTab) to advance focus without submitting.
+		// calls finishedFunc(KeyTab) to advance focus without submitting. On the
+		// TextArea, plain Enter submits; modified Enter (Ctrl/Shift) passes
+		// through so the TextArea can insert a newline (BUG-011).
 		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 			if ev.Key() != tcell.KeyEnter {
 				return ev
@@ -579,6 +609,13 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 				switch item.(type) {
 				case *inlineCycler:
 					return ev // Cycler: Enter handled by its own InputHandler
+				case *styledTextArea:
+					// Plain Enter submits; modified Enter inserts newline in TextArea.
+					if ev.Modifiers() == 0 {
+						dismiss(true)
+						return nil
+					}
+					return ev
 				default:
 					dismiss(true)
 					return nil
@@ -589,12 +626,13 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 
 		themeFormStyle(form, title)
 
-		// Modal height: 5 single-row fields (Name, Project, Branch, Backend,
-		// Prompt) with itemPadding=1 between each, plus button row, surrounding
-		// padding rows, and 2 border rows. Matches the formula used by ShowInput
-		// (height=7 for 1 field) and ShowForm2 (height=9 for 2 fields): each
-		// additional field adds 2 rows, giving 7 + 4*2 = 15 for 5 fields.
-		const newCoordModalHeight = 15
+		// Modal height: 4 single-row fields (Name, Project, Branch, Backend) and
+		// 1 three-row TextArea (Prompt), with itemPadding=1 between each, plus
+		// button row, surrounding padding rows, and 2 border rows. The TextArea
+		// adds 4 rows (3 visible + 1 gap) vs 2 rows for a single-row field, so
+		// the height grows by 2 relative to the all-single-row case (BUG-011):
+		// 7 + 3*2 + 4 = 17.
+		const newCoordModalHeight = 17
 
 		a.captureFocus()
 		a.pieces.pages.AddPage(pageNewCoord, centeredModal(form, modalWidth, newCoordModalHeight), true, true)

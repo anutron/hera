@@ -613,23 +613,24 @@ func TestShowNewCoordForm_EmptyNameDoesNotSubmit(t *testing.T) {
 	}
 }
 
-// TestShowNewCoordForm_PromptIsInputField verifies the Prompt field (item 4) is
-// a single-line styledInputField (backed by tview.InputField), not a
-// multi-line TextArea (BUG-055). This is what makes Enter-to-submit work and
-// keeps the modal height correct.
-func TestShowNewCoordForm_PromptIsInputField(t *testing.T) {
+// TestShowNewCoordForm_PromptIsTextArea verifies the Prompt field (item 4) is
+// a multi-line styledTextArea so coordinator prompts can wrap across lines
+// (BUG-011). Enter-to-submit is enforced by the form's input capture, not by
+// restricting the widget to a single-line InputField.
+func TestShowNewCoordForm_PromptIsTextArea(t *testing.T) {
 	a := newModalTestApp(t)
 	a.ShowNewCoordForm("New coordinator", []string{"p1"}, []string{"claude"}, nil, nil)
 
 	form := frontForm(t, a)
-	if _, ok := form.GetFormItem(4).(*styledInputField); !ok {
-		t.Fatalf("form item 4 (Prompt) must be *styledInputField (BUG-055)")
+	if _, ok := form.GetFormItem(4).(*styledTextArea); !ok {
+		t.Fatalf("form item 4 (Prompt) must be *styledTextArea (BUG-011)")
 	}
 }
 
-// TestShowNewCoordForm_EnterOnPromptSubmits verifies Enter while the Prompt
-// field is focused submits the form (BUG-055). Previously the Prompt was a
-// TextArea where Enter inserted a newline and never submitted.
+// TestShowNewCoordForm_EnterOnPromptSubmits verifies plain Enter while the
+// Prompt TextArea is focused submits the form (BUG-011). The form's input
+// capture intercepts KeyEnter without modifiers and calls dismiss so the
+// TextArea never sees the keystroke as a newline insertion.
 func TestShowNewCoordForm_EnterOnPromptSubmits(t *testing.T) {
 	a := newModalTestApp(t)
 
@@ -645,11 +646,11 @@ func TestShowNewCoordForm_EnterOnPromptSubmits(t *testing.T) {
 	}
 	nameField.SetText("my-coord")
 
-	promptField, ok := form.GetFormItem(4).(*styledInputField)
+	promptField, ok := form.GetFormItem(4).(*styledTextArea)
 	if !ok {
-		t.Fatalf("item 4 must be styledInputField for Prompt")
+		t.Fatalf("item 4 must be styledTextArea for Prompt")
 	}
-	promptField.SetText("some prompt text")
+	promptField.SetText("some prompt text", false)
 	a.app.SetFocus(promptField)
 
 	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
@@ -665,6 +666,34 @@ func TestShowNewCoordForm_EnterOnPromptSubmits(t *testing.T) {
 	}
 	if got.Prompt != "some prompt text" {
 		t.Fatalf("got Prompt %q, want %q", got.Prompt, "some prompt text")
+	}
+}
+
+// TestShowNewCoordForm_CtrlEnterOnPromptDoesNotSubmit verifies that a modified
+// Enter (Ctrl+Enter) while the Prompt TextArea is focused does NOT submit the
+// form (BUG-011). The form's capture lets modified Enter through so the TextArea
+// can insert a newline.
+func TestShowNewCoordForm_CtrlEnterOnPromptDoesNotSubmit(t *testing.T) {
+	a := newModalTestApp(t)
+
+	submitted := false
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"},
+		func(_ NewCoordFormInput) { submitted = true }, nil)
+
+	form := frontForm(t, a)
+	promptField, ok := form.GetFormItem(4).(*styledTextArea)
+	if !ok {
+		t.Fatalf("item 4 must be styledTextArea for Prompt")
+	}
+	a.app.SetFocus(promptField)
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModCtrl))
+
+	if submitted {
+		t.Fatalf("Ctrl+Enter on Prompt field must NOT submit the form")
+	}
+	if !a.IsModalActive() {
+		t.Fatalf("Ctrl+Enter on Prompt field must not dismiss the modal")
 	}
 }
 
