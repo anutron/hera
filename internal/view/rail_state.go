@@ -12,6 +12,29 @@ import (
 // railStateConfigKey is the config-table key for the persisted rail fold state.
 const railStateConfigKey = "view.rail.state"
 
+// railLastSelection records the stable identity of the rail row the operator
+// most recently rested on. Used to restore the cursor after a hera-view open
+// so the operator lands back on the same row rather than resetting to the top
+// (BUG-001).
+//
+// Three identifiers are stored because different row types have different
+// stable keys: managed roles have a DB RoleID; freelancers have RoleID==0 but
+// a stable ArgusTaskID; orchestrator headers have an OrchID. The restore
+// attempt tries each in order (RoleID → ArgusTaskID → OrchID) and falls back
+// to the topmost live item when none match.
+type railLastSelection struct {
+	RoleID      int64  // > 0 for managed role rows
+	ArgusTaskID string // non-empty for freelancers and as fallback for managed roles
+	OrchID      int64  // > 0 for orchestrator header rows
+}
+
+// isZero reports whether the selection carries no identity — the zero value
+// representing "no prior selection" (first ever open, or daemon restarted with
+// no state).
+func (s railLastSelection) isZero() bool {
+	return s.RoleID == 0 && s.ArgusTaskID == "" && s.OrchID == 0
+}
+
 // railViewState is a snapshot of the rail's operator-set fold choices.
 // These survive daemon restarts so the operator does not have to re-collapse
 // coordinators or re-open archive expandos after each hera restart.
@@ -28,6 +51,9 @@ type railViewState struct {
 	// Default (zero value) is collapsed — sub-groups stay tucked until the
 	// operator expands them (BUG-026).
 	ArchiveGroupExpanded map[string]bool
+	// LastSelection is the identity of the row the operator was on when the
+	// state was last saved. Restored on the next hera-view open (BUG-001).
+	LastSelection railLastSelection
 }
 
 func (s railViewState) isEmpty() bool {
@@ -45,6 +71,11 @@ type railStateJSON struct {
 	ArchiveExpanded      map[string]bool `json:"archive_expanded,omitempty"`
 	PinnedFreelance      map[string]bool `json:"pinned_freelance,omitempty"`
 	ArchiveGroupExpanded map[string]bool `json:"archive_group_expanded,omitempty"`
+	// LastSelection fields (BUG-001). Stored flat (no nested object) so
+	// omitempty elides the whole group when the selection is zero.
+	LastSelRoleID      int64  `json:"last_sel_role_id,omitempty"`
+	LastSelArgusTaskID string `json:"last_sel_argus_task_id,omitempty"`
+	LastSelOrchID      int64  `json:"last_sel_orch_id,omitempty"`
 }
 
 func loadRailStateFromDB(ctx context.Context, cfg *db.ConfigDAO) (railViewState, error) {
@@ -63,6 +94,11 @@ func loadRailStateFromDB(ctx context.Context, cfg *db.ConfigDAO) (railViewState,
 		FreelanceCollapsed:   j.FreelanceCollapsed,
 		PinnedFreelance:      j.PinnedFreelance,
 		ArchiveGroupExpanded: j.ArchiveGroupExpanded,
+		LastSelection: railLastSelection{
+			RoleID:      j.LastSelRoleID,
+			ArgusTaskID: j.LastSelArgusTaskID,
+			OrchID:      j.LastSelOrchID,
+		},
 	}
 	if len(j.Collapsed) > 0 {
 		s.Collapsed = make(map[int64]bool, len(j.Collapsed))
@@ -88,6 +124,9 @@ func saveRailStateToDB(ctx context.Context, cfg *db.ConfigDAO, s railViewState) 
 		FreelanceCollapsed:   s.FreelanceCollapsed,
 		PinnedFreelance:      s.PinnedFreelance,
 		ArchiveGroupExpanded: s.ArchiveGroupExpanded,
+		LastSelRoleID:        s.LastSelection.RoleID,
+		LastSelArgusTaskID:   s.LastSelection.ArgusTaskID,
+		LastSelOrchID:        s.LastSelection.OrchID,
 	}
 	if len(s.Collapsed) > 0 {
 		j.Collapsed = make(map[string]bool, len(s.Collapsed))
