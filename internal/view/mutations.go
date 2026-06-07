@@ -228,12 +228,29 @@ type railSelection struct {
 	// roles under an orchestrator). Drives the `^d` destructive-delete
 	// warning when the target has children. Zero for leaf rows.
 	ChildCount int
+
+	// Status is the argus status of the selection's relevant task, carried
+	// so stepStatus can compute the optimistic predicted status (BUG-032)
+	// without a separate cache lookup. For role rows this is roleEntry.Status;
+	// for orchestrator headers it is orchEntry.CoordStatus. Empty when the
+	// task's state has not yet been observed (cold cache, no live binding).
+	Status string
 }
 
 // railSelector reads the rail's current selection. Tests substitute a
 // fake that returns a fixed value; production wires *App.
 type railSelector interface {
 	CurrentRailSelection() railSelection
+}
+
+// statusOptimizer applies and clears optimistic status overrides on the argus
+// state cache. The bridge calls SetOptimistic at the start of a status-step
+// goroutine so the rail reflects the predicted new status before the argus
+// round-trip completes; ClearOptimistic reverts the override on write failure.
+// nil is a safe no-op (tests that don't wire an optimizer work unchanged).
+type statusOptimizer interface {
+	SetOptimistic(taskID, status string)
+	ClearOptimistic(taskID string)
 }
 
 // repopulator triggers a rail repopulate after a mutation completes
@@ -294,16 +311,17 @@ type rowSelector interface {
 // tview's QueueUpdateDraw, which deadlocks the loop when called from
 // it) — is handed to a goroutine via goUI / mutate.
 type mutationBridge struct {
-	ctx     context.Context
-	modals  modalAPI
-	sel     railSelector
-	svc     mutationService
-	listAll listAllState
-	repop   repopulator
-	help    helpFrameSender
-	rowSel  rowSelector
-	fPinner freelancePinner
-	log     *slog.Logger
+	ctx       context.Context
+	modals    modalAPI
+	sel       railSelector
+	svc       mutationService
+	listAll   listAllState
+	repop     repopulator
+	help      helpFrameSender
+	rowSel    rowSelector
+	fPinner   freelancePinner
+	optimizer statusOptimizer // optional: nil is safe (no optimistic render)
+	log       *slog.Logger
 
 	// inFlight guards the blocking phase of a mutation: while a svc call is
 	// executing on a background goroutine, a second mutation key no-ops with
@@ -1047,6 +1065,13 @@ func (b *mutationBridge) OnStatusRevert() {
 //   - orchestrator header → the orchestrator's coord role's task;
 //   - anything else → visible feedback, never silence.
 //
+// OPTIMISTIC RENDER (BUG-032): the predicted new status is applied to the
+// argus state cache at the START of the mutation goroutine — after the
+// inFlight guard is claimed — and an immediate repopulate fires so the rail
+// icon updates before the argus round-trip (~0.5s) completes. On write
+// failure the override is cleared and the rail reverts. On success the poll
+// auto-clears the entry once it confirms the new value.
+//
 // The argus round-trip runs off-loop via mutate.
 func (b *mutationBridge) stepStatus(advance bool) {
 	sel := b.sel.CurrentRailSelection()
@@ -1054,13 +1079,63 @@ func (b *mutationBridge) stepStatus(advance bool) {
 	if !advance {
 		verb = "S"
 	}
+
+	// Resolve the argus task ID for the optimistic overlay. For managed roles
+	// sel.ArgusTaskID is the bound task's ID; for orchestrator headers
+	// sel.CoordTaskID is the coord task's ID. Either may be empty (no live
+	// binding / cold cache) — the optimistic is skipped when either is absent.
+	optID := sel.ArgusTaskID
+	if optID == "" {
+		optID = sel.CoordTaskID
+	}
+
+	// Compute the predicted next/prev status from the currently displayed one.
+	// Empty sel.Status (cold cache, no binding) means we cannot predict the
+	// next rung — skip the optimistic entirely rather than showing a fabricated
+	// icon. Clamped transitions (already at complete/pending) are also skipped.
+	var optStatus string
+	if b.optimizer != nil && optID != "" && sel.Status != "" {
+		if advance {
+			optStatus = ops.NextStatus(sel.Status)
+		} else {
+			optStatus = ops.PrevStatus(sel.Status)
+		}
+		if optStatus == sel.Status {
+			optStatus = "" // clamped: no change expected
+		}
+	}
+
+	// applyOptimistic sets the predicted status in the cache and triggers an
+	// immediate repopulate so the new icon renders before the argus round-trip.
+	// Called at the START of each mutation goroutine (after the inFlight guard),
+	// so a mutation that was dropped (inFlight busy) never touches the cache.
+	applyOptimistic := func() {
+		if b.optimizer != nil && optID != "" && optStatus != "" {
+			b.optimizer.SetOptimistic(optID, optStatus)
+			b.refresh()
+		}
+	}
+
+	// revertOptimistic clears the override and repopulates on write failure so
+	// the rail reverts to the true argus state without waiting for the next poll.
+	revertOptimistic := func() {
+		if b.optimizer != nil && optID != "" && optStatus != "" {
+			b.optimizer.ClearOptimistic(optID)
+			b.refresh()
+		}
+	}
+
 	stepRole := func(roleID int64) {
 		b.mutate("status step", true, func() error {
+			applyOptimistic()
 			var err error
 			if advance {
 				_, err = b.svc.AdvanceStatus(b.ctx, roleID)
 			} else {
 				_, err = b.svc.RevertStatus(b.ctx, roleID)
+			}
+			if err != nil {
+				revertOptimistic()
 			}
 			return err
 		})
@@ -1074,7 +1149,11 @@ func (b *mutationBridge) stepStatus(advance bool) {
 			}
 			taskID := sel.ArgusTaskID
 			b.mutate("status step", true, func() error {
+				applyOptimistic()
 				_, err := b.svc.StepTaskStatus(b.ctx, taskID, advance)
+				if err != nil {
+					revertOptimistic()
+				}
 				return err
 			})
 			return
