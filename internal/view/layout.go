@@ -203,10 +203,8 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			// they are discoverable; the per-row applicability is surfaced by the
 			// op itself (a visible "not applicable" notice on a wrong row), matching
 			// how the other rail mutation keys (n/r/a) are always listed (BUG-007).
-			// J is placed immediately after w (both are "spawn/adopt" ops) so it
-			// appears in the bottom bar before the rename/delete/archive block —
-			// which are pushed past the bar's visible width at typical terminals
-			// (BUG-031).
+			// J is placed immediately after w (both are "spawn/adopt" ops) so the
+			// spawn/adopt group appears together before the mutation block.
 			{Key: "w", Label: "new agent", Bar: true},
 			{Key: "J", Label: "adopt", Bar: true},
 			{Key: "r", Label: "rename", Bar: true},
