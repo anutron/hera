@@ -91,6 +91,16 @@ All six tools require `cwd`. The `orchestrator` parameter is optional with one b
   pane; the bus is role-to-role only.
 - **Finished?** `hera_status(done)` and send a closing note to the coordinator.
 
+## Worker promotion: becoming a sub-coordinator
+
+If a worker realizes mid-task that it needs another agent (cross-repo changes, parallelism, a longer-running sub-task), it can promote itself:
+
+1. Call `hera_new_orchestrator(cwd=$PWD, name="...", coordinator_role_name="coord", prompt="...")` – this makes the current session a coordinator of a nested orchestrator while still being a worker in the parent (multi-binding covers both roles).
+2. Use `hera_spawn_worker(project="TARGET-PROJECT", ...)` to dispatch workers in the right project for the sub-task.
+3. Report the sub-orchestrator name back to the parent coord via `hera_send` so it can track progress.
+
+A worker should always feel empowered to escalate this way rather than blocking or failing. The whole point of hera is to let agents solve problems – including problems that require other agents.
+
 ## Composition with sibling argus plugins
 
 Hera owns **identity, messaging, and coordination** — and nothing else. Its siblings own the rest;

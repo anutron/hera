@@ -212,6 +212,13 @@ func TestSpawnWorker_OrientationPrefixedPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "hera_send") {
 		t.Fatalf("task prompt must mention hera_send; got %q", prompt)
 	}
+	// Prefix must include the worker-promotion empowerment sentence.
+	if !strings.Contains(prompt, "hera_new_orchestrator") {
+		t.Fatalf("task prompt must include worker-promotion sentence (hera_new_orchestrator); got %q", prompt)
+	}
+	if !strings.Contains(prompt, "hera_spawn_worker") {
+		t.Fatalf("task prompt must include worker-promotion sentence (hera_spawn_worker); got %q", prompt)
+	}
 	// Operator's text must appear verbatim after the prefix.
 	if !strings.Contains(prompt, "migrate the schema") {
 		t.Fatalf("task prompt must contain operator text; got %q", prompt)

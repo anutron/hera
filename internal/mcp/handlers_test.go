@@ -32,12 +32,14 @@ type fakeArgusForHandlers struct {
 
 	// Extended for hera_spawn_worker tests.
 	// nextTaskID is returned as the ID of the next POST /api/tasks call.
+	// createInputs records the full CreateTaskInput for each POST /api/tasks call.
 	// inputPosts records POST /api/tasks/{id}/input calls.
 	// taskGetWorktree maps task ID → worktree path for GET /api/tasks/{id}.
 	// taskGetFail, when true, makes GET /api/tasks/{id} return 500.
 	// inputFail, when true, makes POST /api/tasks/{id}/input return 500.
-	nextTaskID string
-	inputPosts []struct {
+	nextTaskID   string
+	createInputs []argus.CreateTaskInput
+	inputPosts   []struct {
 		taskID string
 		body   []byte
 	}
@@ -61,6 +63,7 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 			// Create task: decode input, assign nextTaskID, add to task list.
 			var in argus.CreateTaskInput
 			_ = json.NewDecoder(r.Body).Decode(&in)
+			f.createInputs = append(f.createInputs, in)
 			id := f.nextTaskID
 			if id == "" {
 				id = "fake-task-id"
