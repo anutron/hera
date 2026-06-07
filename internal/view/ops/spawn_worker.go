@@ -62,11 +62,11 @@ func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnW
 		return nil, fmt.Errorf("ops.SpawnWorker: derive unique name: %w", err)
 	}
 
-	// Build the orientation-prefixed prompt (D4). The coordinator name is
+	// Build the orientation-suffixed prompt (D4). The coordinator name is
 	// sourced from the coord ROLE we just loaded — never the caller-supplied
 	// CoordName, which on an agent-row selection is the agent's name, not the
 	// coordinator's. The delta scenario "Worker prompt carries an orientation
-	// prefix" requires the prefix to name the COORDINATOR regardless of which
+	// suffix" requires the suffix to name the COORDINATOR regardless of which
 	// row was selected.
 	taskPrompt := buildWorkerPrompt(coordRole.Name, prompt)
 
@@ -184,16 +184,18 @@ func deriveWorkerName(prompt string) string {
 	return slug
 }
 
-// buildWorkerPrompt assembles the task prompt: a short orientation prefix
-// naming the coordinator and noting the worker may report progress via
-// hera_send, followed by the operator's prompt text verbatim (D4).
+// buildWorkerPrompt assembles the task prompt: the operator's prompt text
+// verbatim first, followed by a short orientation suffix naming the coordinator
+// and noting the worker may report progress via hera_send (D4). User prompt
+// leads so argus derives the worktree branch name from the actual task, not the
+// orientation boilerplate.
 func buildWorkerPrompt(coordName, userPrompt string) string {
-	prefix := "You are a worker agent."
+	suffix := "You are a worker agent."
 	if coordName != "" {
-		prefix = fmt.Sprintf("You are a worker agent under coordinator %q.", coordName)
+		suffix = fmt.Sprintf("You are a worker agent under coordinator %q.", coordName)
 	}
 	return fmt.Sprintf(
-		`%s You may report progress via hera_send. If this task requires changes to another repo or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name="...", coordinator_role_name="coord", prompt="...") to become a sub-coordinator, then use hera_spawn_worker(project="TARGET-PROJECT", ...) to dispatch workers in that project.`+"\n\n%s",
-		prefix, userPrompt,
+		"%s\n\n---\n"+`%s You may report progress via hera_send. If this task requires changes to another repo or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name="...", coordinator_role_name="coord", prompt="...") to become a sub-coordinator, then use hera_spawn_worker(project="TARGET-PROJECT", ...) to dispatch workers in that project.`,
+		userPrompt, suffix,
 	)
 }

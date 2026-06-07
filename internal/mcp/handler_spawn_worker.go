@@ -113,12 +113,14 @@ func (h *SpawnWorkerHandler) Handle(ctx context.Context, raw json.RawMessage) Re
 		return ErrorResponse("hera_spawn_worker: derive unique name: " + err.Error())
 	}
 
-	// Prepend orientation prefix to the prompt (matches ops.buildWorkerPrompt).
+	// Append orientation suffix to the prompt (matches ops.buildWorkerPrompt).
+	// User prompt leads so argus derives the worktree branch name from the actual
+	// task, not the orientation boilerplate.
 	taskPrompt := fmt.Sprintf(
-		"You are a worker agent under coordinator %q. You may report progress via hera_send."+
-			` If this task requires changes to another repo or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name="...", coordinator_role_name="coord", prompt="...") to become a sub-coordinator, then use hera_spawn_worker(project="TARGET-PROJECT", ...) to dispatch workers in that project.`+
-			"\n\n%s",
-		role.Name, prompt,
+		"%s\n\n---\n"+
+			"You are a worker agent under coordinator %q. You may report progress via hera_send."+
+			` If this task requires changes to another repo or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name="...", coordinator_role_name="coord", prompt="...") to become a sub-coordinator, then use hera_spawn_worker(project="TARGET-PROJECT", ...) to dispatch workers in that project.`,
+		prompt, role.Name,
 	)
 
 	// Create the argus task. Pass uniqueName so argus titles the task after
