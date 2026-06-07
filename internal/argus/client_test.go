@@ -116,11 +116,12 @@ func TestClient_GetTaskSize_404(t *testing.T) {
 }
 
 func TestClient_ResizeTask(t *testing.T) {
-	var gotMethod, gotPath, gotCT string
+	var gotMethod, gotPath, gotQuery, gotCT string
 	var gotBody resizeTaskInput
 	srv, c := newTestServerAndClient(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
 		gotCT = r.Header.Get("Content-Type")
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		_, _ = io.WriteString(w, `{"cols":145,"rows":50,"rerendered":true}`)
@@ -135,6 +136,9 @@ func TestClient_ResizeTask(t *testing.T) {
 	}
 	if gotPath != "/api/tasks/t1/resize" {
 		t.Fatalf("path = %s", gotPath)
+	}
+	if gotQuery != "skip_kick=1" {
+		t.Fatalf("query = %q, want skip_kick=1", gotQuery)
 	}
 	if gotCT != "application/json" {
 		t.Fatalf("Content-Type = %q", gotCT)

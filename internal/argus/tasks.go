@@ -108,10 +108,14 @@ const (
 )
 
 // ResizeTask asks argus to resize the worker PTY for taskID to the given
-// cols/rows via POST /api/tasks/{id}/size. Argus applies the SIGWINCH
-// directly to the worker process and (when the agent is idle and the
-// delta crosses argus's RerenderMargin) auto-kicks a clean rerender via
-// the agent's --session-id path so scrollback re-emits at the new width.
+// cols/rows via POST /api/tasks/{id}/resize?skip_kick=1. Argus applies the
+// SIGWINCH directly to the worker process so live terminal UI reflows at the
+// new width. The ?skip_kick=1 parameter suppresses argus's KickRerender
+// (stop+--session-id restart): hera issues ResizeTask on every pane-geometry
+// change driven by the plugin viewport, and each kick would blank the pane and
+// restart the session. Scrollback reflow is handled by the TUI-side
+// maybeKickRerender path (when the user explicitly enters argus's native task
+// view), not by plugin-view pane-size adjustments.
 //
 // Returns ErrNoTaskSize when argus reports 404 (no active session for
 // the task). Other non-2xx statuses surface as *HTTPError. Out-of-bound
@@ -123,7 +127,9 @@ func (c *Client) ResizeTask(ctx context.Context, taskID string, cols, rows int) 
 	body := resizeTaskInput{Cols: cols, Rows: rows}
 	// Argus mounts the resize handler at POST /api/tasks/{id}/resize.
 	// The /size route is GET-only (for reads) and returns 405 on POST.
-	status, err := c.doJSON(ctx, "POST", "/api/tasks/"+url.PathEscape(taskID)+"/resize", body, nil)
+	// skip_kick=1 suppresses KickRerender so plugin-view geometry changes
+	// only send SIGWINCH, not stop+restart (BUG-058).
+	status, err := c.doJSON(ctx, "POST", "/api/tasks/"+url.PathEscape(taskID)+"/resize?skip_kick=1", body, nil)
 	if err != nil {
 		if status == 404 {
 			return ErrNoTaskSize
