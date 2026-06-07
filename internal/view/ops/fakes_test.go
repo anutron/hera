@@ -35,11 +35,19 @@ type fakeDB struct {
 	unpinRoleCalls     []int64
 	endBindingCalls    []endCall
 
+	upsertRoleStatusCalls []upsertRoleStatusCall
+	upsertRoleStatusErr   error
+
 	// createRoleErr / createBindingErr, when set, make CreateRole /
 	// CreateBinding fail — backing the post-create insert-failure tests
 	// (the orphan must NOT be rolled back).
 	createRoleErr    error
 	createBindingErr error
+}
+
+type upsertRoleStatusCall struct {
+	RoleID int64
+	Status string
 }
 
 type renameCall struct {
@@ -157,6 +165,22 @@ func (f *fakeDB) ListOrchestrators(ctx context.Context) ([]*Orchestrator, error)
 		out = append(out, &cp)
 	}
 	return out, nil
+}
+
+func (f *fakeDB) CreateOrchestrator(ctx context.Context, name string) (*Orchestrator, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Idempotent: return existing active row if name is already in use.
+	for _, o := range f.orchestrators {
+		if o.Name == name && !o.Archived {
+			cp := *o
+			return &cp, nil
+		}
+	}
+	f.nextOrchID++
+	o := &Orchestrator{ID: f.nextOrchID, Name: name}
+	f.orchestrators[o.ID] = o
+	return o, nil
 }
 
 func (f *fakeDB) ArchiveOrchestrator(ctx context.Context, id int64) error {
@@ -394,6 +418,13 @@ func (f *fakeDB) ListLiveBindings(ctx context.Context) ([]*Binding, error) {
 		out = append(out, &cp)
 	}
 	return out, nil
+}
+
+func (f *fakeDB) UpsertRoleStatus(ctx context.Context, roleID int64, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.upsertRoleStatusCalls = append(f.upsertRoleStatusCalls, upsertRoleStatusCall{RoleID: roleID, Status: status})
+	return f.upsertRoleStatusErr
 }
 
 func (f *fakeDB) CreateRole(ctx context.Context, in CreateRoleInput) (*Role, error) {

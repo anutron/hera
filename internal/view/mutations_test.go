@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anutron/hera/internal/db"
 	"github.com/anutron/hera/internal/view/ops"
 )
 
@@ -365,6 +366,16 @@ type fakeMutationService struct {
 	stepTaskCalls          []stepTaskCall
 	stepTaskErr            error
 
+	// MarkRoleDone (BUG-048: s→done→confirm-no path).
+	markRoleDoneCalls []int64
+	markRoleDoneErr   error
+
+	// CompleteRole / CompleteTaskByID (BUG-048: s→done→confirm-yes path).
+	completeRoleCalls  []int64
+	completeRoleErr    error
+	completeTaskCalls  []string
+	completeTaskErr    error
+
 	// SpawnWorker plumbing.
 	spawnWorkerCalls []ops.SpawnWorkerInput
 	spawnWorkerResp  *ops.SpawnWorkerResult
@@ -415,14 +426,14 @@ type renameRoleCall struct {
 	NewName string
 }
 
-func (s *fakeMutationService) NewOrchestrator(_ context.Context, in ops.NewOrchestratorInput) (*ops.CreatedTask, error) {
+func (s *fakeMutationService) NewOrchestrator(_ context.Context, in ops.NewOrchestratorInput) (*ops.NewOrchestratorResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.newCalls = append(s.newCalls, in)
 	if s.newErr != nil {
 		return nil, s.newErr
 	}
-	return &ops.CreatedTask{ID: "task-1", Name: in.Name + "-coord"}, nil
+	return &ops.NewOrchestratorResult{OrchestratorID: 1, RoleID: 2, ArgusTaskID: "task-1"}, nil
 }
 
 func (s *fakeMutationService) ListProjects(_ context.Context) ([]string, error) {
@@ -547,6 +558,27 @@ func (s *fakeMutationService) StepTaskStatus(_ context.Context, taskID string, a
 		return "", s.stepTaskErr
 	}
 	return "in_progress", nil
+}
+
+func (s *fakeMutationService) MarkRoleDone(_ context.Context, roleID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.markRoleDoneCalls = append(s.markRoleDoneCalls, roleID)
+	return s.markRoleDoneErr
+}
+
+func (s *fakeMutationService) CompleteRole(_ context.Context, roleID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeRoleCalls = append(s.completeRoleCalls, roleID)
+	return s.completeRoleErr
+}
+
+func (s *fakeMutationService) CompleteTaskByID(_ context.Context, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeTaskCalls = append(s.completeTaskCalls, taskID)
+	return s.completeTaskErr
 }
 
 func (s *fakeMutationService) ListCompletedAgents(_ context.Context) ([]ops.CompletedAgent, error) {
@@ -676,6 +708,13 @@ type fakeFreelancePinner struct{ toggled []string }
 
 func (f *fakeFreelancePinner) ToggleFreelancePin(argusTaskID string) {
 	f.toggled = append(f.toggled, argusTaskID)
+}
+
+// fakeReattachNotifier records OnTaskReattached calls for bridge tests (BUG-053).
+type fakeReattachNotifier struct{ notified []string }
+
+func (f *fakeReattachNotifier) OnTaskReattached(taskID string) {
+	f.notified = append(f.notified, taskID)
 }
 
 func newBridgeUnderTestWithHelp() (*mutationBridge, *fakeModals, *fakeSelector, *fakeMutationService, *fakeListAll, *fakeRepopulator, *fakeHelpSender) {
@@ -1100,6 +1139,168 @@ func TestBridge_OnArchive_ServiceError_ShowsErrorModal(t *testing.T) {
 
 	if len(m.errors) != 1 || m.errors[0] != "argus 500" {
 		t.Fatalf("want error modal; got %v", m.errors)
+	}
+}
+
+// Live coordinator guard: a single `a` on a live orchestrator must show a
+// confirm modal — not archive immediately. The guard fires on the FIRST tap.
+
+func TestBridge_OnArchive_LiveOrchestrator_RequiresConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "foo",
+		CoordTaskID:    "task-coord-1", // live: has a bound coord task
+	}
+	m.stubConfirmNotOpen = true // open the modal but do not auto-answer
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("live orchestrator must open a confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Title, "live coordinator") {
+		t.Fatalf("confirm title must mention live coordinator; got %q", m.confirms[0].Title)
+	}
+	if len(svc.archiveOrchCalls) != 0 {
+		t.Fatalf("must not archive before confirmation; got %v", svc.archiveOrchCalls)
+	}
+}
+
+func TestBridge_OnArchive_LiveOrchestrator_ConfirmYes_Archives(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "foo",
+		CoordTaskID:    "task-coord-1",
+	}
+	m.stubConfirmYes = true
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.archiveOrchCalls) != 1 || svc.archiveOrchCalls[0] != 5 {
+		t.Fatalf("want ArchiveOrchestrator(5) after confirm yes; got %v", svc.archiveOrchCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnArchive_LiveOrchestrator_ConfirmNo_NoArchive(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "foo",
+		CoordTaskID:    "task-coord-1",
+	}
+	m.stubConfirmYes = false // defaults to no
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.archiveOrchCalls) != 0 {
+		t.Fatalf("confirm no must not archive; got %v", svc.archiveOrchCalls)
+	}
+}
+
+// An orchestrator with children requires confirmation — archiving cascades.
+func TestBridge_OnArchive_OrchestratorWithChildren_RequiresConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "foo",
+		ChildCount:     3,
+	}
+	m.stubConfirmNotOpen = true
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("orchestrator with children must open a confirm modal; got %d", len(m.confirms))
+	}
+	msg := m.confirms[0].Message
+	if !stringsContains(msg, "foo") || !stringsContains(msg, "3") {
+		t.Fatalf("confirm must name target and child count; got %q", msg)
+	}
+	if len(svc.archiveOrchCalls) != 0 {
+		t.Fatalf("must not archive before confirmation; got %v", svc.archiveOrchCalls)
+	}
+}
+
+// A live coordinator role (bound argus task) requires confirmation.
+func TestBridge_OnArchive_LiveCoordRole_RequiresConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "coord",
+		RoleKind:    string(db.KindCoordinator),
+		ArgusTaskID: "task-coord-1",
+	}
+	m.stubConfirmNotOpen = true
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("live coord role must open a confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Title, "live coordinator") {
+		t.Fatalf("confirm title must mention live coordinator; got %q", m.confirms[0].Title)
+	}
+	if len(svc.archiveRoleCalls) != 0 {
+		t.Fatalf("must not archive before confirmation; got %v", svc.archiveRoleCalls)
+	}
+}
+
+func TestBridge_OnArchive_LiveCoordRole_ConfirmYes_Archives(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "coord",
+		RoleKind:    string(db.KindCoordinator),
+		ArgusTaskID: "task-coord-1",
+	}
+	m.stubConfirmYes = true
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.archiveRoleCalls) != 1 || svc.archiveRoleCalls[0] != 9 {
+		t.Fatalf("want ArchiveRole(9) after confirm yes; got %v", svc.archiveRoleCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh; got %d", rp.Count())
+	}
+}
+
+// An unbound coordinator role (no ArgusTaskID) archives immediately — no guard.
+func TestBridge_OnArchive_UnboundCoordRole_ArchivesImmediately(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:     selRole,
+		RoleID:   9,
+		Name:     "coord",
+		RoleKind: string(db.KindCoordinator),
+		// ArgusTaskID is empty — no live binding
+	}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(m.confirms) != 0 {
+		t.Fatalf("unbound coord role must not open a confirm modal; got %d", len(m.confirms))
+	}
+	if len(svc.archiveRoleCalls) != 1 || svc.archiveRoleCalls[0] != 9 {
+		t.Fatalf("want ArchiveRole(9) immediately; got %v", svc.archiveRoleCalls)
 	}
 }
 
@@ -1658,6 +1859,58 @@ func TestBridge_OnReattach_OrchestratorHeader_Not_Handled(t *testing.T) {
 	}
 }
 
+// After a successful reattach the bridge must notify the paneReattachNotifier
+// (BUG-053) with the reattached task's id so the App can resize the new session.
+func TestBridge_OnReattach_Success_NotifiesReattachNotifier(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	notifier := &fakeReattachNotifier{}
+	b.reattach = notifier
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         7,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-reattach-notify",
+		HasDeadSession: true,
+	}
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if len(notifier.notified) != 1 || notifier.notified[0] != "task-reattach-notify" {
+		t.Fatalf("paneReattachNotifier.OnTaskReattached not called with correct task; got %v", notifier.notified)
+	}
+	// Rail refresh must still happen after the notify.
+	if rp.Count() < 1 {
+		t.Fatalf("rail refresh must still be triggered after reattach; got %d refreshes", rp.Count())
+	}
+	_ = svc
+}
+
+// On reattach failure the paneReattachNotifier must NOT be called (argus error
+// means no new session was created, so there is nothing to resize).
+func TestBridge_OnReattach_Failure_DoesNotNotifyReattachNotifier(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	notifier := &fakeReattachNotifier{}
+	b.reattach = notifier
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         7,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-fail",
+		HasDeadSession: true,
+	}
+	svc.reattachErr = ops.ErrRestartNotSupported
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if len(notifier.notified) != 0 {
+		t.Fatalf("paneReattachNotifier must not be called on failure; got %v", notifier.notified)
+	}
+}
+
 // When argus does not support restart, the error is surfaced as a modal and
 // OnReattach still returns true (it owned the Enter).
 func TestBridge_OnReattach_NotSupported_ShowsError(t *testing.T) {
@@ -2128,9 +2381,12 @@ func TestBridge_OnStatusAdvance_Optimistic_ClearsOnFailure(t *testing.T) {
 }
 
 // TestBridge_OnStatusAdvance_Optimistic_FreelancerPath verifies the optimistic
-// overlay on the task-direct (freelancer) path.
+// overlay on the task-direct (freelancer) path. Status="in_review" triggers
+// the BUG-048 confirm modal (advancing to "complete"); stubbing yes fires the
+// argus step that applies the optimistic.
 func TestBridge_OnStatusAdvance_Optimistic_FreelancerPath(t *testing.T) {
-	b, _, sel, _, rp, opt := newBridgeWithOptimizer()
+	b, m, sel, _, rp, opt := newBridgeWithOptimizer()
+	m.stubConfirmYes = true // BUG-048: confirm "also mark in argus?" → yes
 	sel.sel = railSelection{
 		Kind:        selRole,
 		RoleKind:    "freelance",
@@ -2280,6 +2536,219 @@ func TestBridge_OnStatusAdvance_InFlight_NoOptimistic(t *testing.T) {
 	}
 }
 
+// --- BUG-048: s → done confirmation modal ---
+
+// helperRoleSelWithStatus returns a managed worker rail selection whose
+// argus status is set so the optimistic path can predict the next rung.
+func helperRoleSelWithStatus(status string) railSelection {
+	return railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "w",
+		RoleKind:    "worker",
+		ArgusTaskID: "T9",
+		Status:      status,
+	}
+}
+
+// TestBridge_OnStatusAdvance_ToDone_ConfirmOpens verifies that a y/n
+// confirmation modal fires when `s` would advance to "complete".
+func TestBridge_OnStatusAdvance_ToDone_ConfirmOpens(t *testing.T) {
+	b, m, sel, _, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmNotOpen = true // don't fire callbacks — just check it opened
+	sel.sel = helperRoleSelWithStatus("in_review")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want confirm modal when advancing to complete; got %d", m.ConfirmCount())
+	}
+	got := m.confirms[0]
+	if got.Title == "" || got.Message == "" {
+		t.Fatalf("confirm must have title+message; got %+v", got)
+	}
+}
+
+// TestBridge_OnStatusAdvance_ToDone_ConfirmYes_CompletesArgusDirectly verifies
+// that answering yes calls CompleteRole directly (not AdvanceStatus), so the
+// argus task is set to "complete" regardless of its current argus status.
+func TestBridge_OnStatusAdvance_ToDone_ConfirmYes_CompletesArgusDirectly(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = true
+	sel.sel = helperRoleSelWithStatus("in_review")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.completeRoleCalls) != 1 || svc.completeRoleCalls[0] != 9 {
+		t.Fatalf("yes must call CompleteRole(9); got %v", svc.completeRoleCalls)
+	}
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("yes must NOT call AdvanceStatus (use CompleteRole instead); got %v", svc.advanceCalls)
+	}
+	if len(svc.markRoleDoneCalls) != 0 {
+		t.Fatalf("yes must NOT call MarkRoleDone; got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_ToDone_ConfirmNo_MarksRoleDone verifies that
+// answering no marks only the hera role done without touching argus status.
+func TestBridge_OnStatusAdvance_ToDone_ConfirmNo_MarksRoleDone(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = false
+	sel.sel = helperRoleSelWithStatus("in_review")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("no must NOT call AdvanceStatus; got %v", svc.advanceCalls)
+	}
+	if len(svc.markRoleDoneCalls) != 1 || svc.markRoleDoneCalls[0] != 9 {
+		t.Fatalf("no must call MarkRoleDone(9); got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmNo_NoOp verifies that
+// the no-path for a freelancer is a no-op (freelancers have no hera role).
+func TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmNo_NoOp(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = false
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleKind:    "freelance",
+		RoleID:      0,
+		Name:        "feat",
+		ArgusTaskID: "T7",
+		Status:      "in_review",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.stepTaskCalls) != 0 {
+		t.Fatalf("no must NOT call StepTaskStatus; got %v", svc.stepTaskCalls)
+	}
+	if len(svc.markRoleDoneCalls) != 0 {
+		t.Fatalf("no for a freelancer must NOT call MarkRoleDone; got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmNo_MarksCoordDone
+// verifies that the no-path on an orchestrator header marks the coord role done.
+func TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmNo_MarksCoordDone(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = false
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    42,
+		CoordTaskID:    "Tcoord",
+		Name:           "proj",
+		Status:         "in_review",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("no must NOT call AdvanceStatus; got %v", svc.advanceCalls)
+	}
+	if len(svc.markRoleDoneCalls) != 1 || svc.markRoleDoneCalls[0] != 42 {
+		t.Fatalf("no must call MarkRoleDone(42) for coord role; got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmYes_CompletesCoordDirectly
+// verifies that the yes-path on an orchestrator header calls CompleteRole on the
+// coord role (not AdvanceStatus).
+func TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmYes_CompletesCoordDirectly(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = true
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    42,
+		CoordTaskID:    "Tcoord",
+		Name:           "proj",
+		Status:         "in_review",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.completeRoleCalls) != 1 || svc.completeRoleCalls[0] != 42 {
+		t.Fatalf("yes must call CompleteRole(42) for coord role; got %v", svc.completeRoleCalls)
+	}
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("yes must NOT call AdvanceStatus; got %v", svc.advanceCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmYes_CompletesTaskDirectly
+// verifies that the yes-path for a freelancer calls CompleteTaskByID (not
+// StepTaskStatus), so the argus task is set to "complete" unconditionally.
+func TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmYes_CompletesTaskDirectly(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = true
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleKind:    "freelance",
+		RoleID:      0,
+		Name:        "feat",
+		ArgusTaskID: "T7",
+		Status:      "in_review",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.completeTaskCalls) != 1 || svc.completeTaskCalls[0] != "T7" {
+		t.Fatalf("yes for freelancer must call CompleteTaskByID(T7); got %v", svc.completeTaskCalls)
+	}
+	if len(svc.stepTaskCalls) != 0 {
+		t.Fatalf("yes must NOT call StepTaskStatus; got %v", svc.stepTaskCalls)
+	}
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("yes must NOT call AdvanceStatus; got %v", svc.advanceCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_NonComplete_NoConfirm verifies that no modal
+// fires when the advance does not reach "complete" (e.g. pending→in_progress).
+func TestBridge_OnStatusAdvance_NonComplete_NoConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	sel.sel = helperRoleSelWithStatus("pending")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 0 {
+		t.Fatalf("no confirm expected for non-complete advance; got %d", m.ConfirmCount())
+	}
+	if len(svc.advanceCalls) != 1 || svc.advanceCalls[0] != 9 {
+		t.Fatalf("non-complete advance must call AdvanceStatus directly; got %v", svc.advanceCalls)
+	}
+}
+
+// TestBridge_OnStatusRevert_ToDone_NoConfirm verifies that `S` (backward step)
+// never triggers the confirmation modal (only `s` forward-to-complete does).
+func TestBridge_OnStatusRevert_ToDone_NoConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	sel.sel = helperRoleSelWithStatus("complete")
+
+	b.OnStatusRevert()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 0 {
+		t.Fatalf("S (revert) must never open a confirm modal; got %d", m.ConfirmCount())
+	}
+	if len(svc.revertCalls) != 1 || svc.revertCalls[0] != 9 {
+		t.Fatalf("S must call RevertStatus(9) directly; got %v", svc.revertCalls)
+	}
+}
+
 // --- Never silent: non-applicable keys give visible feedback ---
 
 func TestBridge_OnStatus_NoSelection_Feedback(t *testing.T) {
@@ -2415,20 +2884,24 @@ func TestBridge_OnArchive_MixedCoordHeader_RepairsViaTaskUnarchive(t *testing.T)
 }
 
 // Spec (mixed-coord-repair): once repaired (coord task no longer argus-
-// archived), `a` on the header behaves exactly as today — the standard
-// cascade-archive.
-func TestBridge_OnArchive_RepairedHeader_CascadesAsBefore(t *testing.T) {
-	b, _, sel, svc, _, _ := newBridgeUnderTest()
+// archived), `a` on the header is a live coordinator → requires confirm.
+// Confirming yes then cascade-archives the orchestrator.
+func TestBridge_OnArchive_RepairedHeader_CascadesAfterConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
 	sel.sel = railSelection{
 		Kind: selOrchestrator, OrchestratorID: 5, Name: "foo",
 		CoordTaskID: "T1", CoordArgusArchived: false,
 	}
+	m.stubConfirmYes = true
 
 	b.OnArchive()
 	b.waitIdle()
 
+	if len(m.confirms) != 1 {
+		t.Fatalf("live repaired header must open a confirm modal; got %d", len(m.confirms))
+	}
 	if len(svc.archiveOrchCalls) != 1 || svc.archiveOrchCalls[0] != 5 {
-		t.Fatalf("repaired header must cascade-archive; got %v", svc.archiveOrchCalls)
+		t.Fatalf("repaired header must cascade-archive after confirm yes; got %v", svc.archiveOrchCalls)
 	}
 	if len(svc.toggleArchiveTaskCalls) != 0 {
 		t.Fatalf("repaired header must not fire the task-direct repair; got %+v", svc.toggleArchiveTaskCalls)

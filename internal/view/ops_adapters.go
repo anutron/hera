@@ -47,6 +47,14 @@ func (a *dbAdapter) ListOrchestrators(ctx context.Context) ([]*ops.Orchestrator,
 	return out, nil
 }
 
+func (a *dbAdapter) CreateOrchestrator(ctx context.Context, name string) (*ops.Orchestrator, error) {
+	o, err := a.d.Orchestrators.Create(ctx, name)
+	if err != nil {
+		return nil, translateDBErr(err)
+	}
+	return adaptOrchestrator(o), nil
+}
+
 func (a *dbAdapter) ArchiveOrchestrator(ctx context.Context, id int64) error {
 	return translateDBErr(a.d.Orchestrators.Archive(ctx, id))
 }
@@ -184,6 +192,10 @@ func (a *dbAdapter) ListLiveBindingsByTask(ctx context.Context, argusTaskID stri
 		out = append(out, adaptBinding(b))
 	}
 	return out, nil
+}
+
+func (a *dbAdapter) UpsertRoleStatus(ctx context.Context, roleID int64, status string) error {
+	return a.d.RoleStatus.Upsert(ctx, roleID, db.RoleStatusValue(status))
 }
 
 func (a *dbAdapter) ListLiveBindings(ctx context.Context) ([]*ops.Binding, error) {

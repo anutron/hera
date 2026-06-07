@@ -611,6 +611,60 @@ func TestShowNewCoordForm_EmptyNameDoesNotSubmit(t *testing.T) {
 	}
 }
 
+// TestShowNewCoordForm_PromptIsInputField verifies the Prompt field (item 4) is
+// a single-line InputField, not a multi-line TextArea (BUG-055). This is what
+// makes Enter-to-submit work and keeps the modal height correct.
+func TestShowNewCoordForm_PromptIsInputField(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"p1"}, []string{"claude"}, nil, nil)
+
+	form := frontForm(t, a)
+	if _, ok := form.GetFormItem(4).(*tview.InputField); !ok {
+		t.Fatalf("form item 4 (Prompt) must be *tview.InputField (BUG-055)")
+	}
+}
+
+// TestShowNewCoordForm_EnterOnPromptSubmits verifies Enter while the Prompt
+// field is focused submits the form (BUG-055). Previously the Prompt was a
+// TextArea where Enter inserted a newline and never submitted.
+func TestShowNewCoordForm_EnterOnPromptSubmits(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var got NewCoordFormInput
+	submitted := false
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"},
+		func(in NewCoordFormInput) { got = in; submitted = true }, nil)
+
+	form := frontForm(t, a)
+	nameField, ok := form.GetFormItem(0).(*tview.InputField)
+	if !ok {
+		t.Fatalf("item 0 must be InputField for Name")
+	}
+	nameField.SetText("my-coord")
+
+	promptField, ok := form.GetFormItem(4).(*tview.InputField)
+	if !ok {
+		t.Fatalf("item 4 must be InputField for Prompt")
+	}
+	promptField.SetText("some prompt text")
+	a.app.SetFocus(promptField)
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Enter on Prompt field must dismiss the new coord form")
+	}
+	if !submitted {
+		t.Fatalf("Enter on Prompt field must fire onSubmit")
+	}
+	if got.Name != "my-coord" {
+		t.Fatalf("got Name %q, want %q", got.Name, "my-coord")
+	}
+	if got.Prompt != "some prompt text" {
+		t.Fatalf("got Prompt %q, want %q", got.Prompt, "some prompt text")
+	}
+}
+
 // TestShowNewCoordForm_FieldsContainedInFrame verifies field widths keep all
 // inputs inside the modal frame (BUG-002 compliance).
 func TestShowNewCoordForm_FieldsContainedInFrame(t *testing.T) {

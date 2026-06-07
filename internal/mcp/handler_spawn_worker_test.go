@@ -343,6 +343,75 @@ func TestSpawnWorker_UnknownCwd(t *testing.T) {
 	}
 }
 
+// TestSpawnWorker_ArgusTaskNameIsRoleName verifies that the created argus task
+// is named after the worker role, not after the orientation preamble (BUG-047).
+func TestSpawnWorker_ArgusTaskNameIsRoleName(t *testing.T) {
+	ctx := context.Background()
+	e := setupHandlers(t)
+	e.fake.addTask(taskFor("c1", "/tmp/c1"))
+	e.fake.mu.Lock()
+	e.fake.nextTaskID = "w1"
+	e.fake.mu.Unlock()
+	setupCoordFixture(t, e, "/tmp/c1", "c1", "proj")
+
+	h := NewSpawnWorkerHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, SpawnWorkerInput{
+		Cwd:      "/tmp/c1",
+		Prompt:   "Fix the auth bug",
+		RoleName: "fix-auth-bug",
+	}))
+	out := decodeSpawnOutput(t, resp)
+
+	// The argus task name must equal the role name, not the preamble.
+	e.fake.mu.Lock()
+	var taskName string
+	for _, task := range e.fake.tasks {
+		if task.ID == out.ArgusTaskID {
+			taskName = task.Name
+		}
+	}
+	e.fake.mu.Unlock()
+
+	if taskName != "fix-auth-bug" {
+		t.Fatalf("argus task Name = %q, want %q (role name); preamble must not become the title", taskName, "fix-auth-bug")
+	}
+}
+
+// TestSpawnWorker_EmpowermentSentencePresent verifies that the orientation
+// preamble includes the worker-promotion sentence so workers know they can
+// become sub-coordinators when needed.
+func TestSpawnWorker_EmpowermentSentencePresent(t *testing.T) {
+	ctx := context.Background()
+	e := setupHandlers(t)
+	e.fake.addTask(taskFor("c1", "/tmp/c1"))
+	e.fake.mu.Lock()
+	e.fake.nextTaskID = "w1"
+	e.fake.mu.Unlock()
+	setupCoordFixture(t, e, "/tmp/c1", "c1", "proj")
+
+	h := NewSpawnWorkerHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, SpawnWorkerInput{
+		Cwd:    "/tmp/c1",
+		Prompt: "do the work",
+	}))
+	decodeSpawnOutput(t, resp)
+
+	e.fake.mu.Lock()
+	inputs := e.fake.createInputs
+	e.fake.mu.Unlock()
+
+	if len(inputs) == 0 {
+		t.Fatal("expected at least one CreateTask call")
+	}
+	taskPrompt := inputs[len(inputs)-1].Prompt
+	if !strings.Contains(taskPrompt, "hera_new_orchestrator") {
+		t.Fatalf("worker prompt must include hera_new_orchestrator empowerment sentence; got %q", taskPrompt)
+	}
+	if !strings.Contains(taskPrompt, "hera_spawn_worker") {
+		t.Fatalf("worker prompt must include hera_spawn_worker empowerment sentence; got %q", taskPrompt)
+	}
+}
+
 // TestSpawnWorker_MetaRoleSet verifies the role=worker meta is applied to the
 // new argus task.
 func TestSpawnWorker_MetaRoleSet(t *testing.T) {

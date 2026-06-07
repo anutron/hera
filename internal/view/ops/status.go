@@ -82,6 +82,69 @@ func (s *Service) stepStatus(ctx context.Context, roleID int64, advance bool) (s
 	return s.StepTaskStatus(ctx, bnd.ArgusTaskID, advance)
 }
 
+// MarkRoleDone updates the hera role's thread_status to "done" and mirrors
+// the value to argus task_meta (best-effort, like hera_status MCP). It does
+// NOT advance the argus workflow status — this is the `s`→done→confirm-no
+// path: the operator chose to mark the hera role done without flipping the
+// argus task to :checked:.
+func (s *Service) MarkRoleDone(ctx context.Context, roleID int64) error {
+	if err := s.DB.UpsertRoleStatus(ctx, roleID, "done"); err != nil {
+		return fmt.Errorf("ops.MarkRoleDone: persist status: %w", err)
+	}
+	// Mirror to argus task meta — best-effort; skip silently on any error
+	// (same contract as the hera_status MCP handler).
+	bnd, err := s.resolveBinding(ctx, roleID)
+	if err == nil && bnd.ArgusTaskID != "" {
+		_ = s.Argus.PutTaskMeta(ctx, bnd.ArgusTaskID, "thread_status", "done")
+	}
+	return nil
+}
+
+// CompleteRole sets the argus task status directly to "complete" for the given
+// role, bypassing the get-then-advance logic of AdvanceStatus. Backs the
+// BUG-048 y-path in hera-view: the operator confirmed "yes" to ":checked: in
+// argus?" so we unconditionally target "complete" rather than stepping one rung
+// from whatever the current argus status happens to be. Unlike AdvanceStatus,
+// this never silently advances to an intermediate rung (e.g. in_review) if the
+// argus status was already behind the cache's optimistic view.
+func (s *Service) CompleteRole(ctx context.Context, roleID int64) error {
+	bnd, err := s.resolveBinding(ctx, roleID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("ops.CompleteRole: role %d has no argus task recorded", roleID)
+		}
+		return fmt.Errorf("ops.CompleteRole: binding lookup for role %d: %w", roleID, err)
+	}
+	if bnd.ArgusTaskID == "" {
+		return fmt.Errorf("ops.CompleteRole: role %d has no argus task recorded", roleID)
+	}
+	_, err = s.Argus.SetTaskStatus(ctx, bnd.ArgusTaskID, "complete")
+	if err != nil {
+		if errors.Is(err, ErrArgusTaskGone) {
+			return fmt.Errorf("ops.CompleteRole: task %s no longer exists in argus (pruned)", bnd.ArgusTaskID)
+		}
+		return fmt.Errorf("ops.CompleteRole: set status %s -> complete: %w", bnd.ArgusTaskID, err)
+	}
+	return nil
+}
+
+// CompleteTaskByID sets the argus task status directly to "complete" by task
+// ID, bypassing hera-binding lookup. Backs the BUG-048 y-path for freelance
+// rows (unmanaged argus tasks with no hera role or binding).
+func (s *Service) CompleteTaskByID(ctx context.Context, taskID string) error {
+	if taskID == "" {
+		return fmt.Errorf("ops.CompleteTaskByID: empty argus task id")
+	}
+	_, err := s.Argus.SetTaskStatus(ctx, taskID, "complete")
+	if err != nil {
+		if errors.Is(err, ErrArgusTaskGone) {
+			return fmt.Errorf("ops.CompleteTaskByID: task %s no longer exists in argus (pruned)", taskID)
+		}
+		return fmt.Errorf("ops.CompleteTaskByID: set status %s -> complete: %w", taskID, err)
+	}
+	return nil
+}
+
 // StepTaskStatus steps an argus task's status directly by task id, bypassing
 // the hera-binding lookup. Backs `s`/`S` against a freelance row — an
 // unmanaged argus task with no hera role or binding to resolve — where the

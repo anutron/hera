@@ -14,6 +14,12 @@ type DB interface {
 	GetOrchestratorByID(ctx context.Context, id int64) (*Orchestrator, error)
 	GetOrchestratorByName(ctx context.Context, name string) (*Orchestrator, error)
 	ListOrchestrators(ctx context.Context) ([]*Orchestrator, error)
+
+	// CreateOrchestrator inserts a new active orchestrator. If an active
+	// orchestrator with the same name already exists it returns the existing row
+	// (idempotent). An archived row with the same name does not block creation.
+	CreateOrchestrator(ctx context.Context, name string) (*Orchestrator, error)
+
 	ArchiveOrchestrator(ctx context.Context, id int64) error
 	UnarchiveOrchestrator(ctx context.Context, id int64) error
 	RenameOrchestrator(ctx context.Context, id int64, newName string) error
@@ -83,6 +89,10 @@ type DB interface {
 	// different role, and the archive cascade must not reach through the
 	// stale binding and archive a task an active role depends on.
 	ListLiveBindingsByTask(ctx context.Context, argusTaskID string) ([]*Binding, error)
+
+	// UpsertRoleStatus sets the hera role's thread_status. Backs
+	// MarkRoleDone (the `s` → done → confirm-no path in hera-view).
+	UpsertRoleStatus(ctx context.Context, roleID int64, status string) error
 }
 
 // CreateTaskRequest is the ops layer's neutral description of an argus

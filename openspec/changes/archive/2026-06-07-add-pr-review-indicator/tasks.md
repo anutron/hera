@@ -20,4 +20,4 @@
 
 ## 4. Ship
 
-- [ ] 4.1 Commit code + tests + change folder together; push via iris; open PR; report via hera_send; hera_status done
+- [x] 4.1 Commit code + tests + change folder together; push via iris; open PR; report via hera_send; hera_status done

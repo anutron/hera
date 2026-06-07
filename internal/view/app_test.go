@@ -41,6 +41,8 @@ type fakePaneSource struct {
 	sizes map[string][2]int
 	// resizes records every ResizeTask call in order.
 	resizes []paneResizeCall
+	// invalidated records every InvalidateResize call (BUG-053).
+	invalidated []string
 }
 
 type paneResizeCall struct {
@@ -77,6 +79,11 @@ func (f *fakePaneSource) TaskSize(taskID string) (int, int) {
 
 func (f *fakePaneSource) ResizeTask(taskID string, cols, rows int) {
 	f.resizes = append(f.resizes, paneResizeCall{TaskID: taskID, Cols: cols, Rows: rows})
+}
+
+// InvalidateResize satisfies paneResizeInvalidator (BUG-053).
+func (f *fakePaneSource) InvalidateResize(taskID string) {
+	f.invalidated = append(f.invalidated, taskID)
 }
 
 // renderApp drives one Draw cycle on the App's root primitive against a
@@ -3951,5 +3958,50 @@ func TestApp_SendHelp_PushesComprehensiveThreeStateSections(t *testing.T) {
 	}
 	if !hasRailKey {
 		t.Errorf("restore frame must include Rail 'move'; got %+v", env2.Items)
+	}
+}
+
+// --- BUG-053: OnTaskReattached resets resize state for the new session ---
+
+// After a successful reattach, App.OnTaskReattached must call InvalidateResize
+// on the source (to clear the ProxyManager's "already applied" flag) so the
+// next resize dispatch reaches argus and sizes the new session correctly.
+// The actual ResizeTask call is queued on the tview event loop via a goroutine
+// (same pattern as the reflow callbacks) and cannot be verified synchronously
+// in unit tests without a running event loop — the pane-level and
+// ProxyManager-level behavior are covered by TestPinnedTerminalPane and
+// TestProxyManager_ResetApplied respectively.
+func TestApp_OnTaskReattached_CallsInvalidateResize(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.OnTaskReattached("task-agent")
+
+	// InvalidateResize must be called for the task so the ProxyManager's
+	// applied flag is cleared before the event-loop resize is queued.
+	if len(src.invalidated) != 1 || src.invalidated[0] != "task-agent" {
+		t.Fatalf("InvalidateResize not called with task-agent; got %v", src.invalidated)
+	}
+}
+
+// An empty task id must be a complete no-op.
+func TestApp_OnTaskReattached_EmptyTaskID_NoOp(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.OnTaskReattached("")
+
+	if len(src.invalidated) != 0 {
+		t.Fatalf("empty task id must not call InvalidateResize; got %v", src.invalidated)
 	}
 }

@@ -32,12 +32,14 @@ type fakeArgusForHandlers struct {
 
 	// Extended for hera_spawn_worker tests.
 	// nextTaskID is returned as the ID of the next POST /api/tasks call.
+	// createInputs records the full CreateTaskInput for each POST /api/tasks call.
 	// inputPosts records POST /api/tasks/{id}/input calls.
 	// taskGetWorktree maps task ID → worktree path for GET /api/tasks/{id}.
 	// taskGetFail, when true, makes GET /api/tasks/{id} return 500.
 	// inputFail, when true, makes POST /api/tasks/{id}/input return 500.
-	nextTaskID string
-	inputPosts []struct {
+	nextTaskID   string
+	createInputs []argus.CreateTaskInput
+	inputPosts   []struct {
 		taskID string
 		body   []byte
 	}
@@ -61,6 +63,7 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 			// Create task: decode input, assign nextTaskID, add to task list.
 			var in argus.CreateTaskInput
 			_ = json.NewDecoder(r.Body).Decode(&in)
+			f.createInputs = append(f.createInputs, in)
 			id := f.nextTaskID
 			if id == "" {
 				id = "fake-task-id"
@@ -69,13 +72,17 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 			if f.taskGetWorktree != nil {
 				wtp = f.taskGetWorktree[id]
 			}
+			name := in.Name
+			if name == "" {
+				name = id
+			}
 			f.tasks = append(f.tasks, argus.Task{
 				ID:           id,
-				Name:         id,
+				Name:         name,
 				Project:      in.Project,
 				WorktreePath: wtp,
 			})
-			_ = json.NewEncoder(w).Encode(argus.CreatedTask{ID: id, Name: id, Status: "in_progress"})
+			_ = json.NewEncoder(w).Encode(argus.CreatedTask{ID: id, Name: name, Status: "in_progress"})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(struct {

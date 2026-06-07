@@ -16,6 +16,50 @@ import (
 	"github.com/anutron/hera/internal/view/ops"
 )
 
+// minPluginViewCols / minPluginViewRows are the sentinel-size thresholds for
+// the viewport guard (BUG-049). Argus sends a small initial viewport (e.g.
+// 13×8) before it knows the real terminal dimensions; we skip draws until a
+// viewport larger than these values is confirmed.
+const (
+	minPluginViewCols = 20
+	minPluginViewRows = 5
+)
+
+// makeViewportGuard returns a tview SetBeforeDrawFunc handler that skips draw
+// cycles until the screen dimensions exceed the sentinel size argus sends when
+// it first opens the plugin view (BUG-049).
+//
+// The guard is one-shot: after the first draw at a real viewport size (w >
+// minPluginViewCols and h > minPluginViewRows), it allows all subsequent draws
+// unconditionally — including any at legitimately small terminal sizes. This
+// prevents the blank/garbled first frame without suppressing valid redraws.
+//
+// onFirstReal, if non-nil, is called in a fresh goroutine the first time the
+// guard transitions from "skip" to "allow". Callers use this to schedule a
+// second draw after the first real-sized frame lands so that tview's Flex
+// layout recalculates with the correct dimensions (BUG-049 take 2). The
+// goroutine avoids calling tApp methods from within the draw lock.
+//
+// tview's draw() is called on the event loop's single goroutine while holding
+// the Application mutex, so the guard closure needs no locking of its own.
+func makeViewportGuard(onFirstReal func()) func(tcell.Screen) bool {
+	passed := false
+	return func(screen tcell.Screen) bool {
+		if passed {
+			return false
+		}
+		w, h := screen.Size()
+		if w > minPluginViewCols && h > minPluginViewRows {
+			passed = true
+			if onFirstReal != nil {
+				go onFirstReal()
+			}
+			return false // allow this draw and all subsequent ones
+		}
+		return true // skip — sentinel size
+	}
+}
+
 // NewSessionFunc returns a SessionFunc that drives one hera-view session
 // per accepted WebSocket connection. It composes the four substrates the
 // previous stages produced:
@@ -145,6 +189,7 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		bridge := newMutationBridge(ctx, app, app, opsService, opsService.ListAll, app, app, log)
 		bridge.rowSel = app
 		bridge.fPinner = app
+		bridge.reattach = app // App.OnTaskReattached resizes the new session (BUG-053)
 		if states != nil {
 			bridge.optimizer = states // ArgusStateCache implements statusOptimizer
 		}
@@ -170,6 +215,15 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// frame.
 		app.OnFocusChanged(focus.State())
 		tApp.SetInputCapture(router.HandleKey)
+
+		// Guard against argus's initial sentinel viewport (e.g. 13×8): skip
+		// draws until a real-sized frame arrives so the first visible frame
+		// is correct, not garbled (BUG-049). The callback queues a second
+		// draw after the first real-sized frame so tview's Flex layout
+		// recalculates with the correct dimensions (BUG-049 take 2).
+		tApp.SetBeforeDrawFunc(makeViewportGuard(func() {
+			tApp.QueueUpdateDraw(func() {})
+		}))
 
 		// Bridge ctx cancellation into tview's event loop by queueing an
 		// EventError. tview's EventLoop handles EventError by calling
@@ -261,6 +315,18 @@ func (p managerPaneSource) ResizeTask(taskID string, cols, rows int) {
 		return
 	}
 	p.mgr.ResizeTask(p.ctx, taskID, cols, rows)
+}
+
+// InvalidateResize clears the ProxyManager's "already applied" resize flag
+// for taskID so the next ResizeTask dispatch reaches argus unconditionally.
+// Called after an argus task session restarts (BUG-053) so the new session is
+// sized to the current pane allocation, not the previous session's last size.
+// Satisfies the paneResizeInvalidator optional interface.
+func (p managerPaneSource) InvalidateResize(taskID string) {
+	if p.mgr == nil || taskID == "" {
+		return
+	}
+	p.mgr.ResetApplied(taskID)
 }
 
 // IsTaskAlive delegates to the proxy manager, which calls argus's

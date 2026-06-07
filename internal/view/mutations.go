@@ -27,7 +27,7 @@ type NewCoordFormInput struct {
 // directly lets tests inject a fake without standing up ops's full
 // dependency tree.
 type mutationService interface {
-	NewOrchestrator(ctx context.Context, in ops.NewOrchestratorInput) (*ops.CreatedTask, error)
+	NewOrchestrator(ctx context.Context, in ops.NewOrchestratorInput) (*ops.NewOrchestratorResult, error)
 	ListProjects(ctx context.Context) ([]string, error)
 	ListBackends(ctx context.Context) ([]string, error)
 	RenameOrchestrator(ctx context.Context, id int64, newName string) error
@@ -99,6 +99,25 @@ type mutationService interface {
 	// backs `s`/`S` (advance=true steps toward complete).
 	ToggleArchiveTask(ctx context.Context, taskID string, archived bool) error
 	StepTaskStatus(ctx context.Context, taskID string, advance bool) (string, error)
+
+	// MarkRoleDone sets the hera role's thread_status to "done" and mirrors
+	// it to argus task_meta (best-effort), without advancing the argus workflow
+	// status. Backs the `s`→done→confirm-no path in hera-view: the operator
+	// chose to mark the role done in hera without flipping the argus task to
+	// :checked: (complete).
+	MarkRoleDone(ctx context.Context, roleID int64) error
+
+	// CompleteRole sets the argus task status directly to "complete" for the
+	// given role. Backs the `s`→done→confirm-yes path (BUG-048): the operator
+	// confirmed ":checked: in argus?" so we unconditionally target "complete"
+	// rather than stepping one rung via AdvanceStatus (which could stop at an
+	// intermediate rung if the argus status was behind the optimistic cache).
+	CompleteRole(ctx context.Context, roleID int64) error
+
+	// CompleteTaskByID sets the argus task status directly to "complete" by
+	// task ID. Backs the `s`→done→confirm-yes path for freelance rows, which
+	// have no hera binding to resolve.
+	CompleteTaskByID(ctx context.Context, taskID string) error
 }
 
 // listAllState is the subset of *ops.ListAllState the bridge uses to
@@ -302,6 +321,14 @@ type freelancePinner interface {
 	ToggleFreelancePin(argusTaskID string)
 }
 
+// paneReattachNotifier is notified after an argus task session is successfully
+// restarted (BUG-053 reattach). The implementation resets the ProxyManager's
+// applied resize state and dispatches a fresh resize with the current pane
+// dimensions so the new session is sized correctly. nil is safe (no-op).
+type paneReattachNotifier interface {
+	OnTaskReattached(taskID string)
+}
+
 // rowSelector stashes a role id to auto-select on the NEXT broadcaster-driven
 // rail repopulate. Because role/binding inserts trigger an async (~100ms) rail
 // refresh, the new row does not exist at the instant SpawnWorker returns — an
@@ -335,7 +362,8 @@ type mutationBridge struct {
 	help      helpFrameSender
 	rowSel    rowSelector
 	fPinner   freelancePinner
-	optimizer statusOptimizer // optional: nil is safe (no optimistic render)
+	optimizer statusOptimizer  // optional: nil is safe (no optimistic render)
+	reattach  paneReattachNotifier // optional: nil is safe (BUG-053)
 	log       *slog.Logger
 
 	// inFlight guards the blocking phase of a mutation: while a svc call is
@@ -471,14 +499,22 @@ func (b *mutationBridge) OnNew() {
 				return
 			}
 			b.mutate("new coordinator", true, func() error {
-				_, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{
+				res, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{
 					Name:    in.Name,
 					Project: in.Project,
 					Branch:  in.Branch,
 					Backend: in.Backend,
 					Prompt:  in.Prompt,
 				})
-				return err
+				if err != nil {
+					return err
+				}
+				// Auto-select the new coordinator row after the rail repopulates.
+				// The binding exists now so the Coord pane binds immediately.
+				if b.rowSel != nil && res != nil {
+					b.rowSel.QueueSelectRole(res.RoleID)
+				}
+				return nil
 			})
 		}, nil)
 	})
@@ -679,11 +715,16 @@ func (b *mutationBridge) OnDelete() {
 	})
 }
 
-// OnArchive toggles the archived state of the selected row. No modal
-// — archive is non-destructive (worktree survives), so a single key
-// is enough. A freelance row (unmanaged argus task, no hera role) is
-// addressed directly by its argus task id; non-addressable rows get
-// visible feedback. The argus call runs off-loop via mutate.
+// OnArchive toggles the archived state of the selected row. A freelance row
+// (unmanaged argus task, no hera role) is addressed directly by its argus task
+// id; non-addressable rows get visible feedback. The argus call runs off-loop
+// via mutate.
+//
+// Guard: archiving a LIVE coordinator (an orchestrator with a bound coord task,
+// an orchestrator with child agents, or a coordinator role with a live binding)
+// requires confirmation via ShowConfirm — a stray `a` on an active coordinator
+// otherwise destroys live work. Non-live rows (already archived, no binding, no
+// children) archive immediately. Unarchiving is always immediate.
 //
 // The toggle DIRECTION follows the row's EFFECTIVE rendered archived
 // state — the same predicate the rail uses to bucket the row into an
@@ -717,9 +758,31 @@ func (b *mutationBridge) OnArchive() {
 				return b.svc.UnarchiveOrchestrator(b.ctx, sel.OrchestratorID)
 			})
 		} else {
-			b.mutate("archive", true, func() error {
-				return b.svc.ArchiveOrchestrator(b.ctx, sel.OrchestratorID)
-			})
+			// Guard: a live orchestrator (bound coord task or child agents) requires
+			// confirmation — cascade-archiving an active coordinator disrupts live work.
+			if sel.CoordTaskID != "" || sel.ChildCount > 0 {
+				b.goUI(func() {
+					var msg string
+					if sel.ChildCount > 0 {
+						msg = fmt.Sprintf(
+							"Archive %q and cascade to its %d child agent(s)? "+
+								"The coordinator and all children will be archived. (y/N)",
+							sel.Name, sel.ChildCount,
+						)
+					} else {
+						msg = fmt.Sprintf("Archive live coordinator %q? (y/N)", sel.Name)
+					}
+					b.modals.ShowConfirm("Archive live coordinator?", msg, func() {
+						b.mutate("archive", true, func() error {
+							return b.svc.ArchiveOrchestrator(b.ctx, sel.OrchestratorID)
+						})
+					}, nil)
+				})
+			} else {
+				b.mutate("archive", true, func() error {
+					return b.svc.ArchiveOrchestrator(b.ctx, sel.OrchestratorID)
+				})
+			}
 		}
 	case selRole:
 		if sel.RoleKind == string(db.KindFreelance) {
@@ -740,9 +803,26 @@ func (b *mutationBridge) OnArchive() {
 				return b.svc.UnarchiveRole(b.ctx, sel.RoleID)
 			})
 		} else {
-			b.mutate("archive", true, func() error {
-				return b.svc.ArchiveRole(b.ctx, sel.RoleID)
-			})
+			// Guard: a live coordinator role (has a bound argus task) requires
+			// confirmation before archiving.
+			if sel.RoleKind == string(db.KindCoordinator) && sel.ArgusTaskID != "" {
+				b.goUI(func() {
+					b.modals.ShowConfirm(
+						"Archive live coordinator?",
+						fmt.Sprintf("Archive live coordinator %q? (y/N)", sel.Name),
+						func() {
+							b.mutate("archive", true, func() error {
+								return b.svc.ArchiveRole(b.ctx, sel.RoleID)
+							})
+						},
+						nil,
+					)
+				})
+			} else {
+				b.mutate("archive", true, func() error {
+					return b.svc.ArchiveRole(b.ctx, sel.RoleID)
+				})
+			}
 		}
 	default:
 		b.notApplicable("a: not applicable to this row")
@@ -958,6 +1038,16 @@ func (b *mutationBridge) OnReattach() bool {
 			// (update argus) from other failures (e.g. network error).
 			return fmt.Errorf("re-attach %q: %s", name, err.Error())
 		}
+		// Notify the App to resize the new session to the current pane
+		// dimensions. The new argus session starts at 80×24 (the argus
+		// default) regardless of what the previous session's size was.
+		// Without this, the resize dedup guard in ProxyManager silently
+		// skips the next dispatch (it thinks the previous session's size is
+		// still applied), leaving the cursor layout wrong until the operator
+		// manually resizes the terminal (BUG-053).
+		if b.reattach != nil {
+			b.reattach.OnTaskReattached(taskID)
+		}
 		// Success: argus is restarting the session. The proxy subscription's
 		// reconnect loop picks up the new output automatically. No explicit
 		// refresh needed — argus will fire task.status_changed / session.started
@@ -1108,8 +1198,10 @@ func (b *mutationBridge) openPRRoleID(sel railSelection) int64 {
 	return 0
 }
 
-// OnStatusAdvance steps the selected row's argus status forward (`s`).
-// No modal — status stepping is reversible (`S`).
+// OnStatusAdvance steps the selected row's argus status forward (`s`). When
+// the advance would reach "complete" (the final argus rung), a y/n modal fires
+// first: y advances the argus status to complete (:checked:); n updates only
+// the hera role status to "done" without touching the argus workflow status.
 func (b *mutationBridge) OnStatusAdvance() {
 	b.stepStatus(true)
 }
@@ -1127,6 +1219,13 @@ func (b *mutationBridge) OnStatusRevert() {
 //     freelancer has no hera binding to resolve);
 //   - orchestrator header → the orchestrator's coord role's task;
 //   - anything else → visible feedback, never silence.
+//
+// BUG-048: when advancing to "complete" (the final argus status rung), a y/n
+// confirmation modal fires first. Yes advances the argus task status to
+// :checked: (existing behavior). No updates only the hera role status to
+// "done" without touching the argus workflow status. The modal fires only
+// from this interactive key path — `hera_status(status=done)` via MCP and
+// `S` (backward step) are unaffected.
 //
 // OPTIMISTIC RENDER (BUG-032): the predicted new status is applied to the
 // argus state cache at the START of the mutation goroutine — after the
@@ -1188,8 +1287,53 @@ func (b *mutationBridge) stepStatus(advance bool) {
 		}
 	}
 
-	stepRole := func(roleID int64) {
-		b.mutate("status step", true, func() error {
+	// Compute the argus-step goroutine body and the managed role id (for the
+	// MarkRoleDone no-path). Resolved before the modal so closures capture the
+	// right values regardless of when the callbacks fire.
+	var argusStep func() error
+	var markDoneRoleID int64 // 0 = no managed hera role (freelancer)
+
+	switch sel.Kind {
+	case selRole:
+		if sel.RoleKind == string(db.KindFreelance) {
+			if sel.ArgusTaskID == "" {
+				b.notApplicable(verb + ": this freelancer has no argus task id to step")
+				return
+			}
+			taskID := sel.ArgusTaskID
+			argusStep = func() error {
+				applyOptimistic()
+				_, err := b.svc.StepTaskStatus(b.ctx, taskID, advance)
+				if err != nil {
+					revertOptimistic()
+				}
+				return err
+			}
+			// markDoneRoleID stays 0: freelancers have no hera role
+		} else {
+			roleID := sel.RoleID
+			argusStep = func() error {
+				applyOptimistic()
+				var err error
+				if advance {
+					_, err = b.svc.AdvanceStatus(b.ctx, roleID)
+				} else {
+					_, err = b.svc.RevertStatus(b.ctx, roleID)
+				}
+				if err != nil {
+					revertOptimistic()
+				}
+				return err
+			}
+			markDoneRoleID = roleID
+		}
+	case selOrchestrator:
+		if sel.CoordRoleID == 0 {
+			b.notApplicable(verb + ": this project has no coordinator role to step")
+			return
+		}
+		roleID := sel.CoordRoleID
+		argusStep = func() error {
 			applyOptimistic()
 			var err error
 			if advance {
@@ -1201,36 +1345,70 @@ func (b *mutationBridge) stepStatus(advance bool) {
 				revertOptimistic()
 			}
 			return err
-		})
+		}
+		markDoneRoleID = roleID
+	default:
+		b.notApplicable(verb + ": not applicable to this row")
+		return
 	}
-	switch sel.Kind {
-	case selRole:
-		if sel.RoleKind == string(db.KindFreelance) {
-			if sel.ArgusTaskID == "" {
-				b.notApplicable(verb + ": this freelancer has no argus task id to step")
-				return
-			}
-			taskID := sel.ArgusTaskID
-			b.mutate("status step", true, func() error {
+
+	// BUG-048: gate on a y/n confirmation when the advance would reach
+	// "complete". optStatus is only "complete" when we could predict the
+	// next rung (warm cache, non-empty ArgusTaskID/CoordTaskID) — cold-cache
+	// rows fall through to the direct path unchanged.
+	if advance && optStatus == "complete" {
+		doneRoleID := markDoneRoleID
+		// y-path: directly set argus task status to "complete" without
+		// going through the get-then-advance chain (which could stop at an
+		// intermediate rung if the actual argus status is behind the cache).
+		var completeStep func() error
+		if doneRoleID != 0 {
+			// Managed role or orchestrator header: resolve via hera binding.
+			completeRoleID := doneRoleID
+			completeStep = func() error {
 				applyOptimistic()
-				_, err := b.svc.StepTaskStatus(b.ctx, taskID, advance)
+				err := b.svc.CompleteRole(b.ctx, completeRoleID)
 				if err != nil {
 					revertOptimistic()
 				}
 				return err
-			})
-			return
+			}
+		} else {
+			// Freelancer: no hera binding — use the argus task ID directly.
+			freelanceTaskID := sel.ArgusTaskID
+			completeStep = func() error {
+				applyOptimistic()
+				err := b.svc.CompleteTaskByID(b.ctx, freelanceTaskID)
+				if err != nil {
+					revertOptimistic()
+				}
+				return err
+			}
 		}
-		stepRole(sel.RoleID)
-	case selOrchestrator:
-		if sel.CoordRoleID == 0 {
-			b.notApplicable(verb + ": this project has no coordinator role to step")
-			return
-		}
-		stepRole(sel.CoordRoleID)
-	default:
-		b.notApplicable(verb + ": not applicable to this row")
+		b.goUI(func() {
+			b.modals.ShowConfirm(
+				"Mark done?",
+				"Also mark :checked: in argus? (y/n)",
+				func() {
+					// y: directly set the argus task status to complete (:checked:)
+					b.mutate("status step", true, completeStep)
+				},
+				func() {
+					// n: update hera role status to "done" only; no argus touch.
+					// Freelancers (doneRoleID==0) have no hera role — no-op.
+					if doneRoleID == 0 {
+						return
+					}
+					b.mutate("mark done", true, func() error {
+						return b.svc.MarkRoleDone(b.ctx, doneRoleID)
+					})
+				},
+			)
+		})
+		return
 	}
+
+	b.mutate("status step", true, argusStep)
 }
 
 func (b *mutationBridge) refresh() {
