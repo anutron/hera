@@ -227,6 +227,26 @@ func (o *OrchestratorsDAO) Unpin(ctx context.Context, id int64) error {
 	return nil
 }
 
+// Delete physically removes an orchestrator row. All child roles and
+// bindings are removed automatically via ON DELETE CASCADE. Unlike
+// Archive (which preserves the row for resurrection), Delete is
+// permanent and is used by the `^d` destructive-delete verb. Returns
+// ErrNotFound if no row matches id.
+func (o *OrchestratorsDAO) Delete(ctx context.Context, id int64) error {
+	res, err := o.db.ExecContext(ctx, `DELETE FROM orchestrators WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("orchestrators.Delete: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	if o.events != nil {
+		o.events.Emit(Event{Entity: EntityOrchestrator, Op: OpDelete, ID: id})
+	}
+	return nil
+}
+
 // Rename updates an orchestrator's name. The new name must be unique
 // across non-archived orchestrators; archived rows with the same name do
 // not block the rename. Returns ErrNotFound if no row matches id, or

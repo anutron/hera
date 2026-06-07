@@ -27,6 +27,7 @@ type fakeDB struct {
 
 	archiveOrchCalls   []int64
 	unarchiveOrchCalls []int64
+	deleteOrchCalls    []int64
 	archiveRoleCalls   []int64
 	unarchiveRoleCalls []int64
 	pinOrchCalls       []int64
@@ -204,6 +205,34 @@ func (f *fakeDB) UnarchiveOrchestrator(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	o.Archived = false
+	return nil
+}
+
+func (f *fakeDB) DeleteOrchestratorByID(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteOrchCalls = append(f.deleteOrchCalls, id)
+	if _, ok := f.orchestrators[id]; !ok {
+		return ErrNotFound
+	}
+	delete(f.orchestrators, id)
+	// Cascade: delete roles and their bindings, mirroring ON DELETE CASCADE.
+	for rID, r := range f.roles {
+		if r.OrchestratorID != id {
+			continue
+		}
+		for bID, b := range f.bindings {
+			if b.RoleID == rID {
+				delete(f.bindings, bID)
+			}
+		}
+		for bID, b := range f.ended {
+			if b.RoleID == rID {
+				delete(f.ended, bID)
+			}
+		}
+		delete(f.roles, rID)
+	}
 	return nil
 }
 

@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -323,14 +324,47 @@ func TestDeleteOrchestrator_Cascades(t *testing.T) {
 	if len(db.endBindingCalls) != 3 {
 		t.Fatalf("expected 3 EndBinding calls, got %d: %+v", len(db.endBindingCalls), db.endBindingCalls)
 	}
+	// Physical deletion: the orchestrator must be gone from the DB so the rail
+	// does not show a ghost in the Archive section (BUG-004).
+	if _, err := db.GetOrchestratorByID(context.Background(), orch.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("orchestrator should be physically deleted; got err=%v", err)
+	}
+	if len(db.deleteOrchCalls) != 1 || db.deleteOrchCalls[0] != orch.ID {
+		t.Fatalf("want DeleteOrchestratorByID(%d); got %v", orch.ID, db.deleteOrchCalls)
+	}
+	// Roles are gone via cascade.
 	for _, id := range []int64{coord.ID, w1.ID, w2.ID} {
-		got, _ := db.GetRoleByID(context.Background(), id)
-		if !got.Archived {
-			t.Fatalf("role %d should be archived", id)
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("role %d should be gone after cascade delete; got err=%v", id, err)
 		}
 	}
-	gotOrch, _ := db.GetOrchestratorByID(context.Background(), orch.ID)
-	if !gotOrch.Archived {
-		t.Fatalf("orchestrator should be archived")
+}
+
+// TestDeleteOrchestrator_CoordOnly is the BUG-004 scenario: a coordinator
+// created via `n` (one orchestrator + one coordinator role + one binding, no
+// workers) must be physically deleted so the rail shows no ghost after `^d`.
+func TestDeleteOrchestrator_CoordOnly(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("test", false)
+	coord := db.seedRole(orch.ID, "coord", KindCoordinator, "hera", false)
+	db.seedBinding(coord.ID, "Tcoord", "")
+
+	a := &fakeArgus{}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+	if err := s.DeleteOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("DeleteOrchestrator: %v", err)
+	}
+
+	// Argus task deleted.
+	if len(a.deleteCalls) != 1 || a.deleteCalls[0] != "Tcoord" {
+		t.Fatalf("want argus DeleteTask(Tcoord); got %v", a.deleteCalls)
+	}
+	// Orchestrator physically gone — no ghost in the Archive section.
+	if _, err := db.GetOrchestratorByID(context.Background(), orch.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("orchestrator should be physically deleted (BUG-004); got err=%v", err)
+	}
+	// Coordinator role gone via cascade.
+	if _, err := db.GetRoleByID(context.Background(), coord.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("coordinator role should be gone after cascade delete; got err=%v", err)
 	}
 }
