@@ -343,6 +343,40 @@ func TestSpawnWorker_UnknownCwd(t *testing.T) {
 	}
 }
 
+// TestSpawnWorker_ArgusTaskNameIsRoleName verifies that the created argus task
+// is named after the worker role, not after the orientation preamble (BUG-047).
+func TestSpawnWorker_ArgusTaskNameIsRoleName(t *testing.T) {
+	ctx := context.Background()
+	e := setupHandlers(t)
+	e.fake.addTask(taskFor("c1", "/tmp/c1"))
+	e.fake.mu.Lock()
+	e.fake.nextTaskID = "w1"
+	e.fake.mu.Unlock()
+	setupCoordFixture(t, e, "/tmp/c1", "c1", "proj")
+
+	h := NewSpawnWorkerHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, SpawnWorkerInput{
+		Cwd:      "/tmp/c1",
+		Prompt:   "Fix the auth bug",
+		RoleName: "fix-auth-bug",
+	}))
+	out := decodeSpawnOutput(t, resp)
+
+	// The argus task name must equal the role name, not the preamble.
+	e.fake.mu.Lock()
+	var taskName string
+	for _, task := range e.fake.tasks {
+		if task.ID == out.ArgusTaskID {
+			taskName = task.Name
+		}
+	}
+	e.fake.mu.Unlock()
+
+	if taskName != "fix-auth-bug" {
+		t.Fatalf("argus task Name = %q, want %q (role name); preamble must not become the title", taskName, "fix-auth-bug")
+	}
+}
+
 // TestSpawnWorker_MetaRoleSet verifies the role=worker meta is applied to the
 // new argus task.
 func TestSpawnWorker_MetaRoleSet(t *testing.T) {
