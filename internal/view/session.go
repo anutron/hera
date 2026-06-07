@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/gdamore/tcell/v2"
@@ -205,9 +206,13 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// closure captures the session ctx so an in-flight restart is cancelled
 		// if the hera-view session ends. On success the splash clears via
 		// OnTaskReattached; on failure we snap back to RAIL.
+		// BUG-009: a per-call 30s timeout caps the goroutine lifetime so a slow or
+		// unresponsive argus cannot hang the reattach goroutine indefinitely.
 		app.onDeadPaneReattach = func(taskID string) {
 			go func() {
-				if err := opsService.ReattachAgent(ctx, taskID); err != nil {
+				rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+				if err := opsService.ReattachAgent(rctx, taskID); err != nil {
 					log.Warn("view: auto-reattach failed", "task_id", taskID, "err", err)
 					if tApp := app.Application(); tApp != nil {
 						go tApp.QueueUpdateDraw(func() {
