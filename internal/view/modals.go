@@ -1,6 +1,7 @@
 package view
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -270,13 +271,197 @@ func (a *App) ShowForm2(title, label1, initial1, label2, initial2 string, onSubm
 	})
 }
 
-// ShowNewCoordForm opens the five-field new-coordinator form modal:
-// Name (required), Project (dropdown), Branch (optional), Backend (dropdown),
-// Prompt (multi-line textarea). onSubmit fires with all field values when
-// the operator confirms with a non-empty name; onCancel fires on Esc.
+// inlineCycler is a custom tview.FormItem presenting a set of options as an
+// inline single-line selector. It replaces tview.DropDown to avoid the green
+// popup overlay and the "Enter submits the form" behaviour (BUG-035).
 //
-// projects and backends are the dropdown options loaded before open (from
-// argus). Either list may be empty; defaults are shown when empty.
+// Display:
+//   - focused:  ◄ current (n/m) ►  — cyan-on-title-bg, bold
+//   - blurred:   current            — normal style on highlight bg
+//
+// Key handling:
+//   - Left / Up    — previous option (wraps)
+//   - Right / Down — next option (wraps)
+//   - Enter        — locks current value; advances focus via finishedFunc(KeyTab)
+//   - Tab          — advance focus (finishedFunc(KeyTab))
+//   - Backtab      — retreat focus (finishedFunc(KeyBacktab))
+//   - Esc          — cancel (finishedFunc(KeyEscape))
+type inlineCycler struct {
+	*tview.Box
+
+	label   string
+	options []string
+	current int
+
+	// fieldWidth is the declared field width for the form layout.
+	fieldWidth int
+
+	// form attributes injected by SetFormAttributes
+	labelWidth     int
+	labelColor     tcell.Color
+	bgColor        tcell.Color
+	fieldTextColor tcell.Color
+	fieldBgColor   tcell.Color
+
+	disabled     bool
+	finishedFunc func(tcell.Key)
+}
+
+func newInlineCycler(label string, options []string, initial, fw int) *inlineCycler {
+	if initial < 0 || (len(options) > 0 && initial >= len(options)) {
+		initial = 0
+	}
+	return &inlineCycler{
+		Box:        tview.NewBox(),
+		label:      label,
+		options:    options,
+		current:    initial,
+		fieldWidth: fw,
+	}
+}
+
+// GetCurrentOption returns the index and text of the currently selected option.
+func (c *inlineCycler) GetCurrentOption() (int, string) {
+	if len(c.options) == 0 {
+		return -1, ""
+	}
+	return c.current, c.options[c.current]
+}
+
+// GetLabel implements tview.FormItem.
+func (c *inlineCycler) GetLabel() string { return c.label }
+
+// SetFormAttributes implements tview.FormItem.
+func (c *inlineCycler) SetFormAttributes(labelWidth int, labelColor, bgColor, fieldTextColor, fieldBgColor tcell.Color) tview.FormItem {
+	c.labelWidth = labelWidth
+	c.labelColor = labelColor
+	c.bgColor = bgColor
+	c.fieldTextColor = fieldTextColor
+	c.fieldBgColor = fieldBgColor
+	return c
+}
+
+// GetFieldWidth implements tview.FormItem.
+func (c *inlineCycler) GetFieldWidth() int { return c.fieldWidth }
+
+// GetFieldHeight implements tview.FormItem (single-line widget).
+func (c *inlineCycler) GetFieldHeight() int { return 1 }
+
+// SetFinishedFunc implements tview.FormItem.
+func (c *inlineCycler) SetFinishedFunc(handler func(key tcell.Key)) tview.FormItem {
+	c.finishedFunc = handler
+	return c
+}
+
+// SetDisabled implements tview.FormItem.
+func (c *inlineCycler) SetDisabled(disabled bool) tview.FormItem {
+	c.disabled = disabled
+	return c
+}
+
+// Draw implements tview.Primitive.
+func (c *inlineCycler) Draw(screen tcell.Screen) {
+	c.DrawForSubclass(screen, c)
+	x, y, width, _ := c.GetInnerRect()
+	if width <= 0 {
+		return
+	}
+
+	// Label — right-padded to labelWidth
+	labelStyle := tcell.StyleDefault.Foreground(c.labelColor).Background(c.bgColor)
+	labelRunes := []rune(c.label)
+	for i := 0; i < c.labelWidth; i++ {
+		r := ' '
+		if i < len(labelRunes) {
+			r = labelRunes[i]
+		}
+		screen.SetContent(x+i, y, r, nil, labelStyle)
+	}
+
+	// Field area — remaining width after label
+	fieldX := x + c.labelWidth
+	fieldW := width - c.labelWidth
+	if fieldW <= 0 {
+		return
+	}
+
+	fStyle := fieldBlurredStyle
+	if c.HasFocus() {
+		fStyle = fieldFocusedStyle
+	}
+
+	for i := 0; i < fieldW; i++ {
+		screen.SetContent(fieldX+i, y, ' ', nil, fStyle)
+	}
+
+	if len(c.options) == 0 {
+		return
+	}
+	cur := c.options[c.current]
+	var text string
+	if c.HasFocus() {
+		text = fmt.Sprintf("◄ %s (%d/%d) ►", cur, c.current+1, len(c.options))
+	} else {
+		text = cur
+	}
+	for i, r := range []rune(text) {
+		if i >= fieldW {
+			break
+		}
+		screen.SetContent(fieldX+i, y, r, nil, fStyle)
+	}
+}
+
+// InputHandler implements tview.Primitive.
+func (c *inlineCycler) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+	return c.WrapInputHandler(func(event *tcell.EventKey, _ func(p tview.Primitive)) {
+		if c.disabled || len(c.options) == 0 {
+			return
+		}
+		n := len(c.options)
+		switch event.Key() {
+		case tcell.KeyLeft, tcell.KeyUp:
+			if c.current > 0 {
+				c.current--
+			} else {
+				c.current = n - 1
+			}
+		case tcell.KeyRight, tcell.KeyDown:
+			c.current = (c.current + 1) % n
+		case tcell.KeyEnter:
+			if c.finishedFunc != nil {
+				c.finishedFunc(tcell.KeyTab)
+			}
+		case tcell.KeyTab:
+			if c.finishedFunc != nil {
+				c.finishedFunc(tcell.KeyTab)
+			}
+		case tcell.KeyBacktab:
+			if c.finishedFunc != nil {
+				c.finishedFunc(tcell.KeyBacktab)
+			}
+		case tcell.KeyEscape:
+			if c.finishedFunc != nil {
+				c.finishedFunc(tcell.KeyEscape)
+			}
+		}
+	})
+}
+
+// ShowNewCoordForm opens the five-field new-coordinator form modal:
+// Name (required), Project (inline cycler), Branch (optional, defaults to
+// "origin/main"), Backend (inline cycler), Prompt (multi-line textarea).
+// onSubmit fires with all field values when the operator confirms with a
+// non-empty name; onCancel fires on Esc.
+//
+// Project and Backend use inlineCycler instead of tview.DropDown to avoid the
+// green popup overlay, the no-theme background, and the "Enter submits the
+// form while the dropdown list is open" behaviour (BUG-035). Arrow keys cycle;
+// Enter on a cycler locks the current value and advances focus to the next
+// field — it does NOT submit the form.
+//
+// projects and backends are the option lists loaded before open (from argus).
+// Either list may be empty; defaults are shown when empty.
 //
 // Safe to call from any goroutine — the body runs through app.QueueUpdateDraw
 // so it lands on the tview event loop.
@@ -293,14 +478,14 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		if len(projOptions) == 0 {
 			projOptions = []string{"(no projects configured)"}
 		}
-		projectDD := tview.NewDropDown().
-			SetLabel("Project: ").
-			SetOptions(projOptions, nil).
-			SetFieldWidth(fw)
-		projectDD.SetCurrentOption(0)
+		projectCycler := newInlineCycler("Project: ", projOptions, 0, fw)
 
+		// Branch defaults to "origin/main" — argus uses the project's configured
+		// default branch when the field is empty, but pre-filling gives the operator
+		// a useful starting point without an extra API call.
 		branchField := tview.NewInputField().
 			SetLabel("Branch: ").
+			SetText("origin/main").
 			SetFieldWidth(fw)
 		wireFieldFocusStyle(branchField)
 
@@ -308,11 +493,7 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		if len(backendOptions) == 0 {
 			backendOptions = []string{"claude"}
 		}
-		backendDD := tview.NewDropDown().
-			SetLabel("Backend: ").
-			SetOptions(backendOptions, nil).
-			SetFieldWidth(fw)
-		backendDD.SetCurrentOption(0)
+		backendCycler := newInlineCycler("Backend: ", backendOptions, 0, fw)
 
 		promptTA := tview.NewTextArea().
 			SetLabel("Prompt: ").
@@ -320,25 +501,22 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 
 		form := tview.NewForm().
 			AddFormItem(nameField).
-			AddFormItem(projectDD).
+			AddFormItem(projectCycler).
 			AddFormItem(branchField).
-			AddFormItem(backendDD).
+			AddFormItem(backendCycler).
 			AddFormItem(promptTA).
 			SetButtonsAlign(tview.AlignCenter)
 
-		// Style dropdowns and textarea to match the modal background.
-		projectDD.SetBackgroundColor(heraBackground)
-		backendDD.SetBackgroundColor(heraBackground)
 		promptTA.SetBackgroundColor(heraBackground)
 		promptTA.SetTextStyle(tcell.StyleDefault.Background(theme.ColorHighlight).Foreground(theme.ColorNormal))
 
 		dismiss := func(submitted bool) {
 			name := strings.TrimSpace(nameField.GetText())
-			_, projOpt := projectDD.GetCurrentOption()
+			_, projOpt := projectCycler.GetCurrentOption()
 			if projOpt == "(no projects configured)" {
 				projOpt = ""
 			}
-			_, backendOpt := backendDD.GetCurrentOption()
+			_, backendOpt := backendCycler.GetCurrentOption()
 			a.closeModal(pageNewCoord)
 			if submitted && name != "" {
 				if onSubmit != nil {
@@ -361,8 +539,10 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		form.AddButton("Cancel [esc]", func() { dismiss(false) })
 		form.SetCancelFunc(func() { dismiss(false) })
 
-		// Enter submits from any non-TextArea field; from a TextArea it inserts
-		// a newline as normal.
+		// Enter on an InputField submits the form. On an inlineCycler it must
+		// NOT — the cycler passes Enter through to its own InputHandler, which
+		// calls finishedFunc(KeyTab) to advance focus without submitting. On a
+		// TextArea Enter inserts a newline as usual.
 		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 			if ev.Key() != tcell.KeyEnter {
 				return ev
@@ -372,20 +552,23 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 				if !item.HasFocus() {
 					continue
 				}
-				if _, isTA := item.(*tview.TextArea); isTA {
+				switch item.(type) {
+				case *tview.TextArea:
 					return ev // TextArea: Enter inserts newline
+				case *inlineCycler:
+					return ev // Cycler: Enter handled by its own InputHandler
+				default:
+					dismiss(true)
+					return nil
 				}
-				dismiss(true)
-				return nil
 			}
 			return ev
 		})
 
 		themeFormStyle(form, title)
 
-		// Modal height: 4 single-row fields (Name, Project, Branch, Backend) +
-		// 1 three-row TextArea (Prompt) + 2 button rows + 2 border rows + 3 padding
-		// rows = ~14 rows total.
+		// Modal height: 5 single-row fields (with itemPadding=1 between each)
+		// + 3-row TextArea + button row + 2 border rows = 14 rows total.
 		const newCoordModalHeight = 14
 
 		a.captureFocus()
