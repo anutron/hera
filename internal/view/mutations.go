@@ -106,6 +106,18 @@ type mutationService interface {
 	// chose to mark the role done in hera without flipping the argus task to
 	// :checked: (complete).
 	MarkRoleDone(ctx context.Context, roleID int64) error
+
+	// CompleteRole sets the argus task status directly to "complete" for the
+	// given role. Backs the `s`→done→confirm-yes path (BUG-048): the operator
+	// confirmed ":checked: in argus?" so we unconditionally target "complete"
+	// rather than stepping one rung via AdvanceStatus (which could stop at an
+	// intermediate rung if the argus status was behind the optimistic cache).
+	CompleteRole(ctx context.Context, roleID int64) error
+
+	// CompleteTaskByID sets the argus task status directly to "complete" by
+	// task ID. Backs the `s`→done→confirm-yes path for freelance rows, which
+	// have no hera binding to resolve.
+	CompleteTaskByID(ctx context.Context, taskID string) error
 }
 
 // listAllState is the subset of *ops.ListAllState the bridge uses to
@@ -1346,13 +1358,40 @@ func (b *mutationBridge) stepStatus(advance bool) {
 	// rows fall through to the direct path unchanged.
 	if advance && optStatus == "complete" {
 		doneRoleID := markDoneRoleID
+		// y-path: directly set argus task status to "complete" without
+		// going through the get-then-advance chain (which could stop at an
+		// intermediate rung if the actual argus status is behind the cache).
+		var completeStep func() error
+		if doneRoleID != 0 {
+			// Managed role or orchestrator header: resolve via hera binding.
+			completeRoleID := doneRoleID
+			completeStep = func() error {
+				applyOptimistic()
+				err := b.svc.CompleteRole(b.ctx, completeRoleID)
+				if err != nil {
+					revertOptimistic()
+				}
+				return err
+			}
+		} else {
+			// Freelancer: no hera binding — use the argus task ID directly.
+			freelanceTaskID := sel.ArgusTaskID
+			completeStep = func() error {
+				applyOptimistic()
+				err := b.svc.CompleteTaskByID(b.ctx, freelanceTaskID)
+				if err != nil {
+					revertOptimistic()
+				}
+				return err
+			}
+		}
 		b.goUI(func() {
 			b.modals.ShowConfirm(
 				"Mark done?",
 				"Also mark :checked: in argus? (y/n)",
 				func() {
-					// y: advance the argus task status to complete (:checked:)
-					b.mutate("status step", true, argusStep)
+					// y: directly set the argus task status to complete (:checked:)
+					b.mutate("status step", true, completeStep)
 				},
 				func() {
 					// n: update hera role status to "done" only; no argus touch.

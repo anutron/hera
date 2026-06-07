@@ -306,6 +306,102 @@ func TestPrevStatus_NeverBounceForward(t *testing.T) {
 	}
 }
 
+// --- CompleteRole (BUG-048 y-path) ---
+
+// TestCompleteRole_SetsComplete verifies that CompleteRole calls SetTaskStatus
+// with "complete" directly — without fetching the current status first.
+func TestCompleteRole_SetsComplete(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedBinding(role.ID, "T1", "")
+
+	a := &fakeArgus{statuses: map[string]string{"T1": "in_progress"}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	if err := s.CompleteRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("CompleteRole: %v", err)
+	}
+	if len(a.setStatusCalls) != 1 || a.setStatusCalls[0].TaskID != "T1" || a.setStatusCalls[0].Status != "complete" {
+		t.Fatalf("CompleteRole must call SetTaskStatus(T1, complete); got %+v", a.setStatusCalls)
+	}
+	// Must NOT call GetTaskStatus — we set directly without reading first.
+	if a.statuses["T1"] != "complete" {
+		t.Fatalf("task status must be complete after CompleteRole; got %q", a.statuses["T1"])
+	}
+}
+
+// TestCompleteRole_AlreadyComplete_StillSets verifies that CompleteRole does
+// not short-circuit when the task is already complete (unlike StepTaskStatus
+// which clamps). We always issue the write for a definitive complete.
+func TestCompleteRole_AlreadyComplete_StillSets(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedBinding(role.ID, "T1", "")
+
+	a := &fakeArgus{statuses: map[string]string{"T1": "complete"}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	if err := s.CompleteRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("CompleteRole: %v", err)
+	}
+	if len(a.setStatusCalls) != 1 || a.setStatusCalls[0].Status != "complete" {
+		t.Fatalf("CompleteRole must always write complete; got %+v", a.setStatusCalls)
+	}
+}
+
+// TestCompleteRole_NoBinding_Errors verifies that CompleteRole returns an error
+// when the role has no argus task recorded (no binding).
+func TestCompleteRole_NoBinding_Errors(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	// no binding
+
+	a := &fakeArgus{}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	if err := s.CompleteRole(context.Background(), role.ID); err == nil {
+		t.Fatalf("CompleteRole on unbound role must error")
+	}
+	if len(a.setStatusCalls) != 0 {
+		t.Fatalf("no binding must not POST status; got %+v", a.setStatusCalls)
+	}
+}
+
+// --- CompleteTaskByID (BUG-048 y-path, freelancers) ---
+
+// TestCompleteTaskByID_SetsComplete verifies that CompleteTaskByID calls
+// SetTaskStatus("complete") directly by task ID.
+func TestCompleteTaskByID_SetsComplete(t *testing.T) {
+	db := newFakeDB()
+	a := &fakeArgus{statuses: map[string]string{"T9": "in_review"}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	if err := s.CompleteTaskByID(context.Background(), "T9"); err != nil {
+		t.Fatalf("CompleteTaskByID: %v", err)
+	}
+	if len(a.setStatusCalls) != 1 || a.setStatusCalls[0].TaskID != "T9" || a.setStatusCalls[0].Status != "complete" {
+		t.Fatalf("CompleteTaskByID must call SetTaskStatus(T9, complete); got %+v", a.setStatusCalls)
+	}
+}
+
+// TestCompleteTaskByID_EmptyTaskID_Errors verifies that CompleteTaskByID
+// returns an error on empty task ID without calling argus.
+func TestCompleteTaskByID_EmptyTaskID_Errors(t *testing.T) {
+	db := newFakeDB()
+	a := &fakeArgus{}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+
+	if err := s.CompleteTaskByID(context.Background(), ""); err == nil {
+		t.Fatalf("CompleteTaskByID with empty task ID must error")
+	}
+	if len(a.setStatusCalls) != 0 {
+		t.Fatalf("empty task ID must not POST status; got %+v", a.setStatusCalls)
+	}
+}
+
 // BUG-017: nextStatus never returns a value BELOW its input (no backward bounce
 // on advance — mirrors the Shift-S clamp guarantee for `s`).
 func TestNextStatus_NeverBouncBackward(t *testing.T) {

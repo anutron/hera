@@ -370,6 +370,12 @@ type fakeMutationService struct {
 	markRoleDoneCalls []int64
 	markRoleDoneErr   error
 
+	// CompleteRole / CompleteTaskByID (BUG-048: s→done→confirm-yes path).
+	completeRoleCalls  []int64
+	completeRoleErr    error
+	completeTaskCalls  []string
+	completeTaskErr    error
+
 	// SpawnWorker plumbing.
 	spawnWorkerCalls []ops.SpawnWorkerInput
 	spawnWorkerResp  *ops.SpawnWorkerResult
@@ -559,6 +565,20 @@ func (s *fakeMutationService) MarkRoleDone(_ context.Context, roleID int64) erro
 	defer s.mu.Unlock()
 	s.markRoleDoneCalls = append(s.markRoleDoneCalls, roleID)
 	return s.markRoleDoneErr
+}
+
+func (s *fakeMutationService) CompleteRole(_ context.Context, roleID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeRoleCalls = append(s.completeRoleCalls, roleID)
+	return s.completeRoleErr
+}
+
+func (s *fakeMutationService) CompleteTaskByID(_ context.Context, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeTaskCalls = append(s.completeTaskCalls, taskID)
+	return s.completeTaskErr
 }
 
 func (s *fakeMutationService) ListCompletedAgents(_ context.Context) ([]ops.CompletedAgent, error) {
@@ -2550,9 +2570,10 @@ func TestBridge_OnStatusAdvance_ToDone_ConfirmOpens(t *testing.T) {
 	}
 }
 
-// TestBridge_OnStatusAdvance_ToDone_ConfirmYes_AdvancesArgus verifies that
-// answering yes advances the argus task status (existing behavior).
-func TestBridge_OnStatusAdvance_ToDone_ConfirmYes_AdvancesArgus(t *testing.T) {
+// TestBridge_OnStatusAdvance_ToDone_ConfirmYes_CompletesArgusDirectly verifies
+// that answering yes calls CompleteRole directly (not AdvanceStatus), so the
+// argus task is set to "complete" regardless of its current argus status.
+func TestBridge_OnStatusAdvance_ToDone_ConfirmYes_CompletesArgusDirectly(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
 	m.stubConfirmYes = true
 	sel.sel = helperRoleSelWithStatus("in_review")
@@ -2560,8 +2581,11 @@ func TestBridge_OnStatusAdvance_ToDone_ConfirmYes_AdvancesArgus(t *testing.T) {
 	b.OnStatusAdvance()
 	b.waitIdle()
 
-	if len(svc.advanceCalls) != 1 || svc.advanceCalls[0] != 9 {
-		t.Fatalf("yes must call AdvanceStatus(9); got %v", svc.advanceCalls)
+	if len(svc.completeRoleCalls) != 1 || svc.completeRoleCalls[0] != 9 {
+		t.Fatalf("yes must call CompleteRole(9); got %v", svc.completeRoleCalls)
+	}
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("yes must NOT call AdvanceStatus (use CompleteRole instead); got %v", svc.advanceCalls)
 	}
 	if len(svc.markRoleDoneCalls) != 0 {
 		t.Fatalf("yes must NOT call MarkRoleDone; got %v", svc.markRoleDoneCalls)
@@ -2633,6 +2657,61 @@ func TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmNo_MarksCoordDone(t *t
 	}
 	if len(svc.markRoleDoneCalls) != 1 || svc.markRoleDoneCalls[0] != 42 {
 		t.Fatalf("no must call MarkRoleDone(42) for coord role; got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmYes_CompletesCoordDirectly
+// verifies that the yes-path on an orchestrator header calls CompleteRole on the
+// coord role (not AdvanceStatus).
+func TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmYes_CompletesCoordDirectly(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = true
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    42,
+		CoordTaskID:    "Tcoord",
+		Name:           "proj",
+		Status:         "in_review",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.completeRoleCalls) != 1 || svc.completeRoleCalls[0] != 42 {
+		t.Fatalf("yes must call CompleteRole(42) for coord role; got %v", svc.completeRoleCalls)
+	}
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("yes must NOT call AdvanceStatus; got %v", svc.advanceCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmYes_CompletesTaskDirectly
+// verifies that the yes-path for a freelancer calls CompleteTaskByID (not
+// StepTaskStatus), so the argus task is set to "complete" unconditionally.
+func TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmYes_CompletesTaskDirectly(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = true
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleKind:    "freelance",
+		RoleID:      0,
+		Name:        "feat",
+		ArgusTaskID: "T7",
+		Status:      "in_review",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.completeTaskCalls) != 1 || svc.completeTaskCalls[0] != "T7" {
+		t.Fatalf("yes for freelancer must call CompleteTaskByID(T7); got %v", svc.completeTaskCalls)
+	}
+	if len(svc.stepTaskCalls) != 0 {
+		t.Fatalf("yes must NOT call StepTaskStatus; got %v", svc.stepTaskCalls)
+	}
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("yes must NOT call AdvanceStatus; got %v", svc.advanceCalls)
 	}
 }
 
