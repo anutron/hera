@@ -186,6 +186,10 @@ func (a *dbAdapter) ListLiveBindingsByTask(ctx context.Context, argusTaskID stri
 	return out, nil
 }
 
+func (a *dbAdapter) UpsertRoleStatus(ctx context.Context, roleID int64, status string) error {
+	return a.d.RoleStatus.Upsert(ctx, roleID, db.RoleStatusValue(status))
+}
+
 func (a *dbAdapter) ListLiveBindings(ctx context.Context) ([]*ops.Binding, error) {
 	rows, err := a.d.Bindings.ListLive(ctx)
 	if err != nil {

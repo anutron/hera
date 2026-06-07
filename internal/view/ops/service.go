@@ -83,6 +83,10 @@ type DB interface {
 	// different role, and the archive cascade must not reach through the
 	// stale binding and archive a task an active role depends on.
 	ListLiveBindingsByTask(ctx context.Context, argusTaskID string) ([]*Binding, error)
+
+	// UpsertRoleStatus sets the hera role's thread_status. Backs
+	// MarkRoleDone (the `s` → done → confirm-no path in hera-view).
+	UpsertRoleStatus(ctx context.Context, roleID int64, status string) error
 }
 
 // CreateTaskRequest is the ops layer's neutral description of an argus

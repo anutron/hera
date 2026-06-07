@@ -365,6 +365,10 @@ type fakeMutationService struct {
 	stepTaskCalls          []stepTaskCall
 	stepTaskErr            error
 
+	// MarkRoleDone (BUG-048: s→done→confirm-no path).
+	markRoleDoneCalls []int64
+	markRoleDoneErr   error
+
 	// SpawnWorker plumbing.
 	spawnWorkerCalls []ops.SpawnWorkerInput
 	spawnWorkerResp  *ops.SpawnWorkerResult
@@ -547,6 +551,13 @@ func (s *fakeMutationService) StepTaskStatus(_ context.Context, taskID string, a
 		return "", s.stepTaskErr
 	}
 	return "in_progress", nil
+}
+
+func (s *fakeMutationService) MarkRoleDone(_ context.Context, roleID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.markRoleDoneCalls = append(s.markRoleDoneCalls, roleID)
+	return s.markRoleDoneErr
 }
 
 func (s *fakeMutationService) ListCompletedAgents(_ context.Context) ([]ops.CompletedAgent, error) {
@@ -2128,9 +2139,12 @@ func TestBridge_OnStatusAdvance_Optimistic_ClearsOnFailure(t *testing.T) {
 }
 
 // TestBridge_OnStatusAdvance_Optimistic_FreelancerPath verifies the optimistic
-// overlay on the task-direct (freelancer) path.
+// overlay on the task-direct (freelancer) path. Status="in_review" triggers
+// the BUG-048 confirm modal (advancing to "complete"); stubbing yes fires the
+// argus step that applies the optimistic.
 func TestBridge_OnStatusAdvance_Optimistic_FreelancerPath(t *testing.T) {
-	b, _, sel, _, rp, opt := newBridgeWithOptimizer()
+	b, m, sel, _, rp, opt := newBridgeWithOptimizer()
+	m.stubConfirmYes = true // BUG-048: confirm "also mark in argus?" → yes
 	sel.sel = railSelection{
 		Kind:        selRole,
 		RoleKind:    "freelance",
@@ -2277,6 +2291,160 @@ func TestBridge_OnStatusAdvance_InFlight_NoOptimistic(t *testing.T) {
 
 	if len(opt.Sets()) != 0 {
 		t.Fatalf("SetOptimistic must not fire when mutation is dropped (inFlight); got %v", opt.Sets())
+	}
+}
+
+// --- BUG-048: s → done confirmation modal ---
+
+// helperRoleSelWithStatus returns a managed worker rail selection whose
+// argus status is set so the optimistic path can predict the next rung.
+func helperRoleSelWithStatus(status string) railSelection {
+	return railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "w",
+		RoleKind:    "worker",
+		ArgusTaskID: "T9",
+		Status:      status,
+	}
+}
+
+// TestBridge_OnStatusAdvance_ToDone_ConfirmOpens verifies that a y/n
+// confirmation modal fires when `s` would advance to "complete".
+func TestBridge_OnStatusAdvance_ToDone_ConfirmOpens(t *testing.T) {
+	b, m, sel, _, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmNotOpen = true // don't fire callbacks — just check it opened
+	sel.sel = helperRoleSelWithStatus("in_review")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want confirm modal when advancing to complete; got %d", m.ConfirmCount())
+	}
+	got := m.confirms[0]
+	if got.Title == "" || got.Message == "" {
+		t.Fatalf("confirm must have title+message; got %+v", got)
+	}
+}
+
+// TestBridge_OnStatusAdvance_ToDone_ConfirmYes_AdvancesArgus verifies that
+// answering yes advances the argus task status (existing behavior).
+func TestBridge_OnStatusAdvance_ToDone_ConfirmYes_AdvancesArgus(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = true
+	sel.sel = helperRoleSelWithStatus("in_review")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.advanceCalls) != 1 || svc.advanceCalls[0] != 9 {
+		t.Fatalf("yes must call AdvanceStatus(9); got %v", svc.advanceCalls)
+	}
+	if len(svc.markRoleDoneCalls) != 0 {
+		t.Fatalf("yes must NOT call MarkRoleDone; got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_ToDone_ConfirmNo_MarksRoleDone verifies that
+// answering no marks only the hera role done without touching argus status.
+func TestBridge_OnStatusAdvance_ToDone_ConfirmNo_MarksRoleDone(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = false
+	sel.sel = helperRoleSelWithStatus("in_review")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("no must NOT call AdvanceStatus; got %v", svc.advanceCalls)
+	}
+	if len(svc.markRoleDoneCalls) != 1 || svc.markRoleDoneCalls[0] != 9 {
+		t.Fatalf("no must call MarkRoleDone(9); got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmNo_NoOp verifies that
+// the no-path for a freelancer is a no-op (freelancers have no hera role).
+func TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmNo_NoOp(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = false
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleKind:    "freelance",
+		RoleID:      0,
+		Name:        "feat",
+		ArgusTaskID: "T7",
+		Status:      "in_review",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.stepTaskCalls) != 0 {
+		t.Fatalf("no must NOT call StepTaskStatus; got %v", svc.stepTaskCalls)
+	}
+	if len(svc.markRoleDoneCalls) != 0 {
+		t.Fatalf("no for a freelancer must NOT call MarkRoleDone; got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmNo_MarksCoordDone
+// verifies that the no-path on an orchestrator header marks the coord role done.
+func TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmNo_MarksCoordDone(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	m.stubConfirmYes = false
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    42,
+		CoordTaskID:    "Tcoord",
+		Name:           "proj",
+		Status:         "in_review",
+	}
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if len(svc.advanceCalls) != 0 {
+		t.Fatalf("no must NOT call AdvanceStatus; got %v", svc.advanceCalls)
+	}
+	if len(svc.markRoleDoneCalls) != 1 || svc.markRoleDoneCalls[0] != 42 {
+		t.Fatalf("no must call MarkRoleDone(42) for coord role; got %v", svc.markRoleDoneCalls)
+	}
+}
+
+// TestBridge_OnStatusAdvance_NonComplete_NoConfirm verifies that no modal
+// fires when the advance does not reach "complete" (e.g. pending→in_progress).
+func TestBridge_OnStatusAdvance_NonComplete_NoConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	sel.sel = helperRoleSelWithStatus("pending")
+
+	b.OnStatusAdvance()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 0 {
+		t.Fatalf("no confirm expected for non-complete advance; got %d", m.ConfirmCount())
+	}
+	if len(svc.advanceCalls) != 1 || svc.advanceCalls[0] != 9 {
+		t.Fatalf("non-complete advance must call AdvanceStatus directly; got %v", svc.advanceCalls)
+	}
+}
+
+// TestBridge_OnStatusRevert_ToDone_NoConfirm verifies that `S` (backward step)
+// never triggers the confirmation modal (only `s` forward-to-complete does).
+func TestBridge_OnStatusRevert_ToDone_NoConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithOptimizer()
+	sel.sel = helperRoleSelWithStatus("complete")
+
+	b.OnStatusRevert()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 0 {
+		t.Fatalf("S (revert) must never open a confirm modal; got %d", m.ConfirmCount())
+	}
+	if len(svc.revertCalls) != 1 || svc.revertCalls[0] != 9 {
+		t.Fatalf("S must call RevertStatus(9) directly; got %v", svc.revertCalls)
 	}
 }
 

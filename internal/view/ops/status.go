@@ -82,6 +82,24 @@ func (s *Service) stepStatus(ctx context.Context, roleID int64, advance bool) (s
 	return s.StepTaskStatus(ctx, bnd.ArgusTaskID, advance)
 }
 
+// MarkRoleDone updates the hera role's thread_status to "done" and mirrors
+// the value to argus task_meta (best-effort, like hera_status MCP). It does
+// NOT advance the argus workflow status — this is the `s`→done→confirm-no
+// path: the operator chose to mark the hera role done without flipping the
+// argus task to :checked:.
+func (s *Service) MarkRoleDone(ctx context.Context, roleID int64) error {
+	if err := s.DB.UpsertRoleStatus(ctx, roleID, "done"); err != nil {
+		return fmt.Errorf("ops.MarkRoleDone: persist status: %w", err)
+	}
+	// Mirror to argus task meta — best-effort; skip silently on any error
+	// (same contract as the hera_status MCP handler).
+	bnd, err := s.resolveBinding(ctx, roleID)
+	if err == nil && bnd.ArgusTaskID != "" {
+		_ = s.Argus.PutTaskMeta(ctx, bnd.ArgusTaskID, "thread_status", "done")
+	}
+	return nil
+}
+
 // StepTaskStatus steps an argus task's status directly by task id, bypassing
 // the hera-binding lookup. Backs `s`/`S` against a freelance row — an
 // unmanaged argus task with no hera role or binding to resolve — where the
