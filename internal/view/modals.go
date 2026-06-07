@@ -495,20 +495,18 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		}
 		backendCycler := newInlineCycler("Backend: ", backendOptions, 0, fw)
 
-		promptTA := tview.NewTextArea().
+		promptField := tview.NewInputField().
 			SetLabel("Prompt: ").
-			SetSize(3, fw)
+			SetFieldWidth(fw)
+		wireFieldFocusStyle(promptField)
 
 		form := tview.NewForm().
 			AddFormItem(nameField).
 			AddFormItem(projectCycler).
 			AddFormItem(branchField).
 			AddFormItem(backendCycler).
-			AddFormItem(promptTA).
+			AddFormItem(promptField).
 			SetButtonsAlign(tview.AlignCenter)
-
-		promptTA.SetBackgroundColor(heraBackground)
-		promptTA.SetTextStyle(tcell.StyleDefault.Background(theme.ColorHighlight).Foreground(theme.ColorNormal))
 
 		dismiss := func(submitted bool) {
 			name := strings.TrimSpace(nameField.GetText())
@@ -525,7 +523,7 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 						Project: projOpt,
 						Branch:  strings.TrimSpace(branchField.GetText()),
 						Backend: backendOpt,
-						Prompt:  promptTA.GetText(),
+						Prompt:  strings.TrimSpace(promptField.GetText()),
 					})
 				}
 			} else if !submitted {
@@ -541,8 +539,7 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 
 		// Enter on an InputField submits the form. On an inlineCycler it must
 		// NOT — the cycler passes Enter through to its own InputHandler, which
-		// calls finishedFunc(KeyTab) to advance focus without submitting. On a
-		// TextArea Enter inserts a newline as usual.
+		// calls finishedFunc(KeyTab) to advance focus without submitting.
 		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 			if ev.Key() != tcell.KeyEnter {
 				return ev
@@ -553,8 +550,6 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 					continue
 				}
 				switch item.(type) {
-				case *tview.TextArea:
-					return ev // TextArea: Enter inserts newline
 				case *inlineCycler:
 					return ev // Cycler: Enter handled by its own InputHandler
 				default:
@@ -567,9 +562,12 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 
 		themeFormStyle(form, title)
 
-		// Modal height: 5 single-row fields (with itemPadding=1 between each)
-		// + 3-row TextArea + button row + 2 border rows = 14 rows total.
-		const newCoordModalHeight = 14
+		// Modal height: 5 single-row fields (Name, Project, Branch, Backend,
+		// Prompt) with itemPadding=1 between each, plus button row, surrounding
+		// padding rows, and 2 border rows. Matches the formula used by ShowInput
+		// (height=7 for 1 field) and ShowForm2 (height=9 for 2 fields): each
+		// additional field adds 2 rows, giving 7 + 4*2 = 15 for 5 fields.
+		const newCoordModalHeight = 15
 
 		a.captureFocus()
 		a.pieces.pages.AddPage(pageNewCoord, centeredModal(form, modalWidth, newCoordModalHeight), true, true)
