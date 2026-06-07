@@ -158,6 +158,47 @@ func TestDeleteRole_MissingWorktreeIsSoftNoop(t *testing.T) {
 	}
 }
 
+// TestDeleteRole_WorktreeGitMissingIsSoftNoop covers BUG-054: the worktree
+// directory exists on disk but argus already removed the .git file, so
+// `git worktree remove` would exit 128. The op must skip git and still
+// archive the role without returning an error.
+func TestDeleteRole_WorktreeGitMissingIsSoftNoop(t *testing.T) {
+	// Create a directory that exists but has no .git inside.
+	dir := t.TempDir()
+
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedBinding(role.ID, "T1", dir)
+
+	wr := &fakeWorktreeRemover{}
+	logger := &fakeLogger{}
+	s := NewService(db, &fakeArgus{}, wr, logger)
+	if err := s.DeleteRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("DeleteRole: %v", err)
+	}
+	// WorktreeRemover must not be called — git would fail with exit 128.
+	if len(wr.calls) != 0 {
+		t.Fatalf("WorktreeRemover should not fire when .git is absent: %v", wr.calls)
+	}
+	// Role must still be archived.
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if !got.Archived {
+		t.Fatalf("role should be archived even when worktree .git is missing")
+	}
+	// Audit log should mention the skip.
+	found := false
+	for _, m := range logger.messages {
+		if strings.Contains(m, "already cleaned up") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected audit log for .git-missing skip, got %v", logger.messages)
+	}
+}
+
 func TestDeleteRole_EmptyWorktreePathIsSoftNoop(t *testing.T) {
 	db := newFakeDB()
 	orch := db.seedOrchestrator("foo", false)
