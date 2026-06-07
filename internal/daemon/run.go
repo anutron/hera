@@ -224,6 +224,31 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	argusState := view.NewArgusStateCache(client, view.DefaultArgusPollInterval, log)
 	go argusState.Run(proxyCtx)
 
+	// Eagerly seed the PTY proxy for every live argus task — not just the
+	// hera-bound ones seeded above. Freelancers and newly-adopted tasks
+	// would otherwise only get a subscription when the user first navigates
+	// to them, limiting scrollback to argus's snapshot window (~256 KiB) at
+	// that moment. By subscribing on each ArgusStateCache poll the ring
+	// starts accumulating from the first time a task appears in the list,
+	// giving the full 4 MiB ring depth by first-open.
+	go func() {
+		ch, unsub := argusState.Subscribe()
+		defer unsub()
+		for {
+			select {
+			case <-proxyCtx.Done():
+				return
+			case _, ok := <-ch:
+				if !ok {
+					return
+				}
+				for _, t := range argusState.List() {
+					viewProxy.Ensure(t.ID)
+				}
+			}
+		}
+	}()
+
 	// Now that the proxy manager exists, swap the per-connection session
 	// runner so each accepted WebSocket gets a real wsscreen + tview
 	// surface (Stages D + F + G stitched together).

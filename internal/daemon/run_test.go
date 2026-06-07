@@ -49,8 +49,9 @@ type fakeArgusForDaemon struct {
 	taskStreamReqs []string // argus task ids that opened streams
 	taskStreamHold chan struct{}
 
-	tasksListReqs int  // incremented on every GET /api/tasks
-	tasksListFail bool // when true, /api/tasks returns 500
+	tasksListReqs int    // incremented on every GET /api/tasks
+	tasksListFail bool   // when true, /api/tasks returns 500
+	tasksListBody string // when non-empty, returned verbatim instead of {"tasks":[]}
 }
 
 func (f *fakeArgusForDaemon) handler() http.Handler {
@@ -104,9 +105,14 @@ func (f *fakeArgusForDaemon) handler() http.Handler {
 		f.mu.Lock()
 		f.tasksListReqs++
 		fail := f.tasksListFail
+		body := f.tasksListBody
 		f.mu.Unlock()
 		if fail {
 			http.Error(w, `{"error":"simulated failure"}`, http.StatusInternalServerError)
+			return
+		}
+		if body != "" {
+			_, _ = io.WriteString(w, body)
 			return
 		}
 		_, _ = io.WriteString(w, `{"tasks":[]}`)
@@ -816,6 +822,107 @@ func TestDaemonStart_SeedsProxyForLiveBindings(t *testing.T) {
 	close(fake.taskStreamHold)
 
 	// Stop should tear down proxy subscriptions cleanly (no goroutine leak).
+	d.Stop(context.Background())
+}
+
+// TestDaemonStart_EagerlySeesFreelancers verifies that tasks in argus's task
+// list that have no hera binding (freelancers) are eagerly seeded into the PTY
+// proxy as soon as the ArgusStateCache first polls. Without this, scrollback
+// for a freelancer is limited to argus's 256 KiB snapshot at first-open rather
+// than accumulating from daemon startup.
+func TestDaemonStart_EagerlySeesFreelancers(t *testing.T) {
+	const freelanceID = "freelance-X"
+	fake := &fakeArgusForDaemon{
+		streamClose:    make(chan struct{}),
+		taskStreamHold: make(chan struct{}),
+		// Return a single task from the /api/tasks listing. It has no hera
+		// binding in the DB, so it will NOT be seeded by the Seed(taskIDs)
+		// call at startup — only the eager-seeder goroutine should pick it up.
+		tasksListBody: `{"tasks":[{"id":"` + freelanceID + `","name":"freelancer","project":"demo","status":"in_progress"}]}`,
+	}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	defer close(fake.streamClose)
+
+	apiPort := extractPort(t, srv.URL)
+	sockSvc := &FakeArgusSocketRPC{apiPort: apiPort}
+	sockPath, stopSock := startFakeArgusSocket(t, sockSvc)
+	defer stopSock()
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	pidPath := filepath.Join(stateDir, "fake-argus.pid")
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	cfg := &config.Config{
+		StateDir:        stateDir,
+		ArgusBaseURL:    srv.URL,
+		ListenAddr:      "127.0.0.1:0",
+		IdleDebounce:    100 * time.Millisecond,
+		MCPHeartbeat:    24 * time.Hour,
+		ArgusSocketPath: sockPath,
+		ArgusPIDPath:    pidPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	d, err := Start(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer d.Stop(context.Background())
+
+	// Wait until the freelancer has been snapshotted AND streamed — purely from
+	// the eager-seeder, with no user navigating to the pane.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		fake.mu.Lock()
+		outOK := false
+		for _, id := range fake.taskOutputReqs {
+			if id == freelanceID {
+				outOK = true
+				break
+			}
+		}
+		streamOK := false
+		for _, id := range fake.taskStreamReqs {
+			if id == freelanceID {
+				streamOK = true
+				break
+			}
+		}
+		fake.mu.Unlock()
+		if outOK && streamOK {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	fake.mu.Lock()
+	outs := append([]string(nil), fake.taskOutputReqs...)
+	streams := append([]string(nil), fake.taskStreamReqs...)
+	fake.mu.Unlock()
+
+	seenOut := map[string]bool{}
+	for _, id := range outs {
+		seenOut[id] = true
+	}
+	seenStream := map[string]bool{}
+	for _, id := range streams {
+		seenStream[id] = true
+	}
+	if !seenOut[freelanceID] {
+		t.Errorf("no snapshot fetch for freelancer %q — eager-seeder not wired (got %+v)", freelanceID, outs)
+	}
+	if !seenStream[freelanceID] {
+		t.Errorf("no stream subscribe for freelancer %q — eager-seeder not wired (got %+v)", freelanceID, streams)
+	}
+
+	close(fake.taskStreamHold)
 	d.Stop(context.Background())
 }
 
