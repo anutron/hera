@@ -973,6 +973,38 @@ func (rl *railList) StepToBindable(dir int) bool {
 	return false
 }
 
+// NavToParent moves the cursor to the nearest ancestor row: the first selectable
+// row above the cursor with a strictly shallower depth. No-op when the cursor is
+// already at depth 0 (root coordinators, top-level Archive expando, Freelance
+// project headers). Fires the selection-changed callback on a successful move.
+//
+// This drives plain ← (left arrow) in RAIL focus (BUG-005): jump to parent
+// without collapsing. Examples:
+//   - worker (depth 1) → coordinator header (depth 0)
+//   - sub-coordinator role (depth 1) → root coordinator header (depth 0)
+//   - worker under sub-coordinator (depth 2) → sub-coordinator row (depth 1)
+//   - archived child inside open per-coordinator Archive (depth 2) → Archive expando (depth 1)
+//   - per-coordinator Archive expando (depth 1) → coordinator header (depth 0)
+//   - Archive sub-group item (depth 2) → sub-group header (depth 1)
+//   - Archive sub-group header (depth 1) → top-level Archive expando (depth 0)
+func (rl *railList) NavToParent() {
+	if rl.cursor < 0 || rl.cursor >= len(rl.rows) {
+		return
+	}
+	curDepth := rl.rows[rl.cursor].depth
+	if curDepth == 0 {
+		return // already at root; no-op
+	}
+	for i := rl.cursor - 1; i >= 0; i-- {
+		if rl.selectable(i) && rl.rows[i].depth < curDepth {
+			rl.cursor = i
+			rl.clampOffset()
+			rl.maybeFireSelectionChanged()
+			return
+		}
+	}
+}
+
 // bindable reports whether row i is a pane-bindable selection: a coordinator
 // header or a role row whose ref carries a task target. Freelance repo headers
 // and Archive expandos are selectable for folding but are NOT pane-bindable.
@@ -1690,6 +1722,8 @@ func (rl *railList) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) 
 			rl.CursorDown()
 		case tcell.KeyUp:
 			rl.CursorUp()
+		case tcell.KeyLeft:
+			rl.NavToParent()
 		case tcell.KeyRune:
 			switch e.Rune() {
 			case ' ':

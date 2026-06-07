@@ -1938,3 +1938,216 @@ func TestOrchIcon_ArchivedCoordCompleteStillShowsCheck(t *testing.T) {
 		t.Fatalf("archived coord header must render dimmed; got %v", style)
 	}
 }
+
+// BUG-005: plain ← (left arrow) navigates up the ancestry tree.
+// Each sub-test exercises one leg of the depth-based parent walk.
+func TestNavToParent(t *testing.T) {
+	t.Run("worker jumps to parent coordinator", func(t *testing.T) {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "coord-a", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w1"},
+				{OrchestratorID: 1, RoleID: 11, Name: "w2"},
+			}},
+		})
+		rl.SelectByRoleID(10)
+		rl.NavToParent()
+		if ref, ok := rl.CurrentRef().(*orchEntry); !ok || ref.ID != 1 {
+			t.Fatalf("← from worker should land on parent coordinator; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("root coordinator is no-op", func(t *testing.T) {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "root", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w"},
+			}},
+		})
+		rl.SelectByOrchID(1)
+		rl.NavToParent()
+		if ref, ok := rl.CurrentRef().(*orchEntry); !ok || ref.ID != 1 {
+			t.Fatalf("← on root coordinator should be no-op; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("sub-coordinator role jumps to root coordinator", func(t *testing.T) {
+		child := &orchEntry{ID: 2, Name: "child-orch", Roles: []*roleEntry{
+			{OrchestratorID: 2, RoleID: 20, Name: "leaf"},
+		}}
+		sub := &roleEntry{OrchestratorID: 1, RoleID: 11, Name: "sub", RoleKind: "coordinator", ArgusTaskID: "t-sub", childOrch: child}
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "root", Roles: []*roleEntry{sub}},
+		})
+		rl.SelectByRoleID(11) // sub-coordinator row at depth 1
+		rl.NavToParent()
+		if ref, ok := rl.CurrentRef().(*orchEntry); !ok || ref.ID != 1 {
+			t.Fatalf("← from sub-coordinator should land on root coordinator; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("worker under sub-coordinator jumps to sub-coordinator row", func(t *testing.T) {
+		child := &orchEntry{ID: 2, Name: "child-orch", Roles: []*roleEntry{
+			{OrchestratorID: 2, RoleID: 20, Name: "leaf"},
+		}}
+		sub := &roleEntry{OrchestratorID: 1, RoleID: 11, Name: "sub", RoleKind: "coordinator", ArgusTaskID: "t-sub", childOrch: child}
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "root", Roles: []*roleEntry{sub}},
+		})
+		rl.SelectByRoleID(20) // leaf under sub-coordinator at depth 2
+		rl.NavToParent()
+		if ref, ok := rl.CurrentRef().(*roleEntry); !ok || ref.RoleID != 11 {
+			t.Fatalf("← from nested worker should land on sub-coordinator row; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("archived worker inside open per-coordinator archive jumps to archive expando", func(t *testing.T) {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "proj", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "active"},
+				{OrchestratorID: 1, RoleID: 11, Name: "archived-w", Archived: true},
+			}},
+		})
+		// Open the per-coordinator Archive expando so the archived row renders.
+		if !rl.SelectByArchiveOwner(1) {
+			t.Fatalf("could not select per-coordinator Archive expando")
+		}
+		rl.ToggleCollapse()
+		// Now move to the archived child row.
+		rl.SelectByRoleID(11)
+		rl.NavToParent()
+		// Should land on the Archive expando (railRowArchiveExpando) with owner=1.
+		// CurrentRef returns nil for Archive expandos; check via rows[cursor].
+		r := rl.rows[rl.cursor]
+		if r.kind != railRowArchiveExpando || r.archiveOwner != 1 {
+			t.Fatalf("← from archived child should land on per-coordinator Archive expando; got row kind=%v owner=%d", r.kind, r.archiveOwner)
+		}
+	})
+
+	t.Run("per-coordinator archive expando jumps to coordinator", func(t *testing.T) {
+		rl := newRailList()
+		// Include one active role so the coordinator isn't default-collapsed
+		// (a coordinator with zero active roles collapses by default, hiding the Archive expando).
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "proj", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "active"},
+				{OrchestratorID: 1, RoleID: 11, Name: "w-arch", Archived: true},
+			}},
+		})
+		if !rl.SelectByArchiveOwner(1) {
+			t.Fatalf("could not select per-coordinator Archive expando")
+		}
+		rl.NavToParent()
+		if ref, ok := rl.CurrentRef().(*orchEntry); !ok || ref.ID != 1 {
+			t.Fatalf("← from per-coordinator Archive expando should land on coordinator; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+
+	t.Run("top-level archive expando is no-op", func(t *testing.T) {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "archived-coord", Archived: true},
+		})
+		if !rl.SelectByArchiveOwner(0) {
+			t.Fatalf("could not select top-level Archive expando")
+		}
+		rl.NavToParent()
+		r := rl.rows[rl.cursor]
+		if r.kind != railRowArchiveExpando || r.archiveOwner != archiveTopLevelOwner {
+			t.Fatalf("← on top-level Archive expando should be no-op; got kind=%v owner=%d", r.kind, r.archiveOwner)
+		}
+	})
+
+	t.Run("archive sub-group item jumps to sub-group header", func(t *testing.T) {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "archived-coord", Archived: true},
+		})
+		// Open the top-level Archive expando, then the "Hera sessions" sub-group.
+		if !rl.SelectByArchiveOwner(0) {
+			t.Fatalf("could not select top-level Archive expando")
+		}
+		rl.ToggleCollapse()
+		if !rl.SelectByArchiveGroup("Hera sessions") {
+			t.Fatalf("could not select 'Hera sessions' sub-group")
+		}
+		rl.ToggleCollapse() // open sub-group so coord row renders
+		// Move to the archived coordinator row inside the sub-group.
+		if !rl.SelectByOrchID(1) {
+			t.Fatalf("could not select archived coordinator inside sub-group")
+		}
+		rl.NavToParent()
+		r := rl.rows[rl.cursor]
+		if r.kind != railRowArchiveGroup || r.archiveGroup != "Hera sessions" {
+			t.Fatalf("← from sub-group item should land on 'Hera sessions' header; got kind=%v group=%q", r.kind, r.archiveGroup)
+		}
+	})
+
+	t.Run("archive sub-group header jumps to top-level archive expando", func(t *testing.T) {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "archived-coord", Archived: true},
+		})
+		// Open the top-level Archive expando to expose the sub-group header.
+		if !rl.SelectByArchiveOwner(0) {
+			t.Fatalf("could not select top-level Archive expando")
+		}
+		rl.ToggleCollapse()
+		if !rl.SelectByArchiveGroup("Hera sessions") {
+			t.Fatalf("could not select 'Hera sessions' sub-group header")
+		}
+		rl.NavToParent()
+		r := rl.rows[rl.cursor]
+		if r.kind != railRowArchiveExpando || r.archiveOwner != archiveTopLevelOwner {
+			t.Fatalf("← from sub-group header should land on top-level Archive expando; got kind=%v owner=%d", r.kind, r.archiveOwner)
+		}
+	})
+
+	t.Run("no-op on empty rail", func(t *testing.T) {
+		rl := newRailList()
+		rl.rows = nil
+		rl.cursor = 0
+		rl.NavToParent() // must not panic
+	})
+
+	t.Run("selection-changed fires on move", func(t *testing.T) {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "coord", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w"},
+			}},
+		})
+		rl.SelectByRoleID(10)
+		var fires int
+		rl.SetOnSelectionChanged(func(any) { fires++ })
+		rl.NavToParent()
+		if fires != 1 {
+			t.Fatalf("NavToParent must fire selection-changed once on move; got %d", fires)
+		}
+		// Already at root — second ← is a no-op and must not fire.
+		rl.NavToParent()
+		if fires != 1 {
+			t.Fatalf("NavToParent no-op must not fire selection-changed; got %d", fires)
+		}
+	})
+
+	// InputHandler wiring: KeyLeft in the rail widget's InputHandler must call
+	// NavToParent. Verify by exercising the handler directly.
+	t.Run("InputHandler KeyLeft triggers NavToParent", func(t *testing.T) {
+		rl := newRailList()
+		rl.SetOrchestrators([]*orchEntry{
+			{ID: 1, Name: "coord", Roles: []*roleEntry{
+				{OrchestratorID: 1, RoleID: 10, Name: "w"},
+			}},
+		})
+		rl.SelectByRoleID(10) // cursor on worker
+		handler := rl.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), nil)
+		if ref, ok := rl.CurrentRef().(*orchEntry); !ok || ref.ID != 1 {
+			t.Fatalf("InputHandler KeyLeft should move cursor to parent coordinator; got %T %+v", rl.CurrentRef(), rl.CurrentRef())
+		}
+	})
+}
