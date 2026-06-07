@@ -540,3 +540,128 @@ func TestPinnedTerminalPane_FocusDelegatesToEmbeddedPaneForCursorRendering(t *te
 		t.Errorf("cursor at (%d,%d), want (10,5) — cursor placed at wrong emulator position", cx, cy)
 	}
 }
+
+// TestPinnedTerminalPane_ReflowCallbackFiresOnDimsChange pins the BUG-038 fix:
+// when a bound pane's inner rect changes, onReflow must be called with the new
+// dimensions so the App can replay the ring buffer through a fresh emulator at
+// the new size, reflowing scrollback to the new width.
+func TestPinnedTerminalPane_ReflowCallbackFiresOnDimsChange(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	resizer := &fakePaneResizer{}
+	p := newBoundPinnedTerminalPane(tp, 78, 22, "task-X", resizer)
+
+	type reflowCall struct{ cols, rows int }
+	var mu sync.Mutex
+	var reflowCalls []reflowCall
+	p.onReflow = func(cols, rows int) {
+		mu.Lock()
+		reflowCalls = append(reflowCalls, reflowCall{cols, rows})
+		mu.Unlock()
+	}
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	// First Draw at the construction-time size (78x22 inner = 80x24 alloc):
+	// lastDesiredCols/Rows start at 78x22, inner rect matches — no callback.
+	sim.SetSize(80, 24)
+	p.SetRect(0, 0, 80, 24)
+	p.Draw(sim)
+
+	mu.Lock()
+	got := len(reflowCalls)
+	mu.Unlock()
+	if got != 0 {
+		t.Fatalf("after Draw at construction size: onReflow fired %d times, want 0", got)
+	}
+
+	// Simulate going fullscreen: inner rect expands to 158x46 (160x48 outer).
+	sim.SetSize(160, 48)
+	p.SetRect(0, 0, 160, 48)
+	p.Draw(sim)
+
+	mu.Lock()
+	calls := append([]reflowCall(nil), reflowCalls...)
+	mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("after expansion Draw: onReflow fired %d times, want 1", len(calls))
+	}
+	if calls[0].cols != 158 || calls[0].rows != 46 {
+		t.Fatalf("onReflow called with (%d, %d), want (158, 46)", calls[0].cols, calls[0].rows)
+	}
+
+	// Subsequent Draw at the same size must NOT fire the callback again.
+	p.Draw(sim)
+
+	mu.Lock()
+	got = len(reflowCalls)
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("after second Draw at same size: onReflow fired %d times total, want 1", got)
+	}
+}
+
+// TestPinnedTerminalPane_ReflowCallbackNotFiredForUnbound pins that unbound
+// placeholder panes (taskID == "") never call onReflow, even when the
+// inner rect changes — those panes track their allocation directly and have
+// no ring buffer to replay.
+func TestPinnedTerminalPane_ReflowCallbackNotFiredForUnbound(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	// Unbound pane: taskID == "", resizer == nil — unbound case in Draw.
+	p := newPinnedTerminalPane(tp, 80, 24)
+
+	fired := false
+	p.onReflow = func(_, _ int) { fired = true }
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(160, 48)
+	p.SetRect(0, 0, 160, 48)
+	p.Draw(sim)
+
+	if fired {
+		t.Fatal("onReflow fired for an unbound placeholder pane — must not fire (no ring buffer)")
+	}
+}
+
+// TestPinnedTerminalPane_ReflowCallbackNotFiredForBoundWithoutResizer pins the
+// Option 2 letterbox path: a bound pane with taskID set but resizer == nil
+// keeps its emulator at the pinned PTY size. The inner-rect branch that calls
+// onReflow is guarded by resizer != nil, so onReflow must not fire.
+func TestPinnedTerminalPane_ReflowCallbackNotFiredForBoundWithoutResizer(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	// Bound but no resizer (Option 2 letterbox): taskID set, resizer nil.
+	p := newBoundPinnedTerminalPane(tp, 78, 22, "task-X", nil)
+
+	fired := false
+	p.onReflow = func(_, _ int) { fired = true }
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	// Allocate smaller than pinned — the letterbox case.
+	sim.SetSize(80, 24)
+	p.SetRect(0, 0, 80, 24)
+	p.Draw(sim)
+
+	if fired {
+		t.Fatal("onReflow fired for a bound-without-resizer pane — must not fire (letterbox path)")
+	}
+}
