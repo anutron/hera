@@ -92,7 +92,7 @@ hera start --foreground
 Keep that terminal open (foreground mode). From any argus task with MCP access, bootstrap an orchestrator:
 
 ```
-hera_new_orchestrator(cwd=$PWD, name="my-project", coordinator_role_name="coord", mission="...")
+hera_new_orchestrator(cwd=$PWD, name="my-project", coordinator_role_name="coord", prompt="...")
 ```
 
 Inspect state any time:

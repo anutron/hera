@@ -83,8 +83,7 @@ func (f *fakeDB) seedRole(orchID int64, name string, kind RoleKind, argusProject
 		Name:           name,
 		Kind:           kind,
 		ArgusProject:   argusProject,
-		Mission:        "test mission",
-		Constraints:    "test constraints",
+		Prompt:         "test prompt",
 		Archived:       archived,
 	}
 	f.roles[r.ID] = r
@@ -420,8 +419,7 @@ func (f *fakeDB) CreateRole(ctx context.Context, in CreateRoleInput) (*Role, err
 		Name:           in.Name,
 		Kind:           in.Kind,
 		ArgusProject:   in.ArgusProject,
-		Mission:        in.Mission,
-		Constraints:    in.Constraints,
+		Prompt:         in.Prompt,
 	}
 	f.roles[r.ID] = r
 	return r, nil

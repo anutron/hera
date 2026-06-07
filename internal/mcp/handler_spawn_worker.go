@@ -43,7 +43,6 @@ type SpawnWorkerInput struct {
 	Cwd          string `json:"cwd"`
 	Orchestrator string `json:"orchestrator,omitempty"`
 	RoleName     string `json:"role_name,omitempty"`
-	Mission      string `json:"mission,omitempty"`
 	Prompt       string `json:"prompt"`
 	Project      string `json:"project,omitempty"`
 	Branch       string `json:"branch,omitempty"`
@@ -55,7 +54,7 @@ type SpawnWorkerOutput struct {
 	Orchestrator        string `json:"orchestrator"`
 	RoleName            string `json:"role_name"`
 	Kind                string `json:"kind"`
-	Mission             string `json:"mission"`
+	Prompt              string `json:"prompt"`
 	BindingID           int64  `json:"binding_id"`
 	ArgusTaskID         string `json:"argus_task_id"`
 	PromptAutoSubmitted bool   `json:"prompt_auto_submitted"`
@@ -140,13 +139,14 @@ func (h *SpawnWorkerHandler) Handle(ctx context.Context, raw json.RawMessage) Re
 		worktreePath = gt.WorktreePath
 	}
 
-	// Insert worker role.
+	// Insert worker role. The operator-supplied prompt (verbatim, before the
+	// orientation prefix) is stored as the role's prompt for the Details pane.
 	workerRole, err := h.db.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: role.OrchestratorID,
 		Name:           uniqueName,
 		Kind:           db.KindWorker,
 		ArgusProject:   project,
-		Mission:        in.Mission,
+		Prompt:         prompt,
 	})
 	if err != nil {
 		slog.Default().Warn("hera_spawn_worker: CreateRole failed — argus task orphaned",
@@ -183,7 +183,7 @@ func (h *SpawnWorkerHandler) Handle(ctx context.Context, raw json.RawMessage) Re
 		Orchestrator:        orch.Name,
 		RoleName:            workerRole.Name,
 		Kind:                string(workerRole.Kind),
-		Mission:             workerRole.Mission,
+		Prompt:              workerRole.Prompt,
 		BindingID:           bnd.ID,
 		ArgusTaskID:         created.ID,
 		PromptAutoSubmitted: autoSubmitted,

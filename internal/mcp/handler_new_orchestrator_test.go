@@ -30,7 +30,7 @@ func TestNewOrchestrator_HappyPath(t *testing.T) {
 	h := NewNewOrchestratorHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, NewOrchestratorInput{
 		Cwd: "/tmp/coord", Name: "foo", CoordinatorRoleName: "coord",
-		Mission: "build foo", Constraints: "ship by friday",
+		Prompt: "build foo",
 	}))
 	out := decodeNewOrchOutput(t, resp)
 	if out.Orchestrator != "foo" {
@@ -58,8 +58,8 @@ func TestNewOrchestrator_HappyPath(t *testing.T) {
 	if role.Kind != db.KindCoordinator {
 		t.Fatalf("role.Kind = %s", role.Kind)
 	}
-	if role.Mission != "build foo" {
-		t.Fatalf("mission = %q", role.Mission)
+	if role.Prompt != "build foo" {
+		t.Fatalf("prompt = %q", role.Prompt)
 	}
 	bnd, err := e.db.Bindings.GetLiveByTaskID(ctx, "t-coord")
 	if err != nil {

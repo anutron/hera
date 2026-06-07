@@ -21,8 +21,8 @@ func findOrchEntry(rail *railList, name string) *orchEntry {
 }
 
 // TestBuildCoordDetails_Fields seeds one orchestrator with a coordinator role
-// (carrying mission/constraints/project) and two workers across two repos, then
-// asserts buildCoordDetails derives every available field.
+// (carrying prompt/project) and two workers across two repos, then asserts
+// buildCoordDetails derives every available field.
 func TestBuildCoordDetails_Fields(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
@@ -31,7 +31,7 @@ func TestBuildCoordDetails_Fields(t *testing.T) {
 	orch, _ := d.Orchestrators.Create(ctx, "alpha")
 	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "alpha-coord", Kind: db.KindCoordinator,
-		ArgusProject: "repo-a", Mission: "ship the thing", Constraints: "no force-push",
+		ArgusProject: "repo-a", Prompt: "ship the thing",
 	})
 	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "builder", Kind: db.KindWorker, ArgusProject: "repo-a",
@@ -62,11 +62,8 @@ func TestBuildCoordDetails_Fields(t *testing.T) {
 	if cd.Name != "alpha" {
 		t.Errorf("Name = %q, want alpha", cd.Name)
 	}
-	if cd.Mission != "ship the thing" {
-		t.Errorf("Mission = %q, want %q", cd.Mission, "ship the thing")
-	}
-	if cd.Constraints != "no force-push" {
-		t.Errorf("Constraints = %q, want %q", cd.Constraints, "no force-push")
+	if cd.Prompt != "ship the thing" {
+		t.Errorf("Prompt = %q, want %q", cd.Prompt, "ship the thing")
 	}
 	if cd.Created.IsZero() {
 		t.Errorf("Created is zero; want the orchestrator created_at")
@@ -208,7 +205,7 @@ func TestDetailsPane_RendersCoordFields(t *testing.T) {
 	orch, _ := d.Orchestrators.Create(ctx, "alpha")
 	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "alpha-coord", Kind: db.KindCoordinator,
-		ArgusProject: "repo-zed", Mission: "shipthething", Constraints: "noforce",
+		ArgusProject: "repo-zed", Prompt: "shipthething",
 	})
 	worker, _ := d.Roles.Create(ctx, db.CreateRoleInput{
 		OrchestratorID: orch.ID, Name: "builderx", Kind: db.KindWorker, ArgusProject: "repo-zed",
@@ -228,7 +225,7 @@ func TestDetailsPane_RendersCoordFields(t *testing.T) {
 	a.applyRailSelection(a.pieces.rail.CurrentRef())
 
 	got := renderApp(t, a, 140, 30)
-	for _, want := range []string{"Details", "alpha", "Mission", "shipthething", "repo-zed", "builderx"} {
+	for _, want := range []string{"Details", "alpha", "Prompt", "shipthething", "repo-zed", "builderx"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered screen missing %q\n---\n%s", want, got)
 		}

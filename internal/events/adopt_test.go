@@ -185,12 +185,11 @@ func TestAdopt_HappyPath_RoleAndBindingCreated(t *testing.T) {
 	fixtureCoordinator(t, e, parentTask)
 	e.fake.addTask(argus.Task{ID: childTask, Name: "f2-impl", Project: "frontend", WorktreePath: "/tmp/f2"})
 	e.fake.setMeta(childTask, MetaKeyRole, string(db.KindWorker))
-	e.fake.setMeta(childTask, MetaKeyMission, "implement F2")
-	e.fake.setMeta(childTask, MetaKeyConstraints, "no breaking changes")
+	e.fake.setMeta(childTask, MetaKeyPrompt, "implement F2")
 
 	e.handler.HandleEvent(ctx, linkCreatedEvent(parentTask, childTask, 100))
 
-	// Role should exist with mission/constraints populated.
+	// Role should exist with prompt populated.
 	orch, _ := e.db.Orchestrators.GetByName(ctx, "foo")
 	role, err := e.db.Roles.GetByOrchestratorAndName(ctx, orch.ID, "f2-impl")
 	if err != nil {
@@ -199,11 +198,8 @@ func TestAdopt_HappyPath_RoleAndBindingCreated(t *testing.T) {
 	if role.Kind != db.KindWorker {
 		t.Fatalf("role.Kind = %s", role.Kind)
 	}
-	if role.Mission != "implement F2" {
-		t.Fatalf("role.Mission = %q", role.Mission)
-	}
-	if role.Constraints != "no breaking changes" {
-		t.Fatalf("role.Constraints = %q", role.Constraints)
+	if role.Prompt != "implement F2" {
+		t.Fatalf("role.Prompt = %q", role.Prompt)
 	}
 	if role.ArgusProject != "frontend" {
 		t.Fatalf("role.ArgusProject = %q", role.ArgusProject)

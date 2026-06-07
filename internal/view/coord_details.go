@@ -32,9 +32,8 @@ type rosterEntry struct {
 // coordDetails is the metadata the Details pane renders for a selected
 // coordinator. It is built from the rail's orchEntry (name, coord status,
 // roster — the rail's source of truth, so Details never disagrees with the
-// rail) plus the hera DB (created, mission, constraints, repos, last
-// activity). No values are inferred; every field is read straight from
-// stored state.
+// rail) plus the hera DB (created, prompt, repos, last activity). No values
+// are inferred; every field is read straight from stored state.
 type coordDetails struct {
 	Name string
 
@@ -50,8 +49,7 @@ type coordDetails struct {
 
 	Created      time.Time
 	LastActivity time.Time
-	Mission      string
-	Constraints  string
+	Prompt       string
 	Repos        []string
 	Roster       []rosterEntry
 }
@@ -59,9 +57,9 @@ type coordDetails struct {
 // buildCoordDetails derives the Details metadata for the coordinator described
 // by orch. Name, coord status, and the agent roster come from the rail-built
 // orchEntry (the rail's source of truth — promoted sub-coordinators included);
-// created time, mission, constraints, repos-in-scope, and last-agent-activity
-// come from the hera DB. A sub-coordinator selection passes its childOrch here
-// (itself an *orchEntry), so the same builder serves root and sub coordinators.
+// created time, prompt, repos-in-scope, and last-agent-activity come from the
+// hera DB. A sub-coordinator selection passes its childOrch here (itself an
+// *orchEntry), so the same builder serves root and sub coordinators.
 //
 // It issues only local SQLite reads (no argus HTTP), so it is safe to call on
 // the tview event loop from applyRailSelection.
@@ -114,8 +112,8 @@ func buildCoordDetails(ctx context.Context, database *db.DB, orch *orchEntry) (c
 		return cd, fmt.Errorf("coord details: list roles: %w", err)
 	}
 
-	// Mission/constraints come from the coordinator role — prefer the one the
-	// rail captured (CoordRoleID); else the first coordinator-kind role.
+	// Prompt comes from the coordinator role — prefer the one the rail captured
+	// (CoordRoleID); else the first coordinator-kind role.
 	var coordRole *db.Role
 	for _, role := range roles {
 		if role == nil || role.Kind != db.KindCoordinator {
@@ -130,8 +128,7 @@ func buildCoordDetails(ctx context.Context, database *db.DB, orch *orchEntry) (c
 		}
 	}
 	if coordRole != nil {
-		cd.Mission = coordRole.Mission
-		cd.Constraints = coordRole.Constraints
+		cd.Prompt = coordRole.Prompt
 	}
 
 	// Repos in scope (distinct argus projects) + last activity (max over role
@@ -402,12 +399,9 @@ func (d *detailsPane) Draw(screen tcell.Screen) {
 	}
 	blank()
 
-	// Mission + Constraints (wrapped).
-	emit("Mission:", theme.StyleDimmed)
-	section(cd.Mission)
-	blank()
-	emit("Constraints:", theme.StyleDimmed)
-	section(cd.Constraints)
+	// Prompt (wrapped).
+	emit("Prompt:", theme.StyleDimmed)
+	section(cd.Prompt)
 	blank()
 
 	// Agent roster.

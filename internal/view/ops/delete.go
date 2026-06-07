@@ -21,8 +21,8 @@ const EndReasonUserDeleted = "user_deleted"
 //     path. Soft no-op if path is empty or directory missing.
 //
 // The role row is preserved so archive-visibility (`l`) and role-as-
-// identity guarantees hold. Mission, constraints, and argus_project all
-// survive for a future resurrect.
+// identity guarantees hold. Prompt and argus_project survive for a future
+// resurrect.
 func (s *Service) DeleteRole(ctx context.Context, id int64) error {
 	role, err := s.DB.GetRoleByID(ctx, id)
 	if err != nil {

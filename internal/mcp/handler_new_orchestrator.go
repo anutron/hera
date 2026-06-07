@@ -40,8 +40,7 @@ type NewOrchestratorInput struct {
 	Cwd                 string `json:"cwd"`
 	Name                string `json:"name"`
 	CoordinatorRoleName string `json:"coordinator_role_name"`
-	Mission             string `json:"mission,omitempty"`
-	Constraints         string `json:"constraints,omitempty"`
+	Prompt              string `json:"prompt,omitempty"`
 }
 
 // NewOrchestratorOutput is the success payload.
@@ -49,8 +48,7 @@ type NewOrchestratorOutput struct {
 	Orchestrator string `json:"orchestrator"`
 	RoleName     string `json:"role_name"`
 	Kind         string `json:"kind"`
-	Mission      string `json:"mission"`
-	Constraints  string `json:"constraints"`
+	Prompt       string `json:"prompt"`
 	BindingID    int64  `json:"binding_id"`
 	ArgusTaskID  string `json:"argus_task_id"`
 	Created      bool   `json:"created"` // true if orchestrator was newly created; false if it already existed
@@ -135,8 +133,7 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 		Name:           in.CoordinatorRoleName,
 		Kind:           db.KindCoordinator,
 		ArgusProject:   task.Project,
-		Mission:        in.Mission,
-		Constraints:    in.Constraints,
+		Prompt:         in.Prompt,
 	})
 	if err != nil {
 		return ErrorResponse("hera_new_orchestrator: create role: " + err.Error())
@@ -161,8 +158,7 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 			Orchestrator: orch.Name,
 			RoleName:     role.Name,
 			Kind:         string(role.Kind),
-			Mission:      role.Mission,
-			Constraints:  role.Constraints,
+			Prompt:       role.Prompt,
 			BindingID:    bnd.ID,
 			ArgusTaskID:  task.ID,
 			Created:      created,
@@ -173,8 +169,7 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 		Orchestrator: orch.Name,
 		RoleName:     role.Name,
 		Kind:         string(role.Kind),
-		Mission:      role.Mission,
-		Constraints:  role.Constraints,
+		Prompt:       role.Prompt,
 		BindingID:    bnd.ID,
 		ArgusTaskID:  task.ID,
 		Created:      created,

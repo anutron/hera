@@ -91,14 +91,14 @@ func (s *Service) NewOrchestrator(ctx context.Context, in NewOrchestratorInput) 
 }
 
 // buildBootstrapPrompt assembles the argus-task prompt that drives the
-// new coord into a hera_new_orchestrator MCP call. The mission field is
-// always empty in the MCP call (the coord's prompt/instructions are
-// passed separately as userPrompt, appended after the bootstrap line).
+// new coord into a hera_new_orchestrator MCP call. The prompt field is
+// always empty in the MCP call (the coord's instructions are passed
+// separately as userPrompt, appended after the bootstrap line).
 //
 // Format is stable because spec scenarios assert on it (see
 // hera-view delta spec: "New-coordinator confirm spawns argus task" —
 // asserts the prompt contains the literal hera_new_orchestrator call
-// with the given name + mission="").
+// with the given name + prompt="").
 func buildBootstrapPrompt(name, userPrompt string) string {
 	// We escape any embedded quotes in the user-supplied strings via a
 	// simple replace so the literal expression we emit stays parseable.
@@ -108,7 +108,7 @@ func buildBootstrapPrompt(name, userPrompt string) string {
 	// reader's sanity.
 	q := func(s string) string { return strings.ReplaceAll(s, `"`, `\"`) }
 	bootstrap := fmt.Sprintf(
-		`You are the coordinator for hera orchestrator %q. As your first action call: hera_new_orchestrator(cwd=$PWD, name="%s", coord_role_name="coord", mission="")`,
+		`You are the coordinator for hera orchestrator %q. As your first action call: hera_new_orchestrator(cwd=$PWD, name="%s", coord_role_name="coord", prompt="")`,
 		name, q(name),
 	)
 	if userPrompt != "" {

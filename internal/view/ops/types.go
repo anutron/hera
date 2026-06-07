@@ -36,8 +36,7 @@ type Role struct {
 	Name           string
 	Kind           RoleKind
 	ArgusProject   string
-	Mission        string
-	Constraints    string
+	Prompt         string
 	Archived       bool
 	Pinned         bool
 }
@@ -58,8 +57,7 @@ type CreateRoleInput struct {
 	Name           string
 	Kind           RoleKind
 	ArgusProject   string
-	Mission        string
-	Constraints    string
+	Prompt         string
 }
 
 // CreateBindingInput is the ops-layer input for inserting a new binding.

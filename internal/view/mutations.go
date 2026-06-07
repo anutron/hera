@@ -112,7 +112,7 @@ type modalAPI interface {
 	ShowInput(title, label, initial string, onSubmit func(value string), onCancel func())
 	// ShowForm2 opens a two-field input modal. onSubmit is invoked with both
 	// trimmed values when the operator confirms; onCancel runs on cancel.
-	// Used by the new-project flow (name required, mission optional). Either
+	// Used by the new-project flow (name required, prompt optional). Either
 	// callback may be nil.
 	ShowForm2(title, label1, initial1, label2, initial2 string, onSubmit func(v1, v2 string), onCancel func())
 	// ShowNewCoordForm opens the five-field new-coordinator form modal.

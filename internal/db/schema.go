@@ -142,6 +142,36 @@ CREATE INDEX messages_nudge_scan ON messages(delivery_mode, read_at, nudge_count
     WHERE delivery_mode = 'idle_submit' AND read_at IS NULL;
 `,
 	},
+	{
+		name: "0007_mission_to_prompt",
+		sql: `
+-- Consolidate role free-form fields: rename mission → prompt, DROP constraints.
+-- Mirrors argus's single-prompt model (BUG-040). Existing mission values are
+-- preserved in the new prompt column. Table recreation required because SQLite
+-- does not support dropping columns or renaming columns in all target versions.
+PRAGMA defer_foreign_keys = ON;
+
+CREATE TABLE roles_new (
+    id              INTEGER PRIMARY KEY,
+    orchestrator_id INTEGER NOT NULL REFERENCES orchestrators(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('coordinator','worker','freelance')),
+    argus_project   TEXT NOT NULL,
+    prompt          TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    archived_at     TEXT,
+    pinned_at       TEXT
+);
+INSERT INTO roles_new (id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at)
+    SELECT id, orchestrator_id, name, kind, argus_project, mission, created_at, archived_at, pinned_at FROM roles;
+DROP TABLE roles;
+ALTER TABLE roles_new RENAME TO roles;
+CREATE INDEX roles_by_kind ON roles(orchestrator_id, kind);
+CREATE UNIQUE INDEX roles_active_name ON roles(orchestrator_id, name) WHERE archived_at IS NULL;
+CREATE INDEX roles_by_archived ON roles(archived_at);
+CREATE INDEX roles_by_pinned ON roles(pinned_at);
+`,
+	},
 }
 
 const initialSchema = `
