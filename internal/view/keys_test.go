@@ -1763,14 +1763,25 @@ func hotkeyContains(items []HotkeyItem, key string) bool {
 }
 
 // TestHotkeyItems_RailAdvertisesPruneAndPR proves the RAIL hotkey dictionary
-// surfaces ^r (prune), ^p (PR), s/S (status) so argus's help overlay (D12) can
-// list them. They are help-overlay-only (Bar:false) to keep the bottom bar
-// uncluttered.
+// surfaces ^r (prune) and ^p (PR) so argus's help overlay (D12) can list them.
+// They remain help-overlay-only (Bar:false) to keep the bottom bar uncluttered.
+// s/S (status) are now Bar:true (promoted to the bar in BUG-007).
 func TestHotkeyItems_RailAdvertisesPruneAndPR(t *testing.T) {
 	items := hotkeyItems(FocusRAIL, true)
-	for _, key := range []string{"^r", "^p", "s", "S"} {
+	for _, key := range []string{"^r", "^p"} {
 		if !hotkeyHas(items, key, false) {
 			t.Errorf("RAIL hotkeys must advertise %q with bar:false; items=%+v", key, items)
+		}
+	}
+}
+
+// TestHotkeyItems_RailBottomBarBUG007 proves BUG-007 additions: ←, s, S, /,
+// and ? are all advertised on the bottom bar (Bar:true) in RAIL focus.
+func TestHotkeyItems_RailBottomBarBUG007(t *testing.T) {
+	items := hotkeyItems(FocusRAIL, true)
+	for _, key := range []string{"←", "s", "S", "/", "?"} {
+		if !hotkeyHas(items, key, true) {
+			t.Errorf("RAIL hotkey %q must have Bar:true (BUG-007); items=%+v", key, items)
 		}
 	}
 }

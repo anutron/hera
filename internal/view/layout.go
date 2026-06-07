@@ -212,15 +212,15 @@ func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
 			{Key: "r", Label: "rename", Bar: true},
 			{Key: "^d", Label: "del", Bar: true},
 			{Key: "a", Label: "archive", Bar: true},
-			{Key: "l", Label: "listall", Bar: true},
-			// Help-overlay-only rail keys (Bar:false): kept off the bottom bar
-			// to avoid clutter but advertised so argus's `?` overlay lists them.
-			{Key: "←", Label: "parent", Bar: false},
+			{Key: "←", Label: "parent", Bar: true},
+			{Key: "s", Label: "status+", Bar: true},
+			{Key: "S", Label: "status-", Bar: true},
+			{Key: "/", Label: "search", Bar: true},
+			{Key: "?", Label: "help", Bar: true},
+			// Help-overlay-only rail keys (Bar:false): kept off the bottom bar.
+			{Key: "l", Label: "listall", Bar: false},
 			{Key: "^r", Label: "prune", Bar: false},
 			{Key: "^p", Label: "PR", Bar: false},
-			{Key: "s", Label: "status+", Bar: false},
-			{Key: "S", Label: "status-", Bar: false},
-			{Key: "?", Label: "help", Bar: false},
 			{Key: "Esc", Label: "argus", Bar: true},
 		}
 	}
