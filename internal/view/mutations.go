@@ -329,6 +329,16 @@ type paneReattachNotifier interface {
 	OnTaskReattached(taskID string)
 }
 
+// reattachPaneStarter is called by OnReattach (Enter on dead-session row) so
+// the view can show the REATTACHING splash on the relevant pane and enter it.
+// ClearPaneReattach is called on reattach failure so the operator is not left
+// staring at a frozen splash. nil is safe (tests without rendering; the
+// background reattach still fires). BUG-008.
+type reattachPaneStarter interface {
+	StartPaneReattach(taskID string)
+	ClearPaneReattach(taskID string)
+}
+
 // rowSelector stashes a role id to auto-select on the NEXT broadcaster-driven
 // rail repopulate. Because role/binding inserts trigger an async (~100ms) rail
 // refresh, the new row does not exist at the instant SpawnWorker returns — an
@@ -362,9 +372,10 @@ type mutationBridge struct {
 	help      helpFrameSender
 	rowSel    rowSelector
 	fPinner   freelancePinner
-	optimizer statusOptimizer  // optional: nil is safe (no optimistic render)
-	reattach  paneReattachNotifier // optional: nil is safe (BUG-053)
-	log       *slog.Logger
+	optimizer   statusOptimizer      // optional: nil is safe (no optimistic render)
+	reattach    paneReattachNotifier // optional: nil is safe (BUG-053)
+	splashStart reattachPaneStarter  // optional: nil is safe (BUG-008)
+	log         *slog.Logger
 
 	// inFlight guards the blocking phase of a mutation: while a svc call is
 	// executing on a background goroutine, a second mutation key no-ops with
@@ -1031,20 +1042,29 @@ func (b *mutationBridge) OnReattach() bool {
 
 	taskID := sel.ArgusTaskID
 	name := sel.Name
+
+	// BUG-008: show the REATTACHING splash on the pane and enter it immediately
+	// (on the event loop), so the operator sees progress feedback right away.
+	if b.splashStart != nil {
+		b.splashStart.StartPaneReattach(taskID)
+	}
+
 	b.mutate("reattach", false, func() error {
 		err := b.svc.ReattachAgent(b.ctx, taskID)
 		if err != nil {
+			// Clear the splash since reattach failed so the operator is not stuck.
+			if b.splashStart != nil {
+				b.splashStart.ClearPaneReattach(taskID)
+			}
 			// Surface a human-readable message: distinguish "not supported"
 			// (update argus) from other failures (e.g. network error).
 			return fmt.Errorf("re-attach %q: %s", name, err.Error())
 		}
-		// Notify the App to resize the new session to the current pane
-		// dimensions. The new argus session starts at 80×24 (the argus
-		// default) regardless of what the previous session's size was.
-		// Without this, the resize dedup guard in ProxyManager silently
-		// skips the next dispatch (it thinks the previous session's size is
-		// still applied), leaving the cursor layout wrong until the operator
-		// manually resizes the terminal (BUG-053).
+		// Notify the App to clear the splash + resize the new session to the
+		// current pane dimensions. The new argus session starts at 80×24 (the
+		// argus default) regardless of what the previous session's size was.
+		// Without this, the resize dedup guard in ProxyManager silently skips
+		// the next dispatch, leaving cursor layout wrong (BUG-053).
 		if b.reattach != nil {
 			b.reattach.OnTaskReattached(taskID)
 		}
