@@ -267,6 +267,69 @@ func TestBuildCoordDetails_LiveCoordCompleteBecomesIdle(t *testing.T) {
 	}
 }
 
+// TestDetailsPane_LiveRefreshOnRepopulate verifies BUG-037: after a DB change
+// triggers a rail repopulate (without the operator moving the cursor), the
+// Details pane's roster reflects the new agents — no leave-and-return required.
+func TestDetailsPane_LiveRefreshOnRepopulate(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "alpha")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "alpha-coord", Kind: db.KindCoordinator, ArgusProject: "repo-a",
+	})
+	w1, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "first-worker", Kind: db.KindWorker, ArgusProject: "repo-a",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "t-coord", WorktreePath: "/c"})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w1.ID, ArgusTaskID: "t-w1", WorktreePath: "/w1"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	// Select the coordinator header — puts Details pane into coordinator mode.
+	a.pieces.rail.SelectByOrchID(orch.ID)
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+
+	if a.pieces.details == nil {
+		t.Fatalf("layout must construct a details pane")
+	}
+	if a.pieces.details.data.Name != "alpha" {
+		t.Fatalf("Details Name = %q, want alpha", a.pieces.details.data.Name)
+	}
+	if len(a.pieces.details.data.Roster) != 1 {
+		t.Fatalf("Details Roster len = %d before repopulate, want 1", len(a.pieces.details.data.Roster))
+	}
+
+	// Simulate a worker joining while the Details pane is open: insert a
+	// second worker into the DB (as the hera_join path would), then call
+	// populateRail directly (as the RailRefresher would via RepopulateRail).
+	// The selection does NOT change — the cursor stays on the coordinator header.
+	w2, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "second-worker", Kind: db.KindWorker, ArgusProject: "repo-a",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: w2.ID, ArgusTaskID: "t-w2", WorktreePath: "/w2"})
+
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+
+	// BUG-037: Details pane must now show both workers without the operator
+	// leaving and re-entering the coordinator view.
+	if len(a.pieces.details.data.Roster) != 2 {
+		names := make([]string, len(a.pieces.details.data.Roster))
+		for i, r := range a.pieces.details.data.Roster {
+			names[i] = r.Name
+		}
+		t.Errorf("Details Roster len = %d after repopulate, want 2; roster: %v", len(a.pieces.details.data.Roster), names)
+	}
+}
+
 // Spec (live-coord-never-complete): archived coordinator with complete argus
 // task is NOT masked — buildCoordDetails must keep Status="complete" so the
 // Details pane for an archived coord still shows ✓.

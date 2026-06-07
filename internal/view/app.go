@@ -673,6 +673,13 @@ func (a *App) populateRail(database *db.DB) error {
 	// row now exists in the freshly-populated rail, so move the cursor to it.
 	// Focus is unchanged — the operator stays in RAIL.
 	a.applyPendingSelect()
+
+	// BUG-037: Details pane live-refresh. The rail was just rebuilt with fresh
+	// orchEntry data, but if the cursor stayed on the same row, maybeFireSelectionChanged
+	// is a no-op (cursor index unchanged) so onRailSelectionChanged never fires and
+	// updateCoordDetails is never called. Re-derive the Details pane from the current
+	// selection so a joining worker / status change shows up without leaving the view.
+	a.refreshDetailsForCurrentSelection()
 	return nil
 }
 
@@ -1814,4 +1821,35 @@ func (a *App) updateCoordDetails(orch *orchEntry) {
 		return
 	}
 	a.pieces.details.SetDetails(cd)
+}
+
+// refreshDetailsForCurrentSelection re-derives the Details pane from whatever
+// coordinator the rail currently shows. Called at the tail of populateRail so
+// a DAO-driven repopulate (joining worker, status change) reflects in the pane
+// even when the cursor does not move — the normal selection-change callback is
+// a no-op when the cursor index is unchanged, leaving the pane on a stale
+// snapshot (BUG-037). Runs on the tview event loop. No-op when the rail or
+// Details pane are absent, or when no coordinator is currently selected.
+func (a *App) refreshDetailsForCurrentSelection() {
+	if a.pieces.details == nil || a.pieces.rail == nil {
+		return
+	}
+	switch ref := a.pieces.rail.CurrentRef().(type) {
+	case *orchEntry:
+		a.updateCoordDetails(ref)
+	case *roleEntry:
+		if ref == nil {
+			return
+		}
+		if ref.childOrch != nil {
+			a.updateCoordDetails(ref.childOrch)
+			return
+		}
+		if ref.RoleKind == string(db.KindCoordinator) {
+			orch := findOrchestratorByID(a.pieces.rail.orchestrators, ref.OrchestratorID)
+			if orch != nil {
+				a.updateCoordDetails(orch)
+			}
+		}
+	}
 }
