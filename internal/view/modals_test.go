@@ -643,3 +643,160 @@ func TestShowNewCoordForm_ButtonLabels(t *testing.T) {
 		t.Fatalf("new coord form buttons must advertise keys: got %v want %v", got, want)
 	}
 }
+
+// frontCycler unwraps the centeredModal flex to an inlineCycler at the given
+// form item index. Fails if the item is not an *inlineCycler.
+func frontCycler(t *testing.T, a *App, idx int) *inlineCycler {
+	t.Helper()
+	form := frontForm(t, a)
+	c, ok := form.GetFormItem(idx).(*inlineCycler)
+	if !ok {
+		t.Fatalf("form item %d must be *inlineCycler", idx)
+	}
+	return c
+}
+
+// TestShowNewCoordForm_ProjectIsInlineCycler verifies the Project field (item 1)
+// uses inlineCycler — not tview.DropDown — so no green popup overlay (BUG-035).
+func TestShowNewCoordForm_ProjectIsInlineCycler(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a", "proj-b"}, []string{"claude"}, nil, nil)
+	_ = frontCycler(t, a, 1) // asserts *inlineCycler
+}
+
+// TestShowNewCoordForm_BackendIsInlineCycler verifies the Backend field (item 3)
+// uses inlineCycler (BUG-035).
+func TestShowNewCoordForm_BackendIsInlineCycler(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude", "opus"}, nil, nil)
+	_ = frontCycler(t, a, 3)
+}
+
+// TestShowNewCoordForm_BranchDefaultsToOriginMain verifies the Branch field
+// (item 2) is pre-filled with "origin/main" as a sensible default.
+func TestShowNewCoordForm_BranchDefaultsToOriginMain(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"}, nil, nil)
+
+	form := frontForm(t, a)
+	branchField, ok := form.GetFormItem(2).(*tview.InputField)
+	if !ok {
+		t.Fatalf("form item 2 must be InputField for Branch")
+	}
+	if got := branchField.GetText(); got != "origin/main" {
+		t.Fatalf("Branch field must default to %q, got %q", "origin/main", got)
+	}
+}
+
+// TestShowNewCoordForm_CyclerLeftRightCycles verifies that Left/Right on the
+// Project cycler cycles through options without submitting the form.
+func TestShowNewCoordForm_CyclerLeftRightCycles(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"alpha", "beta", "gamma"}, []string{"claude"}, nil, nil)
+
+	cycler := frontCycler(t, a, 1)
+
+	// Initial: "alpha" (index 0)
+	if idx, opt := cycler.GetCurrentOption(); idx != 0 || opt != "alpha" {
+		t.Fatalf("initial option must be alpha (0), got %d %q", idx, opt)
+	}
+
+	// Focus the cycler so dispatchKey routes to it.
+	a.app.SetFocus(cycler)
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	if idx, opt := cycler.GetCurrentOption(); idx != 1 || opt != "beta" {
+		t.Fatalf("after Right expected beta (1), got %d %q", idx, opt)
+	}
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
+	if idx, opt := cycler.GetCurrentOption(); idx != 0 || opt != "alpha" {
+		t.Fatalf("after Left expected alpha (0), got %d %q", idx, opt)
+	}
+
+	// Form must NOT have been submitted
+	if !a.IsModalActive() {
+		t.Fatalf("Left/Right on cycler must not dismiss the modal")
+	}
+}
+
+// TestShowNewCoordForm_CyclerEnterAdvancesFocusNoSubmit verifies that pressing
+// Enter while the Project cycler is focused advances focus (does NOT submit).
+func TestShowNewCoordForm_CyclerEnterAdvancesFocusNoSubmit(t *testing.T) {
+	a := newModalTestApp(t)
+
+	submitted := false
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"},
+		func(_ NewCoordFormInput) { submitted = true }, nil)
+
+	cycler := frontCycler(t, a, 1)
+	a.app.SetFocus(cycler)
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if submitted {
+		t.Fatalf("Enter on Project cycler must NOT submit the form")
+	}
+	if !a.IsModalActive() {
+		t.Fatalf("Enter on cycler must not dismiss the modal")
+	}
+}
+
+// TestShowNewCoordForm_CyclerWrapAround verifies that cycling past the last
+// option wraps back to the first, and vice versa.
+func TestShowNewCoordForm_CyclerWrapAround(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"x", "y"}, []string{"claude"}, nil, nil)
+
+	cycler := frontCycler(t, a, 1)
+	a.app.SetFocus(cycler)
+
+	// Left from index 0 wraps to last
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
+	if idx, _ := cycler.GetCurrentOption(); idx != 1 {
+		t.Fatalf("Left from 0 must wrap to last (1), got %d", idx)
+	}
+
+	// Right from last wraps to first
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	if idx, _ := cycler.GetCurrentOption(); idx != 0 {
+		t.Fatalf("Right from last must wrap to 0, got %d", idx)
+	}
+}
+
+// TestShowNewCoordForm_SubmitPassesCyclerValues verifies that the onSubmit
+// callback receives the Project/Backend values from the cyclers.
+func TestShowNewCoordForm_SubmitPassesCyclerValues(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var got NewCoordFormInput
+	submitted := false
+	a.ShowNewCoordForm("New coordinator", []string{"proj-a", "proj-b"}, []string{"claude", "opus"},
+		func(in NewCoordFormInput) { got = in; submitted = true }, nil)
+
+	form := frontForm(t, a)
+	nameField, ok := form.GetFormItem(0).(*tview.InputField)
+	if !ok {
+		t.Fatalf("item 0 must be InputField for Name")
+	}
+	nameField.SetText("my-coord")
+
+	// Advance Backend cycler to "opus" (index 1)
+	backendCycler := frontCycler(t, a, 3)
+	a.app.SetFocus(backendCycler)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+
+	// Submit via the Name field (restore focus to nameField then Enter)
+	a.app.SetFocus(nameField)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if !submitted {
+		t.Fatalf("Enter must fire onSubmit")
+	}
+	if got.Project != "proj-a" {
+		t.Fatalf("Project must be proj-a (initial), got %q", got.Project)
+	}
+	if got.Backend != "opus" {
+		t.Fatalf("Backend must be opus (after Right), got %q", got.Backend)
+	}
+}
