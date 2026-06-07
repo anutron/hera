@@ -160,11 +160,23 @@ These items were explicitly considered for v1.0 and deferred. See also NEXT.md f
 
 **Escalate when:** We have a clear algorithm for inferring goal/scope from the role's message history and prompt.
 
-### Coord archive/mark-done/undo MCP verbs
+### Coord archive/mark-done/undo MCP verbs + hera/argus status disconnect (BUG-048)
 
-**Status:** Deferred. Coordinators currently have to drop to argus `task_archive` to close out agents. Coord-side verbs (`hera_archive_role`, `hera_mark_done`, undo) would make lifecycle management possible from the coordination layer.
+**Status:** Active gap. Sharpened during post-1.0 blank-slate verification (2026-06-06).
 
-**Escalate when:** Orchestrators routinely need to close out completed workers from within a coordinator script.
+**What:** Hera's role status (`s/S` in the rail, or `hera_status`) writes to hera's `role_status` table and mirrors to argus `task_meta` as `meta:hera.thread_status`. It does NOT call argus's task lifecycle API. Argus's task status (the checkmark that disconnects the session) is a separate system. Result: a worker stepped to "done" in hera stays fully live in argus — the session remains connected and the task shows active in argus's task list. The operator sees "done" in the hera rail but a live session in argus, which is confusing and implies parity that doesn't exist.
+
+**Design decision (2026-06-06):** Hera must NEVER automatically mark an argus task `:checked:` — that is always a user action. The fix is a y/n confirmation prompt in the rail when the user presses `s` to step a worker to `done`:
+
+> "Also mark :checked: in argus? (y/n)"
+
+- `y` → hera calls argus task complete on the user's behalf (user-initiated, hera is the affordance)
+- `n` → hera role status updates only; argus task stays live
+- `hera_status(status=done)` via MCP → no prompt, no argus touch (coordinator scripts are unaffected)
+
+The coord-side `hera_archive_role` / `hera_mark_done` MCP verbs remain deferred — the y/n prompt covers the interactive case.
+
+**Escalate when:** The status disconnect causes confusion in day-to-day coordination use — already observed on first dogfood run.
 
 ### Hera-aware skills
 
@@ -183,6 +195,40 @@ These items were explicitly considered for v1.0 and deferred. See also NEXT.md f
 **Status:** Deferred. setup.sh is macOS-only. Linux/systemd path and `hera install` / `hera uninstall` CLI subcommands are the natural extensions.
 
 **Escalate when:** A Linux user reports the daemon lifecycle is unmanageable without a managed service.
+
+### hera-view blank on first entry until resize (BUG-049)
+
+**Status:** Active. Observed on post-1.0 blank-slate daemon (2026-06-06).
+
+**What:** Opening hera-view (Ctrl+H) renders the pane layout at the wrong initial dimensions — content wraps incorrectly or the view appears blank. Resizing the terminal forces a redraw and everything renders correctly. This is the `argus pluginViewportSize 13x8 race`: argus sends a small initial viewport size before the real terminal dimensions arrive; hera-view renders at those small dimensions and doesn't re-layout until a resize event triggers a repaint.
+
+**What was fixed vs. what remains:** BUG-038/042 fixed garbled worker PTY content before the first resize. The plugin view's *own* initial dimensions (the outer view, not the inner PTYs) was flagged as still open after PR #13 and remains unfixed.
+
+**Fix direction:** On receiving the first resize event after plugin-view open, force a full re-render even if dimensions haven't changed from the stored value. Alternatively, defer the first render until a non-trivial viewport size is confirmed (guard against 13×8 or other sentinel small sizes).
+
+**Escalate when:** Consistently reproducible — confirmed on every fresh hera-view open.
+
+### Coord should roll finished workers to `in_review` (BUG-050)
+
+**Status:** Active gap. Raised during post-1.0 dogfood session (2026-06-07).
+
+**What:** When a worker finishes and reports back to the coord, the rail doesn't reflect that the work is done. The argus task stays in its current status (whatever the worker left it), leaving the coord to manually clean up. The rail gets cluttered with finished-but-not-acknowledged workers.
+
+**Design decision:** When a worker sends its final report and goes idle, hera should automatically step its hera role status to `in_review` — signaling "done, awaiting coord acknowledgement." This keeps the rail truthful without auto-completing the argus task. The `:checked:` (argus task complete) remains a user action with the y/n prompt (BUG-048). `in_review` is just a status signal, not a lifecycle event.
+
+**Open question:** What's the trigger? Options: (a) worker explicitly calls `hera_status(status=in_review)` as a convention, (b) hera detects the worker has gone idle after sending a message to coord and auto-steps, (c) coord can step a worker's status remotely via a new MCP verb.
+
+**Escalate when:** The clutter from finished workers becomes disruptive in day-to-day coord use.
+
+### `hera_spawn_worker` argus task title uses preamble, not role name (BUG-047)
+
+**Status:** Active bug. Found during post-1.0 blank-slate verification (2026-06-06).
+
+**What:** `hera_spawn_worker` constructs the argus task prompt as `"You are a worker agent under coordinator \"<coord>\". ...\n\n<user prompt>"`. Argus derives the task title (and thus the worktree branch name) from the first line of the prompt. All workers therefore get near-identical worktree paths: `argus/You-are-a-worker-agent-under` and `argus/You-are-a-worker-agent-under-1` — impossible to tell apart in the rail or filesystem.
+
+**Fix direction:** Pass the role name as the argus task `name` field (distinct from the task body). The hera preamble belongs in the task body; `task_create` accepts a `name` field that argus uses as the task title and branch name. Use `role_name` (or `<orchestrator>/<role_name>`) as the task name.
+
+**Escalate when:** Ready to polish the spawn-worker UX; natural companion to the hera-aware skills work.
 
 ## Resolved this pass
 
