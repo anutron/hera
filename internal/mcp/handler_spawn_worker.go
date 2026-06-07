@@ -119,9 +119,11 @@ func (h *SpawnWorkerHandler) Handle(ctx context.Context, raw json.RawMessage) Re
 		role.Name, prompt,
 	)
 
-	// Create the argus task.
+	// Create the argus task. Pass uniqueName so argus titles the task after
+	// the role, not the orientation preamble that leads the prompt body.
 	created, err := h.client.CreateTask(ctx, argus.CreateTaskInput{
 		Project: project,
+		Name:    uniqueName,
 		Prompt:  taskPrompt,
 		Branch:  in.Branch,
 		Backend: in.Backend,

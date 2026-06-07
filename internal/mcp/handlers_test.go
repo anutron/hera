@@ -69,13 +69,17 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 			if f.taskGetWorktree != nil {
 				wtp = f.taskGetWorktree[id]
 			}
+			name := in.Name
+			if name == "" {
+				name = id
+			}
 			f.tasks = append(f.tasks, argus.Task{
 				ID:           id,
-				Name:         id,
+				Name:         name,
 				Project:      in.Project,
 				WorktreePath: wtp,
 			})
-			_ = json.NewEncoder(w).Encode(argus.CreatedTask{ID: id, Name: id, Status: "in_progress"})
+			_ = json.NewEncoder(w).Encode(argus.CreatedTask{ID: id, Name: name, Status: "in_progress"})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(struct {
