@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 // EndReasonUserDeleted is stamped on every binding ended by `^d`. The
@@ -129,6 +130,17 @@ func (s *Service) removeWorktree(ctx context.Context, worktreePath string) error
 			return nil
 		}
 		return fmt.Errorf("stat %q: %w", worktreePath, err)
+	}
+
+	// If the directory exists but has no .git file, argus already cleaned up
+	// the worktree internals. Skip the git command — it would exit 128 —
+	// and proceed with the DB deletion below.
+	if _, err := os.Stat(filepath.Join(worktreePath, ".git")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.logf("worktree remove: skipping %q (no .git, already cleaned up)", worktreePath)
+			return nil
+		}
+		return fmt.Errorf("stat .git in %q: %w", worktreePath, err)
 	}
 
 	s.logf("worktree remove: %q", worktreePath)
