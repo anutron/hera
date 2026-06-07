@@ -76,9 +76,9 @@ func TestRing_SnapshotReturnsIndependentCopy(t *testing.T) {
 	}
 }
 
-func TestRing_DefaultCapacityIs256KiB(t *testing.T) {
+func TestRing_DefaultCapacityIs4MiB(t *testing.T) {
 	r := newRing(DefaultRingCapacity)
-	if cap := r.Capacity(); cap != 256*1024 {
-		t.Fatalf("capacity = %d, want %d", cap, 256*1024)
+	if cap := r.Capacity(); cap != 4*1024*1024 {
+		t.Fatalf("capacity = %d, want %d", cap, 4*1024*1024)
 	}
 }
