@@ -99,6 +99,13 @@ type mutationService interface {
 	// backs `s`/`S` (advance=true steps toward complete).
 	ToggleArchiveTask(ctx context.Context, taskID string, archived bool) error
 	StepTaskStatus(ctx context.Context, taskID string, advance bool) (string, error)
+
+	// MarkRoleDone sets the hera role's thread_status to "done" and mirrors
+	// it to argus task_meta (best-effort), without advancing the argus workflow
+	// status. Backs the `s`→done→confirm-no path in hera-view: the operator
+	// chose to mark the role done in hera without flipping the argus task to
+	// :checked: (complete).
+	MarkRoleDone(ctx context.Context, roleID int64) error
 }
 
 // listAllState is the subset of *ops.ListAllState the bridge uses to
@@ -1108,8 +1115,10 @@ func (b *mutationBridge) openPRRoleID(sel railSelection) int64 {
 	return 0
 }
 
-// OnStatusAdvance steps the selected row's argus status forward (`s`).
-// No modal — status stepping is reversible (`S`).
+// OnStatusAdvance steps the selected row's argus status forward (`s`). When
+// the advance would reach "complete" (the final argus rung), a y/n modal fires
+// first: y advances the argus status to complete (:checked:); n updates only
+// the hera role status to "done" without touching the argus workflow status.
 func (b *mutationBridge) OnStatusAdvance() {
 	b.stepStatus(true)
 }
@@ -1127,6 +1136,13 @@ func (b *mutationBridge) OnStatusRevert() {
 //     freelancer has no hera binding to resolve);
 //   - orchestrator header → the orchestrator's coord role's task;
 //   - anything else → visible feedback, never silence.
+//
+// BUG-048: when advancing to "complete" (the final argus status rung), a y/n
+// confirmation modal fires first. Yes advances the argus task status to
+// :checked: (existing behavior). No updates only the hera role status to
+// "done" without touching the argus workflow status. The modal fires only
+// from this interactive key path — `hera_status(status=done)` via MCP and
+// `S` (backward step) are unaffected.
 //
 // OPTIMISTIC RENDER (BUG-032): the predicted new status is applied to the
 // argus state cache at the START of the mutation goroutine — after the
@@ -1188,8 +1204,53 @@ func (b *mutationBridge) stepStatus(advance bool) {
 		}
 	}
 
-	stepRole := func(roleID int64) {
-		b.mutate("status step", true, func() error {
+	// Compute the argus-step goroutine body and the managed role id (for the
+	// MarkRoleDone no-path). Resolved before the modal so closures capture the
+	// right values regardless of when the callbacks fire.
+	var argusStep func() error
+	var markDoneRoleID int64 // 0 = no managed hera role (freelancer)
+
+	switch sel.Kind {
+	case selRole:
+		if sel.RoleKind == string(db.KindFreelance) {
+			if sel.ArgusTaskID == "" {
+				b.notApplicable(verb + ": this freelancer has no argus task id to step")
+				return
+			}
+			taskID := sel.ArgusTaskID
+			argusStep = func() error {
+				applyOptimistic()
+				_, err := b.svc.StepTaskStatus(b.ctx, taskID, advance)
+				if err != nil {
+					revertOptimistic()
+				}
+				return err
+			}
+			// markDoneRoleID stays 0: freelancers have no hera role
+		} else {
+			roleID := sel.RoleID
+			argusStep = func() error {
+				applyOptimistic()
+				var err error
+				if advance {
+					_, err = b.svc.AdvanceStatus(b.ctx, roleID)
+				} else {
+					_, err = b.svc.RevertStatus(b.ctx, roleID)
+				}
+				if err != nil {
+					revertOptimistic()
+				}
+				return err
+			}
+			markDoneRoleID = roleID
+		}
+	case selOrchestrator:
+		if sel.CoordRoleID == 0 {
+			b.notApplicable(verb + ": this project has no coordinator role to step")
+			return
+		}
+		roleID := sel.CoordRoleID
+		argusStep = func() error {
 			applyOptimistic()
 			var err error
 			if advance {
@@ -1201,36 +1262,43 @@ func (b *mutationBridge) stepStatus(advance bool) {
 				revertOptimistic()
 			}
 			return err
-		})
-	}
-	switch sel.Kind {
-	case selRole:
-		if sel.RoleKind == string(db.KindFreelance) {
-			if sel.ArgusTaskID == "" {
-				b.notApplicable(verb + ": this freelancer has no argus task id to step")
-				return
-			}
-			taskID := sel.ArgusTaskID
-			b.mutate("status step", true, func() error {
-				applyOptimistic()
-				_, err := b.svc.StepTaskStatus(b.ctx, taskID, advance)
-				if err != nil {
-					revertOptimistic()
-				}
-				return err
-			})
-			return
 		}
-		stepRole(sel.RoleID)
-	case selOrchestrator:
-		if sel.CoordRoleID == 0 {
-			b.notApplicable(verb + ": this project has no coordinator role to step")
-			return
-		}
-		stepRole(sel.CoordRoleID)
+		markDoneRoleID = roleID
 	default:
 		b.notApplicable(verb + ": not applicable to this row")
+		return
 	}
+
+	// BUG-048: gate on a y/n confirmation when the advance would reach
+	// "complete". optStatus is only "complete" when we could predict the
+	// next rung (warm cache, non-empty ArgusTaskID/CoordTaskID) — cold-cache
+	// rows fall through to the direct path unchanged.
+	if advance && optStatus == "complete" {
+		doneRoleID := markDoneRoleID
+		b.goUI(func() {
+			b.modals.ShowConfirm(
+				"Mark done?",
+				"Also mark :checked: in argus? (y/n)",
+				func() {
+					// y: advance the argus task status to complete (:checked:)
+					b.mutate("status step", true, argusStep)
+				},
+				func() {
+					// n: update hera role status to "done" only; no argus touch.
+					// Freelancers (doneRoleID==0) have no hera role — no-op.
+					if doneRoleID == 0 {
+						return
+					}
+					b.mutate("mark done", true, func() error {
+						return b.svc.MarkRoleDone(b.ctx, doneRoleID)
+					})
+				},
+			)
+		})
+		return
+	}
+
+	b.mutate("status step", true, argusStep)
 }
 
 func (b *mutationBridge) refresh() {

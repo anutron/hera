@@ -35,11 +35,19 @@ type fakeDB struct {
 	unpinRoleCalls     []int64
 	endBindingCalls    []endCall
 
+	upsertRoleStatusCalls []upsertRoleStatusCall
+	upsertRoleStatusErr   error
+
 	// createRoleErr / createBindingErr, when set, make CreateRole /
 	// CreateBinding fail — backing the post-create insert-failure tests
 	// (the orphan must NOT be rolled back).
 	createRoleErr    error
 	createBindingErr error
+}
+
+type upsertRoleStatusCall struct {
+	RoleID int64
+	Status string
 }
 
 type renameCall struct {
@@ -394,6 +402,13 @@ func (f *fakeDB) ListLiveBindings(ctx context.Context) ([]*Binding, error) {
 		out = append(out, &cp)
 	}
 	return out, nil
+}
+
+func (f *fakeDB) UpsertRoleStatus(ctx context.Context, roleID int64, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.upsertRoleStatusCalls = append(f.upsertRoleStatusCalls, upsertRoleStatusCall{RoleID: roleID, Status: status})
+	return f.upsertRoleStatusErr
 }
 
 func (f *fakeDB) CreateRole(ctx context.Context, in CreateRoleInput) (*Role, error) {
