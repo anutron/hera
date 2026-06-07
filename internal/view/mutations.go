@@ -27,7 +27,7 @@ type NewCoordFormInput struct {
 // directly lets tests inject a fake without standing up ops's full
 // dependency tree.
 type mutationService interface {
-	NewOrchestrator(ctx context.Context, in ops.NewOrchestratorInput) (*ops.CreatedTask, error)
+	NewOrchestrator(ctx context.Context, in ops.NewOrchestratorInput) (*ops.NewOrchestratorResult, error)
 	ListProjects(ctx context.Context) ([]string, error)
 	ListBackends(ctx context.Context) ([]string, error)
 	RenameOrchestrator(ctx context.Context, id int64, newName string) error
@@ -478,14 +478,22 @@ func (b *mutationBridge) OnNew() {
 				return
 			}
 			b.mutate("new coordinator", true, func() error {
-				_, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{
+				res, err := b.svc.NewOrchestrator(b.ctx, ops.NewOrchestratorInput{
 					Name:    in.Name,
 					Project: in.Project,
 					Branch:  in.Branch,
 					Backend: in.Backend,
 					Prompt:  in.Prompt,
 				})
-				return err
+				if err != nil {
+					return err
+				}
+				// Auto-select the new coordinator row after the rail repopulates.
+				// The binding exists now so the Coord pane binds immediately.
+				if b.rowSel != nil && res != nil {
+					b.rowSel.QueueSelectRole(res.RoleID)
+				}
+				return nil
 			})
 		}, nil)
 	})

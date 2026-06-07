@@ -79,3 +79,16 @@ type SpawnWorkerResult struct {
 	// argus POST /api/tasks).
 	ArgusTaskID string
 }
+
+// NewOrchestratorResult carries the identifiers of the orchestrator, coordinator
+// role, and argus task created by NewOrchestrator. The bridge uses RoleID for
+// auto-selection so the new coordinator appears selected after the rail repopulates.
+type NewOrchestratorResult struct {
+	// OrchestratorID is the new orchestrator's database id.
+	OrchestratorID int64
+	// RoleID is the new coordinator role's database id. Used by the bridge to
+	// call QueueSelectRole after the broadcaster-driven rail repopulate.
+	RoleID int64
+	// ArgusTaskID is the created argus task's id.
+	ArgusTaskID string
+}
