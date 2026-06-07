@@ -93,6 +93,17 @@ type ControlSender interface {
 	SendRelease() error
 }
 
+// PendingSelectionFirer flushes any buffered (debounced) rail-selection update
+// immediately so the pane binding is current before a focus transition.
+// Called by the Ctrl+→ handler when stepping from RAIL into a pane: if the
+// operator navigated to a dead-session row and pressed Ctrl+→ within the 120ms
+// debounce window, the pane might still be bound to the previous task; firing
+// the selection ensures maybeAutoReattachPane sees the correct task ID.
+// Must run on the tview event loop. Nil is a safe no-op.
+type PendingSelectionFirer interface {
+	FireSelectionNow()
+}
+
 // PaneScroller scrolls the currently-focused pane's scrollback by delta lines
 // (positive = up into history, negative = down toward the live screen),
 // driving the ⇧↑/⇧↓ keys (D15). It MUST NOT move the rail selection. The router
@@ -211,6 +222,11 @@ type KeyRouter struct {
 	// (still consumed, never forwarded).
 	Control ControlSender
 
+	// SelectFire flushes a pending debounced rail-selection before a
+	// RAIL→pane focus advance so the pane is bound to the current selection
+	// when maybeAutoReattachPane checks it (BUG-012). Nil disables the flush.
+	SelectFire PendingSelectionFirer
+
 	// Ctx is the context used when calling Poster.PostTaskInput. Defaults
 	// to context.Background() when nil.
 	Ctx context.Context
@@ -264,6 +280,17 @@ func (r *KeyRouter) HandleKey(event *tcell.EventKey) *tcell.EventKey {
 		if r.fullscreenActive {
 			r.fullscreenForward()
 		} else {
+			// BUG-012: flush any pending debounced selection BEFORE advancing
+			// focus from RAIL into a pane. If the operator navigated to a
+			// dead-session row and pressed Ctrl+→ within the 120ms debounce
+			// window, the pane is still bound to the previous task; firing
+			// the selection now ensures maybeAutoReattachPane (called inside
+			// notifyBorder → OnFocusChanged) sees the correct task ID.
+			// applyDeadFocusGuard is a no-op while focus is still RAIL, so
+			// this does not snap focus back unexpectedly.
+			if r.Focus.State() == FocusRAIL && r.SelectFire != nil {
+				r.SelectFire.FireSelectionNow()
+			}
 			r.Focus.Advance()
 			r.notifyBorder()
 		}

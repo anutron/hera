@@ -1839,6 +1839,36 @@ func (a *App) fireRailSelection() {
 	a.saveSelectionState()
 }
 
+// fireSelectionNow cancels any pending debounce timer and immediately applies
+// the buffered selection to the panes. Must run on the tview event loop (same
+// requirement as applyRailSelection). Safe to call when no selection is pending.
+//
+// Used by StartPaneReattach (Enter on dead-session row before the 120ms
+// debounce fires) and by the Ctrl+→ handler (BUG-012): in both cases the pane
+// may still be bound to the previous task, so we need the selection applied
+// before maybeAutoReattachPane checks the task ID.
+func (a *App) fireSelectionNow() {
+	a.selectMu.Lock()
+	if !a.selectHasRef || a.closed {
+		a.selectMu.Unlock()
+		return
+	}
+	ref := a.selectPending
+	a.selectPending = nil
+	a.selectHasRef = false
+	if a.selectTimer != nil {
+		a.selectTimer.Stop()
+		a.selectTimer = nil
+	}
+	a.selectMu.Unlock()
+	a.applyRailSelection(ref)
+	a.saveSelectionState()
+}
+
+// FireSelectionNow satisfies PendingSelectionFirer so the KeyRouter can flush
+// a pending debounced selection before stepping focus from RAIL into a pane.
+func (a *App) FireSelectionNow() { a.fireSelectionNow() }
+
 // tryRestoreLastSelection moves the rail cursor to the row described by sel
 // (BUG-001). Tries three stable identifiers in order:
 //
@@ -2231,21 +2261,28 @@ func (a *App) OnTaskReattached(taskID string) {
 	go a.app.QueueUpdateDraw(func() {
 		a.mu.Lock()
 		var pane *pinnedTerminalPane
-		var cols, rows int
 		if a.coordTask == taskID && a.pieces.coord != nil {
 			pane = a.pieces.coord
-			cols, rows = a.pieces.coord.PinnedSize()
 		} else if a.agentTask == taskID && a.pieces.agent != nil {
 			pane = a.pieces.agent
-			cols, rows = a.pieces.agent.PinnedSize()
 		}
 		a.mu.Unlock()
-		// BUG-008: clear the REATTACHING splash so live PTY content streams in.
-		if pane != nil {
-			pane.SetReattaching(false, "")
+		if pane == nil {
+			return
 		}
-		if cols > 0 && rows > 0 && a.src != nil {
-			a.src.ResizeTask(taskID, cols, rows)
+		// BUG-008: clear the REATTACHING splash so live PTY content streams in.
+		pane.SetReattaching(false, "")
+		// BUG-012: use pane.GetRect() rather than PinnedSize() to derive the
+		// resize dimensions. The splash Draw path returns early without updating
+		// pinnedCols/Rows, so PinnedSize() stays at the construction default
+		// (80×24) for the entire reattach window. GetRect() returns the
+		// layout-allocated rect set by the Flex (correct actual allocation),
+		// ensuring the new session receives the real pane dimensions via SIGWINCH.
+		_, _, w, h := pane.GetRect()
+		innerCols := w - 2
+		innerRows := h - 2
+		if innerCols > 0 && innerRows > 0 && a.src != nil {
+			a.src.ResizeTask(taskID, innerCols, innerRows)
 		}
 	})
 }
@@ -2259,6 +2296,17 @@ func (a *App) StartPaneReattach(taskID string) {
 	if taskID == "" {
 		return
 	}
+	// BUG-012: if the pane isn't yet bound to taskID (the operator pressed Enter
+	// on a dead-session row within the 120ms selection debounce window before
+	// applyRailSelection fired), flush the pending selection immediately so the
+	// pane is bound and the splash has somewhere to appear.
+	a.mu.Lock()
+	notBound := a.agentTask != taskID && a.coordTask != taskID
+	a.mu.Unlock()
+	if notBound {
+		a.fireSelectionNow()
+	}
+
 	a.mu.Lock()
 	var pane *pinnedTerminalPane
 	var focusTarget FocusState
@@ -2370,7 +2418,19 @@ func (a *App) maybeAutoReattachPane(state FocusState) {
 	// navigating to a dead-session freelancer never hangs hera. The operator
 	// can still press Enter to trigger OnReattach (the mutation bridge's Enter
 	// path) which handles freelancers correctly.
+	//
+	// BUG-012: for dead-session freelancers reached via Ctrl+→, also snap focus
+	// back to RAIL so keystrokes don't silently go to a dead PTY. Only snap when
+	// the task is actually dead-session (alive freelancers enter normally).
 	if isFreelancer {
+		if prov, ok := a.src.(TaskStateProvider); ok {
+			if st, stOK := prov.TaskState(taskID); stOK && !taskStatusAlive(st.Status) {
+				if a.focus != nil && a.focus.State() != FocusRAIL {
+					a.focus.ToRAIL()
+					a.OnFocusChanged(FocusRAIL)
+				}
+			}
+		}
 		return
 	}
 	prov, ok := a.src.(TaskStateProvider)

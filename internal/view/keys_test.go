@@ -1943,3 +1943,87 @@ func TestKeyRouter_FilterGateOffRoutesNormally(t *testing.T) {
 		t.Fatalf("with the filter gate off, 'a' must fire archive once; got %d", m.archive)
 	}
 }
+
+// --- BUG-012: Ctrl+→ fires PendingSelectionFirer before advancing from RAIL ---
+
+type fakeSelectionFirer struct {
+	fired int
+}
+
+func (f *fakeSelectionFirer) FireSelectionNow() { f.fired++ }
+
+// Ctrl+→ from RAIL must call SelectFire.FireSelectionNow() before advancing
+// focus so the pane binding is current when maybeAutoReattachPane checks it.
+func TestKeyRouter_CtrlRight_FromRAIL_FiresSelectionFire(t *testing.T) {
+	r, _, _, _ := newRouter()
+	sf := &fakeSelectionFirer{}
+	r.SelectFire = sf
+
+	// Focus starts in RAIL (initial state).
+	if r.Focus.State() != FocusRAIL {
+		t.Fatalf("precondition: want RAIL, got %s", r.Focus.State())
+	}
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl))
+
+	if sf.fired != 1 {
+		t.Errorf("Ctrl+→ from RAIL must call FireSelectionNow once; got %d", sf.fired)
+	}
+	if r.Focus.State() != FocusCOORD {
+		t.Errorf("focus must advance to COORD; got %s", r.Focus.State())
+	}
+}
+
+// Ctrl+→ from COORD (not RAIL) must NOT call FireSelectionNow — the selection
+// was already applied on the first RAIL→COORD press.
+func TestKeyRouter_CtrlRight_FromCOORD_DoesNotFireSelection(t *testing.T) {
+	r, _, _, _ := newRouter()
+	sf := &fakeSelectionFirer{}
+	r.SelectFire = sf
+
+	r.Focus.Advance() // RAIL → COORD
+	sf.fired = 0      // reset counter after the RAIL→COORD advance
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl)) // COORD → AGENT
+
+	if sf.fired != 0 {
+		t.Errorf("Ctrl+→ from COORD must NOT call FireSelectionNow; got %d", sf.fired)
+	}
+	if r.Focus.State() != FocusAGENT {
+		t.Errorf("focus must advance to AGENT; got %s", r.Focus.State())
+	}
+}
+
+// Ctrl+→ in fullscreen mode must NOT call FireSelectionNow (fullscreen uses
+// a different code path that doesn't step from RAIL).
+func TestKeyRouter_CtrlRight_Fullscreen_DoesNotFireSelection(t *testing.T) {
+	r, _, _, _ := newRouter()
+	sf := &fakeSelectionFirer{}
+	r.SelectFire = sf
+	fs := &fakeFullscreen{}
+	r.Fullscreen = fs
+
+	r.Focus.Advance() // RAIL → COORD
+	r.toggleFullscreen()
+	sf.fired = 0
+
+	r.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl)) // fullscreen COORD → AGENT
+
+	if sf.fired != 0 {
+		t.Errorf("Ctrl+→ in fullscreen must NOT call FireSelectionNow; got %d", sf.fired)
+	}
+}
+
+// Nil SelectFire must be a safe no-op — Ctrl+→ still advances focus normally.
+func TestKeyRouter_CtrlRight_NilSelectFire_SafeNoOp(t *testing.T) {
+	r, _, _, _ := newRouter()
+	// SelectFire is nil by default in newRouter()
+
+	out := r.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl))
+	if out != nil {
+		t.Fatalf("Ctrl+→ must be consumed; got non-nil event")
+	}
+	if r.Focus.State() != FocusCOORD {
+		t.Errorf("focus must advance to COORD; got %s", r.Focus.State())
+	}
+}
