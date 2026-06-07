@@ -1,15 +1,25 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 )
 
 // migration is one ordered schema step. New migrations append to migrations
 // below; the slice index determines the version.
+//
+// requiresFKOff must be set for any migration that rebuilds a parent table
+// (via CREATE-new → copy → DROP old → RENAME) where child tables reference it
+// with ON DELETE CASCADE. SQLite fires cascade deletes when the old table is
+// dropped. Setting requiresFKOff tells the runner to disable foreign_keys at
+// the connection level (outside any transaction, the only place SQLite accepts
+// this PRAGMA) so the DROP does not trigger cascades. The runner re-enables
+// foreign_keys and runs PRAGMA foreign_key_check after the migration commits.
 type migration struct {
-	name string
-	sql  string
+	name          string
+	sql           string
+	requiresFKOff bool
 }
 
 var migrations = []migration{
@@ -143,14 +153,17 @@ CREATE INDEX messages_nudge_scan ON messages(delivery_mode, read_at, nudge_count
 `,
 	},
 	{
-		name: "0007_mission_to_prompt",
+		name:          "0007_mission_to_prompt",
+		requiresFKOff: true,
 		sql: `
 -- Consolidate role free-form fields: rename mission → prompt, DROP constraints.
 -- Mirrors argus's single-prompt model (BUG-040). Existing mission values are
 -- preserved in the new prompt column. Table recreation required because SQLite
 -- does not support dropping columns or renaming columns in all target versions.
-PRAGMA defer_foreign_keys = ON;
-
+--
+-- requiresFKOff=true: the runner disables PRAGMA foreign_keys at the connection
+-- level before this transaction so DROP TABLE roles does not fire ON DELETE
+-- CASCADE on bindings.role_id (which would hard-delete every binding row).
 CREATE TABLE roles_new (
     id              INTEGER PRIMARY KEY,
     orchestrator_id INTEGER NOT NULL REFERENCES orchestrators(id) ON DELETE CASCADE,
@@ -244,10 +257,20 @@ CREATE TABLE config (
 
 // migrate runs every migration whose index exceeds the database's stored
 // user_version. user_version starts at 0 in a fresh database.
+// When there are pending migrations, a pre-migration backup is created first
+// so a destructive migration is always recoverable (see backup.go).
 func (d *DB) migrate() error {
 	var version int
 	if err := d.sqldb.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read user_version: %w", err)
+	}
+
+	if version >= len(migrations) {
+		return nil // already at latest version; nothing to do
+	}
+
+	if err := d.backupBeforeMigrate(len(migrations)); err != nil {
+		return fmt.Errorf("pre-migration backup: %w", err)
 	}
 
 	for i := version; i < len(migrations); i++ {
@@ -260,6 +283,10 @@ func (d *DB) migrate() error {
 }
 
 func applyMigration(sqldb *sql.DB, m migration, newVersion int) error {
+	if m.requiresFKOff {
+		return applyMigrationFKOff(sqldb, m, newVersion)
+	}
+
 	tx, err := sqldb.Begin()
 	if err != nil {
 		return err
@@ -277,6 +304,82 @@ func applyMigration(sqldb *sql.DB, m migration, newVersion int) error {
 	}
 
 	return tx.Commit()
+}
+
+// applyMigrationFKOff runs a migration that rebuilds a parent table by
+// disabling SQLite foreign key enforcement at the connection level before
+// beginning the transaction. This prevents ON DELETE CASCADE from firing when
+// the old table is dropped during the rebuild.
+//
+// PRAGMA foreign_keys cannot be changed inside a transaction; we must use a
+// dedicated *sql.Conn to guarantee the same connection holds the pragma state
+// and executes the transaction. FK enforcement is always restored on return,
+// even on error.
+func applyMigrationFKOff(sqldb *sql.DB, m migration, newVersion int) error {
+	ctx := context.Background()
+	conn, err := sqldb.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection: %w", err)
+	}
+	// Always re-enable FK enforcement before returning the connection to the
+	// pool, regardless of whether the migration succeeded.
+	defer func() {
+		_, _ = conn.ExecContext(ctx, "PRAGMA foreign_keys = ON")
+		_ = conn.Close()
+	}()
+
+	// Disable FK enforcement outside any transaction (SQLite silently ignores
+	// PRAGMA foreign_keys inside a transaction).
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign_keys: %w", err)
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
+		return err
+	}
+	// PRAGMA user_version does not accept bound parameters; format the int
+	// inline. newVersion is internal, not user-supplied.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", newVersion)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Validate no FK violations were introduced by the rebuild. Run before
+	// the defer re-enables FK so the check happens on the same connection
+	// while we still hold it exclusively. PRAGMA foreign_key_check works
+	// regardless of the foreign_keys enforcement state.
+	rows, err := conn.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign_key_check: %w", err)
+	}
+	var violations []string
+	for rows.Next() {
+		var tbl, parent string
+		var rowid, fkid int64
+		if err := rows.Scan(&tbl, &rowid, &parent, &fkid); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("foreign_key_check scan: %w", err)
+		}
+		violations = append(violations, fmt.Sprintf("%s rowid=%d → %s fkid=%d", tbl, rowid, parent, fkid))
+	}
+	rowsErr := rows.Err()
+	_ = rows.Close() // close before defer fires PRAGMA foreign_keys = ON
+	if rowsErr != nil {
+		return rowsErr
+	}
+	if len(violations) > 0 {
+		return fmt.Errorf("FK violations after %s: %v", m.name, violations)
+	}
+
+	return nil
 }
 
 // SchemaVersion reports the current applied schema version.
