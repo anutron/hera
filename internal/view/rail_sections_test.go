@@ -1208,6 +1208,63 @@ func TestRailList_BUG026_SectionRulesBetweenZones(t *testing.T) {
 	}
 }
 
+// BUG-036: Section separator rules (Pinned, PinnedEnd, Freelance, SectionRule)
+// must span the full inner rect width, not just the content area after the
+// selection-marker gutter. Previously the separator started at x+markerGutter
+// (2 cols in from the inner left edge), leaving a visible indent. The fix passes
+// the full inner rect (x, w) to drawSeparator instead of (cx=x+2, cw=w-2).
+func TestRailList_BUG036_SectionRuleFullWidth_Pinned(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "foo", Pinned: true, Roles: []*roleEntry{
+			{OrchestratorID: 1, RoleID: 10, Name: "w"},
+		}},
+	})
+	// Rail at width 36: tview border at col 0 and col 35; inner rect x=1, w=34.
+	// The Pinned separator (first inner row) must have '─' at col 1 — right after
+	// the left border — not ' ' (what the gutter indent produced before the fix).
+	const railW = 36
+	got := renderRail(t, rl, railW, 8)
+	for _, ln := range strings.Split(got, "\n") {
+		if !strings.Contains(ln, "Pinned") {
+			continue
+		}
+		runes := []rune(ln)
+		if len(runes) < 2 {
+			t.Fatalf("Pinned separator line too short: %q", ln)
+		}
+		if runes[1] != '─' {
+			t.Errorf("Pinned separator must start dashes at column 1 (full inner width); got col 1 = %q in line:\n%q", string(runes[1]), ln)
+		}
+	}
+}
+
+func TestRailList_BUG036_SectionRuleFullWidth_Freelance(t *testing.T) {
+	rl := newRailList()
+	rl.SetOrchestrators([]*orchEntry{
+		{ID: 1, Name: "coord", Roles: []*roleEntry{{OrchestratorID: 1, RoleID: 10, Name: "w"}}},
+	})
+	rl.SetFreelance([]*freelanceProject{
+		{Project: "Hera", Tasks: []*roleEntry{
+			{RoleKind: "freelance", Name: "free-task", ArgusTaskID: "T1", Project: "Hera"},
+		}},
+	})
+	const railW = 36
+	got := renderRail(t, rl, railW, 12)
+	for _, ln := range strings.Split(got, "\n") {
+		if !strings.Contains(ln, "Freelance") {
+			continue
+		}
+		runes := []rune(ln)
+		if len(runes) < 2 {
+			t.Fatalf("Freelance separator line too short: %q", ln)
+		}
+		if runes[1] != '─' {
+			t.Errorf("Freelance separator must start dashes at column 1 (full inner width); got col 1 = %q in line:\n%q", string(runes[1]), ln)
+		}
+	}
+}
+
 // BUG-026: iconFreelance constant uses U+F0BFA (nf-md-alpha_f_box_outline),
 // NOT U+F0229 (which is md-file_presentation_box in the Hack Nerd Font).
 func TestRailList_BUG026_FreelanceGlyphCodepoint(t *testing.T) {

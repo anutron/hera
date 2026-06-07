@@ -1782,17 +1782,15 @@ func (rl *railList) Draw(screen tcell.Screen) {
 			// ancestry trail. The selection marker is already painted above.
 			rl.drawPinnedBreadcrumbRow(screen, cx, y+i, cw, row.role, row.breadcrumb)
 		case railRowPinnedSep:
-			rl.drawSeparator(screen, cx, y+i, cw, " Pinned ")
+			rl.drawSeparator(screen, x, y+i, w, " Pinned ")
 		case railRowPinnedEnd:
-			// Closing rule under the Pinned block — plain horizontal rule, no label.
-			rl.drawSeparator(screen, cx, y+i, cw, "")
+			rl.drawSeparator(screen, x, y+i, w, "")
 		case railRowSectionRule:
-			// Generic section-delineating rule (BUG-026) — plain rule, no label.
-			rl.drawSeparator(screen, cx, y+i, cw, "")
+			rl.drawSeparator(screen, x, y+i, w, "")
 		case railRowArchiveGroup:
 			rl.drawArchiveGroupRow(screen, cx, y+i, cw, row.archiveGroup, row.archiveCount, row.depth, cursor)
 		case railRowFreelanceSep:
-			rl.drawSeparator(screen, cx, y+i, cw, " Freelance ")
+			rl.drawSeparator(screen, x, y+i, w, " Freelance ")
 		case railRowFreelanceProj:
 			rl.drawFreelanceProjRow(screen, cx, y+i, cw, row.fproj, cursor)
 		case railRowArchiveExpando:
