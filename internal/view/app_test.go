@@ -1395,6 +1395,62 @@ func TestPopulateRail_WorkerLessOrchestratorRendersHeaderOnly(t *testing.T) {
 	}
 }
 
+// TestPopulateRail_DeletedOrchestratorGoneFromRail is the BUG-004 regression
+// test. A coordinator created via `n` is physically deleted (the ops layer
+// calls DeleteOrchestratorByID after ^d). The rail must show NO row for the
+// deleted coordinator — not in the active section, not in the Archive section
+// — so the operator never sees a "ghost" row with "Status: unknown".
+func TestPopulateRail_DeletedOrchestratorGoneFromRail(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "test-coord")
+	coordRole, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "hera",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coordRole.ID, ArgusTaskID: "tc", WorktreePath: "/wt"})
+
+	a, err := BuildApp(d, &fakePaneSource{})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Before deletion: the coordinator header is visible.
+	if !a.pieces.rail.SelectByOrchID(orch.ID) {
+		t.Fatalf("coordinator not found in rail before deletion")
+	}
+
+	// Simulate the physical delete that DeleteOrchestrator performs.
+	if err := d.Orchestrators.Delete(ctx, orch.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// Call populateRail directly (not RepopulateRail) to avoid QueueUpdateDraw
+	// blocking — the test has no running tview main loop.
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+
+	// After deletion: the coordinator must not appear anywhere in the rail —
+	// not in the active section and not in the Archive section even when it is
+	// force-expanded. (BUG-004: before the fix, DeleteOrchestrator only archived
+	// the row, which left a ghost in the Archive section.)
+	a.SetShowArchived(true) // force-expand archives
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail (showArchived): %v", err)
+	}
+
+	if a.pieces.rail.SelectByOrchID(orch.ID) {
+		t.Fatalf("coordinator still in rail after physical delete (BUG-004 ghost)")
+	}
+	for _, row := range a.pieces.rail.rows {
+		if row.kind == railRowOrch && row.orch != nil && row.orch.ID == orch.ID {
+			t.Fatalf("deleted coordinator still renders as railRowOrch (ghost in Archive section)")
+		}
+	}
+}
+
 // TestPopulateRail_DeadBindingsHiddenByDefault confirms that when the argus
 // state cache (warm) has NO RECORD of a worker binding's task — the task was
 // pruned / 404s — the role row is filtered out of the rail. With

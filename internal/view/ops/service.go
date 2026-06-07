@@ -24,6 +24,12 @@ type DB interface {
 	UnarchiveOrchestrator(ctx context.Context, id int64) error
 	RenameOrchestrator(ctx context.Context, id int64, newName string) error
 
+	// DeleteOrchestratorByID physically removes an orchestrator and all its
+	// roles and bindings (via ON DELETE CASCADE). Backs `^d` delete — unlike
+	// Archive, which preserves the row for resurrection, this is permanent.
+	// Returns ErrNotFound if no row matches id.
+	DeleteOrchestratorByID(ctx context.Context, id int64) error
+
 	// PinOrchestrator sets pinned_at AND clears archived_at (mutually
 	// exclusive); UnpinOrchestrator clears pinned_at. Backs the `P` toggle.
 	PinOrchestrator(ctx context.Context, id int64) error

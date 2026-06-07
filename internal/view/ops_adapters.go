@@ -59,6 +59,10 @@ func (a *dbAdapter) ArchiveOrchestrator(ctx context.Context, id int64) error {
 	return translateDBErr(a.d.Orchestrators.Archive(ctx, id))
 }
 
+func (a *dbAdapter) DeleteOrchestratorByID(ctx context.Context, id int64) error {
+	return translateDBErr(a.d.Orchestrators.Delete(ctx, id))
+}
+
 func (a *dbAdapter) UnarchiveOrchestrator(ctx context.Context, id int64) error {
 	return translateDBErr(a.d.Orchestrators.Unarchive(ctx, id))
 }

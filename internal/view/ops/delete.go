@@ -81,12 +81,15 @@ func (s *Service) deleteRoleInternal(ctx context.Context, role *Role) error {
 }
 
 // DeleteOrchestrator handles `^d` against an orchestrator. Cascades the
-// role-delete path to every role under the orchestrator (active and
-// already-archived alike — we still want to remove leftover worktrees
-// on already-archived roles), then archives the orchestrator row.
+// argus-task-delete + worktree-remove path to every active role under the
+// orchestrator, then physically removes the orchestrator row from the DB.
+// The physical DELETE cascades (via ON DELETE CASCADE) to roles and bindings,
+// so no ghost row remains in the rail — neither in the active section nor in
+// the Archive section. This is intentionally more destructive than `a` (which
+// only archives, preserving rows for resurrection); `^d` tears down the whole
+// orchestrator permanently.
 func (s *Service) DeleteOrchestrator(ctx context.Context, id int64) error {
-	orch, err := s.DB.GetOrchestratorByID(ctx, id)
-	if err != nil {
+	if _, err := s.DB.GetOrchestratorByID(ctx, id); err != nil {
 		return fmt.Errorf("ops.DeleteOrchestrator: load %d: %w", id, err)
 	}
 
@@ -100,10 +103,12 @@ func (s *Service) DeleteOrchestrator(ctx context.Context, id int64) error {
 		}
 	}
 
-	if !orch.Archived {
-		if err := s.DB.ArchiveOrchestrator(ctx, id); err != nil {
-			return fmt.Errorf("ops.DeleteOrchestrator: archive: %w", err)
-		}
+	// Physical delete: removes the orchestrator row and, via ON DELETE CASCADE,
+	// all child roles and bindings. Unlike ArchiveOrchestrator, this leaves no
+	// row in the DB — the rail's ListInclusive will not return it and the
+	// Archive section will not show a ghost.
+	if err := s.DB.DeleteOrchestratorByID(ctx, id); err != nil && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("ops.DeleteOrchestrator: delete: %w", err)
 	}
 	return nil
 }
