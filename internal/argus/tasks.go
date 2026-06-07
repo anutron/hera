@@ -330,6 +330,26 @@ func (c *Client) UnarchiveTask(ctx context.Context, taskID string) error {
 	return err
 }
 
+// RestartTask asks argus to restart the agent session for taskID via
+// POST /api/tasks/{id}/restart. Argus is expected to re-spawn the agent
+// backend (e.g. claude --resume <last-session-id>) and route its PTY output
+// through the same task output stream so hera's proxy subscription picks up
+// the resumed session automatically.
+//
+// Returns ErrNoTaskRestart when argus responds 404 or 405 (the endpoint does
+// not exist on this daemon version). Other non-2xx responses surface as
+// *HTTPError.
+func (c *Client) RestartTask(ctx context.Context, taskID string) error {
+	status, err := c.doJSON(ctx, "POST", "/api/tasks/"+url.PathEscape(taskID)+"/restart", nil, nil)
+	if err != nil {
+		if status == 404 || status == 405 {
+			return ErrNoTaskRestart
+		}
+		return err
+	}
+	return nil
+}
+
 // DeleteTask destroys an argus task via DELETE /api/tasks/{id}. Argus stops
 // the session, removes the session log + artifacts, deletes the DB row, AND
 // cleans up the task's git worktree + branch (see argus handleDeleteTask).

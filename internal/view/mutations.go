@@ -77,6 +77,14 @@ type mutationService interface {
 	// section visible).
 	ResurrectOrchestrator(ctx context.Context, coordRoleID int64) (*ops.CreatedTask, error)
 
+	// ReattachAgent restarts the dead agent session for the given argus task.
+	// Backs Enter-on-dead-session-agent (BUG-033): when the user presses Enter
+	// on a row whose PTY session has ended, hera asks argus to re-spawn the
+	// agent backend (e.g. claude --resume <last-session-id>). The proxy
+	// subscription picks up the new output automatically via its reconnect loop.
+	// Returns ops.ErrRestartNotSupported when the daemon lacks the endpoint.
+	ReattachAgent(ctx context.Context, argusTaskID string) error
+
 	// SpawnWorker handles the `w` rail key: creates an argus task in the
 	// coordinator's argus_project, inserts a worker role and binding
 	// programmatically, and returns the created role + task ids so the
@@ -210,6 +218,13 @@ type railSelection struct {
 	// (roleArchived), so `a` must treat it as an unarchive target, never
 	// stamp a fresh archive.
 	Dead bool
+
+	// HasDeadSession reports that the argus task record EXISTS but the PTY
+	// session has ended (the task status is terminal). This is distinct from
+	// Dead (record gone). A dead-session row is the reattach target (BUG-033):
+	// Enter asks argus to restart the agent backend so the conversation can
+	// resume from where it left off.
+	HasDeadSession bool
 
 	// WorktreePath is the argus task's worktree path, carried on freelance
 	// rows (RoleKind "freelance", RoleID 0) so `^p` can open a PR straight
@@ -902,6 +917,54 @@ func (b *mutationBridge) OnResurrect() bool {
 			},
 			nil,
 		)
+	})
+	return true
+}
+
+// OnReattach handles Enter on a dead-session (not permanently Dead) worker or
+// freelance row (BUG-033). It calls argus's restart endpoint so the agent
+// backend re-spawns with the previous session's ID — the proxy subscription's
+// normal reconnect backoff loop then picks up the new session's output
+// automatically. Returns true when it owns the Enter (reattach was initiated
+// or a clear "not supported" message was shown), so the router must NOT fall
+// through to pane-entry. Returns false when the selection is not a reattachable
+// dead-session row (the router then runs the normal OnRailSelectEnter path).
+//
+// Guard: the selected row must have a non-empty ArgusTaskID, must NOT be
+// permanently Dead (task record gone — nothing to restart), and must be in a
+// terminal status (roleInputDead). A live row, an archived-coord row (handled
+// by OnResurrect), or a row with no task id is not a reattach target.
+func (b *mutationBridge) OnReattach() bool {
+	sel := b.sel.CurrentRailSelection()
+	if sel.Kind != selRole {
+		return false
+	}
+	// Only dead-session (not permanently dead, not archived) workers and
+	// freelancers are reattachable. OnResurrect handles archived coordinators.
+	if sel.ArgusTaskID == "" || sel.Dead {
+		return false
+	}
+	// A live row (no terminal status) should enter the pane normally.
+	if !sel.HasDeadSession {
+		return false
+	}
+
+	taskID := sel.ArgusTaskID
+	name := sel.Name
+	b.mutate("reattach", false, func() error {
+		err := b.svc.ReattachAgent(b.ctx, taskID)
+		if err != nil {
+			// Surface a human-readable message: distinguish "not supported"
+			// (update argus) from other failures (e.g. network error).
+			return fmt.Errorf("re-attach %q: %s", name, err.Error())
+		}
+		// Success: argus is restarting the session. The proxy subscription's
+		// reconnect loop picks up the new output automatically. No explicit
+		// refresh needed — argus will fire task.status_changed / session.started
+		// events that drive the argus state cache + rail repopulate. Trigger a
+		// courtesy refresh so the status icon updates sooner.
+		b.refresh()
+		return nil
 	})
 	return true
 }

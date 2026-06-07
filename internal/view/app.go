@@ -969,8 +969,13 @@ func (a *App) CurrentRailSelection() railSelection {
 			// toggles purely on the argus side.
 			ArgusArchived: ref.ArgusArchived,
 			Dead:          ref.Dead,
-			WorktreePath:  ref.WorktreePath,
-			Project:       ref.Project,
+			// HasDeadSession is the reattach signal (BUG-033): the task record
+			// exists but the PTY session has ended (terminal status). Distinct
+			// from Dead (record gone). Enter on a dead-session row attempts a
+			// restart rather than entering a pane that has no live PTY.
+			HasDeadSession: !ref.Dead && ref.HasState && !taskStatusAlive(ref.Status),
+			WorktreePath:   ref.WorktreePath,
+			Project:        ref.Project,
 			// Status carries the role's argus status for the optimistic render
 			// path (BUG-032): stepStatus computes the predicted next/prev status
 			// from this value without a separate cache lookup.

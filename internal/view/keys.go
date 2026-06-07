@@ -74,6 +74,13 @@ type MutationHandler interface {
 	// visible — it shows a resurrect confirm), so the router must NOT enter a
 	// pane; false otherwise (the router runs the normal pane-entry path).
 	OnResurrect() bool
+
+	// OnReattach is consulted on Enter-in-RAIL AFTER OnResurrect but BEFORE
+	// pane-entry. It returns true when it owns the Enter (a dead-session worker
+	// or freelancer — it fires a background restart call), so the router must
+	// NOT enter a pane; false otherwise (the router runs the normal
+	// pane-entry path). BUG-033.
+	OnReattach() bool
 }
 
 // ControlSender sends the argus key-surrender control frames the router needs
@@ -348,6 +355,13 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 		// a pane. OnResurrect returns true when it owns the Enter (modal shown);
 		// otherwise we fall through to the normal pane-entry path below.
 		if r.Mutations != nil && r.Mutations.OnResurrect() {
+			return nil
+		}
+		// Reattach-on-Enter: a dead-session (not permanently Dead) worker or
+		// freelancer row fires a background restart call instead of entering a
+		// pane whose PTY is no longer alive. OnReattach returns true when it
+		// owns the Enter (BUG-033); otherwise we fall through to pane-entry.
+		if r.Mutations != nil && r.Mutations.OnReattach() {
 			return nil
 		}
 		target := FocusRAIL
