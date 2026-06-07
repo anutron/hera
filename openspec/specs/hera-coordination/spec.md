@@ -78,6 +78,22 @@ The trailing byte MUST be CR (`\r`, byte 0x0D), not LF. Claude Code's TUI puts t
 - **WHEN** `hera_send` is called with a recipient whose bound task has been idle ≥ the configured debounce AND `AutoInjectEnabled = false`
 - **THEN** hera MUST POST the formatted body WITHOUT a trailing terminator AND record `delivery_mode = "busy_buffer"` on the message row
 
+### Requirement: Unread idle_submit messages are re-nudged with a non-duplicating doorbell
+
+The system SHALL re-nudge unread idle_submit messages via the `DeliveryWatcher` doorbell mechanism when `read_at` remains NULL past `Config.NudgeAfter`. Re-nudges MUST continue at `Config.NudgeEvery` intervals until `read_at` is set or `nudge_count` reaches `Config.MaxNudges`. The doorbell MUST NOT re-inject the original message body.
+
+See the `hera-delivery-receipt` spec for the full nudge loop, doorbell format, schema, and agent contract.
+
+#### Scenario: Unread idle_submit message nudged after NudgeAfter
+
+- **WHEN** a message with `delivery_mode = 'idle_submit'` has `delivered_at` older than `NudgeAfter`, `read_at IS NULL`, and `nudge_count < MaxNudges`
+- **THEN** the delivery watcher MUST inject a doorbell for the recipient and MUST NOT re-inject the original message body
+
+#### Scenario: Nudging stops when recipient reads the message
+
+- **WHEN** `read_at` is set on a message — either by the recipient calling `hera_inbox` (which stamps `read_at` on all returned messages) or by an explicit `hera_mark_read` call
+- **THEN** the delivery watcher MUST NOT emit any further nudge for that message
+
 ### Requirement: Messages buffered when recipient is not idle
 
 The system SHALL inject `<formatted-body>` without a trailing newline into the recipient's argus task PTY when the recipient is not in the idle state. The text remains in the input buffer for the human user to review and submit.

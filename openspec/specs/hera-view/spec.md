@@ -68,47 +68,54 @@ The system SHALL, at daemon startup, open a snapshot fetch (`GET /api/tasks/{id}
 
 The system SHALL render the body inside top and bottom chrome bars whenever the view application is active, in one of THREE modes determined by the rail's current selection (mirroring the canonical prototype's SOLO/PAIR behavior):
 
-- **Coordinator mode** (a coordinator row is selected — root or sub): rail + a single full-width **HERA pane** (the coordinator's own PTY). No AGENT pane is composed.
-- **Agent mode** (a worker/agent row is selected): rail + **HERA pane** (the agent's coordinator's PTY) + **AGENT pane** (the agent's PTY) — a split body.
-- **Freelance mode** (a freelance row is selected): rail + a single full-width **AGENT pane** (the freelancer's PTY). No HERA pane is composed.
+- **Coordinator mode** (a coordinator row is selected — root or sub): rail + a full-width **Coord pane** (the coordinator's own PTY) + a right-side Details pane. No AGENT pane is composed.
+- **Agent mode** (a worker/agent row is selected): rail + **Coord pane** (the agent's coordinator's PTY) + **AGENT pane** (the agent's PTY) — a split body.
+- **Freelance mode** (a freelance row is selected): rail + a single full-width **AGENT pane** (the freelancer's PTY). No Coord pane is composed.
 
-The center pane is labeled **HERA** (the coordinator), not "coord". The top bar SHALL contain literal text `HERA` left-aligned. Bottom-bar hints are advertised to argus per the key-surrender contract (argus draws the plugin-mode bar); when rendered standalone the bottom bar is focus-aware.
+The center coordinator pane is titled **Coord** (parallel to the **Agent** pane title), NOT "HERA": the argus chrome already identifies the view, so a hera-stamped "HERA" label is redundant. The top chrome bar MUST NOT stamp any hera branding (no literal `HERA`/`Hera` text); it is kept as an empty 1-row bar so the body's vertical geometry is unchanged. The rail keeps its "Rail" title. Bottom-bar hints are advertised to argus per the key-surrender contract (argus draws the plugin-mode bar); when rendered standalone the bottom bar is focus-aware.
 
-#### Scenario: Coordinator selection is a full-width HERA pane
+A pane that has no bound task — the **empty/placeholder state** ("(no coord selected)" / "(no agent selected)") — MUST fill its layout-allocated rect exactly as a bound pane does: the placeholder pane's emulator surface MUST track the full inner rect of its Flex allocation rather than staying at the construction-time default size, so empty coord/agent panes fill the available vertical space and split the horizontal space on the same proportions as their content counterparts. No source-PTY resize is dispatched for an unbound placeholder pane (there is no PTY to size).
+
+#### Scenario: Coordinator selection is a full-width Coord pane
 
 - **WHEN** a coordinator row (root or sub) is selected
-- **THEN** the body MUST be the rail plus a single full-width HERA pane bound to that coordinator's PTY AND no AGENT pane MUST be present
+- **THEN** the body MUST be the rail plus a full-width Coord pane bound to that coordinator's PTY (alongside the Details pane) AND no AGENT pane MUST be present
 
-#### Scenario: Agent selection splits HERA + AGENT
+#### Scenario: Agent selection splits Coord + AGENT
 
 - **WHEN** a worker/agent row is selected
-- **THEN** the body MUST be the rail + a HERA pane bound to the agent's coordinator + an AGENT pane bound to the agent
+- **THEN** the body MUST be the rail + a Coord pane bound to the agent's coordinator + an AGENT pane bound to the agent
 
 #### Scenario: Freelance mode collapses to rail + full-width agent
 
 - **WHEN** the rail selection moves to a freelance row
-- **THEN** the body MUST be the navigation rail plus a single AGENT pane spanning the remaining width AND no HERA pane MUST be present
+- **THEN** the body MUST be the navigation rail plus a single AGENT pane spanning the remaining width AND no Coord pane MUST be present
 
 #### Scenario: Switching selection re-composes the mode
 
 - **WHEN** the rail selection moves between a coordinator, an agent, and a freelancer
-- **THEN** the body MUST re-compose to the corresponding mode (full-width HERA / split / full-width AGENT), tearing down the now-absent pane's subscription
+- **THEN** the body MUST re-compose to the corresponding mode (full-width Coord / split / full-width AGENT), tearing down the now-absent pane's subscription
 
 #### Scenario: Project-mode rail traversal updates both panes
 
 - **WHEN** rail selection moves to a worker agent whose project's coord differs from the previous selection's project
 - **THEN** the COORD pane MUST switch to the new project's coord binding ring buffer AND the AGENT pane MUST switch to the new agent's binding ring buffer
 
-#### Scenario: Freelance mode releases the coord binding
+#### Scenario: Empty coord and agent panes fill their allocation
 
-- **WHEN** a freelance row is selected
-- **THEN** the COORD pane's proxy subscription MUST be released AND the coord task target MUST be empty so no keystroke is forwarded to a coordinator task
+- **WHEN** the body composes an empty coord pane and/or an empty agent pane (no task bound, showing the placeholder text)
+- **THEN** each empty pane MUST fill the full vertical space of its Flex allocation and the two panes MUST split the horizontal space on the same proportions as when they hold live content (no shorter, unevenly-sized placeholder boxes)
+
+#### Scenario: Top chrome bar carries no hera branding
+
+- **WHEN** the view surface renders in any mode
+- **THEN** the top chrome row MUST NOT contain the literal text `HERA` or `Hera` AND the coordinator pane MUST be titled `Coord` (not `HERA`)
 
 ### Requirement: Freelance (unmanaged argus) agents render in a Freelance rail section grouped by repo
 
-A **freelancer** is a live argus task that hera has never bound to any role — a vanilla agent created directly in argus that makes no calls to hera. The system SHALL surface freelancers in the rail so the operator never has to leave hera to notice that an unmanaged agent needs attention.
+A **freelancer** is a live argus task that hera does not currently manage. The system SHALL surface freelancers in the rail so the operator never has to leave hera to notice that an unmanaged agent needs attention — and so that EVERY non-archived argus task is reachable in the rail.
 
-The system SHALL determine the freelancer set from argus's live task list (the argus state cache): every non-archived argus task whose id is NOT referenced by any hera binding (live or ended) is a freelancer. These SHALL be rendered in a "Freelance" section below all project (orchestrator) rows and above the Archive separator, introduced by a "Freelance" separator that is shown ONLY when at least one freelancer exists (so the operator never lands on an empty section).
+The system SHALL determine the freelancer set from argus's live task list (the argus state cache): every non-archived argus task is a freelancer UNLESS (a) at least one hera binding for it is LIVE (`ended_at` null) — it renders under its orchestrator — or (b) it already renders as a role row in the orchestrator tree (workers and sub-coordinators render via the latest-binding fallback even after their bindings end). A hera binding is hera's claim on a task: a live task whose bindings have ALL ENDED (a coordinator binding reconciled away by resync, an archive round-trip that ended the binding) and that no rendered role row carries MUST fall back to the Freelance section — hera's claim has lapsed, and a live argus task MUST NOT become unreachable through hera-side binding bookkeeping. (A task hera has never bound remains the common freelancer case; a coordinator task surfaced this way is ADDITIONALLY still reachable through its orchestrator header's coord-pane binding.) Freelancers SHALL be rendered in a "Freelance" section below all project (orchestrator) rows and above the Archive separator, introduced by a "Freelance" separator that is shown ONLY when at least one freelancer exists (so the operator never lands on an empty section).
 
 Within the Freelance section, freelancers SHALL be grouped by argus project (repo) — "the same way Argus shows them" — under per-repo headers sorted by project name. Each repo header MUST render a collapse chevron (`▾` expanded / `▸` collapsed), the project name, and the count of its live freelance tasks, and MUST toggle expand/collapse when the operator presses Space while that header is selected. Repo groups default to expanded so freelancers are visible by default. Each freelance row MUST render its argus-reported state (status / idle / needs-input) via the same icon rules as managed rows, and its elapsed column MUST show argus's own age string.
 
@@ -116,13 +123,23 @@ Archived argus tasks MUST NOT appear in the Freelance section by default; they M
 
 #### Scenario: Unmanaged argus tasks surface as freelancers grouped by repo
 
-- **WHEN** the rail renders and argus reports live tasks that hera has never bound
+- **WHEN** argus reports live tasks whose ids no hera binding references
 - **THEN** a "Freelance" section MUST appear below all project rows, with those tasks grouped under per-repo headers sorted by project name
 
-#### Scenario: Hera-managed tasks are excluded from Freelance
+#### Scenario: Tasks with a live hera binding are excluded from Freelance
 
-- **WHEN** an argus task is referenced by any hera binding (live or ended)
+- **WHEN** an argus task has at least one live hera binding
 - **THEN** that task MUST NOT appear in the Freelance section (it renders under its orchestrator instead)
+
+#### Scenario: A live task whose hera bindings have all ended falls back to Freelance
+
+- **WHEN** a non-archived argus task's hera bindings have ALL ended (e.g. a coordinator role's binding ended by `resync_missing`) and no role row in the orchestrator tree renders that task id
+- **THEN** the task MUST appear as a named row in the Freelance section under its repo group, selectable like any freelancer
+
+#### Scenario: Role rows rendered via the latest-binding fallback do not duplicate into Freelance
+
+- **WHEN** a worker role's only binding has ended but the role still renders as a row in the orchestrator tree carrying that task id via the latest-binding fallback
+- **THEN** that task MUST NOT additionally appear in the Freelance section
 
 #### Scenario: Space toggles a Freelance repo group
 
@@ -131,12 +148,12 @@ Archived argus tasks MUST NOT appear in the Freelance section by default; they M
 
 #### Scenario: No freelancers hides the section
 
-- **WHEN** argus reports no unmanaged, non-archived live tasks
+- **WHEN** every live argus task is excluded from the freelancer set
 - **THEN** the "Freelance" separator and all repo headers MUST NOT be rendered
 
 #### Scenario: Archived freelancers appear only in Archive
 
-- **WHEN** an unmanaged argus task is archived
+- **WHEN** an argus task in the freelancer set is archived
 - **THEN** it MUST NOT appear in the live Freelance section AND MUST appear only when the Archive view is revealed via `l`
 
 ### Requirement: Three-state focus model
@@ -308,27 +325,17 @@ The redraw scheduling MUST coalesce a burst of ingested chunks into at most one 
 
 ### Requirement: Mutation keys are RAIL-focus-only
 
-The system SHALL recognize the RAIL-only key set (`n`, `w`, `r`, `a`, `l`, `?`, `s`, `S`, `^d`, `^r`, `^p`) ONLY when focus is `RAIL`. When focus is `COORD` or `AGENT`, every one of these keys — including the destructive/external verbs `^d`, `^r`, and `^p` — MUST be treated as ordinary input and forwarded to the bound task's PTY (per the keystroke-forwarding requirement): a printable key forwards its byte, and `^d`/`^r`/`^p` forward their control bytes (Ctrl-D=0x04, Ctrl-R=0x12, Ctrl-P=0x10) so an agent gets EOF / reverse-search / history-prev normally. None of these keys fires a mutation or is intercepted while focus is in a pane.
+The system SHALL recognize the RAIL-only key set (`n`, `w`, `r`, `a`, `l`, `?`, `s`, `S`, `P`, `^d`, `^r`, `^p`) ONLY when focus is `RAIL`. When focus is `COORD` or `AGENT`, every one of these keys — including the destructive/external verbs `^d`, `^r`, and `^p` — MUST be treated as ordinary input and forwarded to the bound task's PTY (per the keystroke-forwarding requirement): a printable key forwards its byte (`P` forwards the byte `P`), and `^d`/`^r`/`^p` forward their control bytes (Ctrl-D=0x04, Ctrl-R=0x12, Ctrl-P=0x10) so an agent gets EOF / reverse-search / history-prev normally. None of these keys fires a mutation or is intercepted while focus is in a pane.
 
 #### Scenario: `n` in RAIL focus opens new-project modal
 
 - **WHEN** focus is `RAIL` and the operator presses `n`
 - **THEN** the view MUST open the new-project input modal
 
-#### Scenario: `w` in RAIL focus opens spawn-worker modal
-
-- **WHEN** focus is `RAIL` and the operator presses `w`
-- **THEN** the view MUST open the spawn-worker input modal (and MUST NOT forward the byte `w` to any task)
-
 #### Scenario: `n` in COORD focus types into the PTY
 
 - **WHEN** focus is `COORD` and the operator presses `n`
 - **THEN** the daemon MUST POST the byte `n` to the COORD task's input endpoint AND MUST NOT open the new-project modal
-
-#### Scenario: `w` in AGENT focus types into the PTY
-
-- **WHEN** focus is `AGENT` and the operator presses `w`
-- **THEN** the daemon MUST POST the byte `w` to the AGENT task's input endpoint AND MUST NOT open the spawn-worker modal
 
 #### Scenario: `r` in AGENT focus types into the PTY
 
@@ -339,6 +346,16 @@ The system SHALL recognize the RAIL-only key set (`n`, `w`, `r`, `a`, `l`, `?`, 
 
 - **WHEN** focus is `AGENT` and the operator presses `?`
 - **THEN** the daemon MUST POST the byte `?` to the AGENT task's input endpoint AND MUST NOT open the help modal
+
+#### Scenario: `P` in RAIL focus toggles pin
+
+- **WHEN** focus is `RAIL` and the operator presses `P` against a coordinator or agent row
+- **THEN** the view MUST toggle that row's pinned state AND MUST NOT forward a byte to any PTY
+
+#### Scenario: `P` in AGENT focus types into the PTY
+
+- **WHEN** focus is `AGENT` and the operator presses `P`
+- **THEN** the daemon MUST POST the byte `P` to the AGENT task's input endpoint AND MUST NOT toggle any pin
 
 #### Scenario: `^d` in AGENT focus forwards Ctrl-D to the PTY
 
@@ -394,9 +411,9 @@ The system SHALL, on `^d` confirmation against a role, end the role's live bindi
 
 ### Requirement: `a` toggles archived state on an orchestrator or role
 
-The system SHALL, on `a` against a non-archived role, set the role's `archived_at` to the current timestamp AND invoke argus's archive endpoint (`POST /api/tasks/{id}/archive`) on the binding's `argus_task_id`. The worktree MUST be preserved. On `a` against a non-archived orchestrator, the same MUST cascade to every role under that orchestrator. The toggle is SYMMETRIC: on `a` against an already-archived role, `archived_at` MUST be cleared AND hera MUST invoke argus's unarchive endpoint on the role's bound argus task — the rail buckets a row into the Archive expando when EITHER side is archived, so clearing only the hera side would produce no visible change.
+The system SHALL, on `a` against a non-archived role, set the role's `archived_at` to the current timestamp AND invoke argus's archive endpoint (`POST /api/tasks/{id}/archive`) on the binding's `argus_task_id`. The worktree MUST be preserved. On `a` against a non-archived orchestrator, the same MUST cascade to every role under that orchestrator — EXCEPT when the header is in the mixed-coord state (displayed-active orchestrator whose coord task is argus-archived), where `a` MUST instead repair by unarchiving the coord's argus task, per the mixed-coord repair requirement. The toggle is SYMMETRIC: on `a` against an already-archived role, `archived_at` MUST be cleared AND hera MUST invoke argus's unarchive endpoint on the role's bound argus task — the rail buckets a row into the Archive expando when EITHER side is archived, so clearing only the hera side would produce no visible change.
 
-The toggle DIRECTION MUST follow the row's EFFECTIVE rendered archived state — the same predicate the rail uses to bucket the row into an Archive expando (hera `archived_at` set, OR argus-archived, OR dead) — never a single backing flag alone: `a` MUST unarchive any row that DISPLAYS as archived and archive any row that displays as active. The view layer SHALL compute the effective state from the selected row and dispatch an EXPLICIT archive or unarchive verb (not a flag-inspecting toggle), so on a mixed-flag row (e.g. hera-active + argus-archived — a state historical asymmetric toggles could produce) `a` clears BOTH sides instead of re-archiving the side that was already clear. Unarchive MUST clear both the hera and argus sides; archive MUST set both. In BOTH directions the bound task MUST be resolved from the role's live binding when one exists, FALLING BACK to the role's most recent binding (by `started_at`) regardless of `ended_at` — archiving a task ENDS its binding (`end_reason='argus_archived'`) while preserving its `argus_task_id`, so for exactly the rows that need unarchiving no live binding exists and a live-only lookup would silently skip the argus side, defeating the symmetric toggle; likewise, archiving a role whose binding was ended by a previous archive (the hera-active + argus-active row that a partial unarchive or historical asymmetric toggle leaves behind) MUST still archive its bound argus task via the same fallback — a live-only lookup there would stamp hera's `archived_at` while silently leaving the argus task active, recreating the mixed state. Only when the role has no binding at all (or the resolved binding carries no argus task id) is the argus step skipped (nothing to archive or unarchive); the hera-side write still proceeds. On `a` against an already-archived orchestrator, the orchestrator's `archived_at` MUST be cleared AND hera MUST likewise invoke argus's unarchive endpoint on the coord role's live binding's argus task; unarchiving an orchestrator MUST NOT cascade to its worker roles (workers unarchive individually). On `a` against a freelance row (an unmanaged argus task with no hera role or binding), hera MUST address the argus task directly — issuing `POST /api/tasks/{id}/archive` (or the unarchive endpoint when the task is already archived per argus state) against the row's argus task id — with no hera DB write (there is no role row to stamp).
+The toggle DIRECTION MUST follow the row's EFFECTIVE rendered archived state — the same predicate the rail uses to bucket the row into an Archive expando (hera `archived_at` set, OR argus-archived, OR dead) — never a single backing flag alone: `a` MUST unarchive any row that DISPLAYS as archived and archive any row that displays as active. The view layer SHALL compute the effective state from the selected row and dispatch an EXPLICIT archive or unarchive verb (not a flag-inspecting toggle), so on a mixed-flag row (e.g. hera-active + argus-archived — a state historical asymmetric toggles could produce) `a` clears BOTH sides instead of re-archiving the side that was already clear. Unarchive MUST clear both the hera and argus sides; archive MUST set both. In BOTH directions the bound task MUST be resolved from the role's live binding when one exists, FALLING BACK to the role's most recent binding (by `started_at`) regardless of `ended_at` — archiving a task ENDS its binding (`end_reason='argus_archived'`) while preserving its `argus_task_id`, so for exactly the rows that need unarchiving no live binding exists and a live-only lookup would silently skip the argus side, defeating the symmetric toggle; likewise, archiving a role whose binding was ended by a previous archive (the hera-active + argus-active row that a partial unarchive or historical asymmetric toggle leaves behind) MUST still archive its bound argus task via the same fallback — a live-only lookup there would stamp hera's `archived_at` while silently leaving the argus task active, recreating the mixed state. The ended-binding fallback MUST carry a **shared-task guard** in the ARCHIVE direction only: when the task id was resolved via an ENDED binding AND any OTHER role holds a LIVE binding (`ended_at` NULL) to that same argus task, the argus-side archive MUST be skipped — the live binding is that other role's ownership claim, and archiving through the stale ended binding would yank a task out from under an ACTIVE role or orchestrator (the cascade-collateral hazard: archiving an old orchestrator archived the operator's live coord's task). The hera-side role archive still proceeds, and the skip MUST be logged at info naming both roles (the role being archived and the live-bound role). A task resolved via the role's OWN live binding archives unconditionally — that live binding IS the ownership — and the unarchive direction stays permissive (no guard). Only when the role has no binding at all (or the resolved binding carries no argus task id) is the argus step skipped entirely (nothing to archive or unarchive); the hera-side write still proceeds. On `a` against an already-archived orchestrator, the orchestrator's `archived_at` MUST be cleared AND hera MUST likewise invoke argus's unarchive endpoint on the coord role's live binding's argus task; unarchiving an orchestrator MUST NOT cascade to its worker roles (workers unarchive individually). On `a` against a freelance row (an unmanaged argus task with no hera role or binding), hera MUST address the argus task directly — issuing `POST /api/tasks/{id}/archive` (or the unarchive endpoint when the task is already archived per argus state) against the row's argus task id — with no hera DB write (there is no role row to stamp).
 
 #### Scenario: Archive role calls argus and preserves worktree
 
@@ -420,8 +437,23 @@ The toggle DIRECTION MUST follow the row's EFFECTIVE rendered archived state —
 
 #### Scenario: Archive role with an ended binding falls back to the latest binding
 
-- **WHEN** the operator presses `a` against a role that DISPLAYS as active whose only binding was ended by a previous archive (`end_reason='argus_archived'`) and records argus task `T1`
+- **WHEN** the operator presses `a` against a role that DISPLAYS as active whose only binding was ended by a previous archive (`end_reason='argus_archived'`) and records argus task `T1`, and no other role holds a live binding to `T1`
 - **THEN** hera MUST set the role's `archived_at` AND issue `POST /api/tasks/T1/archive` resolved via the most recent binding — the ended binding MUST NOT cause the argus side to be silently skipped, leaving the argus task active under a hera-archived role
+
+#### Scenario: Archive via an ended binding skips argus when the task is live-bound to another role
+
+- **WHEN** role `old/w1` is archived (directly or via an orchestrator cascade) and its task id `T1` resolves via an ENDED binding, while role `new/coord` holds a LIVE binding to `T1`
+- **THEN** hera MUST set `old/w1`'s `archived_at`, MUST NOT issue the argus archive endpoint for `T1`, AND MUST log the skip at info naming both `old/w1` and `new/coord`
+
+#### Scenario: Archive via the role's own live binding archives even when the task is shared
+
+- **WHEN** the operator presses `a` against an active role whose LIVE binding records argus task `T1`, while another role also holds a live binding to `T1` (multi-binding)
+- **THEN** hera MUST issue `POST /api/tasks/T1/archive` as today — the role's own live binding is its ownership claim and the shared-task guard MUST NOT apply
+
+#### Scenario: Orchestrator cascade does not archive a sibling orchestrator's live task
+
+- **WHEN** the operator cascade-archives an OLD orchestrator containing a role whose ended binding records task `T1`, and `T1` is live-bound under a DIFFERENT active orchestrator
+- **THEN** the cascade MUST archive the old orchestrator and its roles hera-side, MUST NOT issue the argus archive endpoint for `T1`, and MUST succeed (the skip is not a failure)
 
 #### Scenario: Unarchive role with an ended binding falls back to the latest binding
 
@@ -435,8 +467,13 @@ The toggle DIRECTION MUST follow the row's EFFECTIVE rendered archived state —
 
 #### Scenario: Archive orchestrator cascades to roles
 
-- **WHEN** the operator presses `a` against non-archived orchestrator `foo` with roles `coord`, `w1`, `w2`
+- **WHEN** the operator presses `a` against non-archived orchestrator `foo` with roles `coord`, `w1`, `w2`, and `foo` is NOT in the mixed-coord state
 - **THEN** hera MUST set `archived_at` on `foo`, `coord`, `w1`, and `w2` AND issue an archive call to argus for each role's resolved binding's argus_task_id (live preferred, latest fallback — the cascade calls the role-level archive and inherits its resolution)
+
+#### Scenario: Mixed-coord header repairs instead of cascading
+
+- **WHEN** the operator presses `a` against a displayed-active orchestrator header whose coord task is argus-archived
+- **THEN** hera MUST issue the argus unarchive endpoint for the coord task directly (no hera DB write, no cascade), per the mixed-coord repair requirement
 
 #### Scenario: Unarchive orchestrator unarchives its coord task but does not cascade to workers
 
@@ -518,6 +555,8 @@ Because argus surrenders Esc to the focused plugin view, the system SHALL, when 
 
 The system SHALL push a `{"type":"hotkeys","items":[...]}` text control frame to argus on view connect and on every focus-state change, describing the key bindings for the current focus state (`RAIL` / `COORD` / `AGENT`), with the operator-facing keys flagged `bar:true` to populate argus's context-sensitive bottom bar and the full set driving argus's help overlay. The system MUST NOT render its own bottom-bar row within the view surface; argus renders the plugin-mode status bar, including the reserved `^Q^Q argus` exit hint that hera neither advertises nor displaces.
 
+The `RAIL`-focus hotkey set advertised with `bar:true` MUST include the spawn-worker key `w` (label "new agent") and the adopt-freelancer key `J` (label "adopt"), alongside the existing rail mutation keys, so both recently-added rail gestures are discoverable in argus's bottom bar. As with the other always-listed rail mutation keys (`n`/`r`/`a`), per-row applicability is surfaced by the op itself (a visible "not applicable" notice when pressed on a row it cannot act on), not by hiding the bar hint.
+
 #### Scenario: hotkeys pushed on focus change
 
 - **WHEN** the focus state changes (for example `RAIL` → `COORD`)
@@ -527,6 +566,11 @@ The system SHALL push a `{"type":"hotkeys","items":[...]}` text control frame to
 
 - **WHEN** the view surface renders in any focus state
 - **THEN** it MUST NOT include hera's own bottom-bar row (argus owns the plugin-mode status bar)
+
+#### Scenario: spawn-worker and adopt keys advertised on the bottom bar
+
+- **WHEN** hera pushes the `RAIL`-focus hotkeys frame
+- **THEN** the `bar:true` items MUST include `w` ("new agent") and `J` ("adopt")
 
 ### Requirement: Every mutation is gated behind a confirmation or input modal
 
@@ -632,7 +676,7 @@ The system SHALL render the rail as a tree mirroring argus's task panel: each co
 
 Because hera's data model is flat (a role has a single orchestrator; orchestrators have no parent link), a sub-coordinator is modeled as a multi-binding: the SAME argus task is both a worker role under a parent orchestrator AND the coord of a separate child orchestrator (the join key is a worker role's bound argus task equalling a child orchestrator's coord task). The system SHALL resolve this multi-binding so the child orchestrator's roles nest beneath the worker row (which is rendered as a coordinator row), the child orchestrator MUST NOT also render at the top level, and resolution MUST guard against cycles. Every rail row carries a tree depth; rows MUST be indented by their depth (deeper rows further right), and an `Archive (N)` expando's archived children MUST indent one level deeper than the expando header.
 
-The status icon (on both coordinator headers and agent rows) reflects argus status using argus's own vocabulary (`?` needs-input, `✓` review/complete, `☾` working, `○` idle); a coordinator header's status icon is driven by its coord task's argus state, and a sub-coordinator row's by its own bound task's state. The coordinator marker glyph (distinct from the transient status icon) flags the row as a coordinator regardless of state; the prototype's `◆` root-coord icon is superseded by this status-icon + marker pairing. Every coordinator with archived direct children MUST render an `Archive (N)` expando below its active agents (collapsed by default) in the DEFAULT view — no `l` required: a hera-archived child role (`archived_at` set) MUST appear under its coordinator's `Archive (N)` expando exactly like an argus-archived or dead child, so archiving a row never makes it unreachable; `l` force-expands the expandos. Archived children MUST NOT inflate the coordinator header's live-child `(N)` count. Archived root coordinators MUST render under a top-level `Archive` section at the bottom of the rail. `space` MUST toggle the fold of the selected coordinator (root OR sub-coordinator) or Archive section.
+The status icon (on both coordinator headers and agent rows) reflects argus status using argus's own task-panel glyph table (`` needs-input, `✓` complete, `󰖔` in-review, spinner running, `` idle, `○` pending — see the glyph-table requirement); a coordinator header's status icon is driven by its coord task's argus state, and a sub-coordinator row's by its own bound task's state. The coordinator marker glyph (distinct from the transient status icon) flags the row as a coordinator regardless of state; the prototype's `◆` root-coord icon is superseded by this status-icon + marker pairing. Every coordinator with archived direct children MUST render an `Archive (N)` expando below its active agents (collapsed by default) in the DEFAULT view — no `l` required: a hera-archived child role (`archived_at` set) MUST appear under its coordinator's `Archive (N)` expando exactly like an argus-archived or dead child, so archiving a row never makes it unreachable; `l` force-expands the expandos. Archived children MUST NOT inflate the coordinator header's live-child `(N)` count. Archived root coordinators MUST render under a top-level `Archive` section at the bottom of the rail. `space` MUST toggle the fold of the selected coordinator (root OR sub-coordinator) or Archive section.
 
 The rail's currently selected row MUST be indicated by selected-text styling — its name rendered in argus's selected style (`theme.StyleSelected`, pink `theme.ColorSelected`) — applied consistently across ALL selectable row types (coordinator headers, agent/worker rows, sub-coordinator rows, Freelance repo headers, and Archive expandos). In ADDITION to the styling, the selected row MUST be identifiable WITHOUT color: the rail SHALL reserve a marker gutter at the start of every row and render a selection marker glyph (`›`) in that gutter on the selected row only; every other row MUST render a space there, so nothing shifts when the selection moves. The marker MUST apply to every selectable row kind (coordinator headers, agent/worker rows, sub-coordinator rows, Freelance repo headers, and Archive expandos), so a colorless text capture of the rail (a monochrome renderer, a screen reader, a reduced-color terminal) still reveals exactly which row the cursor is on. The rail MUST NOT paint any cell background to indicate selection: no row — selected or not — may render a filled (non-default) cell background. This guarantees no stale highlight cell can linger on a previously-selected row when the cursor moves, because no row ever writes a non-default background that a later draw would have to clear. The per-row selection indicator is distinct from, and MUST NOT be confused with, the rail pane's focus border (argus's focus color on the pane edge), which is governed by the focus-model requirement.
 
@@ -644,7 +688,7 @@ The rail's currently selected row MUST be indicated by selected-text styling —
 #### Scenario: Coordinator header carries a status icon and coordinator marker
 
 - **WHEN** the rail renders a coordinator whose coord task argus state is known
-- **THEN** the header row MUST render, before the name, a status icon reflecting that argus state (the same `?`/`✓`/`☾`/`○` vocabulary as agent rows) AND the `󰹻` coordinator marker glyph AND MUST NOT render the prototype's `◆`
+- **THEN** the header row MUST render, before the name, a status icon reflecting that argus state (the same task-panel glyph table as agent rows) AND the `󰹻` coordinator marker glyph AND MUST NOT render the prototype's `◆`
 
 #### Scenario: Sub-coordinators sort before leaf workers
 
@@ -981,4 +1025,582 @@ The PR indicator cell:
 
 - **GIVEN** a role row whose argus task has no `pr_state` field (e.g. argus daemon is older)
 - **THEN** the rail MUST render the row without error and without a PR indicator cell
+
+### Requirement: Coordinators with zero non-archived children default collapsed
+
+The rail SHALL derive each coordinator's DEFAULT fold state from its non-archived child count: a coordinator (orchestrator root or nested sub-coordinator) with zero non-archived child agents defaults COLLAPSED (`▸` chevron, children hidden — including its `Archive (N)` expando, per the existing fold semantics under which a collapsed coordinator renders no child rows); a coordinator with one or more non-archived child agents defaults EXPANDED (`▾`). "Non-archived" is the existing active/archived partition: hera-archived, argus-archived, and dead children all count as archived.
+
+The default applies ONLY to coordinators the operator has not explicitly toggled this session. An explicit fold toggle (`space`, or the Enter-on-header fold) SHALL override the default in either direction and persist for the session: toggling a default-collapsed empty coordinator expands it (revealing its `Archive (N)` expando as today), toggling it again re-collapses it, and a manually-collapsed coordinator with active children stays collapsed across rail rebuilds.
+
+While `l`/showArchived is active, the collapsed DEFAULT SHALL be overridden (an untouched empty coordinator renders expanded so its archived children are reachable through its force-expanded `Archive (N)` expando); an explicit manual collapse still wins over `l`. The Freelance section and the top-level `Archive` expando keep their existing fold defaults, unaffected by this rule.
+
+#### Scenario: Empty coordinator defaults collapsed
+
+- **WHEN** the rail renders a coordinator with zero non-archived child agents (no children at all, or only archived/dead children) that the operator has not toggled
+- **THEN** the coordinator row MUST render with the collapsed chevron (`▸`) AND none of its child rows — including its `Archive (N)` expando — may render
+
+#### Scenario: Coordinator with an active child defaults expanded
+
+- **WHEN** the rail renders a coordinator with at least one non-archived child agent that the operator has not toggled
+- **THEN** the coordinator row MUST render with the expanded chevron (`▾`) AND its active children MUST render as today
+
+#### Scenario: Manual toggle overrides the default and persists
+
+- **WHEN** the operator toggles the fold of a default-collapsed empty coordinator (`space` or Enter-on-header)
+- **THEN** the coordinator MUST expand (revealing its `Archive (N)` expando when it has archived children) AND that explicit state MUST persist across rail rebuilds until toggled again; symmetrically a manually-collapsed coordinator with active children MUST stay collapsed across rebuilds
+
+#### Scenario: `l` force-reveal overrides the collapsed default while active
+
+- **WHEN** showArchived (`l`) is active and the rail renders an untouched coordinator with zero non-archived children
+- **THEN** the coordinator MUST render expanded with its `Archive (N)` expando force-expanded so its archived children are visible, AND a coordinator the operator explicitly collapsed MUST remain collapsed
+
+### Requirement: Task status never buckets a rail row
+
+Task STATUS SHALL NOT affect rail bucketing. A row buckets into an Archive expando (or the top-level Archive section) ONLY when at least one of the following holds: the hera role is archived (`archived_at` set), the bound argus task is archived (argus `archived` flag), or the argus task RECORD no longer exists (404 / pruned — a state-cache miss once the cache is warm). The `Dead` classification SHALL mean record-nonexistence ONLY; a task in any terminal STATUS (`complete`, `failed`, `stopped`, …) whose argus record still exists is NOT dead.
+
+A completed task whose argus record still exists MUST render in the ACTIVE tree — among its coordinator's active children, in its freelance repo group, or as a live coordinator header — with its status glyph (green `✓` for `complete`, per the status-glyph table), selectable and bindable like any active row.
+
+A coordinator binding whose task is completed-but-existing MUST still feed the orchestrator header's coord task binding (`CoordTaskID`) and status (`CoordStatus`), so the header renders the `✓` glyph and its pane shows the coordinator's last output; its children's bucketing is unaffected. Only an archived or record-gone coord binding is skipped as a tombstone.
+
+Deadness MUST be derived from the argus state cache snapshot (the same source that drives row icons), not from per-row status-classifying calls: the rail rebuild path MUST NOT issue a synchronous argus HTTP request per row. A cold cache MUST NOT transiently classify rows dead. Status-based aliveness MAY still inform initial pane selection (preferring a live task at session start), but never bucketing.
+
+#### Scenario: Stepping a task to complete keeps it in the active children
+
+- **WHEN** a worker row's bound argus task transitions to status `complete` while its argus record still exists with `archived=0` and the hera role's `archived_at` is NULL
+- **THEN** the row MUST remain among its coordinator's active children rendering the green `✓` glyph, MUST NOT move into the coordinator's `Archive (N)` expando, and MUST NOT be classified `Dead`
+
+#### Scenario: Completed coordinator header stays bound and checked
+
+- **WHEN** an orchestrator's coord binding points at an argus task with status `complete` whose record still exists and is not archived
+- **THEN** the orchestrator header MUST carry that task as its coord binding (`CoordTaskID` set, `CoordStatus` complete, rendering `✓`) AND the header and its children MUST NOT be hidden or re-bucketed on account of the status
+
+#### Scenario: Completed freelancer stays in its repo group
+
+- **WHEN** an unmanaged argus task in the Freelance section has status `complete` and is not archived
+- **THEN** it MUST remain visible in its repo group (counted in the group's `(N)`) rendering `✓`, without `l`
+
+#### Scenario: Record-gone task still buckets as dead
+
+- **WHEN** a role's bound argus task id is absent from the warm argus state cache (the record was pruned / returns 404)
+- **THEN** the row MUST be classified `Dead` and bucket into its coordinator's Archive expando (hidden in the default view, dimmed under `l`)
+
+#### Scenario: Rail rebuild issues no per-row argus HTTP
+
+- **WHEN** the rail repopulates (any rebuild trigger) with N live-bound roles
+- **THEN** deadness MUST be read from the state-cache snapshot; the rebuild MUST NOT perform a per-row `GET /api/tasks/{id}` aliveness probe on the event loop
+
+### Requirement: Coordinator selection renders a right-side Details pane
+
+When the rail selection is a coordinator — an orchestrator root header or a nested sub-coordinator — the body SHALL compose a right-side Details pane alongside the rail and the HERA pane (layout `rail | HERA | Details`). The HERA pane SHALL keep the majority of the width available between the rail and the right edge, so the Details pane never starves the HERA pane at narrow terminals. The Details pane SHALL NOT replace or displace the rail or the HERA pane.
+
+The Details pane SHALL render, for the selected coordinator, fields derived from data hera already stores:
+
+- **Name** of the coordinator.
+- **Status** rendered with the same status glyph and state the rail shows for that coordinator (the shared status-icon vocabulary), so the Details status and the rail status never disagree.
+- **Created** — the orchestrator's creation time.
+- **Last agent activity** — the most recent activity timestamp across the coordinator's roles (role creation, their bindings' start/end, and their status updates).
+- **Mission** and **Constraints** — the coordinator role's stored mission and constraints (empty when unset).
+- **Repos in scope** — the distinct argus projects across the coordinator's roles.
+- **Agent roster** — each of the coordinator's child roles by name and kind with its current rail-displayed status, including any nested sub-coordinators.
+
+The Details pane SHALL include a clearly-marked placeholder for a future inferred description/goal/scope summary; that inference SHALL NOT be implemented by this change.
+
+#### Scenario: Details pane appears on coordinator selection
+
+- **WHEN** the operator selects a coordinator row (orchestrator root header or a nested sub-coordinator)
+- **THEN** the body MUST compose the rail, the full-width HERA pane, AND a right-side Details pane (three columns), with the rail and HERA pane still present
+
+#### Scenario: Details fields are rendered from available data
+
+- **WHEN** the Details pane renders for a selected coordinator
+- **THEN** it MUST show the coordinator's name, a status indicator matching the rail's status glyph for that coordinator, its created time, its last agent activity, its mission and constraints, the distinct repos across its roles, and a roster of its child roles (name, kind, current status) including sub-coordinators
+
+#### Scenario: Agent and freelancer selections are unchanged
+
+- **WHEN** the operator selects an agent (worker) row or a freelancer row
+- **THEN** the body MUST compose exactly as before — `rail | HERA | AGENT` for an agent and `rail | AGENT` for a freelancer — and MUST NOT render the Details pane
+
+#### Scenario: Sub-coordinator Details describe the sub-coordinator's own group
+
+- **WHEN** the operator selects a nested sub-coordinator row
+- **THEN** the Details pane MUST render the metadata of the sub-coordinator's own orchestration group (its name, mission, repos, and roster), not the parent coordinator's
+
+### Requirement: Live coordinators never render ✓/complete
+
+A LIVE coordinator (non-archived, not in the mixed-coord repair state) MUST
+NOT render the `✓ complete` glyph or the "complete" status label in either the
+rail glyph or the Details pane "Status:" field, regardless of the underlying
+argus task status.
+
+Argus auto-completes coordinator tasks when the agent session goes idle
+(waiting for the human). This is an argus-internal lifecycle event that does not
+mean the coordinator is done. Hera MUST mask this: when a live coordinator's
+argus task status is `complete`, hera MUST display the status as `in_progress +
+idle` (rendering the idle moon ☾ glyph, label "idle") in both the rail header
+icon and the Details pane. The raw `CoordStatus` field MAY retain the argus
+value internally; the masking is display-layer only.
+
+The `orchIcon` function applies this masking so the rail header never shows `✓`
+for a live coordinator. The `buildCoordDetails` function applies the same
+masking so the Details pane status field agrees with the rail.
+
+Archived coordinators are exempt — a coordinator rendered in the Archive section
+may show its true argus status (including `✓`) because it represents a completed
+and finished session.
+
+#### Scenario: Live coordinator with argus-complete task renders idle glyph
+
+- **WHEN** a live (non-archived) coordinator's argus task reports status
+  `complete`
+- **THEN** the rail header MUST render the idle moon glyph (☾, `theme.IconMoonOutline`)
+  with `theme.StyleInReview` — NOT the `✓` checkmark
+- **AND** the Details pane "Status:" field MUST show "idle", NOT "complete"
+
+#### Scenario: Archived coordinator with complete task still shows ✓
+
+- **WHEN** an archived coordinator's argus task reports status `complete`
+- **THEN** the rail header MUST render `✓` with `theme.StyleDimmed` (consistent
+  with all other archived rows)
+
+### Requirement: Coordinator roles excluded from ^r prune targets
+
+`ops.ListCompletedAgents` (the `^r` prune eligibility query) MUST skip roles
+whose kind is `coordinator`. A coordinator role whose argus task reports
+`complete` MUST NOT appear in the prune confirmation list, because argus
+auto-completion does not indicate the coordinator is safe to destroy.
+
+#### Scenario: Complete coordinator is not listed as a prune target
+
+- **WHEN** a coordinator role's live binding's argus task reports status
+  `complete`
+- **THEN** `ListCompletedAgents` MUST NOT include that role in its result
+- **AND** a worker role in the same orchestrator whose task is also `complete`
+  MUST still be listed (the guard is coordinator-specific)
+
+### Requirement: Mixed-coord headers render a repair cue and `a` repairs first
+
+The system SHALL detect the **mixed-coord state**: an orchestrator that DISPLAYS as active (hera `archived_at` NULL, header rendered in the active tree) while its coord-pane binding's argus task is ARCHIVED on the argus side (the argus state cache reports `archived` for the header's coord task). Only external argus-side archiving produces this state; it leaves the header's coordinator broken — the coord task is a tombstone argus hides — without any hera-side flag recording it.
+
+The system SHALL render a DISTINCT visible cue on a mixed-coord header: the header's status icon MUST render `⊘` (U+2298, circled division slash) in the error style (red), replacing the normal status glyph, so the operator can SEE "this coord is broken/archived" at a glance. The cue MUST be distinct from the needs-input `?`, from the dimmed-archived treatment, and from the 󰹻 coordinator marker (which keeps rendering beside it). The cue applies ONLY to the mixed state: an orchestrator that is itself archived renders the normal dimmed-archived treatment regardless of its coord task's argus flag, and a header whose coord task is not argus-archived renders its normal status glyph.
+
+The system SHALL make `a` REPAIR-FIRST on a mixed-coord header: pressing `a` (focus `RAIL`, mixed-coord header selected) MUST invoke argus's unarchive endpoint on the header's coord task — directly by task id, with no hera DB write — aligning argus reality to the displayed active orchestrator, and MUST NOT cascade-archive the orchestrator. An argus 404 (task pruned) is tolerated as a skip, per the existing archive-tolerance rule. Once the coord task is unarchived (or whenever the header is NOT in the mixed state), `a` MUST behave exactly as the standard orchestrator toggle (cascade-archive when displayed active, unarchive when displayed archived). The icon cue reverting to the normal status glyph on the post-repair rail refresh is the primary repair feedback. Enter on a mixed-coord header keeps its current behavior (no new flow) — the repair-first `a` is the affordance.
+
+#### Scenario: Mixed-coord header renders the ⊘ repair cue
+
+- **WHEN** an active orchestrator's coord-pane binding task is reported archived by the argus state cache
+- **THEN** the header's status icon MUST render `⊘` in the error style instead of the coord task's status glyph, while the 󰹻 coordinator marker and the header's name render as usual
+
+#### Scenario: Archived orchestrator does not render the cue
+
+- **WHEN** an orchestrator is itself archived (hera `archived_at` set) and its coord task is also argus-archived
+- **THEN** the header MUST render the normal dimmed-archived treatment, NOT the `⊘` cue (the state is not mixed — both sides agree)
+
+#### Scenario: `a` on a mixed-coord header unarchives the coord task instead of cascade-archiving
+
+- **WHEN** the operator presses `a` against a mixed-coord header whose coord task is `T1`
+- **THEN** hera MUST issue the argus unarchive endpoint for `T1` directly (no hera DB write) AND MUST NOT archive the orchestrator or any of its roles
+
+#### Scenario: Repaired header cascades as before
+
+- **WHEN** the operator presses `a` against an active orchestrator header whose coord task is NOT argus-archived
+- **THEN** hera MUST run the standard cascade-archive (orchestrator + roles), exactly as the `a`-toggle requirement specifies
+
+### Requirement: Pane byte streams are scrubbed of OSC sequences before emulation
+
+The system SHALL remove every OSC sequence (`ESC ]` … terminator, any OSC code: 0/1/2/8/…) from a pane's byte stream BEFORE the bytes reach the pane's terminal emulator, so an OSC payload (e.g. a Claude Code set-title string) is never painted as printable text in the pane. The scrub MUST apply to the FULL stream a pane ingests: the ring snapshot delivered at bind time AND every subsequent live byte chunk.
+
+The scrubber MUST recognize BOTH OSC terminators — BEL (`0x07`) and 7-bit ST (`ESC \`) — and MUST drop the terminator together with the payload. CAN (`0x18`) and SUB (`0x1a`) cancel an in-flight OSC; an ESC that begins a new sequence inside an OSC payload cancels the OSC and the new sequence MUST be processed normally. A 0x9C byte inside an OSC payload MUST NOT be treated as a terminator (it may be a UTF-8 continuation byte — e.g. in Claude's "✳" spinner title — and treating it as C1 ST is the upstream parser bug that leaks the payload).
+
+The scrubber MUST be stateful across chunk boundaries: an OSC sequence split across two or more chunks (including the snapshot→live boundary, and a terminator's `ESC` and `\` arriving in different chunks) MUST still be removed in full. A lone trailing `ESC` at the end of a chunk MUST be held until the next chunk decides whether it introduces an OSC.
+
+Non-OSC escape sequences (CSI colors, cursor movement, SGR, etc.) and all ordinary printable bytes MUST pass through byte-for-byte unchanged. The scrub MUST be bounded: a pathological OSC that never terminates MUST stop being dropped after a fixed cap so the filter can never swallow a stream unboundedly.
+
+#### Scenario: Inline OSC title with BEL terminator is not painted
+
+- **WHEN** a pane's stream contains `before` + `ESC ] 0 ; My Title BEL` + `after` within a single chunk
+- **THEN** the bytes delivered to the pane's emulator MUST be exactly `beforeafter` — no byte of the OSC introducer, payload, or BEL terminator may reach the emulator
+
+#### Scenario: OSC with ST terminator is removed
+
+- **WHEN** a pane's stream contains `ESC ] 2 ; My Title ESC \` between ordinary text
+- **THEN** the entire sequence including the two-byte ST terminator MUST be removed and the surrounding text delivered unchanged
+
+#### Scenario: OSC split across chunk boundaries is removed
+
+- **WHEN** an OSC sequence is split across two chunks (e.g. chunk 1 ends mid-payload, or chunk 1 ends with the terminator's `ESC` and chunk 2 begins with `\`), including the case where chunk 1 is the bind-time snapshot and chunk 2 is the first live chunk
+- **THEN** no byte of the sequence may reach the emulator, and bytes after the terminator MUST be delivered unchanged
+
+#### Scenario: Non-OSC escape sequences survive the scrub
+
+- **WHEN** a pane's stream contains SGR color codes and cursor-movement CSI sequences (e.g. `ESC [ 3 1 m`, `ESC [ 6 G`) around an OSC title sequence
+- **THEN** every non-OSC escape sequence MUST be delivered to the emulator byte-for-byte unchanged while the OSC sequence is removed
+
+#### Scenario: 0x9C inside an OSC payload does not terminate it
+
+- **WHEN** an OSC payload contains a multi-byte UTF-8 glyph whose encoding includes a `0x9C` byte (e.g. `✳` = `E2 9C B3`), followed by more payload and then a BEL
+- **THEN** the scrub MUST continue dropping through the `0x9C` and terminate only at the BEL, so no payload byte after the `0x9C` leaks to the emulator
+
+### Requirement: `J` adopts a freelancer into a chosen coordinator
+
+While the RAIL is focused and the selection is a freelancer row (an unmanaged argus task with no hera role or live binding, rendered in the Freelance section), pressing `J` SHALL open a target picker listing the active (non-archived) orchestrators. The picker SHALL be a themed, focusable, dismissable modal in which `Enter` selects the highlighted orchestrator and `Esc` cancels without change. The picker SHALL identify each orchestrator by its name and SHALL name the freelancer being adopted in its title. When no active (non-archived) orchestrator exists, pressing `J` SHALL surface visible feedback that a coordinator must be created first and SHALL NOT open the picker or create any role or binding.
+
+Selecting an orchestrator SHALL adopt the freelancer into it by creating, server-side and without any agent action:
+
+- a `worker` role under the chosen orchestrator, whose name defaults to the freelancer's argus task name and is de-collided (a numeric suffix is appended) when an active role of that name already exists under the orchestrator. The role SHALL record the freelancer's argus repo as its `argus_project` (write-once, consistent with roles created via the bootstrap flow), carried from the rail selection; and
+- a live binding from the freelancer's argus task to that role. The binding SHALL record the freelancer's argus-task worktree path, so the adopted row's `^p` open-PR and pane operations resolve the same worktree the freelancer used.
+
+This role-and-binding creation SHALL reuse the same creation path that `hera_join`'s attach-mode uses (the shared DAO `Roles.Create` + `Bindings.Create`), not a duplicate implementation. The freelancer's argus task SHALL be best-effort stamped `meta:hera.role=worker` for parity with `hera_join`; a transient failure to stamp the meta SHALL NOT undo or fail the binding.
+
+After adoption the row SHALL leave the Freelance section and render as a worker under the chosen coordinator. The adopted agent SHALL remain independent: the binding exists immediately without the agent acting, and the agent MAY later `hera_join(cwd)` to claim the role and receive coordinator messages.
+
+The binding operation SHALL run off the tview event loop (the async-mutate pattern), so `J` never blocks or deadlocks the loop; while one adopt is in flight a second SHALL no-op with visible feedback rather than running concurrently.
+
+`J` SHALL be RAIL-focus-only. In a pane (COORD/AGENT focus) the `J` rune SHALL forward to the bound task's PTY like any other character. The lowercase `j` navigation key SHALL be unaffected.
+
+#### Scenario: `J` on a freelancer creates a worker binding under the chosen coordinator
+
+- **WHEN** the operator selects a freelancer, presses `J`, and picks an orchestrator from the picker
+- **THEN** a `worker` role and a live binding from the freelancer's argus task to that role MUST be created under the chosen orchestrator, and the row MUST re-render as a worker under that coordinator (out of the Freelance section)
+
+#### Scenario: The default role name is de-collided
+
+- **WHEN** the freelancer's task name matches an existing active role name under the chosen orchestrator
+- **THEN** the adopted role MUST be created under a de-collided name (a numeric suffix appended) rather than failing or colliding with the existing role
+
+#### Scenario: `J` on a non-freelancer row surfaces feedback
+
+- **WHEN** the operator presses `J` while a coordinator, a managed agent, an orchestrator header, or a section row is selected
+- **THEN** the view MUST surface visible feedback that only freelancers can be adopted, and MUST NOT create any role or binding (never a silent no-op)
+
+#### Scenario: `J` on a freelancer with no argus task id surfaces feedback
+
+- **WHEN** the operator presses `J` on a freelancer row that carries no argus task id
+- **THEN** the view MUST surface visible feedback and MUST NOT create any role or binding
+
+#### Scenario: An already-bound task is not adopted again
+
+- **WHEN** the freelancer's argus task already has a live binding to some orchestrator (a race or mislabeled row)
+- **THEN** the adopt MUST be rejected with visible feedback and MUST NOT create a second binding
+
+#### Scenario: No active coordinator to adopt into surfaces feedback
+
+- **WHEN** the operator presses `J` on a valid freelancer but no active (non-archived) orchestrator exists
+- **THEN** the view MUST surface visible feedback that a coordinator must be created first, and MUST NOT open the picker or create any role or binding
+
+#### Scenario: `J` in a pane forwards to the PTY
+
+- **WHEN** focus is in a COORD or AGENT pane and the operator types `J`
+- **THEN** the `J` rune MUST be forwarded to the bound task's PTY and MUST NOT open the picker
+
+### Requirement: The rail supports a `/` name filter
+
+While the RAIL is focused, pressing `/` SHALL enter a rail search input mode. While in input mode, typed characters SHALL build a filter query and the rail SHALL narrow to the rows whose name matches the query by case-insensitive substring, across coordinators, agents, and freelancers. Whitespace-separated query terms SHALL each match the row name (or, for a freelance row, its repo), so every term must match for the row to be shown.
+
+While a filter is active the rail SHALL remain ancestry-preserving and legible:
+
+- A coordinator whose name matches, OR which has any descendant role whose name matches, SHALL remain visible so a matching agent always keeps its parent coordinator header.
+- Sections (coordinators, Freelance repo groups, the Archive expando) SHALL auto-expand while a filter is active so matching rows are never hidden behind a fold.
+- A section header or separator SHALL render only when it has at least one visible row beneath it, so the operator never lands on an empty section.
+
+`Esc` while in input mode SHALL exit search and restore the full, unfiltered rail (clearing the query). `Enter` while in input mode SHALL accept the filter — keeping the query applied but leaving input mode so `j`/`k` navigate the filtered set. The active query SHALL be shown unobtrusively (a `/ <query>` input line while typing, and the active query reflected in the rail title once accepted).
+
+While in input mode the rail's mutation keys (`n`/`r`/`a`/`l`/`s`/`S`/`P`/`?`) and the `Esc`-release-to-argus behavior SHALL NOT fire; those keystrokes are filter input instead. After the filter is accepted (input mode off), normal rail key handling SHALL resume.
+
+#### Scenario: `/` narrows the rail to matching rows
+
+- **WHEN** the operator presses `/` and types a query
+- **THEN** the rail MUST show only rows whose name matches the query (case-insensitive substring), hiding non-matching coordinators, agents, and freelancers
+
+#### Scenario: A matching agent keeps its parent coordinator visible
+
+- **WHEN** a filter matches an agent whose name does not match its coordinator's name
+- **THEN** the agent's parent coordinator header MUST remain visible (ancestry-preserving) and expanded so the matching agent is shown under it
+
+#### Scenario: Esc restores the full rail
+
+- **WHEN** the operator presses `Esc` while in search input mode
+- **THEN** the filter MUST clear, input mode MUST exit, and the rail MUST render every row it showed before the filter
+
+#### Scenario: Enter accepts the filter and returns to navigation
+
+- **WHEN** the operator presses `Enter` while in search input mode
+- **THEN** input mode MUST exit, the query MUST stay applied (the rail stays filtered), and `j`/`k` MUST navigate the filtered set
+
+#### Scenario: Mutation keys are filter input while typing
+
+- **WHEN** the operator is in search input mode and types a character that is otherwise a rail mutation key (such as `n` or `a`)
+- **THEN** that character MUST be appended to the filter query and MUST NOT trigger the mutation
+
+### Requirement: The selection marker is gated behind the probe env
+
+The selected rail row's left-gutter `›` selection marker SHALL render only when the live-probe environment variable (`HERA_LIVE_PROBE`) is set. In normal operation (the variable unset), the selected row's gutter SHALL render a blank cell — no glyph — and the selection SHALL be indicated by the selected-row text style (`theme.StyleSelected`) alone. The gutter width SHALL be reserved unconditionally so that toggling the marker on or off, and moving the cursor between rows, never shifts row content horizontally.
+
+#### Scenario: No marker in normal operation
+
+- **WHEN** the rail renders with the probe environment variable unset
+- **THEN** no `›` selection marker MUST appear on any row, and the selected row MUST still be distinguishable by its selected text style
+
+#### Scenario: Marker present under the probe env
+
+- **WHEN** the rail renders with the probe environment variable set
+- **THEN** the `›` selection marker MUST render exactly once, on the selected row, as before
+
+#### Scenario: Gutter does not shift content
+
+- **WHEN** the selection moves between rows, with the marker either gated off or on
+- **THEN** no row's rendered content MUST shift horizontally (the marker gutter is reserved in both states)
+
+### Requirement: Pinned section at the rail top with a `P` toggle
+
+The system SHALL render a `Pinned` section at the TOP of the rail, above the orchestrator list, mirroring argus's task-panel Pinned section. The section is introduced by a `Pinned` separator that is rendered ONLY when at least one pinned coordinator or pinned agent exists (so the operator never lands on an empty section). Pinned items SHALL be fully reachable by normal j/k navigation.
+
+A coordinator (orchestrator header) or an agent (a worker or sub-coordinator role) is PINNED when its hera row carries a `pinned_at` timestamp. A pinned coordinator SHALL render in the Pinned section as a foldable coordinator row carrying its subtree (its children render nested beneath it as usual), and MUST NOT also render in the active orchestrator tree. A pinned agent SHALL float OUT of its coordinator's child list and render in the Pinned section as a standalone row, and MUST NOT be counted in its (former) coordinator's live-child `(N)` count. Unpinning a row SHALL return it to its normal place on the next rail rebuild.
+
+The system SHALL bind `P` (focus `RAIL`) to toggle the pinned state of the selected coordinator or agent: pin when the row is not pinned, unpin when it is. Pin and archive SHALL be MUTUALLY EXCLUSIVE, mirroring argus's `SetPinned`/`SetArchived`: pinning a row MUST clear its archived state (its hera `archived_at`, and when its bound argus task is argus-archived, the argus side too via the unarchive endpoint), and archiving a row MUST clear its `pinned_at`. Pinned state takes PRECEDENCE over archived state in rendering — a row can never be in both the Pinned and an Archive section.
+
+Pin state SHALL be persisted HERA-SIDE in a nullable `pinned_at` column on `orchestrators` and `roles` (mirroring `archived_at`), because argus exposes no pin/SetPinned REST endpoint. Consequently a pinned hera coordinator/agent does NOT reflect into argus's own TUI Pinned section. `P` against a freelance row (an unmanaged argus task with no hera role) is NOT applicable and MUST give visible feedback naming the gap (pinning is hera-side; a freelancer has no hera row to persist a pin on), never a silent no-op.
+
+#### Scenario: Pinned coordinator floats to the Pinned section
+
+- **WHEN** an orchestrator's `pinned_at` is set
+- **THEN** a `Pinned` separator MUST render at the top of the rail AND the orchestrator MUST render as a foldable coordinator row under it (with its subtree) AND MUST NOT also render in the active orchestrator tree
+
+#### Scenario: Pinned agent floats out of its coordinator
+
+- **WHEN** a worker role under coordinator `foo` has its `pinned_at` set
+- **THEN** the worker MUST render as a standalone row in the Pinned section AND MUST NOT appear among `foo`'s active children AND MUST NOT be counted in `foo`'s live-child `(N)` count
+
+#### Scenario: `P` pins the selected row and clears archived
+
+- **WHEN** focus is `RAIL` and the operator presses `P` against a non-pinned, archived role
+- **THEN** hera MUST set the role's `pinned_at`, clear its `archived_at`, and (when its bound argus task is argus-archived) issue the argus unarchive endpoint, so the row moves into the Pinned section and out of any Archive section
+
+#### Scenario: `P` again unpins
+
+- **WHEN** focus is `RAIL` and the operator presses `P` against a pinned coordinator
+- **THEN** hera MUST clear its `pinned_at`, so it returns to the active orchestrator tree on the next rebuild
+
+#### Scenario: Archiving a pinned row clears the pin
+
+- **WHEN** a pinned row is archived (via `a`)
+- **THEN** the row's `pinned_at` MUST be cleared so it leaves the Pinned section, AND it MUST render in its Archive section per the archive rules
+
+#### Scenario: `P` on a freelancer pins it at root level (BUG-024)
+
+- **WHEN** focus is `RAIL` and the operator presses `P` against a freelance row
+- **THEN** hera MUST toggle the freelancer's pinned state in the rail's in-memory `pinnedFreelance` map (persisted via `railViewState` to the config table), AND the pinned freelancer MUST float to the ROOT level of the Pinned block (depth 0, intermixed with pinned coordinators, no ancestry shown), AND MUST NOT also render in the Freelance section (no double-render), AND MUST NOT write any hera role DB row or call argus. Pressing `P` again MUST unpin and return the freelancer to the Freelance section.
+
+#### Scenario: Every freelance row carries the (F) marker (BUG-024 / BUG-026)
+
+- **WHEN** a freelance task renders in the Freelance section, in the Pinned block, OR in the consolidated bottom Archive's per-project sub-groups
+- **THEN** the row MUST display the `iconFreelance` marker (`nf-md-alpha_f_box_outline`, U+F0BFA — confirmed present in HackNerdFont-Regular v3 via post-table glyph name; the prior codepoint U+F0229 was `md-file_presentation_box`, not the intended alpha-f icon) after the status icon, so freelancers are visually distinct from managed agents and coordinators at a glance. The marker MUST render consistently at the same icon-column position in all sections.
+
+#### Scenario: Pinned managed sub-item renders as a stacked two-line breadcrumb (BUG-025)
+
+- **WHEN** a pinned managed role (worker or sub-coordinator) that lives INSIDE a coordinator floats to the Pinned block
+- **THEN** its entry in the Pinned block MUST span TWO consecutive visual lines:
+  - **Line 1** (`railRowPinnedBreadcrumb`, selectable cursor target, DIMMED): the role's status icon followed by the full ancestry trail from the root coordinator down to the role's immediate parent, each name separated by ` › ` and ending with a trailing ` › ` (e.g. `○ kbtest › nested-sub › `). This line is the cursor target for j/k and pane-binding; `currentRef()` MUST return the role, identical to selecting the name line.
+  - **Line 2** (`railRowRole` with `isBreadcrumbContinuation=true`, NON-selectable): the role's name in full-bright style (`StyleNormal`, or `StyleSelected` when line 1 is the cursor), right-aligned age, indented one `indentStep` more than line 1. This line MUST NOT be individually selectable; j/k MUST treat both lines as a single navigation unit (pressing j once from the entry before lands on line 1; pressing j once from line 1 skips line 2 and lands on the next selectable row after both lines).
+- A **top-level pinned coordinator** (a pinned `orchEntry`) MUST stay single-line (the existing `railRowOrch` render path).
+- A **pinned freelancer** MUST stay single-line (rendered at root depth with no coordinator ancestry per BUG-024).
+- When the ancestry trail is too wide for the available line width, it MUST be **left-truncated** with a leading `…` so the nearest parent (rightmost text) remains visible. The role name on line 2 MUST NEVER truncate due to ancestry overflow.
+- `SelectByRoleID` and `SelectByArgusTaskID` MUST find `railRowPinnedBreadcrumb` rows (the cursor target) in addition to non-continuation `railRowRole` rows.
+
+#### Scenario: Deep ancestry chain left-truncates in breadcrumb line
+
+- **WHEN** the breadcrumb ancestry trail (e.g. `grandparent › parent › child › `) exceeds the available line-1 width
+- **THEN** the leftmost ancestors MUST be dropped and the trail replaced with `…` + the remaining suffix, keeping the nearest parent visible. The role name on line 2 MUST render in full with no truncation from the ancestry.
+
+### Requirement: Consolidated bottom Archive with sub-groups (BUG-026, supersedes BUG-019)
+
+The system SHALL render ONE consolidated `Archive (N)` section at the bottom of the rail, holding ALL archived Hera tasks — archived freelancers AND archived root coordinators — in a single, navigable expando. This replaces the BUG-019 per-project Archive expandos inside the Freelance section. The Freelance section MUST show ONLY live (non-archived, non-pinned) freelancers; archived freelancers are NEVER shown inline in the Freelance section.
+
+The bottom Archive expando (collapsed by default, `archiveTopLevelOwner = 0`) contains TWO types of sub-groups (both also collapsed by default, fold state persisted via `railViewState.ArchiveGroupExpanded`):
+
+- **`Hera sessions` sub-group** — holds archived root coordinators (those archived from the active coordinator tree).
+- **Per-project sub-groups** (one per project name, mirroring the live Freelance grouping) — hold archived freelancers for that project. Each archived freelancer row carries the `iconFreelance` marker (`nf-md-alpha_f_box_outline`, U+F0BFA).
+
+Per-coordinator Archive expandos (archived AGENTS inside a coordinator — e.g. `Archive (3)` under `kbtest`) remain exactly as-is, unchanged by this requirement.
+
+`N` on the bottom Archive header is the total count of all archived items (archived coords + archived freelancers). `N` on each sub-group header is the count within that sub-group.
+
+Sub-groups are selectable (`railRowArchiveGroup`). Space/Enter on a sub-group header toggles its fold. The `l` listall convenience force-expands both the Archive expando AND all sub-groups. An active search filter force-expands the Archive and sub-groups, narrowing each to matching items.
+
+Zone separators (plain horizontal rules, `railRowSectionRule`) appear between the active coordinator tree and the Freelance section, and between the Freelance section and the Archive section, visually delineating the four rail zones: Pinned | active coords | Freelance | Archive.
+
+The rail border title is EMPTY by default (BUG-026: the "Rail" label is redundant, removed). During an active search filter, the title shows only the query string (e.g. `/scout`).
+
+#### Scenario: Archived freelancer renders in the consolidated bottom Archive, not vanished
+
+- **WHEN** the operator presses `a` on a freelancer and its argus task becomes archived
+- **THEN** in the default view (without `l`) the rail MUST render the bottom `Archive (N)` section counting that freelancer AND the Freelance section MUST NOT contain that freelancer. Expanding the Archive MUST reveal a per-project sub-group; expanding the sub-group MUST reveal the freelancer as a selectable row.
+
+#### Scenario: Archived freelancer does not double-render
+
+- **WHEN** a freelancer is archived
+- **THEN** it MUST NOT appear inline in its Freelance repo group (in either the default or the `l` view) — it renders only inside the bottom Archive's per-project sub-group.
+
+#### Scenario: No per-project Archive expandos in the Freelance section
+
+- **WHEN** the Freelance section renders
+- **THEN** it MUST contain ONLY live (non-archived, non-pinned) freelancers grouped by project. There MUST be no `railRowArchiveExpando` or `railRowArchiveGroup` rows inside the Freelance section.
+
+#### Scenario: `a` on an archived freelancer in the Archive section unarchives it
+
+- **WHEN** the operator presses `a` against an archived freelancer row inside the bottom Archive section, whose argus task is `T9`
+- **THEN** hera MUST issue the argus unarchive endpoint for `T9` with no hera DB write, so the task returns to its Freelance repo group on the next rebuild.
+
+#### Scenario: Archived root coordinator reachable without `l` via "Hera sessions"
+
+- **WHEN** a root coordinator is archived
+- **THEN** in the default view (without `l`) the rail MUST render the bottom `Archive (N)` section. Expanding it MUST reveal a `Hera sessions (N)` sub-group. Expanding that sub-group MUST reveal the archived coordinator.
+
+#### Scenario: `l` force-expands the bottom Archive and all sub-groups
+
+- **WHEN** the operator presses `l`
+- **THEN** the bottom `Archive (N)` section MUST be force-expanded along with every per-coordinator Archive expando AND all Archive sub-groups (`Hera sessions`, per-project freelancer groups), AND dead rows MUST be revealed.
+
+### Requirement: Rail status icons reflect the bound task's actual argus state
+
+The status icon on every rail row (coordinator headers, agent/worker rows, sub-coordinator rows, and freelance rows) SHALL be derived from the bound argus task's actual argus-reported state whenever that state is known to the argus state cache, REGARDLESS of the row's archive state (hera `archived_at` set, argus-archived) or its hera binding's liveness (live, ended, or dead). Archive state and binding liveness SHALL modulate only the row's STYLE (dimmed) and PLACEMENT (active list vs Archive expando) — never the status GLYPH: archiving a row, unarchiving it, or its binding ending MUST NOT change which glyph renders while the task's argus status is unchanged.
+
+To keep the state resolvable across those transitions, the row's argus-state lookup MUST resolve through the role's most recent binding's task id when no live binding exists (archiving ends the binding with `end_reason='argus_archived'` while preserving the task id; reconciliation ends bindings with `end_reason='resync_missing'`), and the argus state cache MUST include archived tasks (argus's default task list excludes them).
+
+The idle circle `○` SHALL render as a status glyph only when the task's argus state actually warrants it (in-progress idle); for an archived or dead row whose argus state is UNKNOWN (cache miss / task gone from argus), `○` dimmed remains the fallback.
+
+#### Scenario: Archive round-trip never mutates the status glyph
+
+- **WHEN** an agent row whose argus task is `complete` is archived via `a` and later unarchived via `a`, with the task's argus status unchanged throughout
+- **THEN** the row's status icon MUST render `✓` at every step — dimmed while the row displays as archived — and MUST NOT fall to `○` at any point in the round trip
+
+#### Scenario: Archived row with known state renders its true status dimmed
+
+- **WHEN** the rail renders a row bucketed as archived (hera-archived, argus-archived, or dead) whose task state is known to the cache
+- **THEN** the row MUST render the glyph for its actual argus status (`?` needs-input, `✓` complete/in_review, `☾` working, `○` idle-in-progress) in a dimmed style
+
+#### Scenario: Ended binding does not lose the state lookup
+
+- **WHEN** a role's only binding has ended (`end_reason='argus_archived'` or `'resync_missing'`) and the task's state is present in the argus state cache
+- **THEN** the row's status icon MUST reflect that state exactly as if the binding were live
+
+#### Scenario: Dead-classified row with known complete state shows the check
+
+- **WHEN** a row's task is classified dead by the aliveness checker because its status is `complete`, while the state cache still holds that status
+- **THEN** the row MUST render `✓` dimmed, not `○`
+
+#### Scenario: Unknown-state archived row falls back to the dimmed circle
+
+- **WHEN** an archived or dead row's task has no entry in the argus state cache (and the cache is warm)
+- **THEN** the row renders `○` dimmed as the unknown-state fallback
+
+### Requirement: Archive operations tolerate argus-pruned tasks
+
+Argus prunes tasks outright (deletes them, not archives them), so a role's recorded `argus_task_id` can point at a task that no longer exists. The system SHALL treat an HTTP 404 (task not found) from argus's archive or unarchive endpoint as a successful no-op for the argus side of the operation: there is nothing to (un)archive argus-side, so the hera-side flip MUST proceed, the operation MUST report success, and the skip SHALL be logged for diagnosis. This tolerance applies to role archive, role unarchive, orchestrator-unarchive's coord-task unarchive, and the direct freelance task toggle. The 404 MUST be detected via a typed status-code check on the argus client's error, never by string-matching the formatted message.
+
+An orchestrator archive cascade MUST NOT abort when an individual role's archive fails. Pruned tasks (404) are skips per the above; any OTHER per-role failure (e.g. argus unreachable) SHALL be collected while the cascade continues through the remaining roles. When one or more roles failed, the orchestrator's own `archived_at` MUST be left clear — the row stays active so the operator can retry, and the retry skips roles already archived — and the operation MUST return a single summary error naming the roles that failed.
+
+Status stepping (`s`/`S`) against a pruned task remains an error — a nonexistent task cannot be stepped — but the message MUST state plainly that the task no longer exists in argus rather than surfacing a raw HTTP error.
+
+#### Scenario: Archiving a role whose task argus pruned succeeds
+
+- **WHEN** the operator presses `a` against an active role whose bound argus task argus has pruned (the archive endpoint returns 404)
+- **THEN** the role's hera `archived_at` MUST be set, the argus side MUST be skipped, and the operation MUST report success
+
+#### Scenario: Orchestrator cascade archives through a mix of live and pruned tasks
+
+- **WHEN** the operator presses `a` against an orchestrator whose roles bind a mix of live and pruned argus tasks
+- **THEN** every role MUST be archived hera-side, live tasks MUST be archived argus-side, pruned tasks MUST be skipped, and the orchestrator itself MUST be archived with no error
+
+#### Scenario: Non-404 failure does not abort the cascade and leaves the orchestrator retryable
+
+- **WHEN** one role's argus-side archive fails with a non-404 error (e.g. argus unreachable for that call) during an orchestrator cascade
+- **THEN** the cascade MUST still attempt every remaining role, the orchestrator's `archived_at` MUST be left clear, and the returned error MUST name the role(s) that failed
+
+#### Scenario: Unarchiving a role whose task argus pruned succeeds
+
+- **WHEN** the operator presses `a` against an archived role whose bound argus task argus has pruned (the unarchive endpoint returns 404)
+- **THEN** the role's hera `archived_at` MUST be cleared, the argus side MUST be skipped, and the operation MUST report success
+
+#### Scenario: Stepping status on a pruned task errors with a plain message
+
+- **WHEN** the operator presses `s` or `S` against a row whose argus task argus has pruned
+- **THEN** the operation MUST fail with a message stating the task no longer exists in argus, not a raw HTTP 404 error string
+
+### Requirement: Rail status glyphs mirror argus's task-panel table exactly
+
+The status glyph and color rendered for a known argus task state — on every rail row kind (coordinator headers, agent/worker rows, sub-coordinator rows, and freelance rows) and in both active and archived/dimmed variants — SHALL mirror argus's task-panel mapping (argus `internal/tui/theme/theme.go:29-34` + `internal/tui/taskview/tasklist.go:1095-1132`) EXACTLY:
+
+| Argus state | Glyph | Color |
+|---|---|---|
+| `pending` | `○` U+25CB | gray (`theme.ColorPending`) |
+| `complete` | `✓` U+2713 | green (`theme.ColorComplete`) |
+| `in_review` | `󰖔` U+F0594 (nf-md-weather_night, moon-with-stars) | blue (`theme.ColorInReview`) |
+| `in_progress` + needs-input | `` U+F059 (nf-fa-question_circle) | `theme.ColorNeedsInput` (#faa378) |
+| `in_progress` + idle | `` U+F186 (nf-fa-moon_o) | blue (`theme.ColorInReview`) |
+| `in_progress` + running (idle false/omitted) | spinner frames U+EE06..U+EE0B, animated at argus's 150 ms cadence | orange (`theme.ColorInProgress`) |
+
+`in_review` MUST be visually distinct from `complete` by GLYPH, not merely by color: the checkmark `✓` MUST NOT render for any state other than `complete`. Within `in_progress`, needs-input takes priority over idle and running, mirroring argus's switch nesting; the needs-input override applies only to `in_progress` (argus's API serves `needs_input` solely for `in_progress`). Argus's TUI-only `idleUnvisited` variant (moon-with-stars for unvisited-idle) is not in the API and MUST NOT be mirrored: all `in_progress`+idle rows render the plain moon `` U+F186. Colors SHALL come from the SDK theme's argus values (`github.com/anutron/argus-sdk/theme`), never re-hardcoded hex.
+
+Running rows SHOULD animate: while at least one visible rail row is in the running state, the view SHALL repaint at the spinner cadence so the spinner advances by wall clock (argus's animation source); each repaint MUST render the frame for the current wall-clock instant. When no running row is visible, the spinner driver MUST NOT schedule repaints.
+
+This table defines the GLYPH for a known state; it composes with (and does not supersede) the rail-truthfulness requirement: archive state and binding liveness modulate only the STYLE (dimmed), never the glyph, and the dimmed `○` fallback remains reserved for archived/dead rows with UNKNOWN state.
+
+#### Scenario: in_review renders the moon-with-stars, never a check
+
+- **WHEN** a rail row's bound task has argus status `in_review`
+- **THEN** the row MUST render `󰖔` (U+F0594) in blue (`theme.ColorInReview`) AND MUST NOT render `✓`
+
+#### Scenario: complete is the only state that renders a checkmark
+
+- **WHEN** rail rows render tasks in every known argus state
+- **THEN** only the `complete` row renders `✓` (green, `theme.ColorComplete`); every other state renders its own table glyph
+
+#### Scenario: pending renders the open circle
+
+- **WHEN** a rail row's bound task has argus status `pending`
+- **THEN** the row MUST render `○` in gray (`theme.ColorPending`)
+
+#### Scenario: in_progress idle renders the plain moon in blue
+
+- **WHEN** a rail row's bound task is `in_progress` with `idle` true and `needs_input` false
+- **THEN** the row MUST render `` (U+F186) in blue (`theme.ColorInReview`), not dimmed and not the moon-with-stars
+
+#### Scenario: in_progress running renders the animated spinner in orange
+
+- **WHEN** a rail row's bound task is `in_progress` with `idle` false/omitted and `needs_input` false
+- **THEN** the row MUST render the spinner frame for the current wall-clock instant (one of U+EE06..U+EE0B at a 150 ms cadence) in orange (`theme.ColorInProgress`), and successive repaints across frame boundaries MUST advance the frame
+
+#### Scenario: needs-input outranks idle and running within in_progress
+
+- **WHEN** a rail row's bound task is `in_progress` with `needs_input` true (regardless of `idle`)
+- **THEN** the row MUST render `` (U+F059) in `theme.ColorNeedsInput` (#faa378)
+
+#### Scenario: needs-input does not override a non-in_progress status
+
+- **WHEN** a rail row's state carries `needs_input` true but a status other than `in_progress` (a shape argus's API never serves)
+- **THEN** the row MUST render the glyph for its status, mirroring argus's switch nesting
+
+#### Scenario: archived variants keep the table glyph dimmed
+
+- **WHEN** a rail row bucketed as archived/dead has a known argus state
+- **THEN** the row MUST render the same table glyph for that state in the dimmed style (a running archived row renders the spinner frame dimmed)
+
+#### Scenario: spinner driver is quiet without running rows
+
+- **WHEN** no visible rail row is in the running state
+- **THEN** the spinner driver MUST NOT schedule spinner repaints
+
+### Requirement: All hera-rendered surfaces share one consistent background
+
+Every hera-rendered surface — the root canvas, the top bar, the body, the rail, the coordinator and agent pane frames (including their empty/placeholder state), the Details pane, the gaps/canvas between or around panes, and every modal/popup overlay (input, two-field, confirm, select, error) — SHALL paint the SAME background color the SDK terminalpane uses for its emulator interior cells: the terminal's default background (`tcell.ColorDefault`, exposed as the view package's single `heraBackground` constant). No hera surface may render the grey-blue backgrounds that previously leaked through — neither tview's stock primitive/contrast defaults nor the argus status-bar dark gray (`theme.ColorStatusBG`). A modal overlay is distinguished from the chrome behind it by its cyan border + title and its highlighted buttons/fields, NOT by a different background fill.
+
+#### Scenario: Chrome surfaces use the single hera background
+
+- **WHEN** the hera-view application is built
+- **THEN** the root, top bar, body, rail, both panes, and the Details pane MUST each report `heraBackground`, AND none may report `theme.ColorStatusBG`, AND the global tview default background (primitive and contrast) MUST be repointed to `heraBackground` so any unset primitive falls through to the same black
+
+#### Scenario: Modal overlays use the single hera background, not grey-blue
+
+- **WHEN** any modal/popup overlay (input, two-field, confirm, select, or error) is rendered over the base layout
+- **THEN** no cell on the drawn surface may carry tview's stock contrast background or `theme.ColorStatusBG`, AND at least one cell of the overlay MUST carry `heraBackground`
 
