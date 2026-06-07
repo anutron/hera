@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anutron/hera/internal/db"
 	"github.com/anutron/hera/internal/view/ops"
 )
 
@@ -1118,6 +1119,168 @@ func TestBridge_OnArchive_ServiceError_ShowsErrorModal(t *testing.T) {
 
 	if len(m.errors) != 1 || m.errors[0] != "argus 500" {
 		t.Fatalf("want error modal; got %v", m.errors)
+	}
+}
+
+// Live coordinator guard: a single `a` on a live orchestrator must show a
+// confirm modal — not archive immediately. The guard fires on the FIRST tap.
+
+func TestBridge_OnArchive_LiveOrchestrator_RequiresConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "foo",
+		CoordTaskID:    "task-coord-1", // live: has a bound coord task
+	}
+	m.stubConfirmNotOpen = true // open the modal but do not auto-answer
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("live orchestrator must open a confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Title, "live coordinator") {
+		t.Fatalf("confirm title must mention live coordinator; got %q", m.confirms[0].Title)
+	}
+	if len(svc.archiveOrchCalls) != 0 {
+		t.Fatalf("must not archive before confirmation; got %v", svc.archiveOrchCalls)
+	}
+}
+
+func TestBridge_OnArchive_LiveOrchestrator_ConfirmYes_Archives(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "foo",
+		CoordTaskID:    "task-coord-1",
+	}
+	m.stubConfirmYes = true
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.archiveOrchCalls) != 1 || svc.archiveOrchCalls[0] != 5 {
+		t.Fatalf("want ArchiveOrchestrator(5) after confirm yes; got %v", svc.archiveOrchCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh; got %d", rp.Count())
+	}
+}
+
+func TestBridge_OnArchive_LiveOrchestrator_ConfirmNo_NoArchive(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "foo",
+		CoordTaskID:    "task-coord-1",
+	}
+	m.stubConfirmYes = false // defaults to no
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.archiveOrchCalls) != 0 {
+		t.Fatalf("confirm no must not archive; got %v", svc.archiveOrchCalls)
+	}
+}
+
+// An orchestrator with children requires confirmation — archiving cascades.
+func TestBridge_OnArchive_OrchestratorWithChildren_RequiresConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "foo",
+		ChildCount:     3,
+	}
+	m.stubConfirmNotOpen = true
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("orchestrator with children must open a confirm modal; got %d", len(m.confirms))
+	}
+	msg := m.confirms[0].Message
+	if !stringsContains(msg, "foo") || !stringsContains(msg, "3") {
+		t.Fatalf("confirm must name target and child count; got %q", msg)
+	}
+	if len(svc.archiveOrchCalls) != 0 {
+		t.Fatalf("must not archive before confirmation; got %v", svc.archiveOrchCalls)
+	}
+}
+
+// A live coordinator role (bound argus task) requires confirmation.
+func TestBridge_OnArchive_LiveCoordRole_RequiresConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "coord",
+		RoleKind:    string(db.KindCoordinator),
+		ArgusTaskID: "task-coord-1",
+	}
+	m.stubConfirmNotOpen = true
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("live coord role must open a confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Title, "live coordinator") {
+		t.Fatalf("confirm title must mention live coordinator; got %q", m.confirms[0].Title)
+	}
+	if len(svc.archiveRoleCalls) != 0 {
+		t.Fatalf("must not archive before confirmation; got %v", svc.archiveRoleCalls)
+	}
+}
+
+func TestBridge_OnArchive_LiveCoordRole_ConfirmYes_Archives(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:        selRole,
+		RoleID:      9,
+		Name:        "coord",
+		RoleKind:    string(db.KindCoordinator),
+		ArgusTaskID: "task-coord-1",
+	}
+	m.stubConfirmYes = true
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(svc.archiveRoleCalls) != 1 || svc.archiveRoleCalls[0] != 9 {
+		t.Fatalf("want ArchiveRole(9) after confirm yes; got %v", svc.archiveRoleCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh; got %d", rp.Count())
+	}
+}
+
+// An unbound coordinator role (no ArgusTaskID) archives immediately — no guard.
+func TestBridge_OnArchive_UnboundCoordRole_ArchivesImmediately(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:     selRole,
+		RoleID:   9,
+		Name:     "coord",
+		RoleKind: string(db.KindCoordinator),
+		// ArgusTaskID is empty — no live binding
+	}
+
+	b.OnArchive()
+	b.waitIdle()
+
+	if len(m.confirms) != 0 {
+		t.Fatalf("unbound coord role must not open a confirm modal; got %d", len(m.confirms))
+	}
+	if len(svc.archiveRoleCalls) != 1 || svc.archiveRoleCalls[0] != 9 {
+		t.Fatalf("want ArchiveRole(9) immediately; got %v", svc.archiveRoleCalls)
 	}
 }
 
@@ -2642,20 +2805,24 @@ func TestBridge_OnArchive_MixedCoordHeader_RepairsViaTaskUnarchive(t *testing.T)
 }
 
 // Spec (mixed-coord-repair): once repaired (coord task no longer argus-
-// archived), `a` on the header behaves exactly as today — the standard
-// cascade-archive.
-func TestBridge_OnArchive_RepairedHeader_CascadesAsBefore(t *testing.T) {
-	b, _, sel, svc, _, _ := newBridgeUnderTest()
+// archived), `a` on the header is a live coordinator → requires confirm.
+// Confirming yes then cascade-archives the orchestrator.
+func TestBridge_OnArchive_RepairedHeader_CascadesAfterConfirm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
 	sel.sel = railSelection{
 		Kind: selOrchestrator, OrchestratorID: 5, Name: "foo",
 		CoordTaskID: "T1", CoordArgusArchived: false,
 	}
+	m.stubConfirmYes = true
 
 	b.OnArchive()
 	b.waitIdle()
 
+	if len(m.confirms) != 1 {
+		t.Fatalf("live repaired header must open a confirm modal; got %d", len(m.confirms))
+	}
 	if len(svc.archiveOrchCalls) != 1 || svc.archiveOrchCalls[0] != 5 {
-		t.Fatalf("repaired header must cascade-archive; got %v", svc.archiveOrchCalls)
+		t.Fatalf("repaired header must cascade-archive after confirm yes; got %v", svc.archiveOrchCalls)
 	}
 	if len(svc.toggleArchiveTaskCalls) != 0 {
 		t.Fatalf("repaired header must not fire the task-direct repair; got %+v", svc.toggleArchiveTaskCalls)

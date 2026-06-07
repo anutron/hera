@@ -703,11 +703,16 @@ func (b *mutationBridge) OnDelete() {
 	})
 }
 
-// OnArchive toggles the archived state of the selected row. No modal
-// — archive is non-destructive (worktree survives), so a single key
-// is enough. A freelance row (unmanaged argus task, no hera role) is
-// addressed directly by its argus task id; non-addressable rows get
-// visible feedback. The argus call runs off-loop via mutate.
+// OnArchive toggles the archived state of the selected row. A freelance row
+// (unmanaged argus task, no hera role) is addressed directly by its argus task
+// id; non-addressable rows get visible feedback. The argus call runs off-loop
+// via mutate.
+//
+// Guard: archiving a LIVE coordinator (an orchestrator with a bound coord task,
+// an orchestrator with child agents, or a coordinator role with a live binding)
+// requires confirmation via ShowConfirm — a stray `a` on an active coordinator
+// otherwise destroys live work. Non-live rows (already archived, no binding, no
+// children) archive immediately. Unarchiving is always immediate.
 //
 // The toggle DIRECTION follows the row's EFFECTIVE rendered archived
 // state — the same predicate the rail uses to bucket the row into an
@@ -741,9 +746,31 @@ func (b *mutationBridge) OnArchive() {
 				return b.svc.UnarchiveOrchestrator(b.ctx, sel.OrchestratorID)
 			})
 		} else {
-			b.mutate("archive", true, func() error {
-				return b.svc.ArchiveOrchestrator(b.ctx, sel.OrchestratorID)
-			})
+			// Guard: a live orchestrator (bound coord task or child agents) requires
+			// confirmation — cascade-archiving an active coordinator disrupts live work.
+			if sel.CoordTaskID != "" || sel.ChildCount > 0 {
+				b.goUI(func() {
+					var msg string
+					if sel.ChildCount > 0 {
+						msg = fmt.Sprintf(
+							"Archive %q and cascade to its %d child agent(s)? "+
+								"The coordinator and all children will be archived. (y/N)",
+							sel.Name, sel.ChildCount,
+						)
+					} else {
+						msg = fmt.Sprintf("Archive live coordinator %q? (y/N)", sel.Name)
+					}
+					b.modals.ShowConfirm("Archive live coordinator?", msg, func() {
+						b.mutate("archive", true, func() error {
+							return b.svc.ArchiveOrchestrator(b.ctx, sel.OrchestratorID)
+						})
+					}, nil)
+				})
+			} else {
+				b.mutate("archive", true, func() error {
+					return b.svc.ArchiveOrchestrator(b.ctx, sel.OrchestratorID)
+				})
+			}
 		}
 	case selRole:
 		if sel.RoleKind == string(db.KindFreelance) {
@@ -764,9 +791,26 @@ func (b *mutationBridge) OnArchive() {
 				return b.svc.UnarchiveRole(b.ctx, sel.RoleID)
 			})
 		} else {
-			b.mutate("archive", true, func() error {
-				return b.svc.ArchiveRole(b.ctx, sel.RoleID)
-			})
+			// Guard: a live coordinator role (has a bound argus task) requires
+			// confirmation before archiving.
+			if sel.RoleKind == string(db.KindCoordinator) && sel.ArgusTaskID != "" {
+				b.goUI(func() {
+					b.modals.ShowConfirm(
+						"Archive live coordinator?",
+						fmt.Sprintf("Archive live coordinator %q? (y/N)", sel.Name),
+						func() {
+							b.mutate("archive", true, func() error {
+								return b.svc.ArchiveRole(b.ctx, sel.RoleID)
+							})
+						},
+						nil,
+					)
+				})
+			} else {
+				b.mutate("archive", true, func() error {
+					return b.svc.ArchiveRole(b.ctx, sel.RoleID)
+				})
+			}
 		}
 	default:
 		b.notApplicable("a: not applicable to this row")
