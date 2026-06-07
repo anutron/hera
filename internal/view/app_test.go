@@ -4167,10 +4167,11 @@ func TestBuildAppNoSavedSelectionLandsAtCoordinatorSection(t *testing.T) {
 	}
 }
 
-// TestApp_ApplyDeadPaneFocusGuard_ForcesRAILWhenFocusedPaneDied proves that
-// applyDeadPaneFocusGuard moves focus to RAIL when the dead task ID matches the
-// currently-focused pane's bound task (BUG-006 dead-session mid-pane fix).
-func TestApp_ApplyDeadPaneFocusGuard_ForcesRAILWhenFocusedPaneDied(t *testing.T) {
+// TestApp_ApplyDeadPaneFocusGuard_NoopWhenNoTriggerWired proves that
+// applyDeadPaneFocusGuard does NOT kick focus to RAIL when no reattach trigger
+// is wired (e.g. tests without a live session). The REATTACHING splash is the
+// only dead-pane UX; the old BUG-006 RAIL-snap is removed (BUG-008).
+func TestApp_ApplyDeadPaneFocusGuard_NoopWhenNoTriggerWired(t *testing.T) {
 	d := openTestDB(t)
 	a, err := BuildApp(d, nil)
 	if err != nil {
@@ -4192,14 +4193,14 @@ func TestApp_ApplyDeadPaneFocusGuard_ForcesRAILWhenFocusedPaneDied(t *testing.T)
 		t.Fatalf("precondition: focus must be COORD; got %v", focus.State())
 	}
 
-	// The dead pane's task matches the focused coord pane — focus should go to RAIL.
+	// No reattach trigger wired — guard must be a no-op (no RAIL snap).
 	a.applyDeadPaneFocusGuard("dead-task")
 
-	if focus.State() != FocusRAIL {
-		t.Fatalf("after applyDeadPaneFocusGuard, focus = %v; want RAIL", focus.State())
+	if focus.State() != FocusCOORD {
+		t.Fatalf("after applyDeadPaneFocusGuard (no trigger), focus = %v; want COORD (no kick)", focus.State())
 	}
-	if a.CurrentFocus() != FocusRAIL {
-		t.Fatalf("after applyDeadPaneFocusGuard, CurrentFocus = %v; want RAIL", a.CurrentFocus())
+	if a.CurrentFocus() != FocusCOORD {
+		t.Fatalf("after applyDeadPaneFocusGuard (no trigger), CurrentFocus = %v; want COORD", a.CurrentFocus())
 	}
 }
 
@@ -4258,9 +4259,10 @@ func TestApp_ApplyDeadPaneFocusGuard_NoopWhenAlreadyRAIL(t *testing.T) {
 	}
 }
 
-// TestApp_ApplyDeadPaneFocusGuard_AgentPaneDied proves the guard works for the
-// AGENT pane too (not just COORD).
-func TestApp_ApplyDeadPaneFocusGuard_AgentPaneDied(t *testing.T) {
+// TestApp_ApplyDeadPaneFocusGuard_AgentPane_NoopWhenNoTriggerWired proves the
+// guard is a no-op for the AGENT pane too when no reattach trigger is wired.
+// No RAIL-snap — REATTACHING splash is the only dead-pane UX (BUG-008).
+func TestApp_ApplyDeadPaneFocusGuard_AgentPane_NoopWhenNoTriggerWired(t *testing.T) {
 	d := openTestDB(t)
 	a, err := BuildApp(d, nil)
 	if err != nil {
@@ -4281,9 +4283,10 @@ func TestApp_ApplyDeadPaneFocusGuard_AgentPaneDied(t *testing.T) {
 		t.Fatalf("precondition: focus must be AGENT; got %v", focus.State())
 	}
 
+	// No reattach trigger wired — guard must be a no-op (no RAIL snap).
 	a.applyDeadPaneFocusGuard("dead-agent")
 
-	if focus.State() != FocusRAIL {
-		t.Fatalf("after applyDeadPaneFocusGuard, focus = %v; want RAIL", focus.State())
+	if focus.State() != FocusAGENT {
+		t.Fatalf("after applyDeadPaneFocusGuard (no trigger), focus = %v; want AGENT (no kick)", focus.State())
 	}
 }

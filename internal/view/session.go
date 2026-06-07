@@ -110,9 +110,9 @@ func NewSessionFunc(database *db.DB, manager *ProxyManager, client *argus.Client
 		// stopped on teardown so the goroutine never leaks.
 		forwarder := NewPaneForwarder(ctx, client, log, 256)
 		defer forwarder.Stop()
-		// Force focus to RAIL when a pane's PTY session ends mid-typing (BUG-006).
+		// Show REATTACHING splash when a pane's PTY session ends mid-typing (BUG-008).
 		// The forwarder fires onDead exactly once per dead task on the first 404
-		// from PostTaskInput; OnPaneDead bounces to the event loop to move focus.
+		// from PostTaskInput; OnPaneDead bounces to the event loop to show the splash.
 		forwarder.SetOnDead(app.OnPaneDead)
 
 		// Wrap the WebSocket conn so pane-focus keystrokes are forwarded to the

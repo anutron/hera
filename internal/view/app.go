@@ -2066,11 +2066,9 @@ func (a *App) updateCoordDetails(orch *orchEntry) {
 
 // OnPaneDead is called by PaneForwarder when PostTaskInput returns
 // ErrNoTaskInput (HTTP 404) — the task's PTY session ended while the operator
-// was actively typing in the pane. If the dead task is currently the focused
-// pane's target, this forces focus back to RAIL so rawInputConn stops
-// forwarding keystrokes to the dead PTY and they are no longer silently dropped
-// (BUG-006: the applyDeadFocusGuard only fires on rail selection changes, not
-// when a session ends mid-pane).
+// was actively typing in the pane. Shows the REATTACHING splash and triggers a
+// background session restart so the operator stays in the pane with progress
+// feedback (BUG-008).
 //
 // Runs from the forwarder's sender goroutine; bounces to the tview event loop
 // via QueueUpdateDraw. Satisfies paneDeadNotifier.
@@ -2089,19 +2087,19 @@ func (a *App) OnPaneDead(taskID string) {
 }
 
 // applyDeadPaneFocusGuard handles a pane's PTY session dying while the operator
-// is actively focused on it (BUG-006, extended by BUG-008). This is the
-// event-loop half of OnPaneDead (extracted for testability).
+// is actively focused on it (BUG-008). This is the event-loop half of
+// OnPaneDead (extracted for testability).
 //
-// BUG-008 behavior: when a reattach trigger is wired (production), show the
-// REATTACHING splash and auto-trigger a background restart instead of snapping
-// to RAIL. The operator stays in the pane and sees progress feedback. Fallback
-// to the original RAIL snap when no trigger is wired (tests) or the pane is
-// already reattaching (avoids re-triggering a concurrent restart).
+// Shows the REATTACHING splash and auto-triggers a background restart when a
+// trigger is wired (production). No-op when the pane is already reattaching
+// (avoids re-triggering a concurrent restart) or when no trigger is wired
+// (tests without a session). Does NOT snap to RAIL — the REATTACHING splash is
+// the only dead-pane UX.
 //
 // Must run on the tview event loop.
 func (a *App) applyDeadPaneFocusGuard(taskID string) {
 	if a.focus == nil || a.focus.State() == FocusRAIL {
-		return // already at RAIL (user may have already pressed Ctrl-Q)
+		return
 	}
 	// Re-check while on the event loop: the pane may have been rebound since
 	// the 404 fired (j/k navigation away), in which case the dead task is no
@@ -2120,18 +2118,12 @@ func (a *App) applyDeadPaneFocusGuard(taskID string) {
 	if !focusedTaskDead {
 		return
 	}
-	// BUG-008: show splash + trigger reattach when a trigger is wired and
-	// the pane is not already reattaching.
+	// Show splash + trigger reattach. No-op when already reattaching or when
+	// no trigger is wired (tests without a live session).
 	if pane != nil && !pane.reattaching && a.onDeadPaneReattach != nil {
 		pane.SetReattaching(true, "connecting to agent...")
 		a.scheduleSubtitleUpdate(taskID)
 		a.onDeadPaneReattach(taskID)
-		return
-	}
-	// Original BUG-006 fallback: snap to RAIL (tests or already reattaching).
-	if pane == nil || !pane.reattaching {
-		a.focus.ToRAIL()
-		a.OnFocusChanged(FocusRAIL)
 	}
 }
 
