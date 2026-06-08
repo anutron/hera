@@ -196,6 +196,17 @@ CREATE TABLE tree_read_cursors (
 );
 `,
 	},
+	{
+		name: "0009_drop_nudge_columns",
+		sql: `
+-- Drop nudge_count and nudged_at from messages. These were written only by the
+-- DeliveryWatcher doorbell loop, which is removed in delegate-delivery-to-argus.
+-- argus now owns retry via the notify endpoint; hera has no nudge state to track.
+DROP INDEX IF EXISTS messages_nudge_scan;
+ALTER TABLE messages DROP COLUMN nudge_count;
+ALTER TABLE messages DROP COLUMN nudged_at;
+`,
+	},
 }
 
 const initialSchema = `

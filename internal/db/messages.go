@@ -75,8 +75,7 @@ func (m *MessagesDAO) SetDelivered(ctx context.Context, messageID int64, mode De
 func (m *MessagesDAO) UnreadForRole(ctx context.Context, roleID int64) ([]*Message, error) {
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to,
-		        sent_at, read_at, delivery_mode, delivered_at,
-		        nudge_count, nudged_at
+		        sent_at, read_at, delivery_mode, delivered_at
 		 FROM messages
 		 WHERE to_role_id = ? AND read_at IS NULL
 		 ORDER BY sent_at ASC`, roleID)
@@ -94,78 +93,6 @@ func (m *MessagesDAO) UnreadForRole(ctx context.Context, roleID int64) ([]*Messa
 		out = append(out, msg)
 	}
 	return out, rows.Err()
-}
-
-// UnreadIdleSubmitStale returns idle_submit messages that have not been read
-// and are eligible for a doorbell re-nudge. A message is eligible when:
-//   - delivery_mode = 'idle_submit' and read_at IS NULL
-//   - nudge_count < maxNudges
-//   - either (nudge_count=0 and delivered_at <= firstCutoff)
-//     or (nudge_count>0 and nudged_at <= repeatCutoff)
-//
-// firstCutoff = now - NudgeAfter; repeatCutoff = now - NudgeEvery.
-func (m *MessagesDAO) UnreadIdleSubmitStale(
-	ctx context.Context,
-	firstCutoff, repeatCutoff time.Time,
-	maxNudges int,
-) ([]*Message, error) {
-	first := firstCutoff.UTC().Format(time.RFC3339Nano)
-	repeat := repeatCutoff.UTC().Format(time.RFC3339Nano)
-	rows, err := m.db.QueryContext(ctx,
-		`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to,
-		        sent_at, read_at, delivery_mode, delivered_at,
-		        nudge_count, nudged_at
-		 FROM messages
-		 WHERE delivery_mode = 'idle_submit'
-		   AND read_at IS NULL
-		   AND nudge_count < ?
-		   AND (
-		     (nudge_count = 0 AND delivered_at IS NOT NULL AND delivered_at <= ?)
-		     OR (nudge_count > 0 AND nudged_at IS NOT NULL AND nudged_at <= ?)
-		   )
-		 ORDER BY to_role_id, sent_at ASC`,
-		maxNudges, first, repeat,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("messages.UnreadIdleSubmitStale: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []*Message
-	for rows.Next() {
-		msg, err := scanMessageRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, msg)
-	}
-	return out, rows.Err()
-}
-
-// RecordNudge increments nudge_count and sets nudged_at = now for the given
-// message IDs. Messages belonging to other roles or already read are silently
-// skipped.
-func (m *MessagesDAO) RecordNudge(ctx context.Context, messageIDs []int64) error {
-	if len(messageIDs) == 0 {
-		return nil
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	query := `UPDATE messages
-	          SET nudge_count = nudge_count + 1, nudged_at = ?
-	          WHERE read_at IS NULL AND id IN (`
-	args := []any{now}
-	for i, id := range messageIDs {
-		if i > 0 {
-			query += ","
-		}
-		query += "?"
-		args = append(args, id)
-	}
-	query += ")"
-	if _, err := m.db.ExecContext(ctx, query, args...); err != nil {
-		return fmt.Errorf("messages.RecordNudge: %w", err)
-	}
-	return nil
 }
 
 // CountUnreadForRole returns the count of unread messages for a given role.
@@ -214,8 +141,7 @@ func (m *MessagesDAO) MarkRead(ctx context.Context, roleID int64, messageIDs []i
 func (m *MessagesDAO) GetByID(ctx context.Context, id int64) (*Message, error) {
 	row := m.db.QueryRowContext(ctx,
 		`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to,
-		        sent_at, read_at, delivery_mode, delivered_at,
-		        nudge_count, nudged_at
+		        sent_at, read_at, delivery_mode, delivered_at
 		 FROM messages WHERE id = ?`, id)
 	msg, err := scanMessageRow(row)
 	if err != nil {
@@ -235,12 +161,11 @@ type rowScanner interface {
 func scanMessageRow(rs rowScanner) (*Message, error) {
 	var msg Message
 	var inReplyTo sql.NullInt64
-	var readAt, deliveredAt, nudgedAt sql.NullString
+	var readAt, deliveredAt sql.NullString
 	var sentAt, deliveryMode string
 	if err := rs.Scan(
 		&msg.ID, &msg.FromRoleID, &msg.ToRoleID, &msg.Body, &msg.Tldr, &inReplyTo,
 		&sentAt, &readAt, &deliveryMode, &deliveredAt,
-		&msg.NudgeCount, &nudgedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -257,10 +182,6 @@ func scanMessageRow(rs rowScanner) (*Message, error) {
 	if deliveredAt.Valid {
 		t, _ := time.Parse(time.RFC3339Nano, deliveredAt.String)
 		msg.DeliveredAt = &t
-	}
-	if nudgedAt.Valid {
-		t, _ := time.Parse(time.RFC3339Nano, nudgedAt.String)
-		msg.NudgedAt = &t
 	}
 	return &msg, nil
 }

@@ -11,8 +11,6 @@ import (
 	"github.com/anutron/hera/internal/config"
 	"github.com/anutron/hera/internal/db"
 	"github.com/anutron/hera/internal/events"
-	"github.com/anutron/hera/internal/idle"
-	"github.com/anutron/hera/internal/inject"
 	"github.com/anutron/hera/internal/mcp"
 	"github.com/anutron/hera/internal/settings"
 	"github.com/anutron/hera/internal/view"
@@ -38,9 +36,7 @@ type Daemon struct {
 	DB                *db.DB
 	Argus             *argus.Client
 	Ports             *argus.PortsClient
-	IdleTrack         *idle.Tracker
-	Injector          *inject.Injector
-	DeliveryWatcher   *inject.DeliveryWatcher
+	SendHandler       *mcp.SendHandler
 	MCPServer         *mcp.Server
 	Registrar         *mcp.Registrar
 	SettingsRegistrar *settings.Registrar
@@ -53,8 +49,6 @@ type Daemon struct {
 
 	periodicCancel context.CancelFunc
 	periodicDone   chan struct{}
-	doorbellCancel context.CancelFunc
-	doorbellDone   chan struct{}
 }
 
 // Start assembles hera and brings every subsystem up. Returns the live
@@ -103,19 +97,6 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	argusBaseURL := fmt.Sprintf("http://127.0.0.1:%d", apiPort)
 
 	client := argus.New(argusBaseURL, token)
-
-	tracker := idle.NewWithDebounce(cfg.IdleDebounce)
-	injector := inject.New(client, tracker)
-	injector.SetAutoInjectEnabled(cfg.AutoInjectEnabled)
-	dw := inject.NewDeliveryWatcher(
-		database.Messages,
-		database.Bindings,
-		client,
-		cfg.NudgeAfter,
-		cfg.NudgeEvery,
-		cfg.MaxNudges,
-		log,
-	)
 	resolver := mcp.NewResolver(client, database)
 
 	auth, err := mcp.GenerateAuthHeader()
@@ -140,14 +121,15 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 
 	// Wire handlers.
+	sendHandler := mcp.NewSendHandler(resolver, database, client, cfg.AutoInjectEnabled, cfg.NotifyDeadlineMs)
 	mcpSrv.RegisterHandler("hera_new_orchestrator", mcp.NewNewOrchestratorHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_join", mcp.NewJoinHandler(resolver, database, client))
-	mcpSrv.RegisterHandler("hera_send", mcp.NewSendHandler(resolver, database, injector))
-	mcpSrv.RegisterHandler("hera_inbox", mcp.NewInboxHandler(resolver, database))
-	mcpSrv.RegisterHandler("hera_mark_read", mcp.NewMarkReadHandler(resolver, database))
+	mcpSrv.RegisterHandler("hera_send", sendHandler)
+	mcpSrv.RegisterHandler("hera_inbox", mcp.NewInboxHandler(resolver, database, client))
+	mcpSrv.RegisterHandler("hera_mark_read", mcp.NewMarkReadHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_status", mcp.NewStatusHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_spawn_worker", mcp.NewSpawnWorkerHandler(resolver, database, client))
-	mcpSrv.RegisterHandler("settings_save", mcp.NewSettingsSaveHandler(database.Config, tracker, injector))
+	mcpSrv.RegisterHandler("settings_save", mcp.NewSettingsSaveHandler(database.Config, sendHandler))
 	mcpSrv.RegisterHandler("hera_tree_updates", mcp.NewTreeUpdatesHandler(resolver, database))
 	mcpSrv.RegisterHandler("hera_get_messages", mcp.NewGetMessagesHandler(resolver, database))
 
@@ -263,7 +245,6 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	subscriber := events.NewSubscriber(client, database, log)
 	subscriber.Register(events.NewAdoptHandler(client, database, log))
 	subscriber.Register(resyncHandler)
-	subscriber.Register(tracker) // tracker implements events.Handler
 
 	// Subscriber runs in its own goroutine; Run() blocks on ctx in main.
 	go func() {
@@ -283,16 +264,6 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	go func() {
 		defer close(periodicDone)
 		periodic.Run(periodicCtx)
-	}()
-
-	// Delivery watcher — re-nudges unread idle_submit messages with a
-	// non-duplicating doorbell until the recipient confirms receipt via
-	// read_at or the nudge cap is reached.
-	doorbellCtx, doorbellCancel := context.WithCancel(context.Background())
-	doorbellDone := make(chan struct{})
-	go func() {
-		defer close(doorbellDone)
-		dw.Run(doorbellCtx)
 	}()
 
 	// Wire recovery: the watcher fires on pid-mtime change or socket-ping
@@ -318,8 +289,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 
 	return &Daemon{
 		Cfg: cfg, Log: log, DB: database, Argus: client, Ports: ports,
-		IdleTrack: tracker, Injector: injector, DeliveryWatcher: dw,
-		MCPServer: mcpSrv, Registrar: registrar,
+		SendHandler: sendHandler, MCPServer: mcpSrv, Registrar: registrar,
 		SettingsRegistrar: settingsReg, Watcher: watcher,
 		Subscriber:      subscriber,
 		ViewRegistrar:   viewReg,
@@ -328,8 +298,6 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		viewProxyCancel: proxyCancel,
 		periodicCancel:  periodicCancel,
 		periodicDone:    periodicDone,
-		doorbellCancel:  doorbellCancel,
-		doorbellDone:    doorbellDone,
 	}, nil
 }
 
@@ -356,16 +324,6 @@ func (d *Daemon) Stop(ctx context.Context) {
 			case <-d.periodicDone:
 			case <-time.After(5 * time.Second):
 				d.Log.Warn("periodic reconciler did not exit within 5s")
-			}
-		}
-	}
-	if d.doorbellCancel != nil {
-		d.doorbellCancel()
-		if d.doorbellDone != nil {
-			select {
-			case <-d.doorbellDone:
-			case <-time.After(5 * time.Second):
-				d.Log.Warn("delivery watcher did not exit within 5s")
 			}
 		}
 	}

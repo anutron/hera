@@ -106,7 +106,7 @@ func TestMultiBinding_HeraSendAmbiguousWithoutOrchestrator(t *testing.T) {
 	ctx := context.Background()
 	e, _, _ := setupMultiBindingFixture(t)
 
-	h := NewSendHandler(e.resolver, e.db, &fakeInjector{})
+	h := NewSendHandler(e.resolver, e.db, e.client, true, 300000)
 	// Worker-default route would target coord-A; coordinator senders
 	// require explicit to=. Either way, the ambiguity should fire FIRST
 	// because the sender role isn't yet resolved.
@@ -125,7 +125,7 @@ func TestMultiBinding_HeraSendWithOrchestratorRoutesToThatOrchestratorsCoord(t *
 
 	// Sender is worker in A -> default route should go to coord-A,
 	// not coord-B (cross-orchestrator routing is forbidden).
-	h := NewSendHandler(e.resolver, e.db, &fakeInjector{mode: db.DeliveryQueuedNoBinding})
+	h := NewSendHandler(e.resolver, e.db, e.client, true, 300000)
 	resp := h.Handle(ctx, mustMarshal(t, SendInput{
 		Cwd: "/wt", Body: "hi from A worker", Tldr: "hi from A worker", Orchestrator: "A",
 	}))
@@ -146,7 +146,7 @@ func TestMultiBinding_HeraSendCoordinatorWithToAndOrchestrator(t *testing.T) {
 		OrchestratorID: orchB.ID, Name: "impl-B", Kind: db.KindWorker, ArgusProject: "p",
 	})
 
-	h := NewSendHandler(e.resolver, e.db, &fakeInjector{mode: db.DeliveryQueuedNoBinding})
+	h := NewSendHandler(e.resolver, e.db, e.client, true, 300000)
 	resp := h.Handle(ctx, mustMarshal(t, SendInput{
 		Cwd: "/wt", Body: "review needed", Tldr: "review needed", Orchestrator: "B", To: "impl-B",
 	}))
@@ -183,7 +183,7 @@ func TestMultiBinding_HeraStatusWithOrchestratorScopesToRoleOnly(t *testing.T) {
 func TestMultiBinding_HeraInboxAmbiguous(t *testing.T) {
 	ctx := context.Background()
 	e, _, _ := setupMultiBindingFixture(t)
-	h := NewInboxHandler(e.resolver, e.db)
+	h := NewInboxHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, InboxInput{Cwd: "/wt"}))
 	if !resp.IsError {
 		t.Fatalf("expected ambiguous error")
@@ -197,7 +197,7 @@ func TestMultiBinding_HeraInboxWithOrchestratorScopesCorrectly(t *testing.T) {
 	_, _ = e.db.Messages.Create(ctx, db.CreateMessageInput{
 		FromRoleID: workerA.ID, ToRoleID: coordB.ID, Body: "from worker-A to coord-B",
 	})
-	h := NewInboxHandler(e.resolver, e.db)
+	h := NewInboxHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, InboxInput{Cwd: "/wt", Orchestrator: "B"}))
 	if resp.IsError {
 		t.Fatalf("hera_inbox: %q", resp.Content[0].Text)

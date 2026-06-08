@@ -3,13 +3,13 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
@@ -46,6 +46,15 @@ type fakeArgusForHandlers struct {
 	taskGetWorktree map[string]string
 	taskGetFail     bool
 	inputFail       bool
+
+	// notify support: notifyPosts records POST /api/tasks/{id}/notify calls.
+	// notifyState controls the state field returned in the 202 response ("submitted"
+	// or "pending"). notifyFail makes POST /api/tasks/{id}/notify return 500.
+	// cancels records DELETE /api/tasks/{id}/notify/{deliveryID} calls.
+	notifyPosts  []argus.NotifyInput
+	notifyState  string
+	notifyFail   bool
+	cancels      []struct{ taskID, deliveryID string }
 }
 
 func (f *fakeArgusForHandlers) addTask(task argus.Task) {
@@ -147,6 +156,37 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 				ID:           taskID,
 				WorktreePath: wtp,
 			})
+			return
+		}
+
+		// POST /api/tasks/{id}/notify
+		if sub == "notify" && r.Method == http.MethodPost {
+			f.mu.Lock()
+			if f.notifyFail {
+				f.mu.Unlock()
+				http.Error(w, `{"error":"injected notify failure"}`, http.StatusInternalServerError)
+				return
+			}
+			var in argus.NotifyInput
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			f.notifyPosts = append(f.notifyPosts, in)
+			state := f.notifyState
+			if state == "" {
+				state = "submitted"
+			}
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(argus.NotifyResponse{DeliveryID: in.DeliveryID, State: state})
+			return
+		}
+
+		// DELETE /api/tasks/{id}/notify/{deliveryID}
+		if strings.HasPrefix(sub, "notify/") && r.Method == http.MethodDelete {
+			deliveryID := strings.TrimPrefix(sub, "notify/")
+			f.mu.Lock()
+			f.cancels = append(f.cancels, struct{ taskID, deliveryID string }{taskID, deliveryID})
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(argus.CancelNotifyResponse{DeliveryID: deliveryID, Cancelled: true})
 			return
 		}
 
@@ -395,7 +435,7 @@ func TestInbox_EmptyAndPopulated(t *testing.T) {
 	})
 	e.fake.addTask(argus.Task{ID: "t-w", Name: "w", Project: "p", WorktreePath: "/tmp/w"})
 
-	h := NewInboxHandler(e.resolver, e.db)
+	h := NewInboxHandler(e.resolver, e.db, e.client)
 	// Empty
 	resp := h.Handle(ctx, mustMarshal(t, InboxInput{Cwd: "/tmp/w"}))
 	if resp.IsError {
@@ -452,7 +492,7 @@ func TestMarkRead_OnlyOwnMessagesAffected(t *testing.T) {
 	})
 
 	// w2 tries to mark w1's message as read.
-	h := NewMarkReadHandler(e.resolver, e.db)
+	h := NewMarkReadHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, MarkReadInput{Cwd: "/tmp/w2", MessageIDs: []int64{msg.ID}}))
 	if resp.IsError {
 		t.Fatalf("unexpected error: %s", resp.Content[0].Text)
@@ -480,7 +520,7 @@ func TestMarkRead_OnlyOwnMessagesAffected(t *testing.T) {
 func TestMarkRead_RequiresMessageIDs(t *testing.T) {
 	ctx := context.Background()
 	e := setupHandlers(t)
-	h := NewMarkReadHandler(e.resolver, e.db)
+	h := NewMarkReadHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, MarkReadInput{Cwd: "/x"}))
 	if !resp.IsError {
 		t.Fatalf("expected error")
@@ -508,7 +548,7 @@ func TestInbox_MarksReturnedMessagesRead(t *testing.T) {
 		FromRoleID: coord.ID, ToRoleID: worker.ID, Body: "hello",
 	})
 
-	h := NewInboxHandler(e.resolver, e.db)
+	h := NewInboxHandler(e.resolver, e.db, e.client)
 
 	// First call: message is returned.
 	resp := h.Handle(ctx, mustMarshal(t, InboxInput{Cwd: "/tmp/w"}))
@@ -542,10 +582,10 @@ func TestInbox_MarksReturnedMessagesRead(t *testing.T) {
 	}
 }
 
-// TestInbox_FetchStopsDoorbellRenudge verifies that a message fetched via
-// hera_inbox has read_at set and is therefore excluded from future doorbell
-// scans (UnreadIdleSubmitStale returns empty after fetch).
-func TestInbox_FetchStopsDoorbellRenudge(t *testing.T) {
+// TestInbox_FetchCancelsArgusDelivery verifies that a message fetched via
+// hera_inbox has read_at set and a cancel call is made to argus so argus
+// stops retrying delivery.
+func TestInbox_FetchCancelsArgusDelivery(t *testing.T) {
 	ctx := context.Background()
 	e := setupHandlers(t)
 	orch, _ := e.db.Orchestrators.Create(ctx, "foo")
@@ -561,37 +601,39 @@ func TestInbox_FetchStopsDoorbellRenudge(t *testing.T) {
 	e.fake.addTask(argus.Task{ID: "t-w", Name: "w", Project: "p", WorktreePath: "/tmp/w"})
 
 	msg, _ := e.db.Messages.Create(ctx, db.CreateMessageInput{
-		FromRoleID: coord.ID, ToRoleID: worker.ID, Body: "nudge me",
+		FromRoleID: coord.ID, ToRoleID: worker.ID, Body: "nudge me", Tldr: "nudge me",
 	})
-	// Simulate idle_submit delivery so it would be nudge-eligible.
 	if err := e.db.Messages.SetDelivered(ctx, msg.ID, db.DeliveryIdleSubmit); err != nil {
 		t.Fatalf("SetDelivered: %v", err)
 	}
 
-	// Before fetch: message appears as stale.
-	firstCutoff := time.Now().Add(time.Minute)
-	stale, err := e.db.Messages.UnreadIdleSubmitStale(ctx, firstCutoff, firstCutoff, 5)
-	if err != nil {
-		t.Fatalf("UnreadIdleSubmitStale before fetch: %v", err)
-	}
-	if len(stale) != 1 {
-		t.Fatalf("expected 1 stale message before fetch, got %d", len(stale))
-	}
-
-	// Fetch via hera_inbox — this stamps read_at.
-	h := NewInboxHandler(e.resolver, e.db)
+	// Fetch via hera_inbox — stamps read_at and triggers argus cancel.
+	h := NewInboxHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, InboxInput{Cwd: "/tmp/w"}))
 	if resp.IsError {
 		t.Fatalf("inbox call error: %s", resp.Content[0].Text)
 	}
 
-	// After fetch: message is no longer stale — doorbell stops.
-	stale, err = e.db.Messages.UnreadIdleSubmitStale(ctx, firstCutoff, firstCutoff, 5)
+	// Verify read_at was set.
+	row, err := e.db.Messages.GetByID(ctx, msg.ID)
 	if err != nil {
-		t.Fatalf("UnreadIdleSubmitStale after fetch: %v", err)
+		t.Fatalf("GetByID: %v", err)
 	}
-	if len(stale) != 0 {
-		t.Fatalf("expected 0 stale messages after inbox fetch, got %d", len(stale))
+	if row.ReadAt == nil {
+		t.Fatal("read_at not set after inbox fetch")
+	}
+
+	// Verify argus cancel was called for the message.
+	e.fake.mu.Lock()
+	defer e.fake.mu.Unlock()
+	if len(e.fake.cancels) != 1 {
+		t.Fatalf("cancels count = %d, want 1", len(e.fake.cancels))
+	}
+	if e.fake.cancels[0].taskID != "t-w" {
+		t.Fatalf("cancel taskID = %q, want t-w", e.fake.cancels[0].taskID)
+	}
+	if e.fake.cancels[0].deliveryID != fmt.Sprintf("%d", msg.ID) {
+		t.Fatalf("cancel deliveryID = %q, want %d", e.fake.cancels[0].deliveryID, msg.ID)
 	}
 }
 
@@ -628,7 +670,7 @@ func TestInbox_MarkReadPreservesOtherRoleMessages(t *testing.T) {
 	})
 
 	// w1 fetches its inbox — only w1's message should be marked read.
-	h := NewInboxHandler(e.resolver, e.db)
+	h := NewInboxHandler(e.resolver, e.db, e.client)
 	resp := h.Handle(ctx, mustMarshal(t, InboxInput{Cwd: "/tmp/w1"}))
 	if resp.IsError {
 		t.Fatalf("w1 inbox error: %s", resp.Content[0].Text)

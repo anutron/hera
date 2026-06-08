@@ -4,20 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strconv"
 
 	"github.com/anutron/hera/internal/db"
 )
 
+// ArgusNotifyCanceller is the subset of argus.Client used to cancel pending
+// deliveries when messages are marked read.
+type ArgusNotifyCanceller interface {
+	CancelNotify(ctx context.Context, taskID, deliveryID string) error
+}
+
 // InboxHandler implements hera_inbox. Returns every unread message
-// addressed to the caller's role, oldest-first.
+// addressed to the caller's role, oldest-first, then cancels pending argus
+// deliveries for those messages (best-effort).
 type InboxHandler struct {
 	resolver *Resolver
 	db       *db.DB
+	argus    ArgusNotifyCanceller
 }
 
 // NewInboxHandler constructs an InboxHandler.
-func NewInboxHandler(r *Resolver, database *db.DB) *InboxHandler {
-	return &InboxHandler{resolver: r, db: database}
+func NewInboxHandler(r *Resolver, database *db.DB, argusClient ArgusNotifyCanceller) *InboxHandler {
+	return &InboxHandler{resolver: r, db: database, argus: argusClient}
 }
 
 // InboxInput is the tool's input schema.
@@ -73,6 +83,8 @@ func (h *InboxHandler) Handle(ctx context.Context, raw json.RawMessage) Response
 		if _, err := h.db.Messages.MarkRead(ctx, role.ID, ids); err != nil {
 			return ErrorResponse("hera_inbox: mark read: " + err.Error())
 		}
+		// Cancel argus delivery for each read message — best-effort.
+		h.cancelDeliveries(ctx, role.ID, msgs)
 	}
 
 	out := InboxOutput{RoleName: role.Name, Count: len(msgs)}
@@ -93,4 +105,18 @@ func (h *InboxHandler) Handle(ctx context.Context, raw json.RawMessage) Response
 		out.Messages = []InboxMessage{}
 	}
 	return jsonText(out)
+}
+
+// cancelDeliveries calls argus CancelNotify for each message best-effort.
+// Errors are logged at debug level and never fail the handler response.
+func (h *InboxHandler) cancelDeliveries(ctx context.Context, roleID int64, msgs []*db.Message) {
+	bnd, err := h.db.Bindings.GetLiveByRole(ctx, roleID)
+	if err != nil {
+		return // no live binding; nothing to cancel
+	}
+	for _, m := range msgs {
+		if err := h.argus.CancelNotify(ctx, bnd.ArgusTaskID, strconv.FormatInt(m.ID, 10)); err != nil {
+			slog.Debug("hera_inbox: cancel delivery", "msg_id", m.ID, "err", err)
+		}
+	}
 }

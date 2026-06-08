@@ -96,7 +96,7 @@ func TestLinkGate_WiredIntoSendHandler(t *testing.T) {
 	argus.SetLinkState(argus.LinkRecovering)
 
 	// Pass nil deps: if the gate fires, the handler never touches them.
-	h := NewSendHandler(nil, nil, nil)
+	h := NewSendHandler(nil, nil, nil, true, 300000)
 	resp := h.Handle(t.Context(), []byte(`{"cwd":"/tmp/anywhere","body":"hi"}`))
 	if !resp.IsError {
 		t.Fatalf("expected gated error during recovering, got success: %+v", resp)
@@ -111,7 +111,7 @@ func TestLinkGate_WiredIntoInboxHandler(t *testing.T) {
 	argus.SetLinkError(errors.New("ports rpc failed"))
 	argus.SetLinkState(argus.LinkDown)
 
-	h := NewInboxHandler(nil, nil)
+	h := NewInboxHandler(nil, nil, nil)
 	resp := h.Handle(t.Context(), []byte(`{"cwd":"/tmp/anywhere"}`))
 	if !resp.IsError {
 		t.Fatalf("expected gated error during down, got success: %+v", resp)

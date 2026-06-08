@@ -15,8 +15,8 @@ func TestDefault_ReasonableValues(t *testing.T) {
 	if cfg.ListenAddr != "127.0.0.1:7744" {
 		t.Fatalf("ListenAddr = %s", cfg.ListenAddr)
 	}
-	if cfg.IdleDebounce.Seconds() != 2 {
-		t.Fatalf("IdleDebounce = %v", cfg.IdleDebounce)
+	if cfg.NotifyDeadlineMs != 300000 {
+		t.Fatalf("NotifyDeadlineMs = %d, want 300000", cfg.NotifyDeadlineMs)
 	}
 	if cfg.MCPHeartbeat.Minutes() != 5 {
 		t.Fatalf("MCPHeartbeat = %v", cfg.MCPHeartbeat)

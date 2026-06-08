@@ -5,32 +5,44 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
+	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
 )
 
-// MessageInjector is the dependency hera_send uses to deliver bytes
-// into the recipient's PTY. *inject.Injector implements this.
-type MessageInjector interface {
-	Inject(ctx context.Context, taskID, senderRoleName string, msgID int64, tldr string) (db.DeliveryMode, error)
+// ArgusNotifier is the subset of argus.Client used by the send handler.
+// *argus.Client satisfies this interface.
+type ArgusNotifier interface {
+	NotifyTask(ctx context.Context, taskID string, in argus.NotifyInput) (*argus.NotifyResponse, error)
 }
 
-// SendHandler implements hera_send. It looks up the sender via cwd,
-// resolves the recipient via explicit name or default routing (worker
-// or freelance senders default to the orchestrator's coordinator;
-// coordinator senders MUST supply an explicit `to`), persists the
-// message, and (if the recipient has a live binding) delivers via the
-// injector with idle gating.
+// SendHandler implements hera_send. It persists the message and delegates PTY
+// delivery to argus's notify endpoint, which owns idle detection, submit CR,
+// retry, and deduplication.
 type SendHandler struct {
-	resolver *Resolver
-	db       *db.DB
-	injector MessageInjector
+	resolver   *Resolver
+	db         *db.DB
+	argus      ArgusNotifier
+	autoInject atomic.Bool
+	deadlineMs int64
 }
 
-// NewSendHandler constructs a SendHandler.
-func NewSendHandler(r *Resolver, database *db.DB, injector MessageInjector) *SendHandler {
-	return &SendHandler{resolver: r, db: database, injector: injector}
+// NewSendHandler constructs a SendHandler. autoInjectEnabled controls the
+// submit: field in notify calls; deadlineMs is the delivery deadline in
+// milliseconds.
+func NewSendHandler(r *Resolver, database *db.DB, client ArgusNotifier, autoInjectEnabled bool, deadlineMs int64) *SendHandler {
+	h := &SendHandler{resolver: r, db: database, argus: client, deadlineMs: deadlineMs}
+	h.autoInject.Store(autoInjectEnabled)
+	return h
+}
+
+// SetAutoInjectEnabled satisfies the autoInjectSwitch interface used by the
+// settings save handler for hot-reload of the auto_inject_enabled setting.
+func (h *SendHandler) SetAutoInjectEnabled(b bool) {
+	h.autoInject.Store(b)
 }
 
 // SendInput is the tool's input schema.
@@ -93,7 +105,7 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 		return ErrorResponse("hera_send: persist message: " + err.Error())
 	}
 
-	// Deliver.
+	// Deliver via argus notify.
 	var mode db.DeliveryMode
 	bnd, lookupErr := h.db.Bindings.GetLiveByRole(ctx, recipient.ID)
 	switch {
@@ -102,11 +114,21 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 	case lookupErr != nil:
 		return ErrorResponse("hera_send: lookup recipient binding: " + lookupErr.Error())
 	default:
-		delivered, injectErr := h.injector.Inject(ctx, bnd.ArgusTaskID, senderRole.Name, msg.ID, in.Tldr)
-		if injectErr != nil {
-			return ErrorResponse("hera_send: inject: " + injectErr.Error())
+		pointer := formatPointer(senderRole.Name, msg.ID, in.Tldr)
+		resp, notifyErr := h.argus.NotifyTask(ctx, bnd.ArgusTaskID, argus.NotifyInput{
+			Text:       pointer,
+			Submit:     h.autoInject.Load(),
+			DeliveryID: strconv.FormatInt(msg.ID, 10),
+			DeadlineMs: h.deadlineMs,
+		})
+		if notifyErr != nil {
+			return ErrorResponse("hera_send: notify: " + notifyErr.Error())
 		}
-		mode = delivered
+		if resp.State == "submitted" {
+			mode = db.DeliveryIdleSubmit
+		} else {
+			mode = db.DeliveryBusyBuffer
+		}
 	}
 
 	if err := h.db.Messages.SetDelivered(ctx, msg.ID, mode); err != nil {
@@ -120,9 +142,15 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 	})
 }
 
-// resolveRecipient applies the routing rules: explicit `to` looks up the
-// role by (orchestrator, name); empty `to` defaults to the coordinator
-// for worker/freelance senders; coordinator senders MUST provide `to`.
+// formatPointer returns the PTY representation of a message pointer.
+// The recipient sees this subject-line and calls hera_inbox to read the
+// full body (which marks the message as read).
+func formatPointer(senderRoleName string, msgID int64, tldr string) string {
+	return fmt.Sprintf("[hera from %s] msg #%d — %s", senderRoleName, msgID, tldr)
+}
+
+// resolveRecipient applies routing rules: explicit `to` looks up by name;
+// empty `to` defaults to coordinator for worker/freelance; coordinator MUST supply `to`.
 func (h *SendHandler) resolveRecipient(ctx context.Context, sender *db.Role, to string) (*db.Role, error) {
 	if to != "" {
 		role, err := h.db.Roles.GetByOrchestratorAndName(ctx, sender.OrchestratorID, to)
@@ -149,7 +177,6 @@ func (h *SendHandler) resolveRecipient(ctx context.Context, sender *db.Role, to 
 }
 
 // findCoordinator returns the coordinator role under an orchestrator.
-// Returns an error if there is no coordinator.
 func (h *SendHandler) findCoordinator(ctx context.Context, orchestratorID int64) (*db.Role, error) {
 	roles, err := h.db.Roles.ListByOrchestrator(ctx, orchestratorID)
 	if err != nil {

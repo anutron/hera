@@ -233,7 +233,6 @@ func TestDaemonStart_RegistersAllNineToolsAndCleansUp(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour, // skip heartbeat noise during this test
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
@@ -287,11 +286,10 @@ func TestDaemonStart_RegistersAllNineToolsAndCleansUp(t *testing.T) {
 	}
 }
 
-// TestDaemonStart_PersistedSettingsOverrideDefaults exercises the Stage 1.6
-// integration contract: rows in the config table override the Default() values
-// of IdleDebounce and AutoInjectEnabled before Tracker and Injector are
-// instantiated. It also asserts the SettingsRegistrar registered the section
-// on Start and unregistered it on Stop.
+// TestDaemonStart_PersistedSettingsOverrideDefaults exercises the integration
+// contract: rows in the config table override Default() values before the
+// send handler is instantiated. It also asserts the SettingsRegistrar
+// registered the section on Start and unregistered it on Stop.
 func TestDaemonStart_PersistedSettingsOverrideDefaults(t *testing.T) {
 	fake := &fakeArgusForDaemon{streamClose: make(chan struct{})}
 	srv := httptest.NewServer(fake.handler())
@@ -312,14 +310,12 @@ func TestDaemonStart_PersistedSettingsOverrideDefaults(t *testing.T) {
 		t.Fatalf("write pid: %v", err)
 	}
 
-	// Pre-populate the config table with persisted values that diverge
-	// from Default(): debounce 5s (vs default 2s), auto-inject off (vs
-	// default true).
+	// Pre-populate the config table with a persisted value that diverges
+	// from Default(): auto-inject off (vs default true).
 	cfg := &config.Config{
 		StateDir:          stateDir,
 		ArgusBaseURL:      srv.URL,
 		ListenAddr:        "127.0.0.1:0",
-		IdleDebounce:      2 * time.Second,
 		MCPHeartbeat:      24 * time.Hour,
 		AutoInjectEnabled: true, // Default — LoadPersistedSettings should flip this to false.
 		ArgusSocketPath:   sockPath,
@@ -330,9 +326,6 @@ func TestDaemonStart_PersistedSettingsOverrideDefaults(t *testing.T) {
 		t.Fatalf("pre-seed db open: %v", err)
 	}
 	ctx0 := context.Background()
-	if err := database.Config.Set(ctx0, config.KeyIdleDebounceSeconds, "5"); err != nil {
-		t.Fatalf("pre-seed debounce: %v", err)
-	}
 	if err := database.Config.Set(ctx0, config.KeyAutoInjectEnabled, "false"); err != nil {
 		t.Fatalf("pre-seed auto-inject: %v", err)
 	}
@@ -349,10 +342,7 @@ func TestDaemonStart_PersistedSettingsOverrideDefaults(t *testing.T) {
 	}
 	defer d.Stop(context.Background())
 
-	// Persisted debounce wins: cfg.IdleDebounce was overwritten.
-	if cfg.IdleDebounce != 5*time.Second {
-		t.Errorf("cfg.IdleDebounce = %v, want 5s", cfg.IdleDebounce)
-	}
+	// Persisted AutoInjectEnabled=false overrides the default true.
 	if cfg.AutoInjectEnabled {
 		t.Errorf("cfg.AutoInjectEnabled = true, want false (persisted)")
 	}
@@ -528,7 +518,6 @@ func TestDaemonStart_PortDiscoveryRunsBeforeMCPRegistrar(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    "http://127.0.0.1:1",
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour,
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
@@ -592,7 +581,6 @@ func TestDaemonStart_PortDiscoveryFailureExitsNonZero(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour,
 		ArgusSocketPath: filepath.Join(stateDir, "nope.sock"), // does not exist
 		ArgusPIDPath:    pidPath,
@@ -648,7 +636,6 @@ func TestDaemonStart_RegistersPluginViewAndUnregisters(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour, // skip heartbeat noise
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
@@ -733,7 +720,6 @@ func TestDaemonStart_SeedsProxyForLiveBindings(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour,
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
@@ -861,7 +847,6 @@ func TestDaemonStart_EagerlySeesFreelancers(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour,
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
@@ -952,7 +937,6 @@ func TestDaemonStart_MountsViewRouteOnMCPListener(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour,
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
@@ -986,7 +970,6 @@ func TestDaemonStart_TokenMissing(t *testing.T) {
 		StateDir:     stateDir,
 		ArgusBaseURL: srv.URL,
 		ListenAddr:   "127.0.0.1:0",
-		IdleDebounce: 100 * time.Millisecond,
 		MCPHeartbeat: 24 * time.Hour,
 	}
 
@@ -1027,7 +1010,6 @@ func TestDaemonStart_BootReconcileCallsListTasks(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour,
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
@@ -1077,7 +1059,6 @@ func TestDaemonStart_BootReconcileFailure_DaemonStillStarts(t *testing.T) {
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour,
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
