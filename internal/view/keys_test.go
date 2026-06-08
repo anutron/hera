@@ -53,6 +53,7 @@ type fakeMutations struct {
 	prune, openPR, statusAdvance, statusRevert          int
 	pin                                                 int
 	adopt                                               int
+	completeArchived                                    int
 	resurrect                                           int
 	reattach                                            int
 
@@ -78,7 +79,8 @@ func (f *fakeMutations) OnOpenPR()        { f.openPR++ }
 func (f *fakeMutations) OnStatusAdvance() { f.statusAdvance++ }
 func (f *fakeMutations) OnStatusRevert()  { f.statusRevert++ }
 func (f *fakeMutations) OnPin()           { f.pin++ }
-func (f *fakeMutations) OnAdopt()         { f.adopt++ }
+func (f *fakeMutations) OnAdopt()            { f.adopt++ }
+func (f *fakeMutations) OnCompleteArchived() { f.completeArchived++ }
 func (f *fakeMutations) OnResurrect() bool {
 	f.resurrect++
 	return f.resurrectHandled

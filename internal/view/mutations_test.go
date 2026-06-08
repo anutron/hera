@@ -376,6 +376,11 @@ type fakeMutationService struct {
 	completeTaskCalls []string
 	completeTaskErr   error
 
+	// CompleteArchivedDescendants (`C` key).
+	completeArchivedCalls []int64
+	completeArchivedResp  int
+	completeArchivedErr   error
+
 	// SpawnWorker plumbing.
 	spawnWorkerCalls []ops.SpawnWorkerInput
 	spawnWorkerResp  *ops.SpawnWorkerResult
@@ -687,6 +692,16 @@ func (s *fakeMutationService) AdoptTaskIntoOrchestrator(_ context.Context, in op
 		return nil, s.adoptErr
 	}
 	return &ops.AdoptResult{OrchestratorName: "orch", RoleName: in.RoleName, RoleID: 1, BindingID: 1}, nil
+}
+
+func (s *fakeMutationService) CompleteArchivedDescendants(_ context.Context, orchID int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeArchivedCalls = append(s.completeArchivedCalls, orchID)
+	if s.completeArchivedErr != nil {
+		return 0, s.completeArchivedErr
+	}
+	return s.completeArchivedResp, nil
 }
 
 // newBridgeUnderTest wires a mutationBridge with all-fake deps. The

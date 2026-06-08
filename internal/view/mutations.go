@@ -118,6 +118,11 @@ type mutationService interface {
 	// task ID. Backs the `s`→done→confirm-yes path for freelance rows, which
 	// have no hera binding to resolve.
 	CompleteTaskByID(ctx context.Context, taskID string) error
+
+	// CompleteArchivedDescendants marks every archived non-coordinator role
+	// under the given orchestrator as :checked: in argus. Backs the `C`
+	// rail key. Returns the count of tasks completed.
+	CompleteArchivedDescendants(ctx context.Context, orchID int64) (int, error)
 }
 
 // listAllState is the subset of *ops.ListAllState the bridge uses to
@@ -1405,6 +1410,12 @@ func (b *mutationBridge) stepStatus(advance bool) {
 				return err
 			}
 		}
+		// Skip the confirmation when the task is already archived — the operator
+		// is cleaning up a hidden row; the "detach" question is not useful.
+		if sel.Archived || sel.ArgusArchived {
+			b.mutate("status step", true, completeStep)
+			return
+		}
 		b.goUI(func() {
 			b.modals.ShowConfirm(
 				"Mark done?",
@@ -1429,6 +1440,64 @@ func (b *mutationBridge) stepStatus(advance bool) {
 	}
 
 	b.mutate("status step", true, argusStep)
+}
+
+// OnCompleteArchived marks every archived descendant worker of the selected
+// coordinator as :checked: (complete) in argus (`C`). The selection must be
+// a coordinator header or a coordinator role row (including sub-coordinators);
+// other selections get visible feedback. A confirmation modal fires before
+// the bulk operation; the rail refreshes on success.
+func (b *mutationBridge) OnCompleteArchived() {
+	sel := b.sel.CurrentRailSelection()
+
+	var orchID int64
+	var coordName string
+	switch sel.Kind {
+	case selOrchestrator:
+		orchID = sel.OrchestratorID
+		coordName = sel.Name
+	case selRole:
+		if sel.RoleKind != string(db.KindCoordinator) {
+			b.notApplicable("C: select a coordinator to complete its archived workers")
+			return
+		}
+		// Sub-coordinator: target the child orchestrator (mirrors OnNewWorker D2).
+		if sel.ChildOrchestratorID != 0 {
+			orchID = sel.ChildOrchestratorID
+		} else {
+			orchID = sel.OrchestratorID
+		}
+		coordName = sel.Name
+	default:
+		b.notApplicable("C: not applicable to this row")
+		return
+	}
+	if orchID == 0 {
+		b.notApplicable("C: could not resolve orchestrator for this row")
+		return
+	}
+
+	capturedOrchID := orchID
+	capturedName := coordName
+	b.goUI(func() {
+		b.modals.ShowConfirm(
+			fmt.Sprintf("Complete archived under %q?", capturedName),
+			fmt.Sprintf("Mark all archived worker tasks under %q as :checked: in argus? (y/N)", capturedName),
+			func() {
+				b.mutate("complete archived", true, func() error {
+					n, err := b.svc.CompleteArchivedDescendants(b.ctx, capturedOrchID)
+					if err != nil {
+						return err
+					}
+					if n == 0 {
+						return fmt.Errorf("no archived workers to complete under %q", capturedName)
+					}
+					return nil
+				})
+			},
+			nil,
+		)
+	})
 }
 
 func (b *mutationBridge) refresh() {
