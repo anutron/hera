@@ -4805,7 +4805,12 @@ func TestClearReattachAndResize_ResetsSubscriptionBeforeRebind(t *testing.T) {
 // so without the explicit focus reset the focus machine can end up in AGENT
 // or COORD state before the splash clears, moving the terminal cursor into
 // the pane before the new session is ready).
-func TestStartPaneReattach_FocusResetToRail_WithNonDeadPending(t *testing.T) {
+// TestStartPaneReattach_WithNonDeadPending_ReturnsEarlyNoSplash verifies that
+// when StartPaneReattach is called for "t-dead" but a live pending selection
+// fires first (moving agentTask to "t-live"), the pane lookup for "t-dead"
+// finds nil and returns early — no splash is applied, no crash, focus stays
+// in AGENT (the live pane is fine to keep focus on).
+func TestStartPaneReattach_WithNonDeadPending_ReturnsEarlyNoSplash(t *testing.T) {
 	d := openTestDB(t)
 	src := &fakePaneSource{}
 	a, err := BuildApp(d, src)
@@ -4838,16 +4843,19 @@ func TestStartPaneReattach_FocusResetToRail_WithNonDeadPending(t *testing.T) {
 	a.selectHasRef = true
 	a.selectMu.Unlock()
 
-	// Artificially put the focus machine in FocusAGENT, simulating a state
-	// where the operator was in the agent pane before navigating back to the
-	// rail. (In practice Ctrl-Q resets this, but the reset in StartPaneReattach
-	// must be the final safety net.)
 	focus.JumpToAGENT()
 
 	a.StartPaneReattach("t-dead")
 
-	if got := focus.State(); got != FocusRAIL {
-		t.Errorf("StartPaneReattach must leave focus on RAIL; got %v", got)
+	// fireSelectionNow moved agentTask to "t-live"; pane lookup for "t-dead"
+	// found nil and returned early. Focus stays in AGENT — the live pane is a
+	// valid target. No RAIL reset is needed or expected.
+	if got := focus.State(); got != FocusAGENT {
+		t.Errorf("StartPaneReattach with pending live selection: focus = %v, want FocusAGENT", got)
+	}
+	// Splash must NOT have been applied to the dead pane (we returned early).
+	if a.pieces.agent.reattaching {
+		t.Errorf("StartPaneReattach returned early: agent pane should not be reattaching")
 	}
 }
 
@@ -5063,11 +5071,12 @@ func TestMaybeAutoReattachPane_ManagedWorkerFiresAutoReattach(t *testing.T) {
 	}
 }
 
-// TestMaybeAutoReattachPane_ManagedWorkerSnapsToRAIL proves that when focus
+// TestMaybeAutoReattachPane_ManagedWorkerShowsSplash proves that when focus
 // enters the AGENT pane for a dead-session managed worker, maybeAutoReattachPane
-// immediately snaps focus back to RAIL and marks the pane as reattaching —
-// so the REATTACHING splash appears before any keystroke (BUG-012).
-func TestMaybeAutoReattachPane_ManagedWorkerSnapsToRAIL(t *testing.T) {
+// immediately marks the pane as reattaching so the REATTACHING splash appears
+// before any keystroke (BUG-012). Focus stays in AGENT — no RAIL reset is
+// done; clearReattachAndResize moves focus to the new session once it's ready.
+func TestMaybeAutoReattachPane_ManagedWorkerShowsSplash(t *testing.T) {
 	d := openTestDB(t)
 
 	src := &aliveStatePaneSource{
@@ -5094,8 +5103,10 @@ func TestMaybeAutoReattachPane_ManagedWorkerSnapsToRAIL(t *testing.T) {
 	focus.JumpToAGENT()
 	a.maybeAutoReattachPane(FocusAGENT)
 
-	if focus.State() != FocusRAIL {
-		t.Errorf("after maybeAutoReattachPane on dead managed worker: focus = %v, want FocusRAIL", focus.State())
+	// Focus stays in AGENT — StartPaneReattach no longer resets to RAIL, so
+	// the splash renders in the focused pane without a second draw racing it.
+	if focus.State() != FocusAGENT {
+		t.Errorf("after maybeAutoReattachPane on dead managed worker: focus = %v, want FocusAGENT", focus.State())
 	}
 	if !a.pieces.agent.reattaching {
 		t.Errorf("after maybeAutoReattachPane on dead managed worker: pane.reattaching = false, want true")

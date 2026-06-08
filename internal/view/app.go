@@ -2364,11 +2364,12 @@ func (a *App) clearReattachAndResize(taskID string) {
 }
 
 // StartPaneReattach shows the REATTACHING splash on the pane bound to taskID
-// and forces an immediate redraw so the splash renders before any cursor move.
-// Focus stays on the RAIL during the splash; clearReattachAndResize moves focus
-// to the pane once the new session is ready. Called by the mutation bridge when
-// the operator presses Enter on a dead-session row (BUG-008 path 1). Satisfies
-// the reattachPaneStarter interface. Runs on the tview event loop.
+// and forces an immediate redraw so the splash renders in the focused pane
+// without a second draw racing it. Focus follows the selection (agent pane);
+// clearReattachAndResize confirms focus once the new session is ready. Called
+// by the mutation bridge when the operator presses Enter on a dead-session row
+// (BUG-008 path 1). Satisfies the reattachPaneStarter interface. Runs on the
+// tview event loop.
 func (a *App) StartPaneReattach(taskID string) {
 	if taskID == "" {
 		return
@@ -2389,15 +2390,6 @@ func (a *App) StartPaneReattach(taskID string) {
 	//
 	// No-op when no selection is pending (selectHasRef=false).
 	a.fireSelectionNow()
-	// BUG-012: unconditionally reset focus to RAIL after fireSelectionNow.
-	// applyRailSelection can call setBodyMode → OnFocusChanged with a
-	// non-RAIL state when the pending selection is a live task row (live rows
-	// don't trigger applyDeadFocusGuard). Focus must stay on RAIL for the
-	// entire splash period; clearReattachAndResize moves it to the pane.
-	if a.focus != nil {
-		a.focus.ToRAIL()
-	}
-	a.OnFocusChanged(FocusRAIL)
 
 	a.mu.Lock()
 	var pane *pinnedTerminalPane
@@ -2421,8 +2413,8 @@ func (a *App) StartPaneReattach(taskID string) {
 	if a.app != nil {
 		go a.app.QueueUpdateDraw(func() {})
 	}
-	// Focus deliberately stays on the RAIL here. clearReattachAndResize moves
-	// it to the pane once the new session is ready and correctly sized.
+	// Focus follows the selection (agent pane) during the splash.
+	// clearReattachAndResize confirms focus at pane once the new session is ready.
 }
 
 // ClearPaneReattach hides the REATTACHING splash on the pane bound to taskID.
@@ -2533,9 +2525,8 @@ func (a *App) maybeAutoReattachPane(state FocusState) {
 	if !ok || taskStatusAlive(st.Status) {
 		return
 	}
-	// StartPaneReattach snaps focus to RAIL and shows the REATTACHING splash
-	// immediately, so the operator sees feedback before any keystroke can reach
-	// the dead PTY. onDeadPaneReattach fires the actual background restart.
+	// StartPaneReattach shows the REATTACHING splash immediately so the operator
+	// sees feedback in the focused pane. onDeadPaneReattach fires the background restart.
 	a.StartPaneReattach(taskID)
 	a.onDeadPaneReattach(taskID)
 }
