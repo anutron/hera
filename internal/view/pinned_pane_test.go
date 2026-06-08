@@ -3,6 +3,7 @@ package view
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -663,5 +664,70 @@ func TestPinnedTerminalPane_ReflowCallbackNotFiredForBoundWithoutResizer(t *test
 
 	if fired {
 		t.Fatal("onReflow fired for a bound-without-resizer pane — must not fire (letterbox path)")
+	}
+}
+
+// --- BUG-012 clean-slate reattach ---
+
+// SetReattaching(true) must stamp reattachSince so App.OnTaskReattached can
+// enforce the minimum 1-second splash hold. A zero reattachSince would make
+// time.Since return a huge elapsed duration, bypassing the hold entirely.
+func TestPinnedTerminalPane_SetReattaching_StampsReattachSince(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	p := newPinnedTerminalPane(tp, 80, 24)
+
+	// reattachSince must be zero before any reattach.
+	if !p.reattachSince.IsZero() {
+		t.Fatal("reattachSince must start at zero")
+	}
+
+	before := time.Now()
+	p.SetReattaching(true, "connecting...")
+	after := time.Now()
+
+	if p.reattachSince.Before(before) || p.reattachSince.After(after) {
+		t.Errorf("reattachSince = %v, want in [%v, %v]", p.reattachSince, before, after)
+	}
+	if !p.reattaching {
+		t.Error("reattaching must be true after SetReattaching(true)")
+	}
+
+	// SetReattaching(false) must NOT reset reattachSince — the timestamp stays
+	// so a delayed clearReattachAndResize can still check elapsed time after the
+	// splash is cleared.
+	p.SetReattaching(false, "")
+	if p.reattachSince.IsZero() {
+		t.Error("reattachSince must remain set after SetReattaching(false)")
+	}
+	if p.reattaching {
+		t.Error("reattaching must be false after SetReattaching(false)")
+	}
+}
+
+// Calling SetReattaching(true) multiple times must update reattachSince to the
+// most recent call so the hold is measured from the last splash activation.
+func TestPinnedTerminalPane_SetReattaching_UpdatesReattachSinceOnRepeat(t *testing.T) {
+	src := make(chan []byte)
+	defer close(src)
+	tp := terminalpane.New(src)
+	defer tp.Close()
+
+	p := newPinnedTerminalPane(tp, 80, 24)
+
+	p.SetReattaching(true, "first")
+	first := p.reattachSince
+
+	time.Sleep(2 * time.Millisecond)
+
+	p.SetReattaching(false, "")
+	p.SetReattaching(true, "second")
+	second := p.reattachSince
+
+	if !second.After(first) {
+		t.Errorf("second reattachSince (%v) must be after first (%v)", second, first)
 	}
 }

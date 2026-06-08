@@ -1,6 +1,8 @@
 package view
 
 import (
+	"time"
+
 	"github.com/anutron/argus-sdk/terminalpane"
 	"github.com/anutron/argus-sdk/theme"
 	"github.com/anutron/argus-sdk/widget"
@@ -97,6 +99,12 @@ type pinnedTerminalPane struct {
 	// splash. Updated from "connecting to agent..." to "waiting for session..."
 	// after a 2-second delay by the App.
 	reattachingSubtitle string
+
+	// reattachSince records when SetReattaching(true) was last called. Used by
+	// App.OnTaskReattached to enforce a minimum 1-second splash hold so a fast
+	// reattach does not cause a disorienting flicker. Zero before first reattach.
+	// Read/written only on the tview event loop.
+	reattachSince time.Time
 }
 
 // newPinnedTerminalPane wraps tp and pins its emulator surface to
@@ -163,9 +171,14 @@ func (p *pinnedTerminalPane) GetTitle() string {
 }
 
 // SetReattaching shows or hides the REATTACHING splash. When visible is true,
-// subtitle is shown below the gradient title. When false, the pane reverts to
-// normal PTY rendering. Must be called on the tview event loop (BUG-008).
+// subtitle is shown below the gradient title and reattachSince is stamped so
+// App.OnTaskReattached can enforce the minimum splash hold. When false, the
+// pane reverts to normal PTY rendering. Must be called on the tview event loop
+// (BUG-008).
 func (p *pinnedTerminalPane) SetReattaching(visible bool, subtitle string) {
+	if visible {
+		p.reattachSince = time.Now()
+	}
 	p.reattaching = visible
 	p.reattachingSubtitle = subtitle
 }
