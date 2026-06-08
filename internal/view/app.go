@@ -355,10 +355,21 @@ func (a *App) Application() *tview.Application {
 // SetFocusMachine injects the session's focus machine so the App can toggle
 // its coordPresent flag when switching to/from freelance (full-width) mode.
 // Called once during session wiring, after the machine is constructed.
+//
+// Syncs the machine with the current body mode (coordPresent / agentPresent)
+// so it reflects the state set by the initial applyRailSelection in BuildApp,
+// which ran before this machine existed and therefore could not update it. Without
+// the sync a coordinator initial selection (agentPresent=false in the body) leaves
+// the freshly-created machine with its default agentPresent=true, and Ctrl+→ from
+// COORD would advance focus to the absent AGENT pane (BUG-016).
 func (a *App) SetFocusMachine(f *FocusMachine) {
 	a.mu.Lock()
 	a.focus = f
+	coordPresent := a.coordPresent
+	agentPresent := a.agentPresent
 	a.mu.Unlock()
+	f.SetCoordPresent(coordPresent)
+	f.SetAgentPresent(agentPresent)
 }
 
 // SetControl injects the session's view-control sender so the App can push the
@@ -381,6 +392,7 @@ func (a *App) SetControl(c *viewControl) {
 func (a *App) SendHelp() error {
 	a.mu.Lock()
 	coordPresent := a.coordPresent
+	agentPresent := a.agentPresent
 	control := a.control
 	a.mu.Unlock()
 	if control == nil {
@@ -388,7 +400,7 @@ func (a *App) SendHelp() error {
 	}
 	// Push comprehensive dictionary (all Bar:false so the bar is not corrupted
 	// during the brief window before the overlay appears).
-	if err := control.SendHotkeys(helpHotkeyItems(coordPresent)); err != nil {
+	if err := control.SendHotkeys(helpHotkeyItems(coordPresent, agentPresent)); err != nil {
 		return err
 	}
 	// Pop argus's help overlay.
@@ -397,7 +409,7 @@ func (a *App) SendHelp() error {
 	}
 	// Restore current-focus hotkeys so the bar is correct on overlay dismiss.
 	focus := FocusState(a.focusState.Load())
-	return control.SendHotkeys(hotkeyItems(focus, coordPresent))
+	return control.SendHotkeys(hotkeyItems(focus, coordPresent, agentPresent))
 }
 
 // Close stops the terminalpane consumer goroutines, cancels each pane's
@@ -1249,10 +1261,11 @@ func (a *App) OnFocusChanged(state FocusState) {
 	// session conn) makes this a no-op.
 	a.mu.Lock()
 	coordPresent := a.coordPresent
+	agentPresent := a.agentPresent
 	control := a.control
 	a.mu.Unlock()
 	if control != nil {
-		_ = control.SendHotkeys(hotkeyItems(state, coordPresent))
+		_ = control.SendHotkeys(hotkeyItems(state, coordPresent, agentPresent))
 	}
 
 	a.pieces.rail.SetBorderColor(unfocused)

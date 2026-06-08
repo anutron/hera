@@ -1743,9 +1743,9 @@ func TestHotkeyItems_PanesAdvertiseCtrlZ(t *testing.T) {
 		name  string
 		items []HotkeyItem
 	}{
-		{"COORD", hotkeyItems(FocusCOORD, true)},
-		{"AGENT-coordful", hotkeyItems(FocusAGENT, true)},
-		{"AGENT-coordless", hotkeyItems(FocusAGENT, false)},
+		{"COORD", hotkeyItems(FocusCOORD, true, true)},
+		{"AGENT-coordful", hotkeyItems(FocusAGENT, true, true)},
+		{"AGENT-coordless", hotkeyItems(FocusAGENT, false, true)},
 	} {
 		if !hotkeyHas(tc.items, "^Z", true) {
 			t.Errorf("%s hotkeys must advertise ^Z with bar:true (fullscreen); items=%+v", tc.name, tc.items)
@@ -1769,7 +1769,7 @@ func hotkeyContains(items []HotkeyItem, key string) bool {
 // They remain help-overlay-only (Bar:false) to keep the bottom bar uncluttered.
 // s/S (status) are now Bar:true (promoted to the bar in BUG-007).
 func TestHotkeyItems_RailAdvertisesPruneAndPR(t *testing.T) {
-	items := hotkeyItems(FocusRAIL, true)
+	items := hotkeyItems(FocusRAIL, true, true)
 	for _, key := range []string{"^r", "^p"} {
 		if !hotkeyHas(items, key, false) {
 			t.Errorf("RAIL hotkeys must advertise %q with bar:false; items=%+v", key, items)
@@ -1780,7 +1780,7 @@ func TestHotkeyItems_RailAdvertisesPruneAndPR(t *testing.T) {
 // TestHotkeyItems_RailBottomBarBUG007 proves BUG-007 additions: ←, s, S, /,
 // and ? are all advertised on the bottom bar (Bar:true) in RAIL focus.
 func TestHotkeyItems_RailBottomBarBUG007(t *testing.T) {
-	items := hotkeyItems(FocusRAIL, true)
+	items := hotkeyItems(FocusRAIL, true, true)
 	for _, key := range []string{"←", "s", "S", "/", "?"} {
 		if !hotkeyHas(items, key, true) {
 			t.Errorf("RAIL hotkey %q must have Bar:true (BUG-007); items=%+v", key, items)
@@ -1796,9 +1796,9 @@ func TestHotkeyItems_PaneFocusDropsPruneAndPR(t *testing.T) {
 		name  string
 		items []HotkeyItem
 	}{
-		{"COORD", hotkeyItems(FocusCOORD, true)},
-		{"AGENT-coordful", hotkeyItems(FocusAGENT, true)},
-		{"AGENT-coordless", hotkeyItems(FocusAGENT, false)},
+		{"COORD", hotkeyItems(FocusCOORD, true, true)},
+		{"AGENT-coordful", hotkeyItems(FocusAGENT, true, true)},
+		{"AGENT-coordless", hotkeyItems(FocusAGENT, false, true)},
 	} {
 		for _, key := range []string{"^d", "^r", "^p"} {
 			if hotkeyContains(tc.items, key) {
@@ -1858,7 +1858,7 @@ func TestKeyRouter_MutationKey_w_InAGENT_ForwardsAsByte(t *testing.T) {
 // dictionary includes `w` (spawn worker), so it appears in argus's help
 // overlay even if it's not on the bottom bar.
 func TestHotkeyItems_RailAdvertisesWorkerKey(t *testing.T) {
-	items := hotkeyItems(FocusRAIL, true)
+	items := hotkeyItems(FocusRAIL, true, true)
 	if !hotkeyContains(items, "w") {
 		t.Errorf("RAIL hotkeys must advertise 'w' (spawn worker); items=%+v", items)
 	}
@@ -1869,7 +1869,7 @@ func TestHotkeyItems_RailAdvertisesWorkerKey(t *testing.T) {
 // bottom-bar strip, not only in the `?` help overlay (Bar:false). Previously
 // only the overlay listed them; the bar stayed silent about two key actions.
 func TestHotkeyItems_RailAdvertisesJAndWOnBottomBar(t *testing.T) {
-	items := hotkeyItems(FocusRAIL, true)
+	items := hotkeyItems(FocusRAIL, true, true)
 	for _, tc := range []struct {
 		key   string
 		label string
@@ -1887,11 +1887,31 @@ func TestHotkeyItems_RailAdvertisesJAndWOnBottomBar(t *testing.T) {
 // `w` and `J` so the comprehensive overlay matches the bottom bar. Both
 // consumers read from the same hotkeyItems source, so they never drift.
 func TestHelpHotkeyItems_IncludesJAndW(t *testing.T) {
-	all := helpHotkeyItems(true)
+	all := helpHotkeyItems(true, true)
 	for _, key := range []string{"w", "J"} {
 		if !hotkeyContains(all, key) {
 			t.Errorf("helpHotkeyItems must include %q (for the ? overlay); items=%+v", key, all)
 		}
+	}
+}
+
+// TestHotkeyItems_CoordModeOmitsForwardHint proves BUG-016: in coordinator mode
+// (agentPresent=false) the COORD pane hotkey dictionary must NOT advertise ^→
+// because pressing it is a no-op — advertising it would show a key hint for
+// an action that does nothing.
+func TestHotkeyItems_CoordModeOmitsForwardHint(t *testing.T) {
+	items := hotkeyItems(FocusCOORD, true, false) // coordinator mode: no agent pane
+	if hotkeyContains(items, "^→") {
+		t.Errorf("COORD hotkeys in coordinator mode (agentPresent=false) must NOT advertise ^→; items=%+v", items)
+	}
+}
+
+// TestHotkeyItems_AgentModeIncludesForwardHint proves that when the agent pane
+// IS present the COORD dictionary still advertises ^→ → agent.
+func TestHotkeyItems_AgentModeIncludesForwardHint(t *testing.T) {
+	items := hotkeyItems(FocusCOORD, true, true) // normal agent-split mode
+	if !hotkeyHas(items, "^→", true) {
+		t.Errorf("COORD hotkeys in agent-split mode (agentPresent=true) must advertise ^→ with Bar:true; items=%+v", items)
 	}
 }
 

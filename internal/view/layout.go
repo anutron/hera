@@ -112,7 +112,7 @@ func buildLayout(coord, agent *pinnedTerminalPane) layoutPieces {
 // restores the current-focus hotkeys after {"type":"help"} so the bar is
 // correct when the overlay is dismissed. The COORD section is omitted when
 // coordPresent is false (freelance / no-coord mode).
-func helpHotkeyItems(coordPresent bool) []HotkeyItem {
+func helpHotkeyItems(coordPresent, agentPresent bool) []HotkeyItem {
 	var items []HotkeyItem
 
 	// appendSection appends src items with Bar forced to false — the help
@@ -126,19 +126,19 @@ func helpHotkeyItems(coordPresent bool) []HotkeyItem {
 
 	// Rail section.
 	items = append(items, HotkeyItem{Key: "[ Rail ]"})
-	appendSection(hotkeyItems(FocusRAIL, coordPresent))
+	appendSection(hotkeyItems(FocusRAIL, coordPresent, agentPresent))
 
 	// Coord pane section — only when a coord pane exists.
 	if coordPresent {
 		items = append(items, HotkeyItem{}) // blank spacer
 		items = append(items, HotkeyItem{Key: "[ Coord pane ]"})
-		appendSection(hotkeyItems(FocusCOORD, coordPresent))
+		appendSection(hotkeyItems(FocusCOORD, coordPresent, agentPresent))
 	}
 
 	// Agent pane section.
 	items = append(items, HotkeyItem{}) // blank spacer
 	items = append(items, HotkeyItem{Key: "[ Agent pane ]"})
-	appendSection(hotkeyItems(FocusAGENT, coordPresent))
+	appendSection(hotkeyItems(FocusAGENT, coordPresent, agentPresent))
 
 	// Rail mutation keys (n/r/^d/a/l/w/J/P/^r/^p) are RAIL-focus-only; in a
 	// pane they forward as literal bytes to the PTY.
@@ -155,21 +155,30 @@ func helpHotkeyItems(coordPresent bool) []HotkeyItem {
 // overlay. coordPresent controls whether the COORD pane is advertised: in
 // freelance mode (D11) there is no coord, so traversal hints drop the coord
 // step (RAIL advances straight to AGENT; AGENT retreats straight to RAIL).
+// agentPresent controls whether the AGENT pane is advertised: in coordinator
+// mode (D13) there is no agent, so the COORD forward-ladder hint is omitted.
 //
 // This is the same source of truth the retired bottomBarText row drove; argus
 // now renders it instead of hera.
-func hotkeyItems(state FocusState, coordPresent bool) []HotkeyItem {
+func hotkeyItems(state FocusState, coordPresent, agentPresent bool) []HotkeyItem {
 	switch state {
 	case FocusCOORD:
 		// `^d`/`^r`/`^p` are RAIL-focus-only; in a pane they forward to the PTY
 		// (Ctrl-D/R/P), so they are NOT advertised here.
-		return []HotkeyItem{
+		items := []HotkeyItem{
 			{Key: "keys", Label: "coord PTY", Bar: true},
 			{Key: "^Z", Label: "fullscreen", Bar: true},
-			{Key: "^→", Label: "agent", Bar: true},
-			{Key: "^←", Label: "rail", Bar: true},
-			{Key: "^Q", Label: "rail", Bar: true},
 		}
+		// In coordinator mode (no agent pane) ^→ is a no-op; omit the hint so
+		// the bottom bar does not advertise a key that does nothing (BUG-016).
+		if agentPresent {
+			items = append(items, HotkeyItem{Key: "^→", Label: "agent", Bar: true})
+		}
+		items = append(items,
+			HotkeyItem{Key: "^←", Label: "rail", Bar: true},
+			HotkeyItem{Key: "^Q", Label: "rail", Bar: true},
+		)
+		return items
 	case FocusAGENT:
 		if !coordPresent {
 			return []HotkeyItem{
