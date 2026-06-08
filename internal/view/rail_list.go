@@ -488,7 +488,7 @@ func (rl *railList) SetFilter(q string) {
 func (rl *railList) applyFilter() {
 	prev := rl.currentRef()
 	rl.buildRows()
-	if !rl.restoreCursor(prev) {
+	if !rl.restoreCursor(prev) && prev != nil {
 		rl.cursor = rl.firstSelectableRow()
 	}
 	rl.updateTitle()
@@ -742,7 +742,7 @@ func (rl *railList) SetOrchestrators(orchs []*orchEntry) {
 	prev := rl.currentRef()
 	rl.orchestrators = orchs
 	rl.buildRows()
-	if !rl.restoreCursor(prev) {
+	if !rl.restoreCursor(prev) && prev != nil {
 		rl.cursor = rl.firstSelectableRow()
 	}
 	rl.maybeFireSelectionChanged()
@@ -755,7 +755,7 @@ func (rl *railList) SetFreelance(projects []*freelanceProject) {
 	prev := rl.currentRef()
 	rl.freelance = projects
 	rl.buildRows()
-	if !rl.restoreCursor(prev) {
+	if !rl.restoreCursor(prev) && prev != nil {
 		rl.cursor = rl.firstSelectableRow()
 	}
 	rl.maybeFireSelectionChanged()
@@ -769,7 +769,7 @@ func (rl *railList) SetArchivedFreelance(tasks []*roleEntry) {
 	prev := rl.currentRef()
 	rl.archivedFreelance = tasks
 	rl.buildRows()
-	if !rl.restoreCursor(prev) {
+	if !rl.restoreCursor(prev) && prev != nil {
 		rl.cursor = rl.firstSelectableRow()
 	}
 	rl.maybeFireSelectionChanged()
