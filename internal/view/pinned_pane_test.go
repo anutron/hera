@@ -667,6 +667,194 @@ func TestPinnedTerminalPane_ReflowCallbackNotFiredForBoundWithoutResizer(t *test
 	}
 }
 
+// --- greyscale / desaturation ---
+
+// TestGrayscaleColor_MapsColors verifies the Rec. 601 luminance mapping for a
+// set of known colors. Pure red (255,0,0) maps to luma 76; pure green to 149;
+// white and black are invariant. ColorDefault must pass through unchanged.
+func TestGrayscaleColor_MapsColors(t *testing.T) {
+	tests := []struct {
+		name string
+		in   tcell.Color
+		want tcell.Color
+	}{
+		{"default passes through", tcell.ColorDefault, tcell.ColorDefault},
+		{"pure red", tcell.NewRGBColor(255, 0, 0), tcell.NewRGBColor(76, 76, 76)},
+		{"pure green", tcell.NewRGBColor(0, 255, 0), tcell.NewRGBColor(149, 149, 149)},
+		{"white stays white", tcell.NewRGBColor(255, 255, 255), tcell.NewRGBColor(255, 255, 255)},
+		{"black stays black", tcell.NewRGBColor(0, 0, 0), tcell.NewRGBColor(0, 0, 0)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := grayscaleColor(tc.in); got != tc.want {
+				t.Errorf("grayscaleColor(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGrayscaleColor_PaletteResolvesToGray verifies that a 256-palette color
+// is resolved via its Hex value and mapped to a true gray, not passed through
+// as a still-colored palette index.
+func TestGrayscaleColor_PaletteResolvesToGray(t *testing.T) {
+	got := grayscaleColor(tcell.PaletteColor(196)) // xterm bright red #FF0000
+	r, g, b := got.RGB()
+	if r < 0 || r != g || g != b {
+		t.Fatalf("expected gray (r==g==b), got rgb(%d,%d,%d)", r, g, b)
+	}
+}
+
+// TestDesaturateStyle_GreysAllChannels verifies fg, bg, and underline color are
+// all desaturated, while non-color attributes (bold, reverse) are preserved.
+func TestDesaturateStyle_GreysAllChannels(t *testing.T) {
+	style := tcell.StyleDefault.
+		Foreground(tcell.NewRGBColor(200, 30, 30)).
+		Background(tcell.NewRGBColor(20, 20, 220)).
+		Bold(true)
+	out := desaturateStyle(style)
+
+	fg, bg, attr := out.Decompose()
+	assertGray(t, fg)
+	assertGray(t, bg)
+	if attr&tcell.AttrBold == 0 {
+		t.Error("bold attribute must survive desaturation")
+	}
+}
+
+// TestDesaturateStyle_GreysUnderlineColor verifies that an explicit SGR-58
+// underline color is also desaturated.
+func TestDesaturateStyle_GreysUnderlineColor(t *testing.T) {
+	style := tcell.StyleDefault.
+		Foreground(tcell.NewRGBColor(200, 30, 30)).
+		Underline(tcell.UnderlineStyleCurly, tcell.NewRGBColor(0, 200, 0))
+	out := desaturateStyle(style)
+
+	assertGray(t, out.GetUnderlineColor())
+	// Only the color changes; the underline style must be preserved.
+	if out.GetUnderlineStyle() != tcell.UnderlineStyleCurly {
+		t.Error("underline style must survive desaturation")
+	}
+}
+
+// TestDesaturateStyle_DefaultUnderlineColorUntouched verifies that an underline
+// with no explicit color (ulColor == ColorDefault / invalid) passes through
+// unchanged, keeping the terminal's own default foreground color.
+func TestDesaturateStyle_DefaultUnderlineColorUntouched(t *testing.T) {
+	style := tcell.StyleDefault.Underline(true)
+	out := desaturateStyle(style)
+	if got := out.GetUnderlineColor(); got != tcell.ColorDefault {
+		t.Errorf("default underline color = %v, want ColorDefault", got)
+	}
+}
+
+// TestDesaturateStyle_DefaultForeground verifies the common pattern of a
+// default fg with a colored bg: the default fg must stay default (not become a
+// hard gray), and the bg must be grayed.
+func TestDesaturateStyle_DefaultForeground(t *testing.T) {
+	style := tcell.StyleDefault.Background(tcell.NewRGBColor(20, 20, 220))
+	out := desaturateStyle(style)
+
+	fg, bg, _ := out.Decompose()
+	if fg != tcell.ColorDefault {
+		t.Errorf("default fg changed to %v, want ColorDefault", fg)
+	}
+	assertGray(t, bg)
+	if !bg.Valid() {
+		t.Error("bg must be a grayed color, not ColorDefault")
+	}
+}
+
+// TestPinnedTerminalPane_UnfocusedPaintedInGreyscale verifies that an unfocused
+// pane draws its PTY content in Rec. 601 luminance grayscale. We feed a
+// true-color red cell (SGR 38;2) and assert the sim screen cell is gray (r==g==b).
+func TestPinnedTerminalPane_UnfocusedPaintedInGreyscale(t *testing.T) {
+	src := make(chan []byte, 4)
+	tp := terminalpane.New(src)
+	defer func() { close(src); tp.Close() }()
+
+	p := newPinnedTerminalPane(tp, 78, 22)
+	const allocW, allocH = 80, 24
+	p.SetRect(0, 0, allocW, allocH)
+
+	// True-color red fg. After greying: luma = (299*200 + 587*30 + 114*30)/1000 = 80.
+	feedPane(t, tp, src, []byte("\x1b[38;2;200;30;30mA\x1b[0m"))
+
+	// pane is unfocused (no app.SetFocus called).
+	if p.HasFocus() {
+		t.Skip("pane unexpectedly has focus; test requires unfocused state")
+	}
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(allocW, allocH)
+	p.Draw(sim)
+	sim.Show()
+
+	cells, cw, _ := sim.GetContents()
+	// "A" paints at emulator (col=0,row=0) → screen (col=1,row=1) with 1-cell border.
+	cell := cells[1*cw+1]
+	fg, _, _ := cell.Style.Decompose()
+	assertGray(t, fg)
+}
+
+// TestPinnedTerminalPane_FocusedPaintedInColor verifies that a focused pane
+// draws its PTY content in full color (no greyscale applied).
+func TestPinnedTerminalPane_FocusedPaintedInColor(t *testing.T) {
+	src := make(chan []byte, 4)
+	tp := terminalpane.New(src)
+	defer func() { close(src); tp.Close() }()
+
+	p := newPinnedTerminalPane(tp, 78, 22)
+	const allocW, allocH = 80, 24
+	p.SetRect(0, 0, allocW, allocH)
+
+	// True-color red: after greying would be ~(80,80,80); focused must keep
+	// the original (200,30,30) with r != g.
+	feedPane(t, tp, src, []byte("\x1b[38;2;200;30;30mA\x1b[0m"))
+
+	app := tview.NewApplication()
+	app.SetFocus(p)
+	if !p.HasFocus() {
+		t.Fatal("pane must have focus for this test")
+	}
+
+	sim := tcell.NewSimulationScreen("")
+	if err := sim.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sim.SetSize(allocW, allocH)
+	p.Draw(sim)
+	sim.Show()
+
+	cells, cw, _ := sim.GetContents()
+	cell := cells[1*cw+1]
+	fg, _, _ := cell.Style.Decompose()
+	if !fg.Valid() {
+		t.Skip("cell has ColorDefault fg; unable to verify non-gray color")
+	}
+	r, g, b := fg.RGB()
+	if r < 0 {
+		t.Skip("color not resolvable to RGB; skipping color check")
+	}
+	if r == g && g == b {
+		t.Errorf("focused pane has gray fg rgb(%d,%d,%d) — greyscale was incorrectly applied to focused pane", r, g, b)
+	}
+}
+
+// assertGray passes when c is ColorDefault (preserved as-is) or a true gray (r==g==b).
+func assertGray(t *testing.T, c tcell.Color) {
+	t.Helper()
+	if !c.Valid() {
+		return // ColorDefault — preserved unchanged, acceptable
+	}
+	r, g, b := c.RGB()
+	if r != g || g != b {
+		t.Fatalf("expected gray (r==g==b), got rgb(%d,%d,%d)", r, g, b)
+	}
+}
+
 // --- BUG-012 clean-slate reattach ---
 
 // SetReattaching(true) must stamp reattachSince so App.OnTaskReattached can

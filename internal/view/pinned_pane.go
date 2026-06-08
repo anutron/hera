@@ -307,7 +307,15 @@ func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 	p.SetRect(x, y, p.pinnedCols+2, p.pinnedRows+2)
 	defer p.SetRect(x, y, w, h)
 
-	p.TerminalPane.Draw(clipped)
+	// Unfocused panes render in Rec. 601 luminance grayscale so the operator
+	// can distinguish the focused pane from inactive panes pre-attentively,
+	// without relying solely on the border color. ColorDefault passes through
+	// unchanged so the terminal's own background is preserved.
+	var drawScreen tcell.Screen = clipped
+	if !p.HasFocus() {
+		drawScreen = &greyingScreen{Screen: clipped}
+	}
+	p.TerminalPane.Draw(drawScreen)
 
 	// The SDK terminalpane hardcodes a white (tcell.StyleDefault) border when
 	// focused; hera mirrors argus's cyan focus border across the rail and both
@@ -436,4 +444,43 @@ func (c *clippingScreen) SetContent(x, y int, mainc rune, combc []rune, style tc
 		return
 	}
 	c.Screen.SetContent(x, y, mainc, combc, style)
+}
+
+// greyingScreen wraps a tcell.Screen and desaturates all cell styles to
+// Rec. 601 luminance grayscale on SetContent. Used to render unfocused
+// agent/coord panes so the operator can visually distinguish the active pane
+// from the inactive one without relying solely on the border color.
+// tcell.ColorDefault passes through unchanged so the terminal's own background
+// is preserved.
+type greyingScreen struct {
+	tcell.Screen
+}
+
+func (g *greyingScreen) SetContent(x, y int, mainc rune, combc []rune, style tcell.Style) {
+	g.Screen.SetContent(x, y, mainc, combc, desaturateStyle(style))
+}
+
+// desaturateStyle maps fg, bg, and underline color to their Rec. 601
+// luminance grays. tcell.ColorDefault (invalid) passes through unchanged.
+func desaturateStyle(style tcell.Style) tcell.Style {
+	fg, bg, _ := style.Decompose()
+	style = style.Foreground(grayscaleColor(fg)).Background(grayscaleColor(bg))
+	if ulc := style.GetUnderlineColor(); ulc.Valid() {
+		style = style.Underline(grayscaleColor(ulc))
+	}
+	return style
+}
+
+// grayscaleColor maps a color to its Rec. 601 luminance gray. ColorDefault
+// (invalid color) passes through unchanged.
+func grayscaleColor(c tcell.Color) tcell.Color {
+	if !c.Valid() {
+		return c
+	}
+	r, g, b := c.RGB()
+	if r < 0 {
+		return c
+	}
+	l := (299*r + 587*g + 114*b) / 1000
+	return tcell.NewRGBColor(l, l, l)
 }
