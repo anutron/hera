@@ -1370,6 +1370,16 @@ func (a *App) OnFullscreenChanged(pane FocusState, active bool) {
 		a.pieces.agent.SetTitle("Agent")
 	}
 	a.refreshBody()
+	// BUG-013: after the Flex layout changes (rail + other pane added/removed),
+	// tview may not re-query the focused pane's cursor position in the first
+	// post-transition draw — leaving the cursor invisible until the next
+	// unrelated event triggers a repaint. Queue a second draw from a goroutine
+	// (mirroring the BUG-049 v2 pattern) so the pane re-establishes its cursor
+	// in the new container. The goroutine avoids calling QueueUpdateDraw from
+	// within the current draw cycle, which would self-deadlock on tview v0.42.
+	if a.app != nil {
+		go a.app.QueueUpdateDraw(func() {})
+	}
 }
 
 // OnRailSelectEnter handles Enter pressed while RAIL has focus. It enters the
