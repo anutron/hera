@@ -445,6 +445,83 @@ func TestApp_OnFullscreenChanged_UpdatesPaneTitles(t *testing.T) {
 	}
 }
 
+// BUG-013: entering or exiting fullscreen must not leave the cursor invisible.
+// The fix queues a second draw pass (go a.app.QueueUpdateDraw) after refreshBody
+// so tview re-establishes the cursor position in the new container. This test
+// verifies the synchronous structural preconditions: the correct pane is the
+// ONLY item in the body after fullscreen and the normal split is restored on
+// exit. The async QueueUpdateDraw draw itself cannot be exercised synchronously
+// without a running tview event loop (same limitation as TestApp_OnFocusChanged_*
+// ResizeTask tests).
+func TestApp_OnFullscreenChanged_BodyLayoutIsExclusive(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Baseline: normal split shows rail, coord pane, and agent pane.
+	normal := renderApp(t, a, 80, 24)
+	if !strings.Contains(normal, "(no projects)") {
+		t.Fatal("baseline: expected rail placeholder in normal split")
+	}
+	if !strings.Contains(normal, "(no coord selected)") {
+		t.Fatal("baseline: expected coord pane placeholder in normal split")
+	}
+	if !strings.Contains(normal, "(no agent selected)") {
+		t.Fatal("baseline: expected agent pane placeholder in normal split")
+	}
+
+	// Fullscreen COORD: only the coord pane fills the body. Rail and agent
+	// must be absent from the rendered surface.
+	a.OnFullscreenChanged(FocusCOORD, true)
+	coordFS := renderApp(t, a, 80, 24)
+	if strings.Contains(coordFS, "(no projects)") {
+		t.Error("coord fullscreen: rail must not be rendered when coord pane is fullscreen")
+	}
+	if strings.Contains(coordFS, "(no agent selected)") {
+		t.Error("coord fullscreen: agent pane must not be rendered when coord pane is fullscreen")
+	}
+	if !strings.Contains(coordFS, "(no coord selected)") {
+		t.Error("coord fullscreen: coord pane placeholder must be visible in fullscreen")
+	}
+
+	// Exit fullscreen: normal split restored.
+	a.OnFullscreenChanged(FocusCOORD, false)
+	restored := renderApp(t, a, 80, 24)
+	if !strings.Contains(restored, "(no projects)") {
+		t.Error("after exit: rail must be restored in normal split")
+	}
+	if !strings.Contains(restored, "(no agent selected)") {
+		t.Error("after exit: agent pane must be restored in normal split")
+	}
+
+	// Fullscreen AGENT: only the agent pane fills the body. Rail and coord
+	// must be absent.
+	a.OnFullscreenChanged(FocusAGENT, true)
+	agentFS := renderApp(t, a, 80, 24)
+	if strings.Contains(agentFS, "(no projects)") {
+		t.Error("agent fullscreen: rail must not be rendered when agent pane is fullscreen")
+	}
+	if strings.Contains(agentFS, "(no coord selected)") {
+		t.Error("agent fullscreen: coord pane must not be rendered when agent pane is fullscreen")
+	}
+	if !strings.Contains(agentFS, "(no agent selected)") {
+		t.Error("agent fullscreen: agent pane placeholder must be visible in fullscreen")
+	}
+
+	// Exit fullscreen again: normal split restored.
+	a.OnFullscreenChanged(FocusAGENT, false)
+	restored2 := renderApp(t, a, 80, 24)
+	if !strings.Contains(restored2, "(no projects)") {
+		t.Error("after agent exit: rail must be restored in normal split")
+	}
+	if !strings.Contains(restored2, "(no coord selected)") {
+		t.Error("after agent exit: coord pane must be restored in normal split")
+	}
+}
+
 func TestBuildApp_EmptyDBShowsNoProjectsAndPlaceholders(t *testing.T) {
 	d := openTestDB(t)
 	a, err := BuildApp(d, nil)
