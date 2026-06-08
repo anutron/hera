@@ -2345,17 +2345,29 @@ func (a *App) clearReattachAndResize(taskID string) {
 	a.mu.Lock()
 	var cols, rows int
 	var isCoord, isAgent bool
+	var pane *pinnedTerminalPane
 	if a.coordTask == taskID && a.pieces.coord != nil {
-		_, _, w, h := a.pieces.coord.GetRect()
+		pane = a.pieces.coord
+		_, _, w, h := pane.GetRect()
 		cols, rows = w-2, h-2
 		isCoord = true
 	} else if a.agentTask == taskID && a.pieces.agent != nil {
-		_, _, w, h := a.pieces.agent.GetRect()
+		pane = a.pieces.agent
+		_, _, w, h := pane.GetRect()
 		cols, rows = w-2, h-2
 		isAgent = true
 	}
 	a.mu.Unlock()
 	if !isCoord && !isAgent {
+		return
+	}
+	// BUG-015: bail if the pane is not showing the reattach splash. OnTaskReattached
+	// schedules this function on a timer; if the user navigated away and back before
+	// the timer fires, the current pane is a fresh rebind (reattaching=false). Calling
+	// ResetSubscription on a live pane wipes the ring buffer, erasing pending typed
+	// input. pane.reattaching is event-loop-only, so reading it here (also event-loop)
+	// is safe without a lock.
+	if pane == nil || !pane.reattaching {
 		return
 	}
 	if cols > 0 && rows > 0 {
@@ -2384,17 +2396,7 @@ func (a *App) clearReattachAndResize(taskID string) {
 	}
 	// Layout not yet run (GetRect == 0) — just clear the splash so the operator
 	// is not stuck looking at it forever.
-	a.mu.Lock()
-	var pane *pinnedTerminalPane
-	if isCoord {
-		pane = a.pieces.coord
-	} else {
-		pane = a.pieces.agent
-	}
-	a.mu.Unlock()
-	if pane != nil {
-		pane.SetReattaching(false, "")
-	}
+	pane.SetReattaching(false, "")
 	a.moveFocusToPaneAfterReattach(isAgent)
 }
 
