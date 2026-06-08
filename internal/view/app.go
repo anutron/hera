@@ -2482,6 +2482,9 @@ func (a *App) scheduleSubtitleUpdate(taskID string) {
 // Freelancer agent panes are skipped: they have no hera binding and the
 // auto-reattach goroutine can hang when navigating to a dead-session freelancer
 // row. The operator uses Enter (OnReattach) to manually reattach (BUG-009).
+// For managed (non-freelancer) dead sessions, StartPaneReattach is called to
+// snap focus to RAIL before showing the splash so keystrokes during the
+// reattach window never reach the dead PTY (BUG-012).
 // Must run on the tview event loop (called from OnFocusChanged).
 func (a *App) maybeAutoReattachPane(state FocusState) {
 	if a.onDeadPaneReattach == nil {
@@ -2530,8 +2533,10 @@ func (a *App) maybeAutoReattachPane(state FocusState) {
 	if !ok || taskStatusAlive(st.Status) {
 		return
 	}
-	pane.SetReattaching(true, "connecting to agent...")
-	a.scheduleSubtitleUpdate(taskID)
+	// StartPaneReattach snaps focus to RAIL and shows the REATTACHING splash
+	// immediately, so the operator sees feedback before any keystroke can reach
+	// the dead PTY. onDeadPaneReattach fires the actual background restart.
+	a.StartPaneReattach(taskID)
 	a.onDeadPaneReattach(taskID)
 }
 
