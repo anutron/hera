@@ -51,10 +51,12 @@ type fakeArgusForHandlers struct {
 	// notifyState controls the state field returned in the 202 response ("submitted"
 	// or "pending"). notifyFail makes POST /api/tasks/{id}/notify return 500.
 	// cancels records DELETE /api/tasks/{id}/notify/{deliveryID} calls.
-	notifyPosts  []argus.NotifyInput
-	notifyState  string
-	notifyFail   bool
-	cancels      []struct{ taskID, deliveryID string }
+	notifyPosts    []argus.NotifyInput
+	notifyState    string
+	notifyFail     bool
+	notifyNotFound bool // returns 404 for POST .../notify (task has no active session)
+	cancels        []struct{ taskID, deliveryID string }
+	cancelFail     bool // returns 500 for DELETE .../notify/{id}
 }
 
 func (f *fakeArgusForHandlers) addTask(task argus.Task) {
@@ -162,11 +164,18 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 		// POST /api/tasks/{id}/notify
 		if sub == "notify" && r.Method == http.MethodPost {
 			f.mu.Lock()
-			if f.notifyFail {
-				f.mu.Unlock()
+			fail := f.notifyFail
+			notFound := f.notifyNotFound
+			f.mu.Unlock()
+			if fail {
 				http.Error(w, `{"error":"injected notify failure"}`, http.StatusInternalServerError)
 				return
 			}
+			if notFound {
+				http.NotFound(w, r)
+				return
+			}
+			f.mu.Lock()
 			var in argus.NotifyInput
 			_ = json.NewDecoder(r.Body).Decode(&in)
 			f.notifyPosts = append(f.notifyPosts, in)
@@ -182,6 +191,13 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 
 		// DELETE /api/tasks/{id}/notify/{deliveryID}
 		if strings.HasPrefix(sub, "notify/") && r.Method == http.MethodDelete {
+			f.mu.Lock()
+			fail := f.cancelFail
+			f.mu.Unlock()
+			if fail {
+				http.Error(w, `{"error":"injected cancel failure"}`, http.StatusInternalServerError)
+				return
+			}
 			deliveryID := strings.TrimPrefix(sub, "notify/")
 			f.mu.Lock()
 			f.cancels = append(f.cancels, struct{ taskID, deliveryID string }{taskID, deliveryID})
@@ -680,5 +696,115 @@ func TestInbox_MarkReadPreservesOtherRoleMessages(t *testing.T) {
 	unread, _ := e.db.Messages.UnreadForRole(ctx, w2.ID)
 	if len(unread) != 1 || unread[0].ID != msg2.ID {
 		t.Fatalf("w2 should still have 1 unread message, got %d", len(unread))
+	}
+}
+
+// TestInbox_CancelErrorDoesNotFailHandler verifies that a cancel failure
+// does NOT fail the hera_inbox response.
+// Delta: "Scenario: Cancel error does not fail the handler"
+func TestInbox_CancelErrorDoesNotFailHandler(t *testing.T) {
+	ctx := context.Background()
+	e := setupHandlers(t)
+	e.fake.cancelFail = true // DELETE .../notify/{id} returns 500
+
+	orch, _ := e.db.Orchestrators.Create(ctx, "foo")
+	coord, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "c", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	worker, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: worker.ID, ArgusTaskID: "t-w", WorktreePath: "/tmp/w",
+	})
+	e.fake.addTask(argus.Task{ID: "t-w", Name: "w", Project: "p", WorktreePath: "/tmp/w"})
+
+	_, _ = e.db.Messages.Create(ctx, db.CreateMessageInput{
+		FromRoleID: coord.ID, ToRoleID: worker.ID, Body: "hello", Tldr: "hello",
+	})
+
+	// cancel fails (500), but inbox must still succeed.
+	h := NewInboxHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, InboxInput{Cwd: "/tmp/w"}))
+	if resp.IsError {
+		t.Fatalf("hera_inbox must succeed even when cancel fails; got error: %s", resp.Content[0].Text)
+	}
+}
+
+// TestMarkRead_CancelsArgusDelivery verifies that hera_mark_read calls
+// CancelNotify for each marked-read message.
+// Delta: "Scenario: hera_mark_read marks messages read and cancels delivery"
+func TestMarkRead_CancelsArgusDelivery(t *testing.T) {
+	ctx := context.Background()
+	e := setupHandlers(t)
+
+	orch, _ := e.db.Orchestrators.Create(ctx, "foo")
+	coord, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "c", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	worker, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: worker.ID, ArgusTaskID: "t-w", WorktreePath: "/tmp/w",
+	})
+	e.fake.addTask(argus.Task{ID: "t-w", Name: "w", Project: "p", WorktreePath: "/tmp/w"})
+
+	msg, _ := e.db.Messages.Create(ctx, db.CreateMessageInput{
+		FromRoleID: coord.ID, ToRoleID: worker.ID, Body: "ping", Tldr: "ping",
+	})
+	_ = e.db.Messages.SetDelivered(ctx, msg.ID, db.DeliveryIdleSubmit)
+
+	h := NewMarkReadHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, MarkReadInput{
+		Cwd: "/tmp/w", MessageIDs: []int64{msg.ID},
+	}))
+	if resp.IsError {
+		t.Fatalf("hera_mark_read error: %s", resp.Content[0].Text)
+	}
+
+	e.fake.mu.Lock()
+	defer e.fake.mu.Unlock()
+	if len(e.fake.cancels) != 1 {
+		t.Fatalf("cancels count = %d, want 1", len(e.fake.cancels))
+	}
+	if e.fake.cancels[0].taskID != "t-w" {
+		t.Fatalf("cancel taskID = %q, want t-w", e.fake.cancels[0].taskID)
+	}
+	if e.fake.cancels[0].deliveryID != fmt.Sprintf("%d", msg.ID) {
+		t.Fatalf("cancel deliveryID = %q, want %d", e.fake.cancels[0].deliveryID, msg.ID)
+	}
+}
+
+// TestMarkRead_CancelErrorDoesNotFailHandler verifies that a cancel failure
+// does NOT fail the hera_mark_read response.
+// Delta: "Scenario: Cancel error does not fail the handler"
+func TestMarkRead_CancelErrorDoesNotFailHandler(t *testing.T) {
+	ctx := context.Background()
+	e := setupHandlers(t)
+	e.fake.cancelFail = true
+
+	orch, _ := e.db.Orchestrators.Create(ctx, "foo")
+	coord, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "c", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	worker, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "w", Kind: db.KindWorker, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: worker.ID, ArgusTaskID: "t-w", WorktreePath: "/tmp/w",
+	})
+	e.fake.addTask(argus.Task{ID: "t-w", Name: "w", Project: "p", WorktreePath: "/tmp/w"})
+
+	msg, _ := e.db.Messages.Create(ctx, db.CreateMessageInput{
+		FromRoleID: coord.ID, ToRoleID: worker.ID, Body: "ping", Tldr: "ping",
+	})
+
+	h := NewMarkReadHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, MarkReadInput{
+		Cwd: "/tmp/w", MessageIDs: []int64{msg.ID},
+	}))
+	if resp.IsError {
+		t.Fatalf("hera_mark_read must succeed even when cancel fails; got error: %s", resp.Content[0].Text)
 	}
 }

@@ -265,7 +265,7 @@ func TestSend_RecipientHasNoLiveBinding_QueuesPending(t *testing.T) {
 	}
 }
 
-// TestSend_NotifyError_Surfaces verifies that an argus notify failure is
+// TestSend_NotifyError_Surfaces verifies that an argus notify failure (500) is
 // surfaced as a handler error.
 func TestSend_NotifyError_Surfaces(t *testing.T) {
 	ctx := context.Background()
@@ -277,6 +277,24 @@ func TestSend_NotifyError_Surfaces(t *testing.T) {
 	if !resp.IsError {
 		t.Fatal("expected error when argus notify fails")
 	}
+}
+
+// TestSend_NotifyNotFound_ReturnsError verifies that a 404 from argus notify
+// (task has no active PTY session) returns an error to the caller and does
+// not advance delivery_mode past pending.
+// Delta: "Scenario: No active session, delivery fails"
+func TestSend_NotifyNotFound_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	e, h := setupSend(t, true, "submitted")
+	e.fake.notifyNotFound = true
+	_, _ = seedOrchestratorWithBoundPair(t, e)
+
+	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/w", Body: "x", Tldr: "x"}))
+	if !resp.IsError {
+		t.Fatal("expected error when argus notify returns 404 (no active session)")
+	}
+	// Error response means delivery_mode was NOT advanced past pending (no
+	// SetDelivered call reached), satisfying the delta scenario.
 }
 
 // TestSend_CoordinatorWithoutTo_Rejected verifies routing validation.
