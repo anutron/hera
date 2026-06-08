@@ -2235,10 +2235,9 @@ func (a *App) applyDeadPaneFocusGuard(taskID string) {
 // This method:
 //  1. Resets ProxyManager's applied flag via the paneResizeInvalidator optional
 //     interface so the next dispatch reaches argus.
-//  2. Queues a non-blocking resize dispatch on the tview event loop via a
-//     goroutine wrapper (same pattern as the reflow callbacks). The goroutine
-//     reads the current pane dimensions race-safely on the event loop and calls
-//     ResizeTask so the new session is sized to the current pane allocation.
+//  2. Schedules clearReattachAndResize on the tview event loop, enforcing a
+//     minimum 1-second splash hold before the fresh rebind fires. This prevents
+//     a fast reattach from causing a disorienting splash flicker.
 //
 // Satisfies the paneReattachNotifier interface used by the mutation bridge.
 func (a *App) OnTaskReattached(taskID string) {
@@ -2253,11 +2252,9 @@ func (a *App) OnTaskReattached(taskID string) {
 	if a.app == nil {
 		return
 	}
-	// Step 2: schedule a resize on the event loop. The goroutine wrapper is
-	// non-blocking (same pattern as makeCoordReflowCallback / makeAgentReflowCallback):
-	// it does not block the mutation bridge's goroutine while the tview queue
-	// drains, and it reads pinnedCols/pinnedRows on the event loop where Draw
-	// also writes them — no race.
+	// Step 2: schedule clear + fresh rebind on the event loop. The goroutine
+	// wrapper is non-blocking (same pattern as the reflow callbacks) so it
+	// does not block the mutation bridge while the tview queue drains.
 	go a.app.QueueUpdateDraw(func() {
 		a.mu.Lock()
 		var pane *pinnedTerminalPane
@@ -2270,21 +2267,70 @@ func (a *App) OnTaskReattached(taskID string) {
 		if pane == nil {
 			return
 		}
-		// BUG-008: clear the REATTACHING splash so live PTY content streams in.
-		pane.SetReattaching(false, "")
-		// BUG-012: use pane.GetRect() rather than PinnedSize() to derive the
-		// resize dimensions. The splash Draw path returns early without updating
-		// pinnedCols/Rows, so PinnedSize() stays at the construction default
-		// (80×24) for the entire reattach window. GetRect() returns the
-		// layout-allocated rect set by the Flex (correct actual allocation),
-		// ensuring the new session receives the real pane dimensions via SIGWINCH.
-		_, _, w, h := pane.GetRect()
-		innerCols := w - 2
-		innerRows := h - 2
-		if innerCols > 0 && innerRows > 0 && a.src != nil {
-			a.src.ResizeTask(taskID, innerCols, innerRows)
+		// Hold the splash for at least 1 second from when it appeared so a
+		// fast reattach does not cause a disorienting flicker (Aaron's request).
+		if remaining := time.Second - time.Since(pane.reattachSince); remaining > 0 {
+			taskIDCopy := taskID
+			time.AfterFunc(remaining, func() {
+				go a.app.QueueUpdateDraw(func() { a.clearReattachAndResize(taskIDCopy) })
+			})
+			return
 		}
+		a.clearReattachAndResize(taskID)
 	})
+}
+
+// clearReattachAndResize clears the REATTACHING splash for taskID's pane and
+// replaces it with a fresh-subscribed pane (blank emulator) so the old
+// session's ring buffer does not flash before new output arrives. The fresh
+// rebind also dispatches SIGWINCH at the correct pane dimensions. If the
+// layout has not run yet (GetRect returns zero), only the splash is cleared.
+// Must run on the tview event loop.
+func (a *App) clearReattachAndResize(taskID string) {
+	a.mu.Lock()
+	var cols, rows int
+	var isCoord, isAgent bool
+	if a.coordTask == taskID && a.pieces.coord != nil {
+		_, _, w, h := a.pieces.coord.GetRect()
+		cols, rows = w-2, h-2
+		isCoord = true
+	} else if a.agentTask == taskID && a.pieces.agent != nil {
+		_, _, w, h := a.pieces.agent.GetRect()
+		cols, rows = w-2, h-2
+		isAgent = true
+	}
+	a.mu.Unlock()
+	if !isCoord && !isAgent {
+		return
+	}
+	if cols > 0 && rows > 0 {
+		// Replace the pane with a fresh one (blank emulator, re-subscribed to the
+		// new session). This guarantees the old session's ring-buffer content never
+		// shows after the splash clears. The fresh pane's lastDesiredCols/Rows
+		// match cols/rows, so its first Draw short-circuits the resize dispatch;
+		// we send it explicitly below to pair with the pre-queued InvalidateResize.
+		if isAgent {
+			a.forceRebindAgent(taskID, cols, rows)
+		} else {
+			a.forceRebindCoord(taskID, cols, rows)
+		}
+		// BUG-012: explicit SIGWINCH for the new session (see OnTaskReattached).
+		a.src.ResizeTask(taskID, cols, rows)
+		return
+	}
+	// Layout not yet run (GetRect == 0) — just clear the splash so the operator
+	// is not stuck looking at it forever.
+	a.mu.Lock()
+	var pane *pinnedTerminalPane
+	if isCoord {
+		pane = a.pieces.coord
+	} else {
+		pane = a.pieces.agent
+	}
+	a.mu.Unlock()
+	if pane != nil {
+		pane.SetReattaching(false, "")
+	}
 }
 
 // StartPaneReattach shows the REATTACHING splash on the pane bound to taskID,

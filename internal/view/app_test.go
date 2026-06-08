@@ -4531,6 +4531,56 @@ func TestApp_OnTaskReattached_UsesGetRectNotPinnedSize(t *testing.T) {
 	// resize value itself (verified by integration with pinnedTerminalPane.Draw).
 }
 
+// --- BUG-012 clean-slate reattach ---
+
+// clearReattachAndResize must be a no-op when the task ID is not bound to any
+// pane, and must not panic.
+func TestApp_ClearReattachAndResize_NoopWhenNotBound(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Not bound to any pane — must return without side effects.
+	a.clearReattachAndResize("unknown-task")
+	if len(src.resizes) != 0 {
+		t.Fatalf("ResizeTask must not fire for unbound task; got %v", src.resizes)
+	}
+}
+
+// When the pane's GetRect is zero (no layout run), clearReattachAndResize must
+// clear the splash via SetReattaching(false) rather than attempting a forceRebind
+// with zero dimensions.
+func TestApp_ClearReattachAndResize_ClearsSplashWhenRectZero(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Bind agent pane and activate the splash.
+	a.mu.Lock()
+	a.agentTask = "t-agent"
+	a.pieces.agent.SetReattaching(true, "connecting...")
+	a.mu.Unlock()
+
+	if !a.pieces.agent.reattaching {
+		t.Fatal("precondition: agent pane must be reattaching")
+	}
+
+	// GetRect returns 0 (no layout run), so forceRebind path is skipped.
+	a.clearReattachAndResize("t-agent")
+
+	if a.pieces.agent.reattaching {
+		t.Error("clearReattachAndResize must clear the splash when GetRect is zero")
+	}
+}
+
 // maybeAutoReattachPane must snap focus to RAIL for dead-session freelancer
 // panes reached via Ctrl+→ so the operator is not stuck forwarding keystrokes
 // to a dead PTY (BUG-012). The existing BUG-009 test confirms no auto-reattach
