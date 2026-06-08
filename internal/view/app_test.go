@@ -43,6 +43,8 @@ type fakePaneSource struct {
 	resizes []paneResizeCall
 	// invalidated records every InvalidateResize call (BUG-053).
 	invalidated []string
+	// resetSubscriptions records every ResetSubscription call (BUG-012).
+	resetSubscriptions []string
 }
 
 type paneResizeCall struct {
@@ -84,6 +86,11 @@ func (f *fakePaneSource) ResizeTask(taskID string, cols, rows int) {
 // InvalidateResize satisfies paneResizeInvalidator (BUG-053).
 func (f *fakePaneSource) InvalidateResize(taskID string) {
 	f.invalidated = append(f.invalidated, taskID)
+}
+
+// ResetSubscription satisfies paneSubscriptionResetter (BUG-012).
+func (f *fakePaneSource) ResetSubscription(taskID string) {
+	f.resetSubscriptions = append(f.resetSubscriptions, taskID)
 }
 
 // renderApp drives one Draw cycle on the App's root primitive against a
@@ -4750,6 +4757,97 @@ func TestApp_ClearReattachAndResize_ClearsSplashWhenRectZero(t *testing.T) {
 
 	if a.pieces.agent.reattaching {
 		t.Error("clearReattachAndResize must clear the splash when GetRect is zero")
+	}
+}
+
+// clearReattachAndResize must call ResetSubscription (via paneSubscriptionResetter)
+// before forceRebindAgent so the old session's ring buffer is flushed before
+// the fresh pane subscribes (BUG-012). Without the reset, the snapshot fed to
+// the new pane contains old-session bytes, making the emulator start from the
+// old cursor position instead of the new session's clean prompt.
+func TestClearReattachAndResize_ResetsSubscriptionBeforeRebind(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Bind the agent pane, activate the splash, and give it a non-zero rect
+	// so clearReattachAndResize takes the forceRebind path (not the zero-rect
+	// fallback). Inner dims = 50×25 (52-2, 27-2).
+	a.mu.Lock()
+	a.agentTask = "t-agent"
+	a.pieces.agent.SetReattaching(true, "connecting...")
+	a.mu.Unlock()
+	a.pieces.agent.SetRect(0, 0, 52, 27)
+
+	if len(src.resetSubscriptions) != 0 {
+		t.Fatalf("precondition: no ResetSubscription calls yet; got %v", src.resetSubscriptions)
+	}
+
+	a.clearReattachAndResize("t-agent")
+
+	if len(src.resetSubscriptions) == 0 {
+		t.Error("clearReattachAndResize must call ResetSubscription before forceRebind")
+	} else if src.resetSubscriptions[0] != "t-agent" {
+		t.Errorf("ResetSubscription called with wrong task ID: got %q, want %q",
+			src.resetSubscriptions[0], "t-agent")
+	}
+}
+
+// StartPaneReattach must leave focus on RAIL even when fireSelectionNow
+// applies a live-task pending selection (live rows skip applyDeadFocusGuard,
+// so without the explicit focus reset the focus machine can end up in AGENT
+// or COORD state before the splash clears, moving the terminal cursor into
+// the pane before the new session is ready).
+func TestStartPaneReattach_FocusResetToRail_WithNonDeadPending(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+	a.modalSync = true
+
+	// Bind agent pane to the dead task.
+	a.mu.Lock()
+	a.agentTask = "t-dead"
+	a.mu.Unlock()
+
+	// Wire a LIVE pending selection (not the dead task). This simulates the
+	// race where the debounce has not yet fired for a live row that the
+	// operator navigated past on the way to the dead row.
+	liveRef := &roleEntry{
+		RoleKind:    string(db.KindWorker),
+		ArgusTaskID: "t-live",
+		Name:        "live-agent",
+		Dead:        false,
+		HasState:    false, // cold cache → roleInputDead=false → applyDeadFocusGuard no-ops
+	}
+	a.selectMu.Lock()
+	a.selectPending = liveRef
+	a.selectHasRef = true
+	a.selectMu.Unlock()
+
+	// Artificially put the focus machine in FocusAGENT, simulating a state
+	// where the operator was in the agent pane before navigating back to the
+	// rail. (In practice Ctrl-Q resets this, but the reset in StartPaneReattach
+	// must be the final safety net.)
+	focus.JumpToAGENT()
+
+	a.StartPaneReattach("t-dead")
+
+	if got := focus.State(); got != FocusRAIL {
+		t.Errorf("StartPaneReattach must leave focus on RAIL; got %v", got)
 	}
 }
 

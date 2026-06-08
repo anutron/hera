@@ -2324,11 +2324,19 @@ func (a *App) clearReattachAndResize(taskID string) {
 		return
 	}
 	if cols > 0 && rows > 0 {
+		// BUG-012: discard the existing proxy ring buffer before creating the
+		// fresh pane. Without this, the new pane's SubscribeTask call returns a
+		// snapshot containing old-session content followed by new-session bytes,
+		// and the emulator replays it from the beginning — placing the cursor at
+		// a position from the old session (e.g. mid-line inside the "Resume this
+		// session with: ..." argus message) rather than at the new prompt.
+		if sr, ok := a.src.(paneSubscriptionResetter); ok {
+			sr.ResetSubscription(taskID)
+		}
 		// Replace the pane with a fresh one (blank emulator, re-subscribed to the
-		// new session). This guarantees the old session's ring-buffer content never
-		// shows after the splash clears. The fresh pane's lastDesiredCols/Rows
-		// match cols/rows, so its first Draw short-circuits the resize dispatch;
-		// we send it explicitly below to pair with the pre-queued InvalidateResize.
+		// new session's output). The fresh pane's lastDesiredCols/Rows match
+		// cols/rows, so its first Draw short-circuits the resize dispatch; we send
+		// it explicitly below to pair with the pre-queued InvalidateResize.
 		if isAgent {
 			a.forceRebindAgent(taskID, cols, rows)
 		} else {
@@ -2381,6 +2389,15 @@ func (a *App) StartPaneReattach(taskID string) {
 	//
 	// No-op when no selection is pending (selectHasRef=false).
 	a.fireSelectionNow()
+	// BUG-012: unconditionally reset focus to RAIL after fireSelectionNow.
+	// applyRailSelection can call setBodyMode → OnFocusChanged with a
+	// non-RAIL state when the pending selection is a live task row (live rows
+	// don't trigger applyDeadFocusGuard). Focus must stay on RAIL for the
+	// entire splash period; clearReattachAndResize moves it to the pane.
+	if a.focus != nil {
+		a.focus.ToRAIL()
+	}
+	a.OnFocusChanged(FocusRAIL)
 
 	a.mu.Lock()
 	var pane *pinnedTerminalPane
