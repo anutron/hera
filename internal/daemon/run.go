@@ -218,6 +218,13 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	go func() {
 		ch, unsub := argusState.Subscribe()
 		defer unsub()
+		// Seed the current snapshot immediately: the first poll may have already
+		// completed before Subscribe was called (start-up race), and subsequent
+		// polls won't re-notify when the task list is unchanged. Ensure is
+		// idempotent, so a double-call if the channel also fires is safe.
+		for _, t := range argusState.List() {
+			viewProxy.Ensure(t.ID)
+		}
 		for {
 			select {
 			case <-proxyCtx.Done():
