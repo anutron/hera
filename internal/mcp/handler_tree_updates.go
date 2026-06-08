@@ -101,9 +101,7 @@ func (h *TreeUpdatesHandler) Handle(ctx context.Context, raw json.RawMessage) Re
 		TruncatedAtDepth: truncated,
 		Messages:         make([]TreeUpdateMessage, 0, len(msgs)),
 	}
-	for _, m := range msgs {
-		out.Messages = append(out.Messages, m)
-	}
+	out.Messages = append(out.Messages, msgs...)
 	return jsonText(out)
 }
 
@@ -140,7 +138,7 @@ LIMIT 200`, inClause, inClause), args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var result []TreeUpdateMessage
 	for rows.Next() {

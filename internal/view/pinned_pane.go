@@ -310,13 +310,13 @@ func (p *pinnedTerminalPane) Draw(screen tcell.Screen) {
 // drawReattachSplash renders the REATTACHING splash centered in the pane rect.
 // Layout (7 content rows centered vertically in the inner area):
 //
-//	- - - - - ○ - - - - - - - - - - - - - - -   (dashes, cyan)
+//   - - - - - ○ - - - - - - - - - - - - - - -   (dashes, cyan)
 //
-//	        REATTACHING                           (cyan→pink gradient, bold)
+//     REATTACHING                           (cyan→pink gradient, bold)
 //
-//	        connecting to agent...                (dim gray)
+//     connecting to agent...                (dim gray)
 //
-//	- - - - - ○ - - - - - - - - - - - - - - -
+//   - - - - - ○ - - - - - - - - - - - - - - -
 func (p *pinnedTerminalPane) drawReattachSplash(screen tcell.Screen, x, y, w, h int) {
 	// Clear the allocated rect to erase any PTY residue behind the splash.
 	for row := y; row < y+h; row++ {
