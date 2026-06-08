@@ -5335,3 +5335,85 @@ func TestApplyRailSelection_DeadSessionFreelancerSetsFlag(t *testing.T) {
 		t.Errorf("onDeadPaneReattach must not fire for dead-session freelancer; got calls: %v", reattachCalled)
 	}
 }
+
+// TestPopulateRail_CursorOnArchiveExpandoStaysOnRefresh is the BUG-014
+// regression: when the cursor rests on an Archive (N) expando row and a state
+// refresh (e.g. coord spinner stops) triggers populateRail, the cursor must
+// stay on the expando — not jump to the first row of the rail.
+//
+// Root cause: currentRef() returns nil for Archive expando rows (they have no
+// stable entity reference). SetOrchestrators/SetFreelance/SetArchivedFreelance
+// all called firstSelectableRow() when restoreCursor returned false, which it
+// always does for a nil prev — so the cursor snapped to the coord at the top.
+func TestPopulateRail_CursorOnArchiveExpandoStaysOnRefresh(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "proj")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: coord.ID, ArgusTaskID: "c1", WorktreePath: "/c"})
+	active, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "live-worker", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: active.ID, ArgusTaskID: "t-active", WorktreePath: "/a"})
+	archived, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "stashed", Kind: db.KindWorker, ArgusProject: "proj",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{RoleID: archived.ID, ArgusTaskID: "t-stashed", WorktreePath: "/s"})
+	if err := d.Roles.Archive(ctx, archived.ID); err != nil {
+		t.Fatalf("archive role: %v", err)
+	}
+
+	src := &alivePaneSource{alive: map[string]bool{
+		"t-active":  true,
+		"t-stashed": true,
+	}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Locate the Archive expando row — it must exist because orch has an
+	// archived child.
+	rail := a.pieces.rail
+	archiveIdx := -1
+	for i, r := range rail.rows {
+		if r.kind == railRowArchiveExpando && r.archiveOwner == orch.ID {
+			archiveIdx = i
+			break
+		}
+	}
+	if archiveIdx < 0 {
+		t.Fatalf("Archive expando not found in rail rows; kinds=%v", rowKinds(rail))
+	}
+
+	// Move cursor directly to the Archive expando.
+	rail.cursor = archiveIdx
+
+	// Confirm that currentRef() returns nil for this row (it has no stable
+	// entity reference — this is what caused the bug).
+	if ref := rail.currentRef(); ref != nil {
+		t.Fatalf("currentRef on Archive expando must be nil; got %T %v", ref, ref)
+	}
+
+	// Simulate a state refresh (e.g. coord spinner stops, argus pushes an idle
+	// status update). populateRail calls SetOrchestrators / SetFreelance /
+	// SetArchivedFreelance in sequence — each must leave the cursor on the
+	// Archive expando, not snap it to the first selectable row.
+	if err := a.populateRail(d); err != nil {
+		t.Fatalf("populateRail: %v", err)
+	}
+
+	// Cursor must still be on the Archive expando row.
+	if rail.cursor < 0 || rail.cursor >= len(rail.rows) {
+		t.Fatalf("cursor out of range after refresh: %d (len=%d)", rail.cursor, len(rail.rows))
+	}
+	cur := rail.rows[rail.cursor]
+	if cur.kind != railRowArchiveExpando || cur.archiveOwner != orch.ID {
+		t.Fatalf("cursor jumped off Archive expando on refresh: row %d kind=%v archiveOwner=%v; want kind=railRowArchiveExpando owner=%d",
+			rail.cursor, cur.kind, cur.archiveOwner, orch.ID)
+	}
+}
