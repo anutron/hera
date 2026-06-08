@@ -65,7 +65,7 @@ func (r *BounceRecoverer) resumeOrchestrator(ctx context.Context, orch *db.Orche
 			coord = role
 		case db.KindWorker:
 			workers = append(workers, role)
-		// KindFreelance excluded by design
+			// KindFreelance excluded by design
 		}
 	}
 
