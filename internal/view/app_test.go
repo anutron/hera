@@ -4091,7 +4091,7 @@ func TestOnRailSelectEnter_DeadFreelancerStaysInRail(t *testing.T) {
 // verifies that all items are Bar:false (the comprehensive frame must not
 // corrupt argus's context-sensitive bottom bar).
 func TestHelpHotkeyItems_ContainsAllFocusStates(t *testing.T) {
-	items := helpHotkeyItems(true)
+	items := helpHotkeyItems(true, true)
 
 	labelSet := func(its []HotkeyItem) map[string]bool {
 		m := make(map[string]bool, len(its))
@@ -4139,7 +4139,7 @@ func TestHelpHotkeyItems_ContainsAllFocusStates(t *testing.T) {
 // TestHelpHotkeyItems_CoordAbsent asserts that when coordPresent is false the
 // Coord pane section is omitted but Rail and Agent pane sections are present.
 func TestHelpHotkeyItems_CoordAbsent(t *testing.T) {
-	items := helpHotkeyItems(false)
+	items := helpHotkeyItems(false, true)
 
 	hasLabel := func(label string) bool {
 		for _, it := range items {
@@ -5333,5 +5333,42 @@ func TestApplyRailSelection_DeadSessionFreelancerSetsFlag(t *testing.T) {
 
 	if len(reattachCalled) != 0 {
 		t.Errorf("onDeadPaneReattach must not fire for dead-session freelancer; got calls: %v", reattachCalled)
+	}
+}
+
+// --- BUG-016: SetFocusMachine syncs with current body mode ---
+
+// TestApp_SetFocusMachine_SyncsCoordinatorBodyMode is the regression test for
+// BUG-016. BuildApp calls applyRailSelection (which sets agentPresent=false for a
+// coordinator initial selection) BEFORE SetFocusMachine is called. Without the
+// sync in SetFocusMachine the freshly-created machine retains its default
+// agentPresent=true, and Ctrl+→ from COORD advances focus to the absent AGENT pane.
+func TestApp_SetFocusMachine_SyncsCoordinatorBodyMode(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Force coordinator body mode (coordPresent=true, agentPresent=false) as
+	// would be set by applyRailSelection before SetFocusMachine is invoked.
+	a.mu.Lock()
+	a.coordPresent = true
+	a.agentPresent = false
+	a.mu.Unlock()
+
+	focus := NewFocusMachine() // starts with agentPresent=true (the default)
+	a.SetFocusMachine(focus)
+
+	// The machine must be synced: Advance from RAIL → COORD, then a second
+	// Advance must be a no-op (AGENT is absent).
+	focus.Advance() // RAIL → COORD
+	if focus.State() != FocusCOORD {
+		t.Fatalf("Advance from RAIL: want COORD, got %s", focus.State())
+	}
+	focus.Advance() // COORD → must stay COORD (agent absent)
+	if focus.State() != FocusCOORD {
+		t.Fatalf("Advance from COORD in coordinator mode: want COORD (no-op), got %s (BUG-016: FocusMachine not synced on injection)", focus.State())
 	}
 }
