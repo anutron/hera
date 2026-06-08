@@ -56,6 +56,6 @@ watcher := &argus.Watcher{..., OnRestart: recover, ...}
 
 If both hera and argus restart simultaneously, the watcher does not fire (hera is starting fresh). In this case, resume messages are not sent automatically.
 
-**Integration note**: The parallel argus-bounce-signal worker is implementing the argus side — posting `{"type":"ARGUS_BOUNCED"}` (sender task ID `0`) to the coordinator's argus task inbox when argus restarts. Once that argus PR lands and argus exposes a `GET /api/tasks/{id}/inbox` REST endpoint, a future change can add co-restart support by checking the task inbox in `hera_new_orchestrator` / `hera_join`.
+**Integration note**: The parallel argus-bounce-signal worker is implementing the argus side — posting `{"type":"ARGUS_BOUNCED"}` with sender task ID `"argus:system"` to the coordinator's argus task inbox when argus restarts (see argus PR #687). Once that PR lands and argus exposes a `GET /api/tasks/{id}/inbox` REST endpoint, a future change can add co-restart support by checking the task inbox in `hera_new_orchestrator` / `hera_join`, filtering on `sender == "argus:system"`.
 
 This change covers the primary use case (hera running, argus bounces alone).
