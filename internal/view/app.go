@@ -42,14 +42,14 @@ type App struct {
 
 	// mu guards the binding bookkeeping (currently-bound task IDs, the
 	// proxy unsubscribe handles, and the bridges feeding each pane).
-	mu               sync.Mutex
-	coordTask        string
-	agentTask        string
+	mu                sync.Mutex
+	coordTask         string
+	agentTask         string
 	agentIsFreelancer bool // true when agentTask is bound to a freelancer row
-	coordUnsub       func()
-	agentUnsub       func()
-	coordBridge      *paneBridge
-	agentBridge      *paneBridge
+	coordUnsub        func()
+	agentUnsub        func()
+	coordBridge       *paneBridge
+	agentBridge       *paneBridge
 
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool

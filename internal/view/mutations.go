@@ -363,15 +363,15 @@ type rowSelector interface {
 // tview's QueueUpdateDraw, which deadlocks the loop when called from
 // it) — is handed to a goroutine via goUI / mutate.
 type mutationBridge struct {
-	ctx       context.Context
-	modals    modalAPI
-	sel       railSelector
-	svc       mutationService
-	listAll   listAllState
-	repop     repopulator
-	help      helpFrameSender
-	rowSel    rowSelector
-	fPinner   freelancePinner
+	ctx         context.Context
+	modals      modalAPI
+	sel         railSelector
+	svc         mutationService
+	listAll     listAllState
+	repop       repopulator
+	help        helpFrameSender
+	rowSel      rowSelector
+	fPinner     freelancePinner
 	optimizer   statusOptimizer      // optional: nil is safe (no optimistic render)
 	reattach    paneReattachNotifier // optional: nil is safe (BUG-053)
 	splashStart reattachPaneStarter  // optional: nil is safe (BUG-008)

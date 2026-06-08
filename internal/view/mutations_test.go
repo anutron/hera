@@ -371,10 +371,10 @@ type fakeMutationService struct {
 	markRoleDoneErr   error
 
 	// CompleteRole / CompleteTaskByID (BUG-048: s→done→confirm-yes path).
-	completeRoleCalls  []int64
-	completeRoleErr    error
-	completeTaskCalls  []string
-	completeTaskErr    error
+	completeRoleCalls []int64
+	completeRoleErr   error
+	completeTaskCalls []string
+	completeTaskErr   error
 
 	// SpawnWorker plumbing.
 	spawnWorkerCalls []ops.SpawnWorkerInput
