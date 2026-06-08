@@ -2145,8 +2145,9 @@ func (a *App) setBodyMode(coordPresent, agentPresent bool) {
 // removed from the Flex entirely (not hidden) so the present pane(s) take the
 // full canvas. Called after a pane rebind, a mode switch, or a fullscreen change.
 //
-// When fullscreen is active (BUG-027), only the fullscreen pane is composed —
-// the rail and the other pane are omitted so the selected pane fills the body.
+// When fullscreen is active the rail stays visible on the left; only the
+// opposite content pane is omitted so the selected pane expands to fill the
+// space to the right of the rail.
 func (a *App) refreshBody() {
 	body := a.pieces.body
 	if body == nil {
@@ -2162,6 +2163,7 @@ func (a *App) refreshBody() {
 	body.Clear()
 
 	if fullscreenActive {
+		body.AddItem(a.pieces.rail, RailWidth, 0, false)
 		switch fullscreenPane {
 		case FocusCOORD:
 			if a.pieces.coord != nil {
