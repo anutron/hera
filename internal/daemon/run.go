@@ -148,6 +148,8 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	mcpSrv.RegisterHandler("hera_status", mcp.NewStatusHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_spawn_worker", mcp.NewSpawnWorkerHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("settings_save", mcp.NewSettingsSaveHandler(database.Config, tracker, injector))
+	mcpSrv.RegisterHandler("hera_tree_updates", mcp.NewTreeUpdatesHandler(resolver, database))
+	mcpSrv.RegisterHandler("hera_get_messages", mcp.NewGetMessagesHandler(resolver, database))
 
 	// CallbackBaseURL is the actual bound address (honors :0).
 	callback := "http://" + mcpSrv.Addr()
@@ -418,7 +420,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	return nil
 }
 
-// toolDefinitions returns the seven hera_* tool registrations.
+// toolDefinitions returns the nine hera_* tool registrations.
 // v1 shipped six tools; hera_spawn_worker is a sanctioned v1.x addition for
 // born-bound worker spawning (see openspec/changes/add-spawn-worker-verb/).
 func toolDefinitions() []mcp.ToolDefinition {
@@ -461,11 +463,12 @@ func toolDefinitions() []mcp.ToolDefinition {
 				"properties": map[string]any{
 					"cwd":          map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
 					"body":         map[string]any{"type": "string", "description": "Message body"},
+					"tldr":         map[string]any{"type": "string", "description": "One-line summary of the message (≤120 chars, required)"},
 					"to":           map[string]any{"type": "string", "description": "(optional for worker/freelance, required for coordinator) Recipient role name within the same orchestrator"},
 					"in_reply_to":  map[string]any{"type": "integer", "description": "(optional) Message id this is a reply to"},
 					"orchestrator": map[string]any{"type": "string", "description": "(required when the caller's argus task holds 2+ live bindings; optional when it holds exactly one) The orchestrator whose binding identifies the sender role for this call. The recipient is resolved within the same orchestrator."},
 				},
-				"required": []string{"cwd", "body"},
+				"required": []string{"cwd", "body", "tldr"},
 			},
 		},
 		{
@@ -521,6 +524,32 @@ func toolDefinitions() []mcp.ToolDefinition {
 					"backend":      map[string]any{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
 				},
 				"required": []string{"cwd", "prompt"},
+			},
+		},
+		{
+			Name:        "hera_tree_updates",
+			Description: "Scan the caller's orchestrator subtree for new messages since a cursor. Returns TLDR-only subject lines — no bodies. Call hera_get_messages for full content on IDs of interest. Cursor is stored per-role and auto-advances; pass `since` to override.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"cwd":          map[string]any{"type": "string", "description": "Absolute path of the calling agent's working directory"},
+					"orchestrator": map[string]any{"type": "string", "description": "Orchestrator name (optional if the task has one live binding)"},
+					"since":        map[string]any{"type": "integer", "description": "Message ID cursor; omit to use stored cursor"},
+				},
+				"required": []string{"cwd"},
+			},
+		},
+		{
+			Name:        "hera_get_messages",
+			Description: "Fetch full message bodies by ID. Use after hera_tree_updates to drill into messages of interest. Returns per-ID results; inaccessible or missing IDs get an error field rather than a top-level error.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"cwd":          map[string]any{"type": "string", "description": "Absolute path of the calling agent's working directory"},
+					"orchestrator": map[string]any{"type": "string", "description": "Orchestrator name (optional if the task has one live binding)"},
+					"ids":          map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Message IDs to fetch"},
+				},
+				"required": []string{"cwd", "ids"},
 			},
 		},
 	}

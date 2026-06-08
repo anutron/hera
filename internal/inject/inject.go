@@ -42,26 +42,28 @@ func (i *Injector) SetAutoInjectEnabled(b bool) {
 	i.autoInjectEnabled.Store(b)
 }
 
-// FormatBody returns the on-PTY representation of a message body. Exposed
-// for tests so they can assert the exact byte sequence.
-func FormatBody(senderRoleName, body string) string {
-	return fmt.Sprintf("[hera from %s] %s", senderRoleName, body)
+// FormatPointer returns the PTY representation of an initial message delivery.
+// The recipient sees a subject-line pointer and calls hera_inbox to read the
+// full body (which marks the message as read).
+func FormatPointer(senderRoleName string, msgID int64, tldr string) string {
+	return fmt.Sprintf("[hera from %s] msg #%d — %s", senderRoleName, msgID, tldr)
 }
 
-// Inject delivers a message into the recipient task's PTY. Returns the
-// chosen delivery mode so the caller can persist it on the message row.
+// Inject delivers a pointer notification into the recipient task's PTY.
+// Returns the chosen delivery mode so the caller can persist it on the
+// message row. The recipient reads the full body by calling hera_inbox.
 //
-//   - DeliveryIdleSubmit: PTY was idle, body+"\r" injected, auto-submits.
+//   - DeliveryIdleSubmit: PTY was idle, pointer+"\r" injected, auto-submits.
 //     CR (not LF) is the byte the keyboard's Return key emits, and the
 //     recipient's TUI runs the PTY in raw mode so termios does not
 //     translate CR<->LF — only CR triggers submit.
-//   - DeliveryBusyBuffer: PTY was not idle, body injected with no
+//   - DeliveryBusyBuffer: PTY was not idle, pointer injected with no
 //     trailing terminator, the user submits when ready.
 //
 // Errors are returned without choosing a fallback mode – the caller
 // decides how to retry or mark the message as failed.
-func (i *Injector) Inject(ctx context.Context, taskID, senderRoleName, body string) (db.DeliveryMode, error) {
-	formatted := FormatBody(senderRoleName, body)
+func (i *Injector) Inject(ctx context.Context, taskID, senderRoleName string, msgID int64, tldr string) (db.DeliveryMode, error) {
+	formatted := FormatPointer(senderRoleName, msgID, tldr)
 	isIdle := i.idle.IsIdle(taskID)
 	if isIdle && i.autoInjectEnabled.Load() {
 		if _, err := i.pty.PostTaskInput(ctx, taskID, []byte(formatted+"\r")); err != nil {

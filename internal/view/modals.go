@@ -147,7 +147,7 @@ type styledInputField struct {
 // applied as its initial appearance.
 func newStyledInputField() *styledInputField {
 	f := &styledInputField{InputField: tview.NewInputField()}
-	f.InputField.SetFieldStyle(fieldBlurredStyle)
+	f.SetFieldStyle(fieldBlurredStyle)
 	return f
 }
 
@@ -158,10 +158,10 @@ func newStyledInputField() *styledInputField {
 // is rendered.
 func (f *styledInputField) SetFormAttributes(labelWidth int, labelColor, bgColor, fieldTextColor, fieldBgColor tcell.Color) tview.FormItem {
 	f.InputField.SetFormAttributes(labelWidth, labelColor, bgColor, fieldTextColor, fieldBgColor)
-	if f.InputField.HasFocus() {
-		f.InputField.SetFieldStyle(fieldFocusedStyle)
+	if f.HasFocus() {
+		f.SetFieldStyle(fieldFocusedStyle)
 	} else {
-		f.InputField.SetFieldStyle(fieldBlurredStyle)
+		f.SetFieldStyle(fieldBlurredStyle)
 	}
 	return f
 }
@@ -177,8 +177,8 @@ type styledTextArea struct {
 // for multi-line coordinator prompts), word-wrap on by default.
 func newStyledTextArea() *styledTextArea {
 	ta := &styledTextArea{TextArea: tview.NewTextArea()}
-	ta.TextArea.SetSize(3, 0) // 3 visible rows, auto width
-	ta.TextArea.SetTextStyle(fieldBlurredStyle)
+	ta.SetSize(3, 0) // 3 visible rows, auto width
+	ta.SetTextStyle(fieldBlurredStyle)
 	return ta
 }
 
@@ -187,10 +187,10 @@ func newStyledTextArea() *styledTextArea {
 // highlight is visible even after Form.Draw() resets it.
 func (ta *styledTextArea) SetFormAttributes(labelWidth int, labelColor, bgColor, fieldTextColor, fieldBgColor tcell.Color) tview.FormItem {
 	ta.TextArea.SetFormAttributes(labelWidth, labelColor, bgColor, fieldTextColor, fieldBgColor)
-	if ta.TextArea.HasFocus() {
-		ta.TextArea.SetTextStyle(fieldFocusedStyle)
+	if ta.HasFocus() {
+		ta.SetTextStyle(fieldFocusedStyle)
 	} else {
-		ta.TextArea.SetTextStyle(fieldBlurredStyle)
+		ta.SetTextStyle(fieldBlurredStyle)
 	}
 	return ta
 }

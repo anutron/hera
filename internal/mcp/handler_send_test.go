@@ -23,16 +23,17 @@ type fakeInjector struct {
 type fakeInjectCall struct {
 	TaskID     string
 	SenderRole string
-	Body       string
+	MsgID      int64
+	Tldr       string
 }
 
-func (f *fakeInjector) Inject(ctx context.Context, taskID, senderRoleName, body string) (db.DeliveryMode, error) {
+func (f *fakeInjector) Inject(ctx context.Context, taskID, senderRoleName string, msgID int64, tldr string) (db.DeliveryMode, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err, ok := f.failOn[taskID]; ok {
 		return db.DeliveryPending, err
 	}
-	f.calls = append(f.calls, fakeInjectCall{taskID, senderRoleName, body})
+	f.calls = append(f.calls, fakeInjectCall{taskID, senderRoleName, msgID, tldr})
 	return f.mode, nil
 }
 
@@ -69,7 +70,7 @@ func TestSend_Worker_DefaultRoutes_ToCoordinator(t *testing.T) {
 
 	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
 	h := NewSendHandler(e.resolver, e.db, inj)
-	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/w", Body: "need a ruling"}))
+	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/w", Body: "need a ruling", Tldr: "need a ruling"}))
 	out := decodeSendOutput(t, resp)
 	if out.RecipientRole != "coord" {
 		t.Fatalf("recipient = %q", out.RecipientRole)
@@ -112,7 +113,7 @@ func TestSend_CoordinatorWithoutTo_Rejected(t *testing.T) {
 
 	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
 	h := NewSendHandler(e.resolver, e.db, inj)
-	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/coord", Body: "FYI"}))
+	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/coord", Body: "FYI", Tldr: "FYI"}))
 	if !resp.IsError {
 		t.Fatalf("expected error for coordinator-without-to, got success: %+v", resp)
 	}
@@ -154,7 +155,7 @@ func TestSend_ExplicitTo_LooksUpRoleByName(t *testing.T) {
 
 	inj := &fakeInjector{mode: db.DeliveryBusyBuffer}
 	h := NewSendHandler(e.resolver, e.db, inj)
-	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/coord", Body: "do X", To: "w2"}))
+	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/coord", Body: "do X", Tldr: "do X", To: "w2"}))
 	out := decodeSendOutput(t, resp)
 	if out.RecipientRole != "w2" {
 		t.Fatalf("recipient = %q", out.RecipientRole)
@@ -192,7 +193,7 @@ func TestSend_ExplicitTo_UnknownRole(t *testing.T) {
 
 	inj := &fakeInjector{}
 	h := NewSendHandler(e.resolver, e.db, inj)
-	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/coord", Body: "x", To: "ghost"}))
+	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/coord", Body: "x", Tldr: "x", To: "ghost"}))
 	if !resp.IsError {
 		t.Fatalf("expected error")
 	}
@@ -220,7 +221,7 @@ func TestSend_RecipientHasNoLiveBinding_QueuesPending(t *testing.T) {
 
 	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
 	h := NewSendHandler(e.resolver, e.db, inj)
-	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/w", Body: "ping coord"}))
+	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/w", Body: "ping coord", Tldr: "ping coord"}))
 	out := decodeSendOutput(t, resp)
 	if out.DeliveryMode != string(db.DeliveryQueuedNoBinding) {
 		t.Fatalf("delivery = %q, want queued_no_binding", out.DeliveryMode)
@@ -264,7 +265,7 @@ func TestSend_InjectError_Surfaces(t *testing.T) {
 		failOn: map[string]error{"t-coord": errors.New("network unreachable")},
 	}
 	h := NewSendHandler(e.resolver, e.db, inj)
-	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/w", Body: "x"}))
+	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/tmp/w", Body: "x", Tldr: "x"}))
 	if !resp.IsError {
 		t.Fatalf("expected error")
 	}

@@ -2207,9 +2207,10 @@ func (a *App) applyDeadPaneFocusGuard(taskID string) {
 	focusedTaskDead := (state == FocusCOORD && a.coordTask == taskID) ||
 		(state == FocusAGENT && a.agentTask == taskID)
 	var pane *pinnedTerminalPane
-	if state == FocusCOORD {
+	switch state {
+	case FocusCOORD:
 		pane = a.pieces.coord
-	} else if state == FocusAGENT {
+	case FocusAGENT:
 		pane = a.pieces.agent
 	}
 	a.mu.Unlock()

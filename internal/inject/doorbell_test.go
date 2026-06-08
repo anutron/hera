@@ -61,17 +61,19 @@ func (f *fakeBindingLookup) GetLiveByRole(_ context.Context, roleID int64) (*db.
 // -- tests --
 
 func TestFormatDoorbell_Singular(t *testing.T) {
-	got := FormatDoorbell(1)
-	want := "[hera doorbell] 1 unread message — call hera_inbox\r"
+	msgs := []*db.Message{{ID: 5, Tldr: "ping from worker"}}
+	got := FormatDoorbell(msgs)
+	want := "[hera doorbell] msg #5 — ping from worker — call hera_inbox\r"
 	if got != want {
-		t.Fatalf("FormatDoorbell(1) = %q, want %q", got, want)
+		t.Fatalf("FormatDoorbell(1 msg) = %q, want %q", got, want)
 	}
 }
 
 func TestFormatDoorbell_Plural(t *testing.T) {
-	got := FormatDoorbell(3)
+	msgs := []*db.Message{{ID: 1}, {ID: 2}, {ID: 3}}
+	got := FormatDoorbell(msgs)
 	if !strings.HasPrefix(got, "[hera doorbell] 3 unread messages") {
-		t.Fatalf("FormatDoorbell(3) = %q, want plural", got)
+		t.Fatalf("FormatDoorbell(3 msgs) = %q, want plural", got)
 	}
 	if !strings.HasSuffix(got, "\r") {
 		t.Fatalf("FormatDoorbell should end with CR, got %q", got)
@@ -79,7 +81,8 @@ func TestFormatDoorbell_Plural(t *testing.T) {
 }
 
 func TestFormatDoorbell_DoesNotContainPayload(t *testing.T) {
-	got := FormatDoorbell(2)
+	msgs := []*db.Message{{ID: 1}, {ID: 2}}
+	got := FormatDoorbell(msgs)
 	if strings.Contains(got, "body") || strings.Contains(got, "from") {
 		t.Fatalf("FormatDoorbell should not include message body or sender, got %q", got)
 	}

@@ -80,6 +80,7 @@ type Message struct {
 	FromRoleID   int64
 	ToRoleID     int64
 	Body         string
+	Tldr         string
 	InReplyTo    *int64
 	SentAt       time.Time
 	ReadAt       *time.Time

@@ -21,16 +21,15 @@ type NudgeStore interface {
 	RecordNudge(ctx context.Context, messageIDs []int64) error
 }
 
-// FormatDoorbell returns the PTY bytes for a doorbell re-nudge. The count is
-// the total number of unread messages for the recipient at scan time. The
-// returned string is terminated by CR so it auto-submits when the recipient
-// is idle (matching idle_submit semantics).
-func FormatDoorbell(n int) string {
-	unit := "message"
-	if n != 1 {
-		unit = "messages"
+// FormatDoorbell returns the PTY bytes for a doorbell re-nudge. For a single
+// unread message the TLDR is included; for multiple messages a count is shown.
+// The returned string is terminated by CR so it auto-submits when the
+// recipient is idle.
+func FormatDoorbell(msgs []*db.Message) string {
+	if len(msgs) == 1 {
+		return fmt.Sprintf("[hera doorbell] msg #%d — %s — call hera_inbox\r", msgs[0].ID, msgs[0].Tldr)
 	}
-	return fmt.Sprintf("[hera doorbell] %d unread %s — call hera_inbox\r", n, unit)
+	return fmt.Sprintf("[hera doorbell] %d unread messages — call hera_inbox\r", len(msgs))
 }
 
 // DeliveryWatcher is a daemon-lifetime goroutine that periodically scans for
@@ -114,12 +113,12 @@ func (w *DeliveryWatcher) scan(ctx context.Context) error {
 	}
 
 	// Group messages by recipient role ID.
-	byRole := make(map[int64][]int64) // roleID → message IDs
+	byRole := make(map[int64][]*db.Message) // roleID → messages
 	for _, m := range msgs {
-		byRole[m.ToRoleID] = append(byRole[m.ToRoleID], m.ID)
+		byRole[m.ToRoleID] = append(byRole[m.ToRoleID], m)
 	}
 
-	for roleID, msgIDs := range byRole {
+	for roleID, roleMsgs := range byRole {
 		bnd, err := w.bindings.GetLiveByRole(ctx, roleID)
 		if err != nil {
 			// Recipient unbound — skip; they'll see messages via hera_inbox
@@ -128,12 +127,16 @@ func (w *DeliveryWatcher) scan(ctx context.Context) error {
 			continue
 		}
 
-		doorbell := []byte(FormatDoorbell(len(msgIDs)))
+		doorbell := []byte(FormatDoorbell(roleMsgs))
 		if _, err := w.pty.PostTaskInput(ctx, bnd.ArgusTaskID, doorbell); err != nil {
 			w.log.Warn("doorbell: PTY write failed", "role_id", roleID, "task_id", bnd.ArgusTaskID, "err", err)
 			continue
 		}
 
+		msgIDs := make([]int64, len(roleMsgs))
+		for i, m := range roleMsgs {
+			msgIDs[i] = m.ID
+		}
 		if err := w.msgs.RecordNudge(ctx, msgIDs); err != nil {
 			w.log.Warn("doorbell: record nudge failed", "role_id", roleID, "err", err)
 		}
@@ -141,7 +144,7 @@ func (w *DeliveryWatcher) scan(ctx context.Context) error {
 		w.log.Debug("doorbell: nudged recipient",
 			"role_id", roleID,
 			"task_id", bnd.ArgusTaskID,
-			"msg_count", len(msgIDs),
+			"msg_count", len(roleMsgs),
 		)
 	}
 	return nil

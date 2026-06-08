@@ -209,7 +209,7 @@ func (f *fakeArgusForDaemon) handler() http.Handler {
 	return mux
 }
 
-func TestDaemonStart_RegistersAllSevenToolsAndCleansUp(t *testing.T) {
+func TestDaemonStart_RegistersAllNineToolsAndCleansUp(t *testing.T) {
 	fake := &fakeArgusForDaemon{streamClose: make(chan struct{})}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
@@ -248,8 +248,8 @@ func TestDaemonStart_RegistersAllSevenToolsAndCleansUp(t *testing.T) {
 	}
 	defer d.Stop(context.Background())
 
-	// Wait until all seven tools have registered.
-	want := []string{"hera_new_orchestrator", "hera_join", "hera_send", "hera_inbox", "hera_mark_read", "hera_status", "hera_spawn_worker"}
+	// Wait until all nine tools have registered.
+	want := []string{"hera_new_orchestrator", "hera_join", "hera_send", "hera_inbox", "hera_mark_read", "hera_status", "hera_spawn_worker", "hera_tree_updates", "hera_get_messages"}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		fake.mu.Lock()

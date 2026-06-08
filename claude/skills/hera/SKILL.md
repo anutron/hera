@@ -34,7 +34,7 @@ recipient's terminal — auto-submitting when the recipient is idle, waiting for
 when it's busy. Worker tasks a coordinator spawns through argus are auto-adopted into the
 orchestrator graph.
 
-You don't manage any of that plumbing. You call six MCP tools.
+You don't manage any of that plumbing. You call nine MCP tools.
 
 ## The model in five terms
 
@@ -51,26 +51,62 @@ You don't manage any of that plumbing. You call six MCP tools.
 
 ## Tool surface
 
-All six tools require `cwd`. The `orchestrator` parameter is optional with one binding and
+All nine tools require `cwd`. The `orchestrator` parameter is optional with one binding and
 **required** when this task holds 2+ live bindings.
 
-- **`hera_new_orchestrator(cwd, name, coordinator_role_name, [mission], [constraints])`** — "I am
+- **`hera_new_orchestrator(cwd, name, coordinator_role_name, [prompt], [constraints])`** — "I am
   the coordinator." Bootstraps a brand-new orchestrator, creates its coordinator role, and binds
   this task to it. The canonical "be an orchestrator" entry point.
 - **`hera_join(cwd, …)`** — two modes:
   - *Claim mode* — `hera_join(cwd)` returns this task's single live binding (use right after a
     worker terminal opens to adopt the role the coordinator assigned). `hera_join(cwd, orchestrator=X)`
     when the task has 2+ bindings.
-  - *Attach mode* — `hera_join(cwd, orchestrator, role_name, kind=worker|freelance, [mission],
+  - *Attach mode* — `hera_join(cwd, orchestrator, role_name, kind=worker|freelance, [prompt],
     [constraints], [status])` creates a **new** role under an existing orchestrator and binds this
     task to it. Use to join a team nobody spawned you into.
-- **`hera_send(cwd, body, [to], [orchestrator], [in_reply_to])`** — message another role in the
-  same orchestrator. Worker/freelance senders may omit `to` (default-routes to the coordinator).
-  Coordinators **must** supply `to`. Delivery is idle-gated automatically.
-- **`hera_inbox(cwd, [orchestrator])`** — list unread messages addressed to your role, oldest first.
-- **`hera_mark_read(cwd, message_ids, [orchestrator])`** — clear messages once handled.
+- **`hera_send(cwd, body, tldr, [to], [orchestrator], [in_reply_to])`** — message another role in
+  the same orchestrator. `tldr` is **required** — a one-line summary ≤120 chars written by the
+  sender (see TLDR discipline below). Worker/freelance senders may omit `to` (default-routes to
+  the coordinator). Coordinators **must** supply `to`. Delivery is idle-gated automatically.
+- **`hera_inbox(cwd, [orchestrator])`** — fetch all unread messages addressed to your role, oldest
+  first. **Marks messages as read on fetch** — no separate `hera_mark_read` call needed for normal
+  consumption. Call this whenever you receive a doorbell.
+- **`hera_mark_read(cwd, message_ids, [orchestrator])`** — explicit mark-read for specific IDs
+  (e.g. after reading via `hera_get_messages` instead of `hera_inbox`).
 - **`hera_status(cwd, status, [orchestrator])`** — set your role status: `idle` | `working` |
   `blocked` | `done`. Mirrored to argus task metadata, so the coordinator sees it without asking.
+- **`hera_spawn_worker(cwd, project, [prompt], [orchestrator])`** — spawn a new worker argus task
+  under the caller's orchestrator. The worker is born-bound (no `hera_join` needed on the worker
+  side). Caller must hold a live coordinator binding.
+- **`hera_tree_updates(cwd, [orchestrator], [since])`** — scan the caller's orchestrator subtree
+  for new messages since a cursor. Returns **TLDR-only subject lines** — no bodies. Cursor is
+  stored per-role and auto-advances; pass `since` to override. Call periodically or when the human
+  asks "what's the state of things?" — returns a compact view of all descendant activity without
+  flooding context with full message bodies.
+- **`hera_get_messages(cwd, ids, [orchestrator])`** — fetch full message bodies by ID list.
+  Returns per-ID results; inaccessible or missing IDs get an `error` field rather than a top-level
+  error. Use after scanning `hera_tree_updates` to drill into messages of interest.
+
+## TLDR discipline
+
+Every `hera_send` requires a `tldr` — a single line ≤120 chars summarising the message's intent.
+Write it from the recipient's perspective: what do they need to know at a glance?
+
+Good examples:
+
+- `tldr="PR #47 open, tests green, needs review"`
+- `tldr="Blocked on missing API key — need you to rotate it"`
+- `tldr="Cart API done, branched off main, merging now"`
+
+Bad examples (too vague, or multi-line):
+
+- `tldr="update"` — says nothing
+- `tldr="Done with the work you asked me to do"` — no specifics
+
+The TLDR is:
+- shown in the **doorbell** the recipient sees before they call `hera_inbox`
+- returned by **`hera_tree_updates`** so parent coordinators can scan activity without reading bodies
+- stored permanently alongside the message body
 
 ## When to use what
 
@@ -83,8 +119,13 @@ All six tools require `cwd`. The `orchestrator` parameter is optional with one b
 - **This task holds 2+ bindings (nested orchestration)?** Every `hera_send` / `hera_inbox` /
   `hera_mark_read` / `hera_status` / claim-mode `hera_join` **must** pass `orchestrator=` to say
   which role you're acting as. Omitting it returns an ambiguity error listing your options.
-- **You're the coordinator and want to message a worker?** `hera_send(cwd, body, to="wave-1a")` —
-  `to` is mandatory for coordinators.
+- **You're the coordinator and want to message a worker?** `hera_send(cwd, body, tldr="...", to="wave-1a")` —
+  both `tldr` and `to` are mandatory for coordinators.
+- **You received a doorbell?** Call `hera_inbox(cwd=$PWD)` immediately. Don't wait or try to reply
+  before reading — the actual message content is in the inbox, not the doorbell.
+- **You want to see what's happening across your whole team?** `hera_tree_updates(cwd=$PWD)` returns
+  TLDR-only subject lines from all descendants since your last call. Then `hera_get_messages(ids=[…])`
+  to drill into the ones that need attention.
 - **Don't** try to message a role in a *different* orchestrator — cross-orchestrator messaging is
   forbidden; `to` always resolves within your own orchestrator.
 - **Don't** use `hera_send` to talk to the human. The human reads the coordinator's own Claude
@@ -116,17 +157,34 @@ reach them through *their* MCP tools, not hera's.
 
 These are orthogonal plugins. Hera does not wrap them and they do not wrap hera.
 
-## Doorbell re-delivery
+## Receiving messages and the doorbell
 
-When hera detects that an idle_submit message was injected but never confirmed read (i.e., no `hera_mark_read` call arrived within ~30 seconds), it fires a **doorbell** nudge: a short message injected directly into your PTY:
+Hera delivers messages as lightweight pointers, not full bodies. When a role sends you a message,
+you see something like this injected into your PTY:
 
 ```
-[hera doorbell] N unread message(s) — call hera_inbox
+[hera from wave-1a] msg #42 — PR #47 open, tests green, needs review
 ```
 
-**When you see this message as a turn: call `hera_inbox(cwd=$PWD)` immediately.** The doorbell is a re-delivery signal, not a new message. The actual content is in your inbox. After reading, call `hera_mark_read` so the nudge loop stops.
+**When you see a `[hera from …]` line as a turn: call `hera_inbox(cwd=$PWD)` immediately.**
+`hera_inbox` fetches the full body and marks the message as read in one call — no separate
+`hera_mark_read` needed.
 
-Hera will re-fire the doorbell at ~30-second intervals until you read and mark the message, up to a maximum of 5 nudges per message.
+**Doorbell re-delivery:** if hera detects that an injected message was never read (within ~30s),
+it fires a re-nudge directly into your PTY:
+
+```
+[hera doorbell] msg #42 — PR #47 open, tests green, needs review — call hera_inbox
+```
+
+or, when multiple messages are pending:
+
+```
+[hera doorbell] 3 unread messages — call hera_inbox
+```
+
+Same response: call `hera_inbox` immediately. Hera re-fires at ~30-second intervals up to 5 nudges
+per message.
 
 ## Common mistakes (reach for the tool, not these)
 
@@ -166,7 +224,32 @@ hera_status(cwd=$PWD, status="done")
 
 ```
 hera_join(cwd=$PWD, orchestrator="checkout-rebuild", role_name="perf-helper",
-          kind="freelance", mission="Profile the hot path nobody owns")
+          kind="freelance", prompt="Profile the hot path nobody owns")
 hera_status(cwd=$PWD, status="working")
-hera_send(cwd=$PWD, body="Found an N+1 in cart serialization — want me to take it?")
+hera_send(cwd=$PWD, tldr="Found N+1 in cart serialization", body="Found an N+1 in cart serialization — want me to take it?")
+```
+
+### 4. Scan subtree for activity (root coordinator pattern)
+
+```
+# Get TLDR-only subject lines from all descendants since last check.
+hera_tree_updates(cwd=$PWD)
+# → returns list of {id, from_role, from_orchestrator, tldr, sent_at}
+
+# Identify IDs worth reading in full, then drill in:
+hera_get_messages(cwd=$PWD, ids=[42, 47, 51])
+# → returns full bodies for those three messages
+
+# Synthesise for the human: who's blocked, what needs attention.
+```
+
+### 5. Send a message with TLDR
+
+```
+hera_send(
+    cwd=$PWD,
+    to="wave-1a",
+    tldr="Cart API spec clarification: use PATCH not PUT for partial updates",
+    body="For the cart API endpoints, please use PATCH not PUT. PUT implies full replacement and the client doesn't always send the full state. Check the OpenAPI spec at docs/api/cart.yaml for the contract."
+)
 ```

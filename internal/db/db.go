@@ -25,6 +25,7 @@ type DB struct {
 	RoleStatus    *RoleStatusDAO
 	EventCursor   *EventCursorDAO
 	Config        *ConfigDAO
+	TreeCursors   *TreeCursorsDAO
 
 	// Events broadcasts DAO writes on the rail-watched tables
 	// (orchestrators, roles, bindings) to in-process subscribers
@@ -69,6 +70,7 @@ func Open(path string) (*DB, error) {
 	d.RoleStatus = &RoleStatusDAO{db: sqldb}
 	d.EventCursor = &EventCursorDAO{db: sqldb}
 	d.Config = &ConfigDAO{db: sqldb}
+	d.TreeCursors = &TreeCursorsDAO{db: sqldb}
 
 	return d, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/anutron/hera/internal/db"
 )
@@ -12,7 +13,7 @@ import (
 // MessageInjector is the dependency hera_send uses to deliver bytes
 // into the recipient's PTY. *inject.Injector implements this.
 type MessageInjector interface {
-	Inject(ctx context.Context, taskID, senderRoleName, body string) (db.DeliveryMode, error)
+	Inject(ctx context.Context, taskID, senderRoleName string, msgID int64, tldr string) (db.DeliveryMode, error)
 }
 
 // SendHandler implements hera_send. It looks up the sender via cwd,
@@ -36,6 +37,7 @@ func NewSendHandler(r *Resolver, database *db.DB, injector MessageInjector) *Sen
 type SendInput struct {
 	Cwd          string `json:"cwd"`
 	Body         string `json:"body"`
+	Tldr         string `json:"tldr"`
 	To           string `json:"to,omitempty"`
 	InReplyTo    *int64 `json:"in_reply_to,omitempty"`
 	Orchestrator string `json:"orchestrator,omitempty"`
@@ -63,6 +65,12 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 	if in.Body == "" {
 		return ErrorResponse("hera_send: body is required")
 	}
+	if strings.TrimSpace(in.Tldr) == "" {
+		return ErrorResponse("hera_send: tldr is required — provide a one-line summary (≤120 chars)")
+	}
+	if strings.ContainsRune(in.Tldr, '\n') || len(in.Tldr) > 120 {
+		return ErrorResponse("hera_send: tldr must be a single line of ≤120 characters")
+	}
 
 	_, senderRole, _, err := h.resolver.CallerRole(ctx, in.Cwd, in.Orchestrator)
 	if err != nil {
@@ -78,6 +86,7 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 		FromRoleID: senderRole.ID,
 		ToRoleID:   recipient.ID,
 		Body:       in.Body,
+		Tldr:       in.Tldr,
 		InReplyTo:  in.InReplyTo,
 	})
 	if err != nil {
@@ -93,7 +102,7 @@ func (h *SendHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 	case lookupErr != nil:
 		return ErrorResponse("hera_send: lookup recipient binding: " + lookupErr.Error())
 	default:
-		delivered, injectErr := h.injector.Inject(ctx, bnd.ArgusTaskID, senderRole.Name, in.Body)
+		delivered, injectErr := h.injector.Inject(ctx, bnd.ArgusTaskID, senderRole.Name, msg.ID, in.Tldr)
 		if injectErr != nil {
 			return ErrorResponse("hera_send: inject: " + injectErr.Error())
 		}
