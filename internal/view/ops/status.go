@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // statusOrder is argus's workflow ladder. `s` advances toward complete; `S`
@@ -143,6 +144,54 @@ func (s *Service) CompleteTaskByID(ctx context.Context, taskID string) error {
 		return fmt.Errorf("ops.CompleteTaskByID: set status %s -> complete: %w", taskID, err)
 	}
 	return nil
+}
+
+// CompleteArchivedDescendants sets the argus status to "complete" for every
+// archived non-coordinator role under the given orchestrator. Backs the `C`
+// rail key: select a coord, press C, and all archived worker tasks under it
+// are marked :checked: in argus. The coordinator role itself is skipped so
+// only workers are targeted. Returns the count of tasks completed and any
+// accumulated errors — partial success is possible when some tasks have been
+// pruned or are temporarily unreachable.
+func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64) (int, error) {
+	roles, err := s.DB.ListRolesByOrchestratorInclusive(ctx, orchID)
+	if err != nil {
+		return 0, fmt.Errorf("ops.CompleteArchivedDescendants: list roles: %w", err)
+	}
+	var completed int
+	var errMsgs []string
+	for _, role := range roles {
+		if !role.Archived {
+			continue
+		}
+		if role.Kind == KindCoordinator {
+			continue
+		}
+		bnd, err := s.resolveBinding(ctx, role.ID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue // no binding ever recorded; skip
+			}
+			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): %v", role.Name, role.ID, err))
+			continue
+		}
+		if bnd.ArgusTaskID == "" {
+			continue
+		}
+		if _, err := s.Argus.SetTaskStatus(ctx, bnd.ArgusTaskID, "complete"); err != nil {
+			if errors.Is(err, ErrArgusTaskGone) {
+				continue // pruned; skip silently
+			}
+			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): %v", role.Name, role.ID, err))
+			continue
+		}
+		completed++
+	}
+	if len(errMsgs) > 0 {
+		return completed, fmt.Errorf("ops.CompleteArchivedDescendants: %d error(s): %s",
+			len(errMsgs), strings.Join(errMsgs, "; "))
+	}
+	return completed, nil
 }
 
 // StepTaskStatus steps an argus task's status directly by task id, bypassing

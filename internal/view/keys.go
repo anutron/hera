@@ -69,6 +69,12 @@ type MutationHandler interface {
 	// forwards to the PTY instead.
 	OnAdopt()
 
+	// OnCompleteArchived marks every archived descendant worker of the selected
+	// coordinator as :checked: (complete) in argus (`C`, RAIL-focus-only). Only
+	// operates on coordinator headers and coordinator role rows; other selections
+	// get visible feedback. In a pane the rune `C` forwards to the PTY instead.
+	OnCompleteArchived()
+
 	// OnResurrect is consulted on Enter-in-RAIL BEFORE pane-entry. It returns
 	// true when it owns the Enter (an archived coord with the Archive section
 	// visible — it shows a resurrect confirm), so the router must NOT enter a
@@ -471,6 +477,14 @@ func (r *KeyRouter) handleRail(event *tcell.EventKey) *tcell.EventKey {
 			// (in a pane the rune forwards to the PTY via handlePane).
 			if r.Mutations != nil {
 				r.Mutations.OnPin()
+			}
+			return nil
+		case 'C':
+			// `C` completes all archived workers under the selected coordinator;
+			// RAIL-focus-only (in a pane the rune forwards to the PTY via
+			// handlePane).
+			if r.Mutations != nil {
+				r.Mutations.OnCompleteArchived()
 			}
 			return nil
 		case 'J':

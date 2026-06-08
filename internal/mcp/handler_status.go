@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
@@ -34,12 +35,14 @@ type StatusInput struct {
 // StatusOutput is the success payload. ArgusLink reflects the current
 // hera <-> argus link state at the time of the call; ArgusLinkError is
 // populated only when ArgusLink == "down", carrying the most recent
-// recovery failure so the caller can diagnose.
+// recovery failure so the caller can diagnose. AutoArchived is true when
+// the worker role was automatically archived because status=="done".
 type StatusOutput struct {
 	RoleName       string `json:"role_name"`
 	Status         string `json:"status"`
 	UpdatedAt      string `json:"updated_at"`
 	MetaMirrored   bool   `json:"meta_mirrored"`
+	AutoArchived   bool   `json:"auto_archived,omitempty"`
 	ArgusLink      string `json:"argus_link"`
 	ArgusLinkError string `json:"argus_link_error,omitempty"`
 }
@@ -80,6 +83,20 @@ func (h *StatusHandler) Handle(ctx context.Context, raw json.RawMessage) Respons
 		mirrored = false
 	}
 
+	// Auto-archive worker roles when they report "done". This is the hera-layer
+	// "I'm done" signal — more reliable than watching argus task status, which
+	// can flip for reasons unrelated to the actual work being finished.
+	// Only KindWorker roles are archived; coordinators manage their own lifecycle.
+	autoArchived := false
+	if s == db.StatusDone && role.Kind == db.KindWorker {
+		if archErr := h.db.Roles.Archive(ctx, role.ID); archErr != nil {
+			slog.Default().Warn("hera_status: auto-archive worker on done failed",
+				"role_id", role.ID, "role_name", role.Name, "err", archErr)
+		} else {
+			autoArchived = true
+		}
+	}
+
 	updatedAt := ""
 	if rs, err := h.db.RoleStatus.Get(ctx, role.ID); err == nil {
 		updatedAt = rs.UpdatedAt.Format("2006-01-02T15:04:05.000Z07:00")
@@ -91,6 +108,7 @@ func (h *StatusHandler) Handle(ctx context.Context, raw json.RawMessage) Respons
 		Status:       in.Status,
 		UpdatedAt:    updatedAt,
 		MetaMirrored: mirrored,
+		AutoArchived: autoArchived,
 		ArgusLink:    link.String(),
 	}
 	if link == argus.LinkDown {

@@ -53,6 +53,7 @@ type fakeMutations struct {
 	prune, openPR, statusAdvance, statusRevert          int
 	pin                                                 int
 	adopt                                               int
+	completeArchived                                    int
 	resurrect                                           int
 	reattach                                            int
 
@@ -66,19 +67,20 @@ type fakeMutations struct {
 	reattachHandled bool
 }
 
-func (f *fakeMutations) OnNew()           { f.new++ }
-func (f *fakeMutations) OnNewWorker()     { f.newWorker++ }
-func (f *fakeMutations) OnRename()        { f.rename++ }
-func (f *fakeMutations) OnDelete()        { f.del++ }
-func (f *fakeMutations) OnArchive()       { f.archive++ }
-func (f *fakeMutations) OnListAll()       { f.listAll++ }
-func (f *fakeMutations) OnHelp()          { f.help++ }
-func (f *fakeMutations) OnPrune()         { f.prune++ }
-func (f *fakeMutations) OnOpenPR()        { f.openPR++ }
-func (f *fakeMutations) OnStatusAdvance() { f.statusAdvance++ }
-func (f *fakeMutations) OnStatusRevert()  { f.statusRevert++ }
-func (f *fakeMutations) OnPin()           { f.pin++ }
-func (f *fakeMutations) OnAdopt()         { f.adopt++ }
+func (f *fakeMutations) OnNew()              { f.new++ }
+func (f *fakeMutations) OnNewWorker()        { f.newWorker++ }
+func (f *fakeMutations) OnRename()           { f.rename++ }
+func (f *fakeMutations) OnDelete()           { f.del++ }
+func (f *fakeMutations) OnArchive()          { f.archive++ }
+func (f *fakeMutations) OnListAll()          { f.listAll++ }
+func (f *fakeMutations) OnHelp()             { f.help++ }
+func (f *fakeMutations) OnPrune()            { f.prune++ }
+func (f *fakeMutations) OnOpenPR()           { f.openPR++ }
+func (f *fakeMutations) OnStatusAdvance()    { f.statusAdvance++ }
+func (f *fakeMutations) OnStatusRevert()     { f.statusRevert++ }
+func (f *fakeMutations) OnPin()              { f.pin++ }
+func (f *fakeMutations) OnAdopt()            { f.adopt++ }
+func (f *fakeMutations) OnCompleteArchived() { f.completeArchived++ }
 func (f *fakeMutations) OnResurrect() bool {
 	f.resurrect++
 	return f.resurrectHandled
