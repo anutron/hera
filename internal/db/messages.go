@@ -16,6 +16,7 @@ type CreateMessageInput struct {
 	FromRoleID int64
 	ToRoleID   int64
 	Body       string
+	Tldr       string
 	InReplyTo  *int64
 }
 
@@ -31,9 +32,9 @@ func (m *MessagesDAO) Create(ctx context.Context, in CreateMessageInput) (*Messa
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := m.db.ExecContext(ctx,
 		`INSERT INTO messages
-		 (from_role_id, to_role_id, body, in_reply_to, sent_at, delivery_mode)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		in.FromRoleID, in.ToRoleID, in.Body, nullable(in.InReplyTo), now, string(DeliveryPending),
+		 (from_role_id, to_role_id, body, tldr, in_reply_to, sent_at, delivery_mode)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		in.FromRoleID, in.ToRoleID, in.Body, in.Tldr, nullable(in.InReplyTo), now, string(DeliveryPending),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("messages.Create: %w", err)
@@ -48,6 +49,7 @@ func (m *MessagesDAO) Create(ctx context.Context, in CreateMessageInput) (*Messa
 		FromRoleID:   in.FromRoleID,
 		ToRoleID:     in.ToRoleID,
 		Body:         in.Body,
+		Tldr:         in.Tldr,
 		InReplyTo:    in.InReplyTo,
 		SentAt:       t,
 		DeliveryMode: DeliveryPending,
@@ -72,7 +74,7 @@ func (m *MessagesDAO) SetDelivered(ctx context.Context, messageID int64, mode De
 // sent_at ascending (oldest first, matching inbox semantics).
 func (m *MessagesDAO) UnreadForRole(ctx context.Context, roleID int64) ([]*Message, error) {
 	rows, err := m.db.QueryContext(ctx,
-		`SELECT id, from_role_id, to_role_id, body, in_reply_to,
+		`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to,
 		        sent_at, read_at, delivery_mode, delivered_at,
 		        nudge_count, nudged_at
 		 FROM messages
@@ -110,7 +112,7 @@ func (m *MessagesDAO) UnreadIdleSubmitStale(
 	first := firstCutoff.UTC().Format(time.RFC3339Nano)
 	repeat := repeatCutoff.UTC().Format(time.RFC3339Nano)
 	rows, err := m.db.QueryContext(ctx,
-		`SELECT id, from_role_id, to_role_id, body, in_reply_to,
+		`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to,
 		        sent_at, read_at, delivery_mode, delivered_at,
 		        nudge_count, nudged_at
 		 FROM messages
@@ -211,7 +213,7 @@ func (m *MessagesDAO) MarkRead(ctx context.Context, roleID int64, messageIDs []i
 // GetByID loads a single message by id.
 func (m *MessagesDAO) GetByID(ctx context.Context, id int64) (*Message, error) {
 	row := m.db.QueryRowContext(ctx,
-		`SELECT id, from_role_id, to_role_id, body, in_reply_to,
+		`SELECT id, from_role_id, to_role_id, body, tldr, in_reply_to,
 		        sent_at, read_at, delivery_mode, delivered_at,
 		        nudge_count, nudged_at
 		 FROM messages WHERE id = ?`, id)
@@ -236,7 +238,7 @@ func scanMessageRow(rs rowScanner) (*Message, error) {
 	var readAt, deliveredAt, nudgedAt sql.NullString
 	var sentAt, deliveryMode string
 	if err := rs.Scan(
-		&msg.ID, &msg.FromRoleID, &msg.ToRoleID, &msg.Body, &inReplyTo,
+		&msg.ID, &msg.FromRoleID, &msg.ToRoleID, &msg.Body, &msg.Tldr, &inReplyTo,
 		&sentAt, &readAt, &deliveryMode, &deliveredAt,
 		&msg.NudgeCount, &nudgedAt,
 	); err != nil {

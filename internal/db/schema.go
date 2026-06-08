@@ -185,6 +185,17 @@ CREATE INDEX roles_by_archived ON roles(archived_at);
 CREATE INDEX roles_by_pinned ON roles(pinned_at);
 `,
 	},
+	{
+		name: "0008_tldr_and_tree_cursors",
+		sql: `
+ALTER TABLE messages ADD COLUMN tldr TEXT NOT NULL DEFAULT '';
+CREATE TABLE tree_read_cursors (
+    role_id    INTEGER PRIMARY KEY REFERENCES roles(id),
+    cursor     INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+`,
+	},
 }
 
 const initialSchema = `

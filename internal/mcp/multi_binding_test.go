@@ -110,7 +110,7 @@ func TestMultiBinding_HeraSendAmbiguousWithoutOrchestrator(t *testing.T) {
 	// Worker-default route would target coord-A; coordinator senders
 	// require explicit to=. Either way, the ambiguity should fire FIRST
 	// because the sender role isn't yet resolved.
-	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/wt", Body: "hello"}))
+	resp := h.Handle(ctx, mustMarshal(t, SendInput{Cwd: "/wt", Body: "hello", Tldr: "hello"}))
 	if !resp.IsError {
 		t.Fatalf("expected ambiguous error, got success: %q", resp.Content[0].Text)
 	}
@@ -127,7 +127,7 @@ func TestMultiBinding_HeraSendWithOrchestratorRoutesToThatOrchestratorsCoord(t *
 	// not coord-B (cross-orchestrator routing is forbidden).
 	h := NewSendHandler(e.resolver, e.db, &fakeInjector{mode: db.DeliveryQueuedNoBinding})
 	resp := h.Handle(ctx, mustMarshal(t, SendInput{
-		Cwd: "/wt", Body: "hi from A worker", Orchestrator: "A",
+		Cwd: "/wt", Body: "hi from A worker", Tldr: "hi from A worker", Orchestrator: "A",
 	}))
 	out := decodeSendOut(t, resp)
 	if out.RecipientRole != "coord-A" {
@@ -148,7 +148,7 @@ func TestMultiBinding_HeraSendCoordinatorWithToAndOrchestrator(t *testing.T) {
 
 	h := NewSendHandler(e.resolver, e.db, &fakeInjector{mode: db.DeliveryQueuedNoBinding})
 	resp := h.Handle(ctx, mustMarshal(t, SendInput{
-		Cwd: "/wt", Body: "review needed", Orchestrator: "B", To: "impl-B",
+		Cwd: "/wt", Body: "review needed", Tldr: "review needed", Orchestrator: "B", To: "impl-B",
 	}))
 	out := decodeSendOut(t, resp)
 	if out.RecipientRole != "impl-B" {
