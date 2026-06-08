@@ -5063,6 +5063,45 @@ func TestMaybeAutoReattachPane_ManagedWorkerFiresAutoReattach(t *testing.T) {
 	}
 }
 
+// TestMaybeAutoReattachPane_ManagedWorkerSnapsToRAIL proves that when focus
+// enters the AGENT pane for a dead-session managed worker, maybeAutoReattachPane
+// immediately snaps focus back to RAIL and marks the pane as reattaching —
+// so the REATTACHING splash appears before any keystroke (BUG-012).
+func TestMaybeAutoReattachPane_ManagedWorkerSnapsToRAIL(t *testing.T) {
+	d := openTestDB(t)
+
+	src := &aliveStatePaneSource{
+		alive: map[string]bool{"t-worker": false},
+		states: map[string]ArgusTaskState{
+			"t-worker": {Status: "complete"},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+	a.onDeadPaneReattach = func(taskID string) {}
+
+	a.mu.Lock()
+	a.agentTask = "t-worker"
+	a.agentIsFreelancer = false
+	a.mu.Unlock()
+
+	focus.JumpToAGENT()
+	a.maybeAutoReattachPane(FocusAGENT)
+
+	if focus.State() != FocusRAIL {
+		t.Errorf("after maybeAutoReattachPane on dead managed worker: focus = %v, want FocusRAIL", focus.State())
+	}
+	if !a.pieces.agent.reattaching {
+		t.Errorf("after maybeAutoReattachPane on dead managed worker: pane.reattaching = false, want true")
+	}
+}
+
 // TestApplyRailSelection_DeadSessionFreelancerSetsFlag proves that a
 // dead-session freelancer (HasState=true, terminal status, Dead=false) also
 // sets agentIsFreelancer when the cursor lands on the row, so
