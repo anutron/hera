@@ -302,3 +302,34 @@ func TestBounceRecovery_CoordinatorNotMessaged(t *testing.T) {
 		t.Fatalf("coordinator inbox = %d, want 0", len(coordInbox))
 	}
 }
+
+// TestBounceRecovery_ArchivedOrchestratorSkipped verifies that an archived
+// orchestrator (and its workers) are excluded from the resume sweep.
+// Spec criterion 1: "The orchestrator is active (not archived)."
+func TestBounceRecovery_ArchivedOrchestratorSkipped(t *testing.T) {
+	ctx := context.Background()
+	d := openBounceTestDB(t)
+	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
+
+	// Create an orchestrator with a worker.
+	orch, _ := setupOrchestrator(t, ctx, d, "archived-orch")
+	w, _ := setupWorker(t, ctx, d, orch.ID, "worker", "task-arch")
+
+	// Archive the orchestrator.
+	if err := d.Orchestrators.Archive(ctx, orch.ID); err != nil {
+		t.Fatalf("archive orchestrator: %v", err)
+	}
+
+	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec.ResumeWorkers(ctx)
+
+	// Archived orchestrator excluded — no inject calls.
+	if len(inj.calls) != 0 {
+		t.Fatalf("expected 0 inject calls (archived orchestrator excluded), got %d", len(inj.calls))
+	}
+	// Worker's inbox must be empty.
+	inbox, _ := d.Messages.UnreadForRole(ctx, w.ID)
+	if len(inbox) != 0 {
+		t.Fatalf("worker inbox = %d, want 0 (orchestrator archived)", len(inbox))
+	}
+}
