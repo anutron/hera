@@ -297,8 +297,16 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 
 	// Wire recovery: the watcher fires on pid-mtime change or socket-ping
 	// failure; the registrar heartbeat fires the same callback as a
-	// passive fallback on 404 responses.
-	recover := argus.RecoverFunc(ports, client, registrar, settingsReg, log)
+	// passive fallback on 404 responses. After link recovery succeeds,
+	// BounceRecoverer sends resume messages to all active managed workers.
+	bounceRec := &BounceRecoverer{DB: database, Injector: injector, Log: log}
+	linkRecover := argus.RecoverFunc(ports, client, registrar, settingsReg, log)
+	recover := func(ctx context.Context) {
+		linkRecover(ctx)
+		if argus.GetLinkState() == argus.LinkHealthy {
+			bounceRec.ResumeWorkers(ctx)
+		}
+	}
 	registrar.SetOnHeartbeat404(recover)
 
 	watcher := &argus.Watcher{
