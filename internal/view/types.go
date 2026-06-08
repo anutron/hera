@@ -40,6 +40,17 @@ type paneResizeInvalidator interface {
 	InvalidateResize(taskID string)
 }
 
+// paneSubscriptionResetter is an optional capability some PaneSource values
+// implement. When present, ResetSubscription closes the existing proxy
+// subscription for taskID and removes it from the cache, so the next
+// SubscribeTask call creates a fresh subscription with an empty ring buffer.
+// Used by clearReattachAndResize before creating a new pane after a session
+// restart (BUG-012): without the reset, the new pane receives a snapshot
+// containing the old session's content, causing cursor misposition.
+type paneSubscriptionResetter interface {
+	ResetSubscription(taskID string)
+}
+
 // TaskAliveChecker is an optional capability some PaneSource (or other)
 // values may also implement. When the runtime PaneSource passed to
 // BuildApp satisfies it, findInitialSelection filters worker bindings to

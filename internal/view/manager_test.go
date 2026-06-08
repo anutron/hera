@@ -594,6 +594,52 @@ func TestProxyManager_ResetApplied_UnknownTaskID(t *testing.T) {
 	m.ResetApplied("")
 }
 
+// TestProxyManager_ResetSubscription pins that ResetSubscription removes the
+// subscription from the cache and a subsequent Ensure creates a fresh one.
+func TestProxyManager_ResetSubscription(t *testing.T) {
+	ff := &fakeFetcher{}
+	m := NewProxyManager(context.Background(), ff, nil)
+	defer m.Close()
+
+	sub1 := m.Ensure("task-X")
+	if sub1 == nil {
+		t.Fatal("Ensure must return a non-nil subscription")
+	}
+
+	// Ensure is idempotent — same object returned.
+	if got := m.Ensure("task-X"); got != sub1 {
+		t.Fatal("Ensure must return the same subscription on repeated calls")
+	}
+
+	m.ResetSubscription("task-X")
+
+	// After reset the manager has no entry for the task.
+	ids := m.TaskIDs()
+	for _, id := range ids {
+		if id == "task-X" {
+			t.Fatal("ResetSubscription must remove the task from TaskIDs")
+		}
+	}
+
+	// A new Ensure after reset creates a different subscription.
+	sub2 := m.Ensure("task-X")
+	if sub2 == sub1 {
+		t.Fatal("Ensure after ResetSubscription must create a new subscription")
+	}
+}
+
+// TestProxyManager_ResetSubscription_SafeForUnknown pins that ResetSubscription
+// is a no-op for a task id that was never seeded.
+func TestProxyManager_ResetSubscription_SafeForUnknown(t *testing.T) {
+	ff := &fakeFetcher{}
+	m := NewProxyManager(context.Background(), ff, nil)
+	defer m.Close()
+
+	// Must not panic.
+	m.ResetSubscription("task-never-seen")
+	m.ResetSubscription("")
+}
+
 // TestProxyManager_CloseClearsAndReleases pins Close: every subscription is
 // closed and the manager's internal map is empty afterward.
 func TestProxyManager_CloseClearsAndReleases(t *testing.T) {

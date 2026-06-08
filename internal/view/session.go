@@ -361,6 +361,18 @@ func (p managerPaneSource) InvalidateResize(taskID string) {
 	p.mgr.ResetApplied(taskID)
 }
 
+// ResetSubscription closes the existing proxy subscription for taskID and
+// removes it from the cache so the next SubscribeTask call starts with a
+// fresh ring buffer. Used by clearReattachAndResize (BUG-012) to ensure the
+// new pane does not receive old-session content from the stale ring.
+// Satisfies the paneSubscriptionResetter optional interface.
+func (p managerPaneSource) ResetSubscription(taskID string) {
+	if p.mgr == nil || taskID == "" {
+		return
+	}
+	p.mgr.ResetSubscription(taskID)
+}
+
 // IsTaskAlive delegates to the proxy manager, which calls argus's
 // GET /api/tasks/{id} and classifies the returned Status. Satisfies
 // view.TaskAliveChecker so findInitialSelection can filter recently-

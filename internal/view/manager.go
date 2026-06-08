@@ -329,6 +329,27 @@ func (m *ProxyManager) runResizeDispatch(ctx context.Context, taskID string, st 
 	}
 }
 
+// ResetSubscription closes the existing Subscription for taskID and removes
+// it from the cache. The next Ensure/SubscribeTask call creates a fresh
+// subscription with an empty ring buffer, preventing old-session content from
+// appearing in a new pane after a session restart (BUG-012). Safe to call
+// when no subscription exists for taskID (no-op). The closed subscription
+// stops its upstream goroutine and releases HTTP connections.
+func (m *ProxyManager) ResetSubscription(taskID string) {
+	if m == nil || taskID == "" {
+		return
+	}
+	m.mu.Lock()
+	sub, ok := m.subs[taskID]
+	if ok {
+		delete(m.subs, taskID)
+	}
+	m.mu.Unlock()
+	if ok {
+		sub.Close()
+	}
+}
+
 // ResetApplied clears the "already applied" flag for taskID, forcing the next
 // ResizeTask dispatch to reach argus even when the requested dimensions match
 // the size sent to the previous session. Called after an argus task session
