@@ -1,0 +1,3731 @@
+{
+  "code_files": [
+    {
+      "path": "cmd/hera-view-client/main.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/list.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/resume.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/start.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/stop.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/status.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/main.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "cmd/hera/errors.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/settings/registrar_test.go",
+      "language": "go",
+      "exports": [
+        "TestRegistrar_ForceReregister_FiresImmediately",
+        "TestRegistrar_ForceReregister_ReturnsErrorOnArgusFailure",
+        "TestRegistrar_HeartbeatSurvivesTransientArgusError",
+        "TestRegistrar_PayloadShapeMatchesSpec",
+        "TestRegistrar_StartRegistersAndHeartbeats",
+        "TestRegistrar_StopDeletesEachRegisteredSection"
+      ]
+    },
+    {
+      "path": "internal/settings/registrar.go",
+      "language": "go",
+      "exports": [
+        "Add",
+        "ForceReregister",
+        "HeraSection",
+        "NewRegistrar",
+        "Registrar",
+        "Sections",
+        "SetHeartbeat",
+        "Start",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/config/config.go",
+      "language": "go",
+      "exports": [
+        "Config",
+        "Default",
+        "EnsureStateDir",
+        "LoadToken",
+        "LogPath",
+        "PIDPath",
+        "StatePath",
+        "TokenPath"
+      ]
+    },
+    {
+      "path": "internal/config/settings_keys.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/config/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/config/config_test.go",
+      "language": "go",
+      "exports": [
+        "TestDefault_ReasonableValues",
+        "TestEnsureStateDir",
+        "TestLoadToken_FileEmpty",
+        "TestLoadToken_FileMissing",
+        "TestLoadToken_FileValid"
+      ]
+    },
+    {
+      "path": "internal/argus/tasks_notify_test.go",
+      "language": "go",
+      "exports": [
+        "TestCancelNotify_NotFound",
+        "TestCancelNotify_OK",
+        "TestCancelNotify_PathRouting",
+        "TestCancelNotify_ServerError",
+        "TestNotifyTask_NoSession",
+        "TestNotifyTask_PathRouting",
+        "TestNotifyTask_Pending",
+        "TestNotifyTask_ServerError",
+        "TestNotifyTask_Submitted"
+      ]
+    },
+    {
+      "path": "internal/argus/recovery.go",
+      "language": "go",
+      "exports": [
+        "Recover",
+        "RecoverFunc",
+        "Reregistrar"
+      ]
+    },
+    {
+      "path": "internal/argus/tasks.go",
+      "language": "go",
+      "exports": [
+        "ArchiveTask",
+        "BackendEntry",
+        "CancelNotify",
+        "CancelNotifyResponse",
+        "CreateProject",
+        "CreateProjectInput",
+        "CreateTask",
+        "CreateTaskInput",
+        "CreatedTask",
+        "DeleteTask",
+        "GetTask",
+        "GetTaskMeta",
+        "GetTaskMetaResponse",
+        "GetTaskSize",
+        "ListBackends",
+        "ListProjects",
+        "ListTasks",
+        "ListTasksAll",
+        "ListTasksResponse",
+        "MetaEntry",
+        "NotifyInput",
+        "NotifyResponse",
+        "NotifyTask",
+        "PostTaskInput",
+        "PutTaskMeta",
+        "PutTaskMetaInput",
+        "ResizeTask",
+        "RestartTask",
+        "SetTaskStatus",
+        "Task",
+        "UnarchiveTask",
+        "UnmarshalJSON"
+      ]
+    },
+    {
+      "path": "internal/argus/errors_test.go",
+      "language": "go",
+      "exports": [
+        "TestIsNotFound"
+      ]
+    },
+    {
+      "path": "internal/argus/views_test.go",
+      "language": "go",
+      "exports": [
+        "TestDeleteView_404IsSoftSuccess",
+        "TestDeleteView_DELETEsExpectedPath",
+        "TestDeleteView_NonNotFoundErrorPropagates",
+        "TestHeartbeatView_FindsRegistered",
+        "TestHeartbeatView_HTTPErrorPropagates",
+        "TestHeartbeatView_MissingReturnsSentinel",
+        "TestRegisterView_409ButNoMatchInList",
+        "TestRegisterView_409ReturnsExisting",
+        "TestRegisterView_AuthHeader",
+        "TestRegisterView_NonConflictError",
+        "TestRegisterView_PostsAndDecodes"
+      ]
+    },
+    {
+      "path": "internal/argus/watcher_test.go",
+      "language": "go",
+      "exports": [
+        "TestWatcher_PidMtimeChange_FiresRestart",
+        "TestWatcher_PingFailure_FiresRestart",
+        "TestWatcher_SingleFlight_SuppressesConcurrentTriggers",
+        "TestWatcher_Stop_WaitsForInFlight"
+      ]
+    },
+    {
+      "path": "internal/argus/linkstate.go",
+      "language": "go",
+      "exports": [
+        "GetLinkState",
+        "LinkLastError",
+        "LinkState",
+        "SetLinkError",
+        "SetLinkState",
+        "String"
+      ]
+    },
+    {
+      "path": "internal/argus/request.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/argus/tasks_lifecycle_test.go",
+      "language": "go",
+      "exports": [
+        "TestClient_DeleteTask",
+        "TestClient_DeleteTask_Error",
+        "TestClient_DeleteTask_NotFound",
+        "TestClient_SetTaskStatus"
+      ]
+    },
+    {
+      "path": "internal/argus/linkstate_test.go",
+      "language": "go",
+      "exports": [
+        "TestLinkState_ConcurrentSetGet",
+        "TestLinkState_DefaultIsHealthy",
+        "TestLinkState_LastErrorRoundTrip",
+        "TestLinkState_SetGet",
+        "TestLinkState_String"
+      ]
+    },
+    {
+      "path": "internal/argus/client.go",
+      "language": "go",
+      "exports": [
+        "BaseURL",
+        "Client",
+        "New",
+        "SetBaseURL"
+      ]
+    },
+    {
+      "path": "internal/argus/audit_followup_test.go",
+      "language": "go",
+      "exports": [
+        "TestStreamEvents_SinceCarriesCursorValue",
+        "TestStreamEvents_SinceZeroAlwaysEmitted"
+      ]
+    },
+    {
+      "path": "internal/argus/settings_test.go",
+      "language": "go",
+      "exports": [
+        "TestClient_RegisterSettingsSection",
+        "TestClient_RegisterSettingsSection_ErrorPropagated",
+        "TestClient_RegisterSettingsSection_JSONFieldNames",
+        "TestClient_RegisterSettingsSection_OmitsEmptyOptionalFields",
+        "TestClient_UnregisterSettingsSection",
+        "TestClient_UnregisterSettingsSection_ErrorPropagated",
+        "TestClient_UnregisterSettingsSection_EscapesPath"
+      ]
+    },
+    {
+      "path": "internal/argus/events.go",
+      "language": "go",
+      "exports": [
+        "Event",
+        "EventHandler",
+        "StreamEvents"
+      ]
+    },
+    {
+      "path": "internal/argus/socket_test.go",
+      "language": "go",
+      "exports": [
+        "FakeDaemonRPC",
+        "FakeEmpty",
+        "FakePongResp",
+        "FakePortsResp",
+        "Ping",
+        "Ports",
+        "TestPortsClient_Ping_NoSocket",
+        "TestPortsClient_Ping_OK",
+        "TestPortsClient_Ping_ServerError",
+        "TestPortsClient_Ports_DecodesPascalCaseWireShape",
+        "TestPortsClient_Ports_DialError"
+      ]
+    },
+    {
+      "path": "internal/argus/settings.go",
+      "language": "go",
+      "exports": [
+        "RegisterSettingsSection",
+        "SettingField",
+        "SettingsSectionDefinition",
+        "SettingsSectionResponse",
+        "UnregisterSettingsSection"
+      ]
+    },
+    {
+      "path": "internal/argus/client_setbaseurl_test.go",
+      "language": "go",
+      "exports": [
+        "TestClient_SetBaseURL_RacesAreClean",
+        "TestClient_SetBaseURL_TrimsTrailingSlash",
+        "TestClient_SetBaseURL_UpdatesRequestTarget"
+      ]
+    },
+    {
+      "path": "internal/argus/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/argus/mcp.go",
+      "language": "go",
+      "exports": [
+        "MCPTool",
+        "MCPToolResponse",
+        "RegisterTool",
+        "UnregisterTool"
+      ]
+    },
+    {
+      "path": "internal/argus/recovery_test.go",
+      "language": "go",
+      "exports": [
+        "ForceReregister",
+        "TestRecover_HappyPath_SetsBaseURLAndMarksHealthy",
+        "TestRecover_MCPFailure_LinkDownAndSettingsSkipped",
+        "TestRecover_OrderingPortsBeforeRegistrars",
+        "TestRecover_PortsFailure_LinkDownWithWrappedError"
+      ]
+    },
+    {
+      "path": "internal/argus/output_test.go",
+      "language": "go",
+      "exports": [
+        "TestGetTaskOutput_404TreatedAsEmpty",
+        "TestGetTaskOutput_500Surfaces",
+        "TestGetTaskOutput_ReturnsBodyAndTotal",
+        "TestStreamTaskOutput_ContextCancelExits",
+        "TestStreamTaskOutput_DecodesBase64Chunks",
+        "TestStreamTaskOutput_HTTPErrorReturned",
+        "TestStreamTaskOutput_IgnoresKeepalivesAndUnknown"
+      ]
+    },
+    {
+      "path": "internal/argus/output.go",
+      "language": "go",
+      "exports": [
+        "GetTaskOutput",
+        "StreamTaskOutput",
+        "TaskOutputHandler",
+        "TaskOutputSnapshot"
+      ]
+    },
+    {
+      "path": "internal/argus/views.go",
+      "language": "go",
+      "exports": [
+        "DeleteView",
+        "HeartbeatView",
+        "PluginView",
+        "RegisterView"
+      ]
+    },
+    {
+      "path": "internal/argus/client_test.go",
+      "language": "go",
+      "exports": [
+        "TestClient_ArchiveTask",
+        "TestClient_CreateProject",
+        "TestClient_CreateProject_ValidatesInput",
+        "TestClient_CreateTask",
+        "TestClient_CreateTask_MetaErrorReturnsTaskID",
+        "TestClient_CreateTask_PutsMeta",
+        "TestClient_CreateTask_ValidatesProject",
+        "TestClient_CreateTask_ValidatesPromptOrName",
+        "TestClient_DoJSON_Errors",
+        "TestClient_GetTask",
+        "TestClient_GetTaskMeta_WithNamespace",
+        "TestClient_GetTaskSize",
+        "TestClient_GetTaskSize_404",
+        "TestClient_ListTasks",
+        "TestClient_PostTaskInput",
+        "TestClient_PostTaskInput_BytesAsString",
+        "TestClient_PutTaskMeta",
+        "TestClient_RegisterTool",
+        "TestClient_ResizeTask",
+        "TestClient_ResizeTask_400",
+        "TestClient_ResizeTask_404",
+        "TestClient_ResizeTask_5xx",
+        "TestClient_ResizeTask_RejectsOutOfBoundDims",
+        "TestClient_SendsAuthAndVersion",
+        "TestClient_StreamEvents",
+        "TestClient_UnarchiveTask",
+        "TestClient_UnregisterTool"
+      ]
+    },
+    {
+      "path": "internal/argus/socket.go",
+      "language": "go",
+      "exports": [
+        "NewPortsClient",
+        "Ping",
+        "Ports",
+        "PortsClient"
+      ]
+    },
+    {
+      "path": "internal/argus/watcher.go",
+      "language": "go",
+      "exports": [
+        "Start",
+        "Stop",
+        "Watcher"
+      ]
+    },
+    {
+      "path": "internal/argus/errors.go",
+      "language": "go",
+      "exports": [
+        "Error",
+        "HTTPError",
+        "IsNotFound"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_tree_updates.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "NewTreeUpdatesHandler",
+        "TreeUpdateMessage",
+        "TreeUpdatesHandler",
+        "TreeUpdatesInput",
+        "TreeUpdatesOutput"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_status.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "NewStatusHandler",
+        "StatusHandler",
+        "StatusInput",
+        "StatusOutput"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "Handler",
+        "HandlerFunc"
+      ]
+    },
+    {
+      "path": "internal/mcp/resolve.go",
+      "language": "go",
+      "exports": [
+        "AmbiguousBindingEntry",
+        "AmbiguousBindingError",
+        "CallerRole",
+        "Error",
+        "NewResolver",
+        "NoBindingForOrchestratorError",
+        "Resolver",
+        "TaskForCwd"
+      ]
+    },
+    {
+      "path": "internal/mcp/handlers_test.go",
+      "language": "go",
+      "exports": [
+        "TestInbox_CancelErrorDoesNotFailHandler",
+        "TestInbox_EmptyAndPopulated",
+        "TestInbox_FetchCancelsArgusDelivery",
+        "TestInbox_MarkReadPreservesOtherRoleMessages",
+        "TestInbox_MarksReturnedMessagesRead",
+        "TestJoin_BareReincarnation_HappyPath",
+        "TestJoin_BareReincarnation_NoBinding",
+        "TestJoin_FreelanceAttach_ConflictingKind",
+        "TestJoin_FreelanceAttach_HappyPath",
+        "TestJoin_FreelanceAttach_OrchestratorMissing",
+        "TestJoin_UnknownCwd",
+        "TestMarkRead_CancelErrorDoesNotFailHandler",
+        "TestMarkRead_CancelsArgusDelivery",
+        "TestMarkRead_OnlyOwnMessagesAffected",
+        "TestMarkRead_RequiresMessageIDs",
+        "TestStatus_HappyPath",
+        "TestStatus_InvalidStatus"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_status_test.go",
+      "language": "go",
+      "exports": [
+        "TestStatus_ArgusLink_Down_IncludesLastError",
+        "TestStatus_ArgusLink_Healthy",
+        "TestStatus_ArgusLink_Recovering"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_inbox.go",
+      "language": "go",
+      "exports": [
+        "ArgusNotifyCanceller",
+        "Handle",
+        "InboxHandler",
+        "InboxInput",
+        "InboxMessage",
+        "InboxOutput",
+        "NewInboxHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_spawn_worker.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "NewSpawnWorkerHandler",
+        "SpawnWorkerHandler",
+        "SpawnWorkerInput",
+        "SpawnWorkerOutput"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_new_orchestrator.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "NewNewOrchestratorHandler",
+        "NewOrchestratorHandler",
+        "NewOrchestratorInput",
+        "NewOrchestratorOutput"
+      ]
+    },
+    {
+      "path": "internal/mcp/server.go",
+      "language": "go",
+      "exports": [
+        "Addr",
+        "CallbackBaseURL",
+        "GenerateAuthHeader",
+        "Mount",
+        "NewServer",
+        "RegisterHandler",
+        "Server",
+        "Start",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_new_orchestrator_test.go",
+      "language": "go",
+      "exports": [
+        "TestJoin_AllowsAttachWhenBoundToDifferentOrchestrator",
+        "TestJoin_FreelanceAttach_MirrorsRoleMeta",
+        "TestJoin_RejectsAttachWhenAlreadyBoundToSameOrchestrator",
+        "TestJoin_RejectsKindCoordinator",
+        "TestNewOrchestrator_AllowsBootstrapWhenBoundToDifferentOrchestrator",
+        "TestNewOrchestrator_HappyPath",
+        "TestNewOrchestrator_IdempotentOnExistingOrchestratorWithoutLiveCoordinator",
+        "TestNewOrchestrator_RejectsAlreadyBoundToSameOrchestrator",
+        "TestNewOrchestrator_RejectsConflictingRoleKind",
+        "TestNewOrchestrator_RejectsLiveCoordinatorElsewhere",
+        "TestNewOrchestrator_RequiredArgs"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_settings_save_test.go",
+      "language": "go",
+      "exports": [
+        "Error",
+        "Set",
+        "SetAutoInjectEnabled",
+        "TestSettingsSave_AutoInjectFalse",
+        "TestSettingsSave_AutoInjectTrue",
+        "TestSettingsSave_EmptyBodyIsNoOp",
+        "TestSettingsSave_InvalidBoolRejected",
+        "TestSettingsSave_InvalidJSON",
+        "TestSettingsSave_ResponseEchosChanged",
+        "TestSettingsSave_StringBool"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_link_state_test.go",
+      "language": "go",
+      "exports": [
+        "TestLinkGate_DownReturnsStructuredErrorWithLastError",
+        "TestLinkGate_DownWithoutLastErrorOmitsSuffix",
+        "TestLinkGate_HealthyProceeds",
+        "TestLinkGate_RecoveringReturnsStructuredError",
+        "TestLinkGate_WiredIntoInboxHandler",
+        "TestLinkGate_WiredIntoSendHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/multi_binding_test.go",
+      "language": "go",
+      "exports": [
+        "TestMultiBinding_HeraInboxAmbiguous",
+        "TestMultiBinding_HeraInboxWithOrchestratorScopesCorrectly",
+        "TestMultiBinding_HeraJoinClaimAmbiguous",
+        "TestMultiBinding_HeraJoinClaimUnknownOrchestrator",
+        "TestMultiBinding_HeraJoinClaimWithOrchestrator",
+        "TestMultiBinding_HeraSendAmbiguousWithoutOrchestrator",
+        "TestMultiBinding_HeraSendCoordinatorWithToAndOrchestrator",
+        "TestMultiBinding_HeraSendWithOrchestratorRoutesToThatOrchestratorsCoord",
+        "TestMultiBinding_HeraStatusWithOrchestratorScopesToRoleOnly",
+        "TestMultiBinding_NewOrchestratorAddsThirdBinding"
+      ]
+    },
+    {
+      "path": "internal/mcp/audit_followup_test.go",
+      "language": "go",
+      "exports": [
+        "TestNewOrchestrator_MetaMirrorFailure_StillSucceeds",
+        "TestResolver_TaskForCwd_NormalizesTrailingSlash",
+        "TestStatus_MetaMirrorFailure_ReturnsMetaMirroredFalse"
+      ]
+    },
+    {
+      "path": "internal/mcp/registrar_test.go",
+      "language": "go",
+      "exports": [
+        "TestRegistrar_ForceReregister_FiresImmediately",
+        "TestRegistrar_ForceReregister_ReturnsErrorOnArgusFailure",
+        "TestRegistrar_Heartbeat404FiresCallback",
+        "TestRegistrar_StartRegistersAllToolsAndHeartbeats"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_get_messages.go",
+      "language": "go",
+      "exports": [
+        "GetMessageResult",
+        "GetMessagesHandler",
+        "GetMessagesInput",
+        "GetMessagesOutput",
+        "Handle",
+        "NewGetMessagesHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/mcp/handler_link_state.go",
+      "language": "go",
+      "exports": [
+        "LinkGate"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_send_test.go",
+      "language": "go",
+      "exports": [
+        "TestSend_ArgusNotify_PendingState",
+        "TestSend_ArgusNotify_SubmittedState",
+        "TestSend_AutoInjectDisabled_SubmitFalse",
+        "TestSend_BodyRequired",
+        "TestSend_CoordinatorWithoutTo_Rejected",
+        "TestSend_ExplicitTo_LooksUpRoleByName",
+        "TestSend_ExplicitTo_UnknownRole",
+        "TestSend_NotifyError_Surfaces",
+        "TestSend_NotifyNotFound_ReturnsError",
+        "TestSend_RecipientHasNoLiveBinding_QueuesPending",
+        "TestSend_SetAutoInjectEnabled_HotReload",
+        "TestSend_Worker_DefaultRoutes_ToCoordinator"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_mark_read.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "MarkReadHandler",
+        "MarkReadInput",
+        "MarkReadOutput",
+        "NewMarkReadHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_join.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "JoinHandler",
+        "JoinInput",
+        "JoinOutput",
+        "NewJoinHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/envelope.go",
+      "language": "go",
+      "exports": [
+        "CallbackEnvelope",
+        "ContentBlock",
+        "ErrorResponse",
+        "Response",
+        "TextResponse"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_settings_save.go",
+      "language": "go",
+      "exports": [
+        "Handle",
+        "NewSettingsSaveHandler",
+        "SettingsSaveHandler"
+      ]
+    },
+    {
+      "path": "internal/mcp/registrar.go",
+      "language": "go",
+      "exports": [
+        "Add",
+        "ForceReregister",
+        "NewRegistrar",
+        "Registrar",
+        "SetHeartbeat",
+        "SetOnHeartbeat404",
+        "Start",
+        "Stop",
+        "ToolDefinition",
+        "Tools"
+      ]
+    },
+    {
+      "path": "internal/mcp/server_test.go",
+      "language": "go",
+      "exports": [
+        "TestGenerateAuthHeader",
+        "TestServer_CallbackInvokesHandler",
+        "TestServer_HealthCheckRespondsOK",
+        "TestServer_RejectsEnvelopeMismatch",
+        "TestServer_RejectsGET",
+        "TestServer_RejectsWrongAuth",
+        "TestServer_ReturnsNotFoundForUnknownTool"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_spawn_worker_test.go",
+      "language": "go",
+      "exports": [
+        "TestSpawnWorker_ArgusTaskNameIsRoleName",
+        "TestSpawnWorker_AutoSubmitFails",
+        "TestSpawnWorker_EmpowermentSentencePresent",
+        "TestSpawnWorker_ExplicitRoleName",
+        "TestSpawnWorker_GetTaskFails",
+        "TestSpawnWorker_HappyPath",
+        "TestSpawnWorker_MetaRoleSet",
+        "TestSpawnWorker_NonCoordRejected",
+        "TestSpawnWorker_ProjectOverride",
+        "TestSpawnWorker_PromptRequired",
+        "TestSpawnWorker_RoleNameDerived",
+        "TestSpawnWorker_RoleNameUniqueness",
+        "TestSpawnWorker_UnknownCwd"
+      ]
+    },
+    {
+      "path": "internal/mcp/handler_send.go",
+      "language": "go",
+      "exports": [
+        "ArgusNotifier",
+        "Handle",
+        "NewSendHandler",
+        "SendHandler",
+        "SendInput",
+        "SendOutput",
+        "SetAutoInjectEnabled"
+      ]
+    },
+    {
+      "path": "internal/daemon/loadsettings_test.go",
+      "language": "go",
+      "exports": [
+        "TestLoadPersistedSettings_CorruptAutoInjectAborts",
+        "TestLoadPersistedSettings_MissingKeysKeepDefaults",
+        "TestLoadPersistedSettings_PersistedAutoInjectFalseWins"
+      ]
+    },
+    {
+      "path": "internal/daemon/run.go",
+      "language": "go",
+      "exports": [
+        "Daemon",
+        "Run",
+        "Start",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/daemon/view_smoke_test.go",
+      "language": "go",
+      "exports": [
+        "TestViewSmoke_EnterIntoPaneThenTypeForwards",
+        "TestViewSmoke_EscFromRailReleasesToArgus",
+        "TestViewSmoke_FocusFeedbackReflectsState",
+        "TestViewSmoke_LastWriterWinsClosesPrior",
+        "TestViewSmoke_RailResumesAfterReturn",
+        "TestViewSmoke_RenderAndKeyRouting",
+        "TestViewSmoke_ShiftArrowScrollIntercepted"
+      ]
+    },
+    {
+      "path": "internal/daemon/run_test.go",
+      "language": "go",
+      "exports": [
+        "FakeArgusSocketRPC",
+        "FakeSocketEmpty",
+        "FakeSocketPongResp",
+        "FakeSocketPortsResp",
+        "Ping",
+        "Ports",
+        "TestDaemonStart_BootReconcileCallsListTasks",
+        "TestDaemonStart_BootReconcileFailure_DaemonStillStarts",
+        "TestDaemonStart_EagerlySeesFreelancers",
+        "TestDaemonStart_MountsViewRouteOnMCPListener",
+        "TestDaemonStart_PersistedSettingsOverrideDefaults",
+        "TestDaemonStart_PortDiscoveryFailureExitsNonZero",
+        "TestDaemonStart_PortDiscoveryRunsBeforeMCPRegistrar",
+        "TestDaemonStart_RegistersAllNineToolsAndCleansUp",
+        "TestDaemonStart_RegistersPluginViewAndUnregisters",
+        "TestDaemonStart_SeedsProxyForLiveBindings",
+        "TestDaemonStart_TokenMissing"
+      ]
+    },
+    {
+      "path": "internal/daemon/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/daemon/live_probe_test.go",
+      "language": "go",
+      "exports": [
+        "TestLiveArgusAPIProbe",
+        "TestLiveViewProbe"
+      ]
+    },
+    {
+      "path": "internal/daemon/loadsettings.go",
+      "language": "go",
+      "exports": [
+        "LoadPersistedSettings"
+      ]
+    },
+    {
+      "path": "internal/view/rail.go",
+      "language": "go",
+      "exports": [
+        "NewRailRefresher",
+        "NewRailRefresherWith",
+        "RailRefresher",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/view/app_test.go",
+      "language": "go",
+      "exports": [
+        "InvalidateResize",
+        "IsTaskAlive",
+        "LiveTasks",
+        "ResetSubscription",
+        "ResizeTask",
+        "SubscribeTask",
+        "TaskSize",
+        "TaskState",
+        "TestApp_ApplyDeadPaneFocusGuard_AgentPane_NoopWhenNoTriggerWired",
+        "TestApp_ApplyDeadPaneFocusGuard_NoopForUnfocusedPane",
+        "TestApp_ApplyDeadPaneFocusGuard_NoopWhenAlreadyRAIL",
+        "TestApp_ApplyDeadPaneFocusGuard_NoopWhenNoTriggerWired",
+        "TestApp_ApplyRailSelection_DeadSessionAgentForcesRAIL",
+        "TestApp_ClearReattachAndResize_ClearsSplashWhenRectZero",
+        "TestApp_ClearReattachAndResize_NoopWhenNotBound",
+        "TestApp_CurrentRailSelection_AgentRow_CarriesCoordRoleID",
+        "TestApp_CurrentRailSelection_SubCoordRow_TargetsItself",
+        "TestApp_InPaneNavigate_MovesSelectionAndKeepsPaneFocus",
+        "TestApp_InPaneNavigate_SkipsCoordlessOrchHeader",
+        "TestApp_IsFilteringDelegatesToRail",
+        "TestApp_OnFocusChanged_AgentPane_CallsInvalidateResize",
+        "TestApp_OnFocusChanged_CoordPane_CallsInvalidateResize",
+        "TestApp_OnFocusChanged_EmptyTask_NoInvalidateResize",
+        "TestApp_OnFocusChanged_PaintsArgusCyanBorders",
+        "TestApp_OnFocusChanged_PushesFocusAwareHotkeys",
+        "TestApp_OnFocusChanged_Rail_NoInvalidateResize",
+        "TestApp_OnFullscreenChanged_UpdatesPaneTitles",
+        "TestApp_OnNewWorker_AgentRow_SpawnsUnderCoord_RealSelection",
+        "TestApp_OnNewWorker_ArchivedAgentRow_SpawnsUnderCoord_RealSelection",
+        "TestApp_OnNewWorker_DeadAgentRow_SpawnsUnderCoord_RealSelection",
+        "TestApp_OnNewWorker_SubCoordRow_SpawnsUnderChild_RealSelection",
+        "TestApp_OnRailSelectEnter_ArchiveExpandoFolds",
+        "TestApp_OnRailSelectEnter_CoordinatorEntersHERA",
+        "TestApp_OnRailSelectEnter_DeadSessionWorkerStaysInRAIL",
+        "TestApp_OnRailSelectEnter_FreelanceHeaderFolds",
+        "TestApp_OnRailSelectEnter_FreelancerEntersAgent",
+        "TestApp_OnRailSelectEnter_OrchHeaderEntersHERA",
+        "TestApp_OnRailSelectEnter_WorkerRebindsAgentAndJumps",
+        "TestApp_OnRailSelectionChanged_DebounceCoalescesRapidMoves",
+        "TestApp_OnRailSelectionChanged_OrchHeaderKeepsAgent",
+        "TestApp_OnRailSelectionChanged_RebindsBothPanes",
+        "TestApp_OnTaskReattached_CallsInvalidateResize",
+        "TestApp_OnTaskReattached_EmptyTaskID_NoOp",
+        "TestApp_OnTaskReattached_UsesGetRectNotPinnedSize",
+        "TestApp_QueueSelectRole_AbandonsUnresolvableAfterBound",
+        "TestApp_QueueSelectRole_AppliedOnNextRepopulate",
+        "TestApp_QueueSelectRole_FreshBudgetPerQueue",
+        "TestApp_SendHelp_PushesComprehensiveThreeStateSections",
+        "TestApplyRailSelection_DeadFreelancerClearsAgentPane",
+        "TestApplyRailSelection_DeadSessionFreelancerSetsFlag",
+        "TestApplyRailSelection_DeadWorkerClearsAgentPane",
+        "TestApplyRailSelection_FreelancerSetsAgentIsFreelancer",
+        "TestApplyRailSelection_NestedWorkerBindsChildCoord",
+        "TestBuildAppNoSavedSelectionLandsAtCoordinatorSection",
+        "TestBuildAppRestoresLastSelectionFromDB",
+        "TestBuildApp_AdoptedFreelancerLeavesFreelanceAndRendersUnderCoordinator",
+        "TestBuildApp_AgentSelectionSplitsHERAAndAgent",
+        "TestBuildApp_AllChromeSurfacesUseHeraBackground",
+        "TestBuildApp_ArchivedFreelancerLandsInBottomArchive",
+        "TestBuildApp_ArgusArchivedRoleHiddenFromActiveRail",
+        "TestBuildApp_CoordinatorSelectionIsFullWidthHERA",
+        "TestBuildApp_DoneRoleSurfacesLastBindingTaskID",
+        "TestBuildApp_EmptyDBShowsNoProjectsAndPlaceholders",
+        "TestBuildApp_EndedBindingWorkerRowDoesNotDuplicateIntoFreelance",
+        "TestBuildApp_FreelanceGroupsByProjectExcludesManagedAndArchived",
+        "TestBuildApp_FreelancerSelectionIsFullWidthAgent",
+        "TestBuildApp_GoneTaskRoleHiddenFromActiveRail",
+        "TestBuildApp_HeaderReachableCoordTaskDoesNotDuplicateIntoFreelance",
+        "TestBuildApp_InitialFrameMatchesInitialSelection",
+        "TestBuildApp_LiveBindingMarksRoleAndSubscribesPanes",
+        "TestBuildApp_MixedCoordArchivedLandsOnEntry",
+        "TestBuildApp_NilSourceDoesNotPanic",
+        "TestBuildApp_NoHeraHeraBrandingInTopRow",
+        "TestBuildApp_NoLiveAgentLeavesPlaceholders",
+        "TestBuildApp_OrphanedCoordTaskStillFallsBackToFreelance",
+        "TestBuildApp_PinnedOrchestratorRendersInPinnedSection",
+        "TestBuildApp_PopulatesRailFromDAOs",
+        "TestBuildApp_RailHeaderRendered",
+        "TestBuildApp_RailRowReflectsArgusState",
+        "TestBuildApp_RejectsNilDB",
+        "TestBuildApp_SelectingFreelancerEntersFullWidthMode",
+        "TestBuildApp_SwitchingSelectionRecomposesAndTearsDown",
+        "TestBuildApp_ThreeColumnsAndChrome",
+        "TestBuildApp_WorkerInCoordlessProjectClearsCoord",
+        "TestClearReattachAndResize_MoveFocusToAgent",
+        "TestClearReattachAndResize_ResetsSubscriptionBeforeRebind",
+        "TestFindInitialSelection_FallsBackToCoordWhenNoLiveWorker",
+        "TestFindInitialSelection_NoCheckerKeepsLegacyBehavior",
+        "TestFindInitialSelection_NothingLiveReturnsEmpty",
+        "TestFindInitialSelection_PrefersLiveWorker",
+        "TestFindInitialSelection_PrefersSecondOrchestratorWithLiveWorker",
+        "TestFindInitialSelection_SkipsHeraArchivedRole",
+        "TestFireSelectionNow_AppliesPendingSelection",
+        "TestFireSelectionNow_NoOp_WhenNoPending",
+        "TestHelpHotkeyItems_ContainsAllFocusStates",
+        "TestHelpHotkeyItems_CoordAbsent",
+        "TestMaybeAutoReattachPane_DeadSessionFreelancer_SnapsToRAIL",
+        "TestMaybeAutoReattachPane_FreelancerSkipsAutoReattach",
+        "TestMaybeAutoReattachPane_LiveFreelancer_DoesNotSnapToRAIL",
+        "TestMaybeAutoReattachPane_ManagedWorkerFiresAutoReattach",
+        "TestMaybeAutoReattachPane_ManagedWorkerSnapsToRAIL",
+        "TestOnRailSelectEnter_DeadFreelancerStaysInRail",
+        "TestOnRailSelectEnter_DeadWorkerStaysInRail",
+        "TestPopulateRail_ArchivedSubCoordStaysInExpando",
+        "TestPopulateRail_CompletedCoordStillFeedsCoordTaskID",
+        "TestPopulateRail_CompletedTaskStaysActive",
+        "TestPopulateRail_DeadBindingsHiddenByDefault",
+        "TestPopulateRail_DeadCoordSkippedFromCoordTaskID",
+        "TestPopulateRail_DeletedOrchestratorGoneFromRail",
+        "TestPopulateRail_FiltersCoordRows",
+        "TestPopulateRail_HeraArchivedRoleInArchiveExpandoByDefault",
+        "TestPopulateRail_SubCoordinatorNestsAndBindsOwnTask",
+        "TestPopulateRail_WorkerLessOrchestratorRendersHeaderOnly",
+        "TestStartPaneReattach_FiresSelectionWhenBoundButWrongBodyMode",
+        "TestStartPaneReattach_FiresSelectionWhenPaneNotBound",
+        "TestStartPaneReattach_FocusResetToRail_WithNonDeadPending",
+        "TestStartPaneReattach_FocusStaysOnRail"
+      ]
+    },
+    {
+      "path": "internal/view/taskstate_test.go",
+      "language": "go",
+      "exports": [
+        "ListTasksAll",
+        "TestArgusStateCache_ClearOptimistic_RestoresPolled",
+        "TestArgusStateCache_Get_NoOptimistic_ReturnsPolled",
+        "TestArgusStateCache_Poll_AutoClearsConfirmedOptimistic",
+        "TestArgusStateCache_Poll_KeepsOptimisticWhileUnconfirmed",
+        "TestArgusStateCache_SetOptimistic_EmptyTaskID_NoOp",
+        "TestArgusStateCache_SetOptimistic_OnlyOverridesStatus",
+        "TestArgusStateCache_SetOptimistic_OverridesStatus",
+        "TestArgusStateCache_SetOptimistic_UnknownTask_NotAffectingGet"
+      ]
+    },
+    {
+      "path": "internal/view/forwarder.go",
+      "language": "go",
+      "exports": [
+        "Enqueue",
+        "NewPaneForwarder",
+        "PaneForwarder",
+        "SetOnDead",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/view/forwarder_test.go",
+      "language": "go",
+      "exports": [
+        "Calls",
+        "PostTaskInput",
+        "TestPaneForwarder_CoalescesConsecutiveSameTask",
+        "TestPaneForwarder_ContextCancelStops",
+        "TestPaneForwarder_DeadCallbackFiredOnErrNoTaskInput",
+        "TestPaneForwarder_DeadCallbackFiresOncePerTask",
+        "TestPaneForwarder_DeadCallbackNotFiredOnOtherErrors",
+        "TestPaneForwarder_DoesNotCoalesceAcrossTasks",
+        "TestPaneForwarder_FailureLogged",
+        "TestPaneForwarder_NonBlockingEnqueue",
+        "TestPaneForwarder_PreservesOrder",
+        "TestPaneForwarder_StopTerminatesGoroutine",
+        "Write"
+      ]
+    },
+    {
+      "path": "internal/view/wheel_test.go",
+      "language": "go",
+      "exports": [
+        "Calls",
+        "RouteWheel",
+        "TestApp_ApplyWheel_AbsentPaneStaleRectIgnored",
+        "TestApp_ApplyWheel_DeadZoneSwallowed",
+        "TestApp_ApplyWheel_PaneUnderCursorScrolls",
+        "TestApp_ApplyWheel_PositionBeatsFocus",
+        "TestApp_ApplyWheel_WheelDownReturnsToLive",
+        "TestApp_ScrollFocusedPane_DrivesSDKEngine",
+        "TestPinnedTerminalPane_AnchorLockHoldsContent",
+        "TestPinnedTerminalPane_ScrolledRendersHistoryAndBadge",
+        "TestRailList_CursorMoveResnapsAfterPan",
+        "TestRailList_PanByClampsToContent",
+        "TestRailList_PanByNoOpWhenContentFits",
+        "TestRailList_PanByPansWithoutMovingSelection",
+        "TestRawInput_ClickSwallowedEverywhere",
+        "TestRawInput_HeraChordStillPassesWithWheelWired",
+        "TestRawInput_NilWheelRouterSafe",
+        "TestRawInput_WheelInPaneFocusRoutedNotForwarded",
+        "TestRawInput_WheelInRailFocusRoutedNotParsed"
+      ]
+    },
+    {
+      "path": "internal/view/server.go",
+      "language": "go",
+      "exports": [
+        "Handler",
+        "NewServer",
+        "Server",
+        "SessionFunc",
+        "SetRunner",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/view/coord_details_test.go",
+      "language": "go",
+      "exports": [
+        "TestBuildCoordDetails_ArchivedCoordCompletionNotMasked",
+        "TestBuildCoordDetails_Fields",
+        "TestBuildCoordDetails_LiveCoordCompleteBecomesIdle",
+        "TestBuildCoordDetails_RosterIncludesSubCoordinator",
+        "TestDetailsPane_LiveRefreshOnRepopulate",
+        "TestDetailsPane_OnlyInCoordinatorMode",
+        "TestDetailsPane_RendersCoordFields"
+      ]
+    },
+    {
+      "path": "internal/view/manager_test.go",
+      "language": "go",
+      "exports": [
+        "GetTask",
+        "GetTaskOutput",
+        "GetTaskSize",
+        "ResizeTask",
+        "StreamTaskOutput",
+        "TestProxyManager_CloseClearsAndReleases",
+        "TestProxyManager_EnsureIdempotent",
+        "TestProxyManager_IsTaskAlive",
+        "TestProxyManager_ResetApplied",
+        "TestProxyManager_ResetApplied_UnknownTaskID",
+        "TestProxyManager_ResetSubscription",
+        "TestProxyManager_ResetSubscription_SafeForUnknown",
+        "TestProxyManager_ResizeTaskCoalescesTransientDims",
+        "TestProxyManager_ResizeTaskDedupesRepeatedDims",
+        "TestProxyManager_ResizeTaskDispatchesOnDimChange",
+        "TestProxyManager_ResizeTaskDispatchesToFetcher",
+        "TestProxyManager_ResizeTaskGiveUpRechecksDesired",
+        "TestProxyManager_ResizeTaskGivesUpAfterMaxAttempts",
+        "TestProxyManager_ResizeTaskIgnoresBadInputs",
+        "TestProxyManager_ResizeTaskRetriesOnFailure",
+        "TestProxyManager_ResizeTaskRetryUsesLatestDims",
+        "TestProxyManager_ResizeTaskStopsOnCtxCancel",
+        "TestProxyManager_SeedCreatesOnePerTaskID",
+        "TestProxyManager_SubscriptionOutlivesSessionContext"
+      ]
+    },
+    {
+      "path": "internal/view/proxy/proxy.go",
+      "language": "go",
+      "exports": [
+        "Close",
+        "Fetcher",
+        "Listener",
+        "NewSubscription",
+        "Option",
+        "Subscribe",
+        "Subscription",
+        "TaskID",
+        "Unsubscribe",
+        "WithErrorFunc",
+        "WithListenerBufferSize",
+        "WithRingCapacity"
+      ]
+    },
+    {
+      "path": "internal/view/proxy/proxy_test.go",
+      "language": "go",
+      "exports": [
+        "TestProxy_404SnapshotStartsStreamAtZero",
+        "TestProxy_CloseTearsDownListeners",
+        "TestProxy_FanOutMultipleListeners",
+        "TestProxy_LateSubscriberSeesSnapshotNotStreamOverlap",
+        "TestProxy_RingBounded",
+        "TestProxy_SnapshotThenStream",
+        "TestProxy_StreamReconnectAfterError",
+        "TestProxy_SubscribeAfterCloseReturnsClosedChannel",
+        "TestProxy_UnsubscribeStopsDelivery"
+      ]
+    },
+    {
+      "path": "internal/view/proxy/ring.go",
+      "language": "go",
+      "exports": [
+        "Append",
+        "Capacity",
+        "Snapshot",
+        "Total"
+      ]
+    },
+    {
+      "path": "internal/view/proxy/ring_test.go",
+      "language": "go",
+      "exports": [
+        "TestRing_AppendBelowCapacityRetainsAllBytes",
+        "TestRing_AppendBeyondCapacityDropsOldest",
+        "TestRing_AppendSingleBlobLargerThanCapacityKeepsTail",
+        "TestRing_AppendsAtCapacityPreserveExactBytes",
+        "TestRing_AppendsWrapAroundPreserveOrder",
+        "TestRing_DefaultCapacityIs4MiB",
+        "TestRing_SnapshotReturnsIndependentCopy"
+      ]
+    },
+    {
+      "path": "internal/view/rail_test.go",
+      "language": "go",
+      "exports": [
+        "TestRailRefresher_BurstCoalescedIntoOneRefresh",
+        "TestRailRefresher_IdleProducesNoRefresh",
+        "TestRailRefresher_InsertOrchestratorTriggersRefresh",
+        "TestRailRefresher_RoleAndBindingTriggerRefresh",
+        "TestRailRefresher_SecondBurstFiresAgain",
+        "TestRailRefresher_StopHaltsFurtherRefreshes",
+        "TestRailRefresher_StopIsIdempotent"
+      ]
+    },
+    {
+      "path": "internal/view/redraw.go",
+      "language": "go",
+      "exports": [
+        "Schedule",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/view/control_test.go",
+      "language": "go",
+      "exports": [
+        "TestViewControl_Help_ExactJSON",
+        "TestViewControl_Hotkeys_ExactJSON",
+        "TestViewControl_NilSafe",
+        "TestViewControl_Release_ExactJSON",
+        "Write",
+        "Writes"
+      ]
+    },
+    {
+      "path": "internal/view/testing_helpers_test.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/view/types.go",
+      "language": "go",
+      "exports": [
+        "PaneSource",
+        "ResizeTask",
+        "SubscribeTask",
+        "TaskAliveChecker",
+        "TaskSize"
+      ]
+    },
+    {
+      "path": "internal/view/pinned_pane_test.go",
+      "language": "go",
+      "exports": [
+        "Calls",
+        "ResizeTask",
+        "TestPinnedTerminalPane_BoundPaneKeepsPinnedSizeAcrossDraw",
+        "TestPinnedTerminalPane_ClipsBeyondAllocatedRect",
+        "TestPinnedTerminalPane_DrawDedupesAcrossFrames",
+        "TestPinnedTerminalPane_DrawFiresResizeWithInnerRect",
+        "TestPinnedTerminalPane_DrawRefiresOnAllocChange",
+        "TestPinnedTerminalPane_DrawSkipsResizeWhenInnerMatchesQueriedSize",
+        "TestPinnedTerminalPane_DrawSkipsResizeWhenNoTaskID",
+        "TestPinnedTerminalPane_FocusDelegatesToEmbeddedPaneForCursorRendering",
+        "TestPinnedTerminalPane_ReflowCallbackFiresOnDimsChange",
+        "TestPinnedTerminalPane_ReflowCallbackNotFiredForBoundWithoutResizer",
+        "TestPinnedTerminalPane_ReflowCallbackNotFiredForUnbound",
+        "TestPinnedTerminalPane_RepaintsCyanBorderOnFocus",
+        "TestPinnedTerminalPane_ScrollByTracksAndClamps",
+        "TestPinnedTerminalPane_SetReattaching_StampsReattachSince",
+        "TestPinnedTerminalPane_SetReattaching_UpdatesReattachSinceOnRepeat",
+        "TestPinnedTerminalPane_UnboundPaneFillsAllocation",
+        "TestPinnedTerminalPane_ZeroDefaultsTo80x24"
+      ]
+    },
+    {
+      "path": "internal/view/rail_state.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/view/keys.go",
+      "language": "go",
+      "exports": [
+        "BorderUpdater",
+        "ControlSender",
+        "FullscreenUpdater",
+        "HandleKey",
+        "InPaneNavigator",
+        "InputPoster",
+        "KeyRouter",
+        "ModalGate",
+        "MutationHandler",
+        "PaneByteForwarder",
+        "PaneScroller",
+        "PaneTargets",
+        "PendingSelectionFirer",
+        "RailFilter",
+        "RailSelectHandler"
+      ]
+    },
+    {
+      "path": "internal/view/keys_test.go",
+      "language": "go",
+      "exports": [
+        "AgentTaskID",
+        "Calls",
+        "CoordTaskID",
+        "Enqueue",
+        "FireSelectionNow",
+        "InPaneNavigate",
+        "IsFiltering",
+        "IsModalActive",
+        "OnAdopt",
+        "OnArchive",
+        "OnDelete",
+        "OnFocusChanged",
+        "OnFullscreenChanged",
+        "OnHelp",
+        "OnListAll",
+        "OnNew",
+        "OnNewWorker",
+        "OnOpenPR",
+        "OnPin",
+        "OnPrune",
+        "OnRailSelectEnter",
+        "OnReattach",
+        "OnRename",
+        "OnResurrect",
+        "OnStatusAdvance",
+        "OnStatusRevert",
+        "PostTaskInput",
+        "ScrollFocusedPane",
+        "SendHelp",
+        "SendRelease",
+        "TestFocusMachine_Advance_RAILtoCOORDtoAGENT",
+        "TestFocusMachine_CoordinatorModeSkipsAgent",
+        "TestFocusMachine_FreelanceSkipsCoord",
+        "TestFocusMachine_InitialState",
+        "TestFocusMachine_JumpToAGENT",
+        "TestFocusMachine_Retreat_AGENTtoCOORDtoRAIL",
+        "TestFocusMachine_SetAgentPresentBumpsOffAgent",
+        "TestFocusMachine_SetCoordPresentBumpsOffCoord",
+        "TestFocusMachine_ToRAIL",
+        "TestHelpHotkeyItems_IncludesJAndW",
+        "TestHotkeyItems_PaneFocusDropsPruneAndPR",
+        "TestHotkeyItems_PanesAdvertiseCtrlZ",
+        "TestHotkeyItems_RailAdvertisesJAndWOnBottomBar",
+        "TestHotkeyItems_RailAdvertisesPruneAndPR",
+        "TestHotkeyItems_RailAdvertisesWorkerKey",
+        "TestHotkeyItems_RailBottomBarBUG007",
+        "TestKeyRouter_AdoptKey_PaneFocus_ForwardToPTY",
+        "TestKeyRouter_AdoptKey_RailFocus_FiresMutation",
+        "TestKeyRouter_AltBackspaceInPane_ForwardsEscDEL",
+        "TestKeyRouter_AltRune_ForwardsEscPrefixed",
+        "TestKeyRouter_ArrowInPane_ForwardsCSI",
+        "TestKeyRouter_BackspaceInAGENT_Forwards7F",
+        "TestKeyRouter_BorderUpdates_OnEveryFocusChange",
+        "TestKeyRouter_CtrlLeft_AGENTtoCOORD",
+        "TestKeyRouter_CtrlLeft_COORDtoRAIL",
+        "TestKeyRouter_CtrlLeft_InAGENT_NotForwarded",
+        "TestKeyRouter_CtrlQ_FromAGENTtoRAIL",
+        "TestKeyRouter_CtrlQ_FromCOORDtoRAIL",
+        "TestKeyRouter_CtrlRight_COORDtoAGENT",
+        "TestKeyRouter_CtrlRight_FromCOORD_DoesNotFireSelection",
+        "TestKeyRouter_CtrlRight_FromRAIL_FiresSelectionFire",
+        "TestKeyRouter_CtrlRight_Fullscreen_DoesNotFireSelection",
+        "TestKeyRouter_CtrlRight_InCOORD_NotForwarded",
+        "TestKeyRouter_CtrlRight_NilSelectFire_SafeNoOp",
+        "TestKeyRouter_CtrlRight_RAILtoCOORD",
+        "TestKeyRouter_CtrlZ_InAGENT_EntersFullscreen",
+        "TestKeyRouter_CtrlZ_InCOORDFullscreen_ExitsFullscreen",
+        "TestKeyRouter_CtrlZ_InCOORD_EntersFullscreen",
+        "TestKeyRouter_CtrlZ_InPane_NotForwardedToPTY",
+        "TestKeyRouter_CtrlZ_InRAIL_ConsumedNoOp",
+        "TestKeyRouter_DestructiveVerbs_RailOnly_FireInRailForwardInPane",
+        "TestKeyRouter_EnterFromRAIL_JumpsToAGENT",
+        "TestKeyRouter_EnterFromRAIL_NoAgent_Propagates",
+        "TestKeyRouter_EnterInCOORD_ForwardsCR",
+        "TestKeyRouter_EnterInRAIL_Reattach_Handled",
+        "TestKeyRouter_EnterInRAIL_Reattach_NotHandled_EntersPane",
+        "TestKeyRouter_EnterInRAIL_Resurrect_Handled",
+        "TestKeyRouter_EnterInRAIL_Resurrect_NotHandled_EntersPane",
+        "TestKeyRouter_EnterInRAIL_Resurrect_Precedes_Reattach",
+        "TestKeyRouter_EnterInRAIL_WithHandler_AGENT",
+        "TestKeyRouter_EnterInRAIL_WithHandler_COORD",
+        "TestKeyRouter_EnterInRAIL_WithHandler_RAIL_Propagates",
+        "TestKeyRouter_EscYieldsToRailWhileFiltering",
+        "TestKeyRouter_Esc_InAGENT_ForwardedToPTY_NoRelease",
+        "TestKeyRouter_Esc_InCOORD_ForwardedToPTY_NoRelease",
+        "TestKeyRouter_Esc_InRAIL_SendsRelease_NotForwarded",
+        "TestKeyRouter_FilterGateOffRoutesNormally",
+        "TestKeyRouter_ForwardFailure_IsLogged_NotSwallowed",
+        "TestKeyRouter_ForwardSuccess_NotLoggedAsFailure",
+        "TestKeyRouter_Forward_EnqueuesNotSynchronousPost",
+        "TestKeyRouter_Forward_NonBlocking",
+        "TestKeyRouter_Fullscreen_CtrlLeft_AGENTToCOORD",
+        "TestKeyRouter_Fullscreen_CtrlLeft_COORDExitsToRAIL",
+        "TestKeyRouter_Fullscreen_CtrlQ_ExitsFullscreenToRAIL",
+        "TestKeyRouter_Fullscreen_CtrlRight_AGENTNoOp",
+        "TestKeyRouter_Fullscreen_CtrlRight_COORDToAGENT",
+        "TestKeyRouter_Fullscreen_NormalKeysStillForwarded",
+        "TestKeyRouter_LowerJ_RailFocus_IsNavNotAdopt",
+        "TestKeyRouter_MetaRight_RAILtoCOORD",
+        "TestKeyRouter_ModArrows_InPane_NavigateSelectionKeepPaneFocus",
+        "TestKeyRouter_ModArrows_InRAIL_NoInPaneNav",
+        "TestKeyRouter_ModalActive_YieldsAllEvents",
+        "TestKeyRouter_ModalInactive_NormalDispatch",
+        "TestKeyRouter_MutationKey_CtrlD_InCOORD_ForwardsByteNotDelete",
+        "TestKeyRouter_MutationKey_CtrlD_InRAIL_FiresHandler",
+        "TestKeyRouter_MutationKey_Question_InAGENT_NoMutationOnlyForward",
+        "TestKeyRouter_MutationKey_Question_InRAIL_FiresHandler",
+        "TestKeyRouter_MutationKey_a_InRAIL_FiresHandler",
+        "TestKeyRouter_MutationKey_l_InRAIL_FiresHandler",
+        "TestKeyRouter_MutationKey_n_InCOORD_NoMutationOnlyForward",
+        "TestKeyRouter_MutationKey_n_InRAIL_FiresHandler",
+        "TestKeyRouter_MutationKey_r_InAGENT_NoMutationOnlyForward",
+        "TestKeyRouter_MutationKey_r_InRAIL_FiresHandler",
+        "TestKeyRouter_MutationKey_w_InAGENT_ForwardsAsByte",
+        "TestKeyRouter_MutationKey_w_InCOORD_ForwardsAsByte",
+        "TestKeyRouter_MutationKey_w_InRAIL_FiresOnNewWorker",
+        "TestKeyRouter_NoAgentTaskID_DropsKeystroke",
+        "TestKeyRouter_NoBorderUpdate_OnNonFocusKey",
+        "TestKeyRouter_PinKey_PaneFocus_ForwardToPTY",
+        "TestKeyRouter_PinKey_RailFocus_FiresMutation",
+        "TestKeyRouter_Question_InRAIL_NotForwarded",
+        "TestKeyRouter_RailNavKey_DownArrow_Propagates",
+        "TestKeyRouter_RailNavKey_J_PropagatesAsKeyDown",
+        "TestKeyRouter_RailNavKey_K_PropagatesAsKeyUp",
+        "TestKeyRouter_RailNavKey_UpArrow_Propagates",
+        "TestKeyRouter_ShiftArrows_InPane_ScrollNotNavNotForward",
+        "TestKeyRouter_ShiftArrows_InRAIL_NoScroll",
+        "TestKeyRouter_ShiftEnterInPane_ForwardsEscCR",
+        "TestKeyRouter_StatusKeys_PaneFocus_ForwardToPTY",
+        "TestKeyRouter_StatusKeys_RailFocus_FireMutation",
+        "TestKeyRouter_TypingInAGENT_ForwardsToAgent",
+        "TestKeyRouter_TypingInCOORD_ForwardsRuneByte",
+        "TestKeyRouter_YieldsToRailWhileFiltering"
+      ]
+    },
+    {
+      "path": "internal/view/session.go",
+      "language": "go",
+      "exports": [
+        "InvalidateResize",
+        "IsTaskAlive",
+        "LiveTasks",
+        "NewSessionFunc",
+        "Printf",
+        "ResetSubscription",
+        "ResizeTask",
+        "StatesReady",
+        "SubscribeTask",
+        "TaskSize",
+        "TaskState"
+      ]
+    },
+    {
+      "path": "internal/view/redraw_test.go",
+      "language": "go",
+      "exports": [
+        "TestRedrawCoalescer_BurstCoalescesToSingleDraw",
+        "TestRedrawCoalescer_DirtyClearedBeforeDraw",
+        "TestRedrawCoalescer_EachWindowDrawsOnce",
+        "TestRedrawCoalescer_NilSafe",
+        "TestRedrawCoalescer_SnapshotIngestSchedulesSingleSettledDraw",
+        "TestRedrawCoalescer_TickerLoopFlushes"
+      ]
+    },
+    {
+      "path": "internal/view/raw_input.go",
+      "language": "go",
+      "exports": [
+        "Read",
+        "WheelRouter"
+      ]
+    },
+    {
+      "path": "internal/view/ops_adapters.go",
+      "language": "go",
+      "exports": [
+        "ArchiveOrchestrator",
+        "ArchiveRole",
+        "ArchiveTask",
+        "CreateBinding",
+        "CreateOrchestrator",
+        "CreateRole",
+        "CreateTask",
+        "DeleteOrchestratorByID",
+        "DeleteTask",
+        "EndBinding",
+        "GetLatestBindingByRole",
+        "GetLiveBindingByRole",
+        "GetOrchestratorByID",
+        "GetOrchestratorByName",
+        "GetRoleByID",
+        "GetRoleByOrchestratorAndName",
+        "GetTask",
+        "GetTaskStatus",
+        "ListBackends",
+        "ListLiveBindings",
+        "ListLiveBindingsByTask",
+        "ListOrchestrators",
+        "ListProjects",
+        "ListRolesByOrchestrator",
+        "ListRolesByOrchestratorInclusive",
+        "PinOrchestrator",
+        "PinRole",
+        "PostTaskInput",
+        "PutTaskMeta",
+        "RenameOrchestrator",
+        "RenameRole",
+        "RestartTask",
+        "SetTaskStatus",
+        "UnarchiveOrchestrator",
+        "UnarchiveRole",
+        "UnarchiveTask",
+        "UnpinOrchestrator",
+        "UnpinRole",
+        "UpsertRoleStatus"
+      ]
+    },
+    {
+      "path": "internal/view/rail_list.go",
+      "language": "go",
+      "exports": [
+        "AcceptFilter",
+        "BeginFilter",
+        "ClearFilter",
+        "CurrentRef",
+        "CursorDown",
+        "CursorUp",
+        "Draw",
+        "Filter",
+        "Filtering",
+        "HandleFilterKey",
+        "HasRunningRows",
+        "InputHandler",
+        "IsFreelancePinned",
+        "NavToParent",
+        "PanBy",
+        "RestoreViewState",
+        "SelectByArchiveGroup",
+        "SelectByArchiveOwner",
+        "SelectByArgusTaskID",
+        "SelectByOrchID",
+        "SelectByProject",
+        "SelectByRoleID",
+        "SetArchivedFreelance",
+        "SetFilter",
+        "SetFreelance",
+        "SetOnSelectionChanged",
+        "SetOnStateChanged",
+        "SetOrchestrators",
+        "SetShowArchived",
+        "ShowArchived",
+        "StepToBindable",
+        "ToggleCollapse",
+        "ToggleFreelancePin",
+        "ViewState"
+      ]
+    },
+    {
+      "path": "internal/view/control.go",
+      "language": "go",
+      "exports": [
+        "HotkeyItem",
+        "SendHelp",
+        "SendHotkeys",
+        "SendRelease"
+      ]
+    },
+    {
+      "path": "internal/view/layout.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/view/mutations_test.go",
+      "language": "go",
+      "exports": [
+        "AdoptTaskIntoOrchestrator",
+        "AdvanceStatus",
+        "ArchiveOrchestrator",
+        "ArchiveRole",
+        "ClearOptimistic",
+        "Clears",
+        "CompleteRole",
+        "CompleteTaskByID",
+        "ConfirmCount",
+        "Count",
+        "CurrentRailSelection",
+        "DeleteOrchestrator",
+        "DeleteRole",
+        "ErrorCount",
+        "LastQueued",
+        "ListActiveOrchestrators",
+        "ListBackends",
+        "ListCompletedAgents",
+        "ListProjects",
+        "MarkRoleDone",
+        "NewOrchestrator",
+        "OnTaskReattached",
+        "OpenPR",
+        "OpenPRFromWorktree",
+        "PinOrchestrator",
+        "PinRole",
+        "PruneCompleted",
+        "QueueSelectRole",
+        "ReattachAgent",
+        "RenameOrchestrator",
+        "RenameRole",
+        "RepopulateRail",
+        "ResurrectOrchestrator",
+        "RevertStatus",
+        "SelectCount",
+        "SendHelp",
+        "SetOptimistic",
+        "SetShowArchived",
+        "Sets",
+        "ShowArchivedValues",
+        "ShowConfirm",
+        "ShowError",
+        "ShowForm2",
+        "ShowInput",
+        "ShowNewCoordForm",
+        "ShowSelect",
+        "SpawnWorker",
+        "StepTaskStatus",
+        "TestBridge_OnAdopt_Freelancer_Cancel_NoAdopt",
+        "TestBridge_OnAdopt_Freelancer_NoTaskID_Feedback",
+        "TestBridge_OnAdopt_Freelancer_PicksOrchestrator_Adopts",
+        "TestBridge_OnAdopt_ManagedWorker_NotApplicable",
+        "TestBridge_OnAdopt_NoActiveOrchestrators_Feedback",
+        "TestBridge_OnAdopt_Orchestrator_NotApplicable",
+        "TestBridge_OnAdopt_ReturnsBeforeSvcCompletes",
+        "TestBridge_OnAdopt_ServiceError_ShowsErrorModal",
+        "TestBridge_OnArchive_ActiveOrchestrator_Archives",
+        "TestBridge_OnArchive_ActiveRole_Archives",
+        "TestBridge_OnArchive_ArchivedFreelancer_Unarchives",
+        "TestBridge_OnArchive_ArchivedHeaderWithArchivedCoordTask_UnarchivesOrch",
+        "TestBridge_OnArchive_ArchivedOrchestrator_Unarchives",
+        "TestBridge_OnArchive_DeadRole_Unarchives",
+        "TestBridge_OnArchive_Freelancer_TogglesArgusTaskDirectly",
+        "TestBridge_OnArchive_HeraArchivedRole_Unarchives",
+        "TestBridge_OnArchive_LiveCoordRole_ConfirmYes_Archives",
+        "TestBridge_OnArchive_LiveCoordRole_RequiresConfirm",
+        "TestBridge_OnArchive_LiveOrchestrator_ConfirmNo_NoArchive",
+        "TestBridge_OnArchive_LiveOrchestrator_ConfirmYes_Archives",
+        "TestBridge_OnArchive_LiveOrchestrator_RequiresConfirm",
+        "TestBridge_OnArchive_MixedCoordHeader_RepairsViaTaskUnarchive",
+        "TestBridge_OnArchive_MixedFlagRole_ArgusArchived_Unarchives",
+        "TestBridge_OnArchive_NoSelection_Feedback",
+        "TestBridge_OnArchive_OrchestratorWithChildren_RequiresConfirm",
+        "TestBridge_OnArchive_RepairedHeader_CascadesAfterConfirm",
+        "TestBridge_OnArchive_ReturnsBeforeSvcCompletes",
+        "TestBridge_OnArchive_ServiceError_ShowsErrorModal",
+        "TestBridge_OnArchive_UnboundCoordRole_ArchivesImmediately",
+        "TestBridge_OnDelete_ConfirmNo_NoServiceCall",
+        "TestBridge_OnDelete_ConfirmYes_Orchestrator_CallsDeleteOrchestrator",
+        "TestBridge_OnDelete_ConfirmYes_Role_CallsDeleteRole",
+        "TestBridge_OnDelete_Freelancer_Feedback",
+        "TestBridge_OnDelete_NoSelection_NoConfirm_Feedback",
+        "TestBridge_OnDelete_Orchestrator_ConfirmNamesAndWarnsChildren",
+        "TestBridge_OnDelete_ReturnsBeforeConfirmShown",
+        "TestBridge_OnDelete_Role_WithChildren_WarnsChildren",
+        "TestBridge_OnDelete_ServiceError_ShowsErrorModal",
+        "TestBridge_OnHelp_NilSenderNoPanic",
+        "TestBridge_OnHelp_SendsHelpFrame",
+        "TestBridge_OnListAll_ReturnsBeforeRefresh",
+        "TestBridge_OnListAll_SyncsArchiveVisibilityToRepopulator",
+        "TestBridge_OnListAll_TogglesState_AndRefreshes",
+        "TestBridge_OnNewWorker_AgentRow_ResolvesToCoord",
+        "TestBridge_OnNewWorker_CoordRow_OpensInputModal",
+        "TestBridge_OnNewWorker_EmptyPrompt_SurfacesNotice",
+        "TestBridge_OnNewWorker_FreelanceRow_NotApplicable",
+        "TestBridge_OnNewWorker_NoneSelection_NotApplicable",
+        "TestBridge_OnNewWorker_OrchHeaderNoCoordRole_NotApplicable",
+        "TestBridge_OnNewWorker_SpawnError_SurfacesErrorModal",
+        "TestBridge_OnNewWorker_SubCoordNoChildOrch_NotApplicable",
+        "TestBridge_OnNewWorker_Success_QueuesAutoSelect",
+        "TestBridge_OnNew_Cancel_NoServiceCall",
+        "TestBridge_OnNew_EmptyName_NoServiceCall",
+        "TestBridge_OnNew_ListProjectsError_ShowsErrorModal",
+        "TestBridge_OnNew_ServiceError_ShowsErrorModal",
+        "TestBridge_OnNew_ValidInput_CallsNewOrchestrator",
+        "TestBridge_OnNew_WithPrompt_PassesThrough",
+        "TestBridge_OnOpenPR_ConfirmNo_NoPR",
+        "TestBridge_OnOpenPR_ConfirmYes_OpensPR",
+        "TestBridge_OnOpenPR_Coordinator_OpensPRForCoordRole",
+        "TestBridge_OnOpenPR_Freelancer_ConfirmNo_NoPR",
+        "TestBridge_OnOpenPR_Freelancer_NoWorktree_NoConfirm_Feedback",
+        "TestBridge_OnOpenPR_Freelancer_OpensPRFromWorktree",
+        "TestBridge_OnOpenPR_NoTarget_Feedback",
+        "TestBridge_OnOpenPR_SubCoordinatorRole_OpensPR",
+        "TestBridge_OnPin_Freelancer_NoFPinner_NotApplicable",
+        "TestBridge_OnPin_Freelancer_TogglesViaFPinner",
+        "TestBridge_OnPin_PinnedOrchestrator_Unpins",
+        "TestBridge_OnPin_PinnedRole_Unpins",
+        "TestBridge_OnPin_UnpinnedOrchestrator_Pins",
+        "TestBridge_OnPin_UnpinnedRole_Pins",
+        "TestBridge_OnPrune_ConfirmNo_NoPrune",
+        "TestBridge_OnPrune_ConfirmYes_PrunesListed",
+        "TestBridge_OnPrune_NoCompleted_NoConfirmNoPrune",
+        "TestBridge_OnPrune_ReturnsBeforeListCompletes",
+        "TestBridge_OnReattach_DeadSession_Freelancer_Calls_ReattachAgent",
+        "TestBridge_OnReattach_DeadSession_Worker_Calls_ReattachAgent",
+        "TestBridge_OnReattach_Dead_Row_Not_Handled",
+        "TestBridge_OnReattach_Failure_DoesNotNotifyReattachNotifier",
+        "TestBridge_OnReattach_LiveWorker_Not_Handled",
+        "TestBridge_OnReattach_NoTaskID_Not_Handled",
+        "TestBridge_OnReattach_NotSupported_ShowsError",
+        "TestBridge_OnReattach_OrchestratorHeader_Not_Handled",
+        "TestBridge_OnReattach_Success_NotifiesReattachNotifier",
+        "TestBridge_OnRename_EmptyName_NoServiceCall",
+        "TestBridge_OnRename_Freelancer_Feedback",
+        "TestBridge_OnRename_NoSelection_NoServiceCall_Feedback",
+        "TestBridge_OnRename_Orchestrator_CallsRenameOrchestrator",
+        "TestBridge_OnRename_Role_CallsRenameRole",
+        "TestBridge_OnRename_UnchangedName_NoServiceCall",
+        "TestBridge_OnResurrect_ArchiveHidden_NotHandled",
+        "TestBridge_OnResurrect_ArchivedCoordRole_ArchiveVisible_Confirms",
+        "TestBridge_OnResurrect_ArchivedOrchestrator_UsesCoordRoleID",
+        "TestBridge_OnResurrect_ArchivedWorker_NotHandled",
+        "TestBridge_OnResurrect_LiveCoord_NotHandled",
+        "TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmNo_NoOp",
+        "TestBridge_OnStatusAdvance_FreelancerToDone_ConfirmYes_CompletesTaskDirectly",
+        "TestBridge_OnStatusAdvance_InFlight_NoOptimistic",
+        "TestBridge_OnStatusAdvance_NilOptimizer_StillWorks",
+        "TestBridge_OnStatusAdvance_NonComplete_NoConfirm",
+        "TestBridge_OnStatusAdvance_Optimistic_Clamped_NoSet",
+        "TestBridge_OnStatusAdvance_Optimistic_ClearsOnFailure",
+        "TestBridge_OnStatusAdvance_Optimistic_FreelancerPath",
+        "TestBridge_OnStatusAdvance_Optimistic_NoTaskID_NoSet",
+        "TestBridge_OnStatusAdvance_Optimistic_OrchestratorHeader",
+        "TestBridge_OnStatusAdvance_Optimistic_SetBeforeSvcCall",
+        "TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmNo_MarksCoordDone",
+        "TestBridge_OnStatusAdvance_OrchestratorToDone_ConfirmYes_CompletesCoordDirectly",
+        "TestBridge_OnStatusAdvance_ReturnsBeforeSvcCompletes",
+        "TestBridge_OnStatusAdvance_Role_Steps",
+        "TestBridge_OnStatusAdvance_ToDone_ConfirmNo_MarksRoleDone",
+        "TestBridge_OnStatusAdvance_ToDone_ConfirmOpens",
+        "TestBridge_OnStatusAdvance_ToDone_ConfirmYes_CompletesArgusDirectly",
+        "TestBridge_OnStatusRevert_Optimistic_SetBeforeSvcCall",
+        "TestBridge_OnStatusRevert_Role_Steps",
+        "TestBridge_OnStatusRevert_ToDone_NoConfirm",
+        "TestBridge_OnStatus_Freelancer_StepsTaskDirectly",
+        "TestBridge_OnStatus_NoSelection_Feedback",
+        "TestBridge_OnStatus_OrchestratorHeader_StepsCoordRole",
+        "TestBridge_OnStatus_OrchestratorNoCoord_Feedback",
+        "TestBridge_SecondMutationWhileInFlight_NoOpsWithFeedback",
+        "Toggle",
+        "ToggleArchiveTask",
+        "ToggleFreelancePin",
+        "UnarchiveOrchestrator",
+        "UnarchiveRole",
+        "UnpinOrchestrator",
+        "UnpinRole",
+        "Visible"
+      ]
+    },
+    {
+      "path": "internal/view/rail_sections_test.go",
+      "language": "go",
+      "exports": [
+        "TestRailList_ArchivedFreelancer_NoDoubleRenderWithListAll",
+        "TestRailList_ArchivedFreelancer_RendersInBottomArchive",
+        "TestRailList_BUG026_ArchiveGroupFoldStatePersists",
+        "TestRailList_BUG026_ArchivedFreelancerCarriesMarkerInArchive",
+        "TestRailList_BUG026_ConsolidatedBottomArchive",
+        "TestRailList_BUG026_FreelanceGlyphCodepoint",
+        "TestRailList_BUG026_NoRailLabel",
+        "TestRailList_BUG026_PerCoordAgentArchivesIntact",
+        "TestRailList_BUG026_SectionRulesBetweenZones",
+        "TestRailList_BUG036_SectionRuleFullWidth_Freelance",
+        "TestRailList_BUG036_SectionRuleFullWidth_Pinned",
+        "TestRailList_FilterAppliesTo_ArchivedFreelancers",
+        "TestRailList_FilterAppliesTo_PinnedRoles",
+        "TestRailList_FreelanceMarker_RendersOnFreelanceRows",
+        "TestRailList_PinnedBlockHasClosingDelineator",
+        "TestRailList_PinnedBreadcrumb_DeepAncestry",
+        "TestRailList_PinnedBreadcrumb_DeepChainLeftTruncates",
+        "TestRailList_PinnedBreadcrumb_NavigationTreatsAsTwoLineUnit",
+        "TestRailList_PinnedBreadcrumb_TwoLinesAreConsecutive",
+        "TestRailList_PinnedFreelancer_FloatsToRootPinnedSection",
+        "TestRailList_PinnedFreelancer_StaysSingleLine",
+        "TestRailList_PinnedLeafUnderSubCoordinator_DoesNotVanish",
+        "TestRailList_PinnedOrchestrator_FloatsToTopPinnedSection",
+        "TestRailList_PinnedRole_FloatsOutOfCoordinator",
+        "TestRailList_PinnedRootOrch_StaysSingleLine",
+        "TestRailList_PinnedSubCoord_FloatsToTopWithChildren",
+        "TestRailList_PinnedSubItem_GetsBreadcrumbForm"
+      ]
+    },
+    {
+      "path": "internal/view/registrar_test.go",
+      "language": "go",
+      "exports": [
+        "TestRegistrar_HeartbeatTickRunsAtInterval",
+        "TestRegistrar_ReRegistersWhenMissing",
+        "TestRegistrar_StartErrorPropagates",
+        "TestRegistrar_StartRegisters",
+        "TestRegistrar_StopDeletes"
+      ]
+    },
+    {
+      "path": "internal/view/raw_input_test.go",
+      "language": "go",
+      "exports": [
+        "Close",
+        "CurrentFocus",
+        "Read",
+        "TestApp_CurrentFocus_TracksOnFocusChanged",
+        "TestIsHeraChord_Matrix",
+        "TestRawInput_AltArrowForwardedNotIntercepted",
+        "TestRawInput_BareEnterForwardsCR",
+        "TestRawInput_ChordsPassToParserEvenInPane",
+        "TestRawInput_CoordFocusForwardsToCoord",
+        "TestRawInput_CtrlZ_0x1a_PassesToParserNotForwardedInPane",
+        "TestRawInput_NoBoundTaskDropsContent",
+        "TestRawInput_PaneContentForwardedVerbatim",
+        "TestRawInput_RailFocusPassesToParser",
+        "TestRawInput_TextEnvelopePassesThrough",
+        "Write"
+      ]
+    },
+    {
+      "path": "internal/view/mutations.go",
+      "language": "go",
+      "exports": [
+        "NewCoordFormInput",
+        "OnAdopt",
+        "OnArchive",
+        "OnDelete",
+        "OnHelp",
+        "OnListAll",
+        "OnNew",
+        "OnNewWorker",
+        "OnOpenPR",
+        "OnPin",
+        "OnPrune",
+        "OnReattach",
+        "OnRename",
+        "OnResurrect",
+        "OnStatusAdvance",
+        "OnStatusRevert"
+      ]
+    },
+    {
+      "path": "internal/view/osc_filter.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/view/modals_test.go",
+      "language": "go",
+      "exports": [
+        "TestFormFieldWidth_FitsInsideFrame",
+        "TestOnFocusChanged_DoesNotStealFocusFromActiveModal",
+        "TestShowConfirm_EnterDefaultsToNo",
+        "TestShowConfirm_FocusMovesAndEscIsNo",
+        "TestShowConfirm_RendersWithArgusTheme",
+        "TestShowConfirm_YAndNRunesDecide",
+        "TestShowError_EscDismissesAndRestoresFocus",
+        "TestShowError_FocusMovesToModalAndEnterDismisses",
+        "TestShowError_RendersWithArgusTheme",
+        "TestShowError_TitleHasPadding",
+        "TestShowForm2_ButtonsAdvertiseKeys",
+        "TestShowForm2_EnterSubmits",
+        "TestShowInput_ButtonsAdvertiseKeys",
+        "TestShowInput_EnterSubmits",
+        "TestShowInput_EscCancelsAndRestoresFocus",
+        "TestShowInput_RendersWithArgusTheme",
+        "TestShowInput_TitleHasPadding",
+        "TestShowNewCoordForm_BackendIsInlineCycler",
+        "TestShowNewCoordForm_BranchDefaultsToOriginMain",
+        "TestShowNewCoordForm_ButtonLabels",
+        "TestShowNewCoordForm_CtrlEnterOnPromptDoesNotSubmit",
+        "TestShowNewCoordForm_CyclerEnterAdvancesFocusNoSubmit",
+        "TestShowNewCoordForm_CyclerLeftRightCycles",
+        "TestShowNewCoordForm_CyclerWrapAround",
+        "TestShowNewCoordForm_EmptyNameDoesNotSubmit",
+        "TestShowNewCoordForm_EnterOnPromptSubmits",
+        "TestShowNewCoordForm_EscCancels",
+        "TestShowNewCoordForm_FieldsContainedInFrame",
+        "TestShowNewCoordForm_FocusedFieldHasCyanBackground",
+        "TestShowNewCoordForm_NameFieldCursorVisible",
+        "TestShowNewCoordForm_ProjectIsInlineCycler",
+        "TestShowNewCoordForm_PromptIsTextArea",
+        "TestShowNewCoordForm_SubmitFiresCallback",
+        "TestShowNewCoordForm_SubmitPassesCyclerValues",
+        "TestShowSelect_EnterInvokesOnSelectWithChosenIndex",
+        "TestShowSelect_EscInvokesOnCancel",
+        "TestShowSelect_SelectedRowIsHighContrast",
+        "TestShowSelect_TitleHasPadding"
+      ]
+    },
+    {
+      "path": "internal/view/app.go",
+      "language": "go",
+      "exports": [
+        "AgentIsFreelancer",
+        "AgentTaskID",
+        "App",
+        "Application",
+        "BuildApp",
+        "ClearPaneReattach",
+        "Close",
+        "CoordTaskID",
+        "CurrentFocus",
+        "CurrentRailSelection",
+        "FireSelectionNow",
+        "InPaneNavigate",
+        "IsFiltering",
+        "OnFocusChanged",
+        "OnFullscreenChanged",
+        "OnPaneDead",
+        "OnRailSelectEnter",
+        "OnTaskReattached",
+        "QueueSelectRole",
+        "RepopulateRail",
+        "RouteWheel",
+        "ScrollFocusedPane",
+        "SendHelp",
+        "SetControl",
+        "SetFocusMachine",
+        "SetShowArchived",
+        "StartPaneReattach",
+        "ToggleFreelancePin"
+      ]
+    },
+    {
+      "path": "internal/view/pane_bridge_test.go",
+      "language": "go",
+      "exports": [
+        "TestNewBoundPane_NilRedrawSafe",
+        "TestNewBoundPane_RedrawFiresOnUpstreamChunk",
+        "TestPumpPaneBridge_ScrubsOSCFromSnapshotAndLiveStream"
+      ]
+    },
+    {
+      "path": "internal/view/modals.go",
+      "language": "go",
+      "exports": [
+        "Draw",
+        "GetCurrentOption",
+        "GetFieldHeight",
+        "GetFieldWidth",
+        "GetLabel",
+        "InputHandler",
+        "IsModalActive",
+        "SetDisabled",
+        "SetFinishedFunc",
+        "SetFormAttributes",
+        "ShowConfirm",
+        "ShowError",
+        "ShowForm2",
+        "ShowInput",
+        "ShowNewCoordForm",
+        "ShowSelect"
+      ]
+    },
+    {
+      "path": "internal/view/ops_adapters_test.go",
+      "language": "go",
+      "exports": [
+        "TestArgusAdapter_ArchiveTask_404TranslatesToTaskGone",
+        "TestArgusAdapter_ArchiveTask_Non404PassesThrough",
+        "TestArgusAdapter_GetSetTaskStatus_404TranslatesToTaskGone",
+        "TestArgusAdapter_UnarchiveTask_404TranslatesToTaskGone"
+      ]
+    },
+    {
+      "path": "internal/view/ops/rename.go",
+      "language": "go",
+      "exports": [
+        "RenameOrchestrator",
+        "RenameRole"
+      ]
+    },
+    {
+      "path": "internal/view/ops/reattach_test.go",
+      "language": "go",
+      "exports": [
+        "TestReattachAgent_ArgusError_Propagates",
+        "TestReattachAgent_EmptyTaskID_ReturnsError",
+        "TestReattachAgent_NoEndpoint_SurfacesNotSupported",
+        "TestReattachAgent_Success"
+      ]
+    },
+    {
+      "path": "internal/view/ops/adopt_test.go",
+      "language": "go",
+      "exports": [
+        "TestAdoptTaskIntoOrchestrator_CreatesWorkerRoleAndBinding",
+        "TestAdoptTaskIntoOrchestrator_DeCollidesRoleName",
+        "TestAdoptTaskIntoOrchestrator_MetaFailureDoesNotFailBinding",
+        "TestAdoptTaskIntoOrchestrator_RejectsAlreadyBoundTask",
+        "TestAdoptTaskIntoOrchestrator_RejectsEmptyTaskID",
+        "TestAdoptTaskIntoOrchestrator_RejectsUnknownOrchestrator",
+        "TestListActiveOrchestrators_ReturnsActiveSet"
+      ]
+    },
+    {
+      "path": "internal/view/ops/new_test.go",
+      "language": "go",
+      "exports": [
+        "TestNewOrchestrator_ArchivedDuplicateAllowed",
+        "TestNewOrchestrator_BindingInsertFailure_NoRollback",
+        "TestNewOrchestrator_CreatesOrchestratorRoleAndBinding",
+        "TestNewOrchestrator_DuplicateActiveNameRejected",
+        "TestNewOrchestrator_EmptyName",
+        "TestNewOrchestrator_EmptyProject",
+        "TestNewOrchestrator_EmptyUserPromptNoDoubleNewline",
+        "TestNewOrchestrator_GetTaskFailureSoftDegrades",
+        "TestNewOrchestrator_PromptIncludesOrchNameAndUserText",
+        "TestNewOrchestrator_PropagatesArgusError",
+        "TestNewOrchestrator_RoleInsertFailure_NoRollback",
+        "TestNewOrchestrator_TaskCreatedInProject"
+      ]
+    },
+    {
+      "path": "internal/view/ops/service.go",
+      "language": "go",
+      "exports": [
+        "ArgusClient",
+        "CreateTaskRequest",
+        "CreatedTask",
+        "DB",
+        "ListBackends",
+        "ListProjects",
+        "Logger",
+        "NewService",
+        "PRCreator",
+        "Service",
+        "TaskDetails",
+        "WorktreeRemover"
+      ]
+    },
+    {
+      "path": "internal/view/ops/archive_test.go",
+      "language": "go",
+      "exports": [
+        "TestArchiveOrchestrator_CascadeArchivesEndedBindingTask",
+        "TestArchiveOrchestrator_CascadeSkipsTaskLiveBoundElsewhere",
+        "TestArchiveOrchestrator_Explicit_Cascades",
+        "TestArchiveRole_EndedBindingFallsBackToLatest",
+        "TestArchiveRole_Explicit_SetsHeraAndArgus",
+        "TestArchiveRole_OwnLiveBindingArchivesEvenWhenShared",
+        "TestArchiveRole_PrefersLiveBindingOverEnded",
+        "TestArchiveRole_SharedTaskGuard_OtherLiveBindingOnDifferentTaskArchives",
+        "TestArchiveRole_SharedTaskGuard_SkipsArgusWhenLiveBoundElsewhere",
+        "TestToggleArchiveOrchestrator_CascadesArchive",
+        "TestToggleArchiveOrchestrator_UnarchiveDoesNotCascade",
+        "TestToggleArchiveOrchestrator_UnarchiveNoCoordBindingSkipsArgus",
+        "TestToggleArchiveRole_ArchivesAndCallsArgus",
+        "TestToggleArchiveRole_ArgusErrorPropagates",
+        "TestToggleArchiveRole_NoLiveBindingSkipsArgus",
+        "TestToggleArchiveRole_UnarchiveArgusErrorPropagates",
+        "TestToggleArchiveRole_UnarchiveEndedBindingFallsBackToLatest",
+        "TestToggleArchiveRole_UnarchiveNoBindingSkipsArgus",
+        "TestToggleArchiveRole_UnarchivePrefersLiveBindingOverEnded",
+        "TestToggleArchiveRole_UnarchiveUnarchivesArgusToo",
+        "TestToggleArchiveTask_Active_ArchivesByTaskID",
+        "TestToggleArchiveTask_Archived_UnarchivesByTaskID",
+        "TestToggleArchiveTask_ArgusErrorPropagates",
+        "TestToggleArchiveTask_EmptyTaskID_Errors",
+        "TestUnarchiveOrchestrator_Explicit_UnarchivesCoordTask",
+        "TestUnarchiveRole_Explicit_ClearsHeraAndArgus",
+        "TestUnarchiveRole_MixedFlags_HeraActiveArgusArchived"
+      ]
+    },
+    {
+      "path": "internal/view/ops/pin.go",
+      "language": "go",
+      "exports": [
+        "PinOrchestrator",
+        "PinRole",
+        "UnpinOrchestrator",
+        "UnpinRole"
+      ]
+    },
+    {
+      "path": "internal/view/ops/delete.go",
+      "language": "go",
+      "exports": [
+        "DeleteOrchestrator",
+        "DeleteRole",
+        "ExecWorktreeRemover",
+        "Remove"
+      ]
+    },
+    {
+      "path": "internal/view/ops/types.go",
+      "language": "go",
+      "exports": [
+        "Binding",
+        "CreateBindingInput",
+        "CreateRoleInput",
+        "NewOrchestratorResult",
+        "Orchestrator",
+        "Role",
+        "RoleKind",
+        "SpawnWorkerResult"
+      ]
+    },
+    {
+      "path": "internal/view/ops/status_test.go",
+      "language": "go",
+      "exports": [
+        "TestAdvanceStatus_ClampsAtComplete",
+        "TestAdvanceStatus_StepsForward",
+        "TestCompleteRole_AlreadyComplete_StillSets",
+        "TestCompleteRole_NoBinding_Errors",
+        "TestCompleteRole_SetsComplete",
+        "TestCompleteTaskByID_EmptyTaskID_Errors",
+        "TestCompleteTaskByID_SetsComplete",
+        "TestNextStatus_NeverBouncBackward",
+        "TestPrevStatus_NeverBounceForward",
+        "TestRevertStatus_ClampsAtPending",
+        "TestRevertStatus_FullBackwardWalk_NoBounceFwd",
+        "TestRevertStatus_StepsBackward",
+        "TestStepStatus_EndedBindingFallsBackToLatest",
+        "TestStepStatus_EndedBindingWithEmptyTaskID_ClearError",
+        "TestStepStatus_NoBinding_Errors",
+        "TestStepStatus_PrefersLiveBindingOverEnded",
+        "TestStepStatus_SetError_Propagates",
+        "TestStepTaskStatus_Advance_StepsForwardByTaskID",
+        "TestStepTaskStatus_ClampsAtComplete_NoWrite",
+        "TestStepTaskStatus_EmptyTaskID_Errors",
+        "TestStepTaskStatus_Revert_StepsBackwardByTaskID"
+      ]
+    },
+    {
+      "path": "internal/view/ops/adopt.go",
+      "language": "go",
+      "exports": [
+        "AdoptInput",
+        "AdoptResult",
+        "AdoptTaskIntoOrchestrator",
+        "ListActiveOrchestrators"
+      ]
+    },
+    {
+      "path": "internal/view/ops/resurrect.go",
+      "language": "go",
+      "exports": [
+        "ResurrectOrchestrator"
+      ]
+    },
+    {
+      "path": "internal/view/ops/new.go",
+      "language": "go",
+      "exports": [
+        "NewOrchestrator",
+        "NewOrchestratorInput"
+      ]
+    },
+    {
+      "path": "internal/view/ops/archive.go",
+      "language": "go",
+      "exports": [
+        "ArchiveOrchestrator",
+        "ArchiveRole",
+        "ToggleArchiveOrchestrator",
+        "ToggleArchiveRole",
+        "ToggleArchiveTask",
+        "UnarchiveOrchestrator",
+        "UnarchiveRole"
+      ]
+    },
+    {
+      "path": "internal/view/ops/pin_test.go",
+      "language": "go",
+      "exports": [
+        "TestPinOrchestrator_PinsClearsArchivedAndUnarchivesCoordTask",
+        "TestPinRole_NoBindingSkipsArgus",
+        "TestPinRole_PinsClearsArchivedAndUnarchivesArgus",
+        "TestUnpinOrchestrator_ClearsPin",
+        "TestUnpinRole_ClearsPinNoArgus"
+      ]
+    },
+    {
+      "path": "internal/view/ops/prune.go",
+      "language": "go",
+      "exports": [
+        "CompletedAgent",
+        "ListCompletedAgents",
+        "PruneCompleted"
+      ]
+    },
+    {
+      "path": "internal/view/ops/pr_test.go",
+      "language": "go",
+      "exports": [
+        "TestExecPRCreator_ImplementsInterface",
+        "TestOpenPRFromWorktree_CreatorError_Propagates",
+        "TestOpenPRFromWorktree_DelegatesToCreator",
+        "TestOpenPRFromWorktree_EmptyPath_Errors",
+        "TestOpenPRFromWorktree_NoCreator_Errors",
+        "TestOpenPR_CreatorError_Propagates",
+        "TestOpenPR_DelegatesToCreator",
+        "TestOpenPR_NoBinding_Errors",
+        "TestOpenPR_NoCreator_Errors"
+      ]
+    },
+    {
+      "path": "internal/view/ops/spawn_worker_test.go",
+      "language": "go",
+      "exports": [
+        "TestSpawnWorker_ArgusCreateFailure_ReturnsError",
+        "TestSpawnWorker_BindingInsertFailureAfterCreate_NoRollback",
+        "TestSpawnWorker_CollisionSuffix",
+        "TestSpawnWorker_CreatesTaskInCoordsProject",
+        "TestSpawnWorker_EmptyPrompt_ValidationError",
+        "TestSpawnWorker_EmptySlugFallsBackToWorkerStem",
+        "TestSpawnWorker_GetTaskFailureSoftDegrades",
+        "TestSpawnWorker_InsertsRoleAndBindingWithWorktreePath",
+        "TestSpawnWorker_OrientationPrefixedPrompt",
+        "TestSpawnWorker_PrefixNamesCoordRoleNotSelectedRow",
+        "TestSpawnWorker_PromptSetFromOperatorText",
+        "TestSpawnWorker_RoleInsertFailureAfterCreate_NoRollback",
+        "TestSpawnWorker_RoleNameDerivedFromPrompt"
+      ]
+    },
+    {
+      "path": "internal/view/ops/pr.go",
+      "language": "go",
+      "exports": [
+        "CreatePR",
+        "ExecPRCreator",
+        "OpenPR",
+        "OpenPRFromWorktree"
+      ]
+    },
+    {
+      "path": "internal/view/ops/prune_test.go",
+      "language": "go",
+      "exports": [
+        "TestListCompletedAgents_OnlyCompleted",
+        "TestListCompletedAgents_SkipsCoordinatorRoles",
+        "TestPruneCompleted_DestroysOnlyGivenAgents",
+        "TestPruneCompleted_EmptyList_NoDestruction"
+      ]
+    },
+    {
+      "path": "internal/view/ops/resurrect_test.go",
+      "language": "go",
+      "exports": [
+        "TestResurrectOrchestrator_HappyPath",
+        "TestResurrectOrchestrator_RejectsActiveRole",
+        "TestResurrectOrchestrator_RejectsEmptyArgusProject",
+        "TestResurrectOrchestrator_RejectsNonCoord"
+      ]
+    },
+    {
+      "path": "internal/view/ops/listall_test.go",
+      "language": "go",
+      "exports": [
+        "TestListAllState_NilSafeConstruction",
+        "TestListAllState_StartsHidden",
+        "TestListAllState_Toggle"
+      ]
+    },
+    {
+      "path": "internal/view/ops/listall.go",
+      "language": "go",
+      "exports": [
+        "ListAllState",
+        "NewListAllState",
+        "Toggle",
+        "Visible"
+      ]
+    },
+    {
+      "path": "internal/view/ops/spawn_worker.go",
+      "language": "go",
+      "exports": [
+        "SpawnWorker",
+        "SpawnWorkerInput"
+      ]
+    },
+    {
+      "path": "internal/view/ops/rename_test.go",
+      "language": "go",
+      "exports": [
+        "TestRenameOrchestrator_DuplicateActiveRejected",
+        "TestRenameOrchestrator_DuplicateArchivedAllowed",
+        "TestRenameOrchestrator_EmptyName",
+        "TestRenameOrchestrator_NoopWhenSameName",
+        "TestRenameOrchestrator_Success",
+        "TestRenameRole_ArchivedSiblingAllowed",
+        "TestRenameRole_DuplicateSiblingRejected",
+        "TestRenameRole_EmptyName",
+        "TestRenameRole_SameNameAcrossOrchestratorsAllowed",
+        "TestRenameRole_Success"
+      ]
+    },
+    {
+      "path": "internal/view/ops/status.go",
+      "language": "go",
+      "exports": [
+        "AdvanceStatus",
+        "CompleteRole",
+        "CompleteTaskByID",
+        "MarkRoleDone",
+        "NextStatus",
+        "PrevStatus",
+        "RevertStatus",
+        "StepTaskStatus"
+      ]
+    },
+    {
+      "path": "internal/view/ops/delete_test.go",
+      "language": "go",
+      "exports": [
+        "TestDeleteOrchestrator_Cascades",
+        "TestDeleteOrchestrator_CoordOnly",
+        "TestDeleteOrchestrator_DestroysEveryArgusTask",
+        "TestDeleteRole_AuditLogIncludesPath",
+        "TestDeleteRole_DestroysArgusTask",
+        "TestDeleteRole_EmptyWorktreePathIsSoftNoop",
+        "TestDeleteRole_HappyPath",
+        "TestDeleteRole_MissingWorktreeIsSoftNoop",
+        "TestDeleteRole_NoBinding_NoArgusDelete",
+        "TestDeleteRole_NoLiveBinding",
+        "TestDeleteRole_WorktreeGitMissingIsSoftNoop",
+        "TestExecWorktreeRemover_RemovesRealWorktree"
+      ]
+    },
+    {
+      "path": "internal/view/ops/fakes_test.go",
+      "language": "go",
+      "exports": [
+        "ArchiveOrchestrator",
+        "ArchiveRole",
+        "ArchiveTask",
+        "CreateBinding",
+        "CreateOrchestrator",
+        "CreatePR",
+        "CreateRole",
+        "CreateTask",
+        "DeleteOrchestratorByID",
+        "DeleteTask",
+        "EndBinding",
+        "GetLatestBindingByRole",
+        "GetLiveBindingByRole",
+        "GetOrchestratorByID",
+        "GetOrchestratorByName",
+        "GetRoleByID",
+        "GetRoleByOrchestratorAndName",
+        "GetTask",
+        "GetTaskStatus",
+        "ListBackends",
+        "ListLiveBindings",
+        "ListLiveBindingsByTask",
+        "ListOrchestrators",
+        "ListProjects",
+        "ListRolesByOrchestrator",
+        "ListRolesByOrchestratorInclusive",
+        "PinOrchestrator",
+        "PinRole",
+        "PostTaskInput",
+        "Printf",
+        "PutTaskMeta",
+        "Remove",
+        "RenameOrchestrator",
+        "RenameRole",
+        "RestartTask",
+        "SetTaskStatus",
+        "UnarchiveOrchestrator",
+        "UnarchiveRole",
+        "UnarchiveTask",
+        "UnpinOrchestrator",
+        "UnpinRole",
+        "UpsertRoleStatus"
+      ]
+    },
+    {
+      "path": "internal/view/ops/reattach.go",
+      "language": "go",
+      "exports": [
+        "ReattachAgent"
+      ]
+    },
+    {
+      "path": "internal/view/ops/binding.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/view/ops/archive_prune_test.go",
+      "language": "go",
+      "exports": [
+        "TestArchiveOrchestrator_CascadesThroughPrunedTasks",
+        "TestArchiveOrchestrator_NonPrunedFailureContinuesAndAggregates",
+        "TestArchiveOrchestrator_RetryAfterPartialFailureCompletes",
+        "TestArchiveRole_Non404ArgusErrorStillPropagates",
+        "TestArchiveRole_PrunedTaskSkipsArgusSide",
+        "TestStepTaskStatus_PrunedTaskFriendlyError",
+        "TestToggleArchiveTask_PrunedTaskIsNoOp",
+        "TestUnarchiveOrchestrator_PrunedCoordTaskSkipsArgusSide",
+        "TestUnarchiveRole_PrunedTaskSkipsArgusSide"
+      ]
+    },
+    {
+      "path": "internal/view/ops/errors.go",
+      "language": "go",
+      "exports": [
+        "Error",
+        "ValidationError"
+      ]
+    },
+    {
+      "path": "internal/view/rail_state_test.go",
+      "language": "go",
+      "exports": [
+        "TestRailListStateChangeCallback",
+        "TestRailListViewStateCapturesLastSelection",
+        "TestRailListViewStateRestoreRoundTrip",
+        "TestRailStatePersistRoundTrip"
+      ]
+    },
+    {
+      "path": "internal/view/focus.go",
+      "language": "go",
+      "exports": [
+        "Advance",
+        "FocusMachine",
+        "FocusState",
+        "JumpToAGENT",
+        "JumpToCOORD",
+        "NewFocusMachine",
+        "Retreat",
+        "SetAgentPresent",
+        "SetCoordPresent",
+        "State",
+        "String",
+        "ToRAIL"
+      ]
+    },
+    {
+      "path": "internal/view/coord_details.go",
+      "language": "go",
+      "exports": [
+        "Draw",
+        "SetDetails"
+      ]
+    },
+    {
+      "path": "internal/view/session_test.go",
+      "language": "go",
+      "exports": [
+        "TestMakeViewportGuard_BoundaryExactly",
+        "TestMakeViewportGuard_OnFirstRealCallback",
+        "TestMakeViewportGuard_SkipsSentinelSize",
+        "TestSession_RailRefresherSubscribedAndStoppedOnClose"
+      ]
+    },
+    {
+      "path": "internal/view/manager.go",
+      "language": "go",
+      "exports": [
+        "Close",
+        "Ensure",
+        "IsTaskAlive",
+        "NewProxyManager",
+        "ProxyManager",
+        "ResetApplied",
+        "ResetSubscription",
+        "ResizeTask",
+        "Seed",
+        "TaskIDs",
+        "TaskSize"
+      ]
+    },
+    {
+      "path": "internal/view/osc_filter_test.go",
+      "language": "go",
+      "exports": [
+        "TestOSCFilter_0x9CIsNotATerminator",
+        "TestOSCFilter_BackToBackOSC",
+        "TestOSCFilter_CANAndSUBCancel",
+        "TestOSCFilter_ESCCancelsOSCAndNewSequenceSurvives",
+        "TestOSCFilter_FreshSliceOwnershipPerCall",
+        "TestOSCFilter_InlineBELTitleRemoved",
+        "TestOSCFilter_LoneTrailingESCDeferred",
+        "TestOSCFilter_MixedStream",
+        "TestOSCFilter_NonOSCEscapesPassThrough",
+        "TestOSCFilter_RunawayCapStopsDropping",
+        "TestOSCFilter_STTerminatorRemoved",
+        "TestOSCFilter_SplitAcrossChunks_Introducer",
+        "TestOSCFilter_SplitAcrossChunks_Payload",
+        "TestOSCFilter_SplitAcrossChunks_STTerminator",
+        "TestOSCFilter_ThreeWaySplit"
+      ]
+    },
+    {
+      "path": "internal/view/pinned_pane.go",
+      "language": "go",
+      "exports": [
+        "Draw",
+        "Focus",
+        "GetTitle",
+        "PinnedSize",
+        "SetContent",
+        "SetReattaching",
+        "SetReattachingSubtitle",
+        "SetTitle"
+      ]
+    },
+    {
+      "path": "internal/view/pane_bridge.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/view/rail_list_test.go",
+      "language": "go",
+      "exports": [
+        "TestDrawRoleRow_RunningRowRendersAdvancingSpinner",
+        "TestNavToParent",
+        "TestOrchIcon_ArchivedCoordCompleteStillShowsCheck",
+        "TestOrchIcon_ArchivedHeaderKeepsTrueStatusGlyph",
+        "TestOrchIcon_ArchivedOrchestratorSkipsRepairCue",
+        "TestOrchIcon_HealthyHeaderRendersNormalGlyph",
+        "TestOrchIcon_LiveCoordWithCompleteArgusTaskRendersIdleMoon",
+        "TestOrchIcon_MixedCoordArchivedRendersRepairCue",
+        "TestPRGlyph_ActionableStatesReturnGlyphAndOk",
+        "TestPRGlyph_NonActionableStatesReturnNotOk",
+        "TestRailList_AcceptFilterKeepsQueryLeavesInputMode",
+        "TestRailList_AnimFrameAdvancesByWallClock",
+        "TestRailList_ArchiveSeparatorRendersWhenShowArchived",
+        "TestRailList_ArchivedChildIndentsDeeperThanExpando",
+        "TestRailList_ClearFilterRestoresFullRail",
+        "TestRailList_CollapseHidesRoles",
+        "TestRailList_CoordHeaderStatusIconAndMarker",
+        "TestRailList_CoordinatorFoldableSpaceToggle",
+        "TestRailList_CursorMovesAcrossSelectableRows",
+        "TestRailList_DeadRoleHiddenByDefault",
+        "TestRailList_DeadRoleShownWhenArchivedVisible",
+        "TestRailList_EmptyCoordinatorDefaultsCollapsed",
+        "TestRailList_EmptySubCoordinatorDefaultsCollapsed",
+        "TestRailList_FilterAutoExpandsCollapsed",
+        "TestRailList_FilterInputAppendsRunes",
+        "TestRailList_FilterInputLineRendered",
+        "TestRailList_FilterNarrowsToNameMatches",
+        "TestRailList_FilterPreservesAncestry",
+        "TestRailList_FilterWhitespaceTerms",
+        "TestRailList_FoldersFirstOrdering",
+        "TestRailList_FreelanceCursorRestoresByTaskID",
+        "TestRailList_FreelanceSectionRendersAndCollapses",
+        "TestRailList_HasRunningRows",
+        "TestRailList_HasRunningRowsClearsWhenLastRunnerCompletes",
+        "TestRailList_HeaderShowsChevronAndCount",
+        "TestRailList_HidesArchivedItemsButShowsExpandoWhenCollapsed",
+        "TestRailList_ManualToggleOverridesCollapsedDefault",
+        "TestRailList_MarkerGateDoesNotShiftContent",
+        "TestRailList_MarkerHiddenWithoutProbe",
+        "TestRailList_MarkerShownWithProbe",
+        "TestRailList_NoFreelanceSectionWhenEmpty",
+        "TestRailList_NoKindPills",
+        "TestRailList_NonSelectedRowHasNoBackground",
+        "TestRailList_OnSelectionChangedFiresOnMove",
+        "TestRailList_OnSelectionChangedFiresOnSelectBy",
+        "TestRailList_PRCellReclainsSpaceWhenNonActionable",
+        "TestRailList_PRIndicatorCellRendersForActionableState",
+        "TestRailList_PerCoordinatorArchiveExpando",
+        "TestRailList_RestoresCursorAcrossRebuild",
+        "TestRailList_SelectionMarkerMovesWithCursorWithoutShift",
+        "TestRailList_SelectionMarkerOnEverySelectableRowKind",
+        "TestRailList_SelectionUsesSelectedTextNotBackground",
+        "TestRailList_ShowArchivedOverridesCollapsedDefault",
+        "TestRailList_StepToBindable",
+        "TestRailList_SubCoordinatorNestsAsFoldableCoordRow",
+        "TestRailList_TopLevelArchiveBelowFreelance",
+        "TestRailList_TopLevelArchiveForArchivedRootCoordinators",
+        "TestRoleIcon_ArchiveRoundTripNeverMutatesGlyph",
+        "TestRoleIcon_DeadCompleteShowsCheckDimmed",
+        "TestStateGlyph_MirrorsArgusTable",
+        "TestStateGlyph_NeedsInputScopedToInProgress",
+        "TestStateGlyph_NoCheckmarkForNonCompleteStates",
+        "TestStateGlyph_SpinnerCyclesArgusProgressFrames",
+        "TestStatusIcon_ArchivedRowsKeepTrueStatusGlyph",
+        "TestStatusIcon_UnknownStateArchivedFallsBackToCircle"
+      ]
+    },
+    {
+      "path": "internal/view/registrar.go",
+      "language": "go",
+      "exports": [
+        "ID",
+        "NewRegistrar",
+        "Registrar",
+        "SetHeartbeat",
+        "Start",
+        "Stop"
+      ]
+    },
+    {
+      "path": "internal/view/server_test.go",
+      "language": "go",
+      "exports": [
+        "TestServer_RunnerInvokedPerConnection",
+        "TestServer_SecondConnectionClosesFirst",
+        "TestServer_UpgradeAccepted",
+        "TestServer_WedgedPriorDoesNotBlockNewSession"
+      ]
+    },
+    {
+      "path": "internal/view/taskstate.go",
+      "language": "go",
+      "exports": [
+        "ArgusStateCache",
+        "ArgusTaskInfo",
+        "ArgusTaskState",
+        "ClearOptimistic",
+        "FreelanceProvider",
+        "Get",
+        "List",
+        "NewArgusStateCache",
+        "Ready",
+        "Run",
+        "SetOptimistic",
+        "Subscribe",
+        "TaskStateProvider"
+      ]
+    },
+    {
+      "path": "internal/db/roles.go",
+      "language": "go",
+      "exports": [
+        "Archive",
+        "Create",
+        "CreateRoleInput",
+        "GetByID",
+        "GetByOrchestratorAndName",
+        "ListByOrchestrator",
+        "ListByOrchestratorInclusive",
+        "Pin",
+        "Rename",
+        "RolesDAO",
+        "Unarchive",
+        "Unpin"
+      ]
+    },
+    {
+      "path": "internal/db/pinned_test.go",
+      "language": "go",
+      "exports": [
+        "TestOrchestrators_Archive_ClearsPinnedAt",
+        "TestOrchestrators_Pin_ClearsArchivedAt",
+        "TestOrchestrators_Pin_PreservesIdempotencyTimestamp",
+        "TestOrchestrators_Pin_SetsPinnedAt",
+        "TestOrchestrators_Unpin_ClearsPinnedAt",
+        "TestRoles_Archive_ClearsPinnedAt",
+        "TestRoles_Pin_RoundtripsThroughListInclusive",
+        "TestRoles_Pin_SetsPinnedAtAndClearsArchived",
+        "TestRoles_Unpin_ClearsPinnedAt"
+      ]
+    },
+    {
+      "path": "internal/db/role_status.go",
+      "language": "go",
+      "exports": [
+        "Get",
+        "RoleStatusDAO",
+        "Upsert"
+      ]
+    },
+    {
+      "path": "internal/db/config.go",
+      "language": "go",
+      "exports": [
+        "ConfigDAO",
+        "Get",
+        "Set"
+      ]
+    },
+    {
+      "path": "internal/db/orchestrators.go",
+      "language": "go",
+      "exports": [
+        "Archive",
+        "Create",
+        "Delete",
+        "GetByID",
+        "GetByName",
+        "List",
+        "ListInclusive",
+        "OrchestratorsDAO",
+        "Pin",
+        "Rename",
+        "Unarchive",
+        "Unpin"
+      ]
+    },
+    {
+      "path": "internal/db/backup.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/db/event_cursor.go",
+      "language": "go",
+      "exports": [
+        "EventCursorDAO",
+        "Get",
+        "Set"
+      ]
+    },
+    {
+      "path": "internal/db/db.go",
+      "language": "go",
+      "exports": [
+        "Close",
+        "DB",
+        "Open",
+        "Path",
+        "Raw"
+      ]
+    },
+    {
+      "path": "internal/db/events_test.go",
+      "language": "go",
+      "exports": [
+        "TestBroadcaster_CancelClosesChannel",
+        "TestBroadcaster_CancelStopsDelivery",
+        "TestBroadcaster_CloseClosesAllSubscribers",
+        "TestBroadcaster_ConcurrentSubscribeAndEmit",
+        "TestBroadcaster_EmitAfterCloseIsNoop",
+        "TestBroadcaster_FanOutToMultipleSubscribers",
+        "TestBroadcaster_SlowSubscriberDoesNotBlockProducer",
+        "TestDB_BindingCreateEmitsInsertEvent",
+        "TestDB_BindingEndEmitsUpdateEvent",
+        "TestDB_BindingEndOnAlreadyEndedDoesNotEmit",
+        "TestDB_OrchestratorArchiveEmitsUpdateEvent",
+        "TestDB_OrchestratorArchiveIdempotentDoesNotEmit",
+        "TestDB_OrchestratorCreateEmitsInsertEvent",
+        "TestDB_OrchestratorCreateIdempotentDoesNotEmit",
+        "TestDB_OrchestratorRenameEmitsUpdateEvent",
+        "TestDB_OrchestratorRenameSelfDoesNotEmit",
+        "TestDB_OrchestratorUnarchiveEmitsUpdateEvent",
+        "TestDB_RoleArchiveEmitsUpdateEvent",
+        "TestDB_RoleArchiveIdempotentDoesNotEmit",
+        "TestDB_RoleCreateEmitsInsertEvent",
+        "TestDB_RoleCreateIdempotentDoesNotEmit",
+        "TestDB_RoleRenameEmitsUpdateEvent",
+        "TestDB_RoleRenameSelfDoesNotEmit",
+        "TestDB_RoleUnarchiveEmitsUpdateEvent"
+      ]
+    },
+    {
+      "path": "internal/db/db_test.go",
+      "language": "go",
+      "exports": [
+        "TestBindings_EndIsIdempotentlySafe",
+        "TestBindings_GetLiveByWorktree",
+        "TestBindings_LifecycleStartAndEnd",
+        "TestBindings_ListLiveExcludesEnded",
+        "TestConfig_GetSet",
+        "TestEventCursor_GetSetMonotonic",
+        "TestMessages_CreateInboxMarkRead",
+        "TestMessages_CreateRequiresToRoleID",
+        "TestMessages_MarkReadDoesNotTouchOtherRolesMessages",
+        "TestMessages_SetDelivered",
+        "TestOpen_CreatesFileAndMigrates",
+        "TestOpen_IsIdempotent_ReopenWithExistingFile",
+        "TestOrchestrators_CreateAndGet",
+        "TestOrchestrators_CreateIsIdempotent",
+        "TestOrchestrators_GetByName_NotFound",
+        "TestRoleStatus_UpsertAndGet",
+        "TestRoles_CreateAndGet",
+        "TestRoles_CreateConflictingKindFails",
+        "TestRoles_CreateSameKindIsIdempotent"
+      ]
+    },
+    {
+      "path": "internal/db/migration_0009_test.go",
+      "language": "go",
+      "exports": [
+        "TestMigration0009_NudgeColumnsDropped"
+      ]
+    },
+    {
+      "path": "internal/db/types.go",
+      "language": "go",
+      "exports": [
+        "Binding",
+        "DeliveryMode",
+        "Message",
+        "Orchestrator",
+        "Role",
+        "RoleKind",
+        "RoleStatus",
+        "RoleStatusValue"
+      ]
+    },
+    {
+      "path": "internal/db/subtree.go",
+      "language": "go",
+      "exports": [
+        "SubtreeOrchIDs"
+      ]
+    },
+    {
+      "path": "internal/db/audit_followup_test.go",
+      "language": "go",
+      "exports": [
+        "TestBindings_CoordinatorTaskArchived_RoleSurvives",
+        "TestBindings_PartialUniqueIndex_AllowsRebindAfterEnd",
+        "TestBindings_PartialUniqueIndex_PreventsTwoLiveForSameTask",
+        "TestBindings_SameRoleReboundAcrossIncarnations",
+        "TestRoles_ArgusProjectPreservedAcrossCreate"
+      ]
+    },
+    {
+      "path": "internal/db/events.go",
+      "language": "go",
+      "exports": [
+        "Broadcaster",
+        "Close",
+        "Emit",
+        "EntityType",
+        "Event",
+        "EventOp",
+        "NewBroadcaster",
+        "Subscribe",
+        "SubscriberCount"
+      ]
+    },
+    {
+      "path": "internal/db/bindings_multi_test.go",
+      "language": "go",
+      "exports": [
+        "TestBindings_CreateDerivesOrchestratorIDFromRole",
+        "TestBindings_GetLiveByTaskAndOrchestrator",
+        "TestBindings_GetLiveByTaskIDReturnsAmbiguousWhenMulti",
+        "TestBindings_GetLiveByTaskID_SingleStillReturnsRow",
+        "TestBindings_ListLiveByTaskID_EmptyForUnknownTask",
+        "TestBindings_MultiBindingSameTaskDifferentOrchestrators",
+        "TestBindings_SecondBindingSameTaskSameOrchestratorRejected",
+        "TestMigration0004_BackfillsOrchestratorID"
+      ]
+    },
+    {
+      "path": "internal/db/bindings.go",
+      "language": "go",
+      "exports": [
+        "BindingsDAO",
+        "Create",
+        "CreateBindingInput",
+        "End",
+        "GetLatestByRole",
+        "GetLiveByRole",
+        "GetLiveByTaskAndOrchestrator",
+        "GetLiveByTaskID",
+        "GetLiveByWorktree",
+        "ListByRole",
+        "ListLive",
+        "ListLiveByTaskID"
+      ]
+    },
+    {
+      "path": "internal/db/tree_cursors.go",
+      "language": "go",
+      "exports": [
+        "GetTreeCursor",
+        "TreeCursorsDAO",
+        "UpsertTreeCursor"
+      ]
+    },
+    {
+      "path": "internal/db/messages.go",
+      "language": "go",
+      "exports": [
+        "CountUnreadForRole",
+        "Create",
+        "CreateMessageInput",
+        "GetByID",
+        "MarkRead",
+        "MessagesDAO",
+        "SetDelivered",
+        "UnreadForRole"
+      ]
+    },
+    {
+      "path": "internal/db/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/db/roles_test.go",
+      "language": "go",
+      "exports": [
+        "TestRoles_Archive_IdempotentTimestamp",
+        "TestRoles_Archive_NonExistentReturnsNotFound",
+        "TestRoles_Archive_SetsArchivedAtAndPreservesIdentity",
+        "TestRoles_Create_ArchivedSameNameDoesNotBlock",
+        "TestRoles_GetByID_ResolvesArchivedRow",
+        "TestRoles_GetByOrchestratorAndName_FiltersArchived",
+        "TestRoles_ListByOrchestratorInclusive_ReturnsAll",
+        "TestRoles_ListByOrchestrator_FiltersArchivedByDefault",
+        "TestRoles_Rename_AllowedAcrossArchivedSibling",
+        "TestRoles_Rename_AllowsSameNameAcrossOrchestrators",
+        "TestRoles_Rename_NonExistentReturnsNotFound",
+        "TestRoles_Rename_RejectsActiveSiblingDuplicate",
+        "TestRoles_Rename_UpdatesNameOnly",
+        "TestRoles_Unarchive_ClearsArchivedAt",
+        "TestRoles_Unarchive_NonExistentReturnsNotFound"
+      ]
+    },
+    {
+      "path": "internal/db/bindings_latest_test.go",
+      "language": "go",
+      "exports": [
+        "TestBindings_GetLatestByRole_FallsBackToEndedBinding",
+        "TestBindings_GetLatestByRole_NoBindingReturnsErrNotFound",
+        "TestBindings_GetLatestByRole_PicksMostRecentOfSeveralEnded",
+        "TestBindings_GetLatestByRole_ReturnsLiveBinding"
+      ]
+    },
+    {
+      "path": "internal/db/schema.go",
+      "language": "go",
+      "exports": [
+        "SchemaVersion"
+      ]
+    },
+    {
+      "path": "internal/db/migration_0007_test.go",
+      "language": "go",
+      "exports": [
+        "TestMigration0007_BindingsSurviveRoleTableRebuild",
+        "TestMigration_BackupCreatedForPendingMigrations",
+        "TestMigration_NoBackupWhenFullyMigrated",
+        "TestMigration_PruneBackupsKeepsLatest"
+      ]
+    },
+    {
+      "path": "internal/db/orchestrators_test.go",
+      "language": "go",
+      "exports": [
+        "TestOrchestrators_Archive_NonExistentReturnsNotFound",
+        "TestOrchestrators_Archive_PreservesIdempotencyTimestamp",
+        "TestOrchestrators_Archive_SetsArchivedAt",
+        "TestOrchestrators_Create_ArchivedSameNameDoesNotBlock",
+        "TestOrchestrators_GetByID_ResolvesArchivedRow",
+        "TestOrchestrators_GetByName_FiltersArchived",
+        "TestOrchestrators_ListInclusive_ReturnsAll",
+        "TestOrchestrators_List_FiltersArchivedByDefault",
+        "TestOrchestrators_Rename_AllowedToArchivedName",
+        "TestOrchestrators_Rename_NonExistentReturnsNotFound",
+        "TestOrchestrators_Rename_RejectsActiveDuplicate",
+        "TestOrchestrators_Rename_ScansArchivedAtAndAttachesPointer",
+        "TestOrchestrators_Rename_SelfRenameIsNoop",
+        "TestOrchestrators_Rename_UpdatesNameOnly",
+        "TestOrchestrators_Unarchive_AlreadyActiveIsNoOp",
+        "TestOrchestrators_Unarchive_ClearsArchivedAt",
+        "TestOrchestrators_Unarchive_NonExistentReturnsNotFound"
+      ]
+    },
+    {
+      "path": "internal/log/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/events/adopt_test.go",
+      "language": "go",
+      "exports": [
+        "TestAdopt_HappyPath_RoleAndBindingCreated",
+        "TestAdopt_MetaSaysNotWorker_NotAdopted",
+        "TestAdopt_MissingMeta_NotAdopted",
+        "TestAdopt_ParentCoordOrchestratorArchived_NotAdopted",
+        "TestAdopt_ParentHasMultipleCoordinatorBindings_NotAdopted",
+        "TestAdopt_ParentHasWorkerAndCoordinator_AdoptUnderCoordinator",
+        "TestAdopt_ParentNotBound_NotAdopted",
+        "TestAdopt_ParentNotCoordinator_NotAdopted",
+        "TestAdopt_TaskArchived_BindingPreserved",
+        "TestAdopt_TaskArchived_MultiBinding_BindingsPreserved",
+        "TestAdopt_TaskDeleted_BindingEnds",
+        "TestAdopt_TaskDeleted_NoBinding_NoError"
+      ]
+    },
+    {
+      "path": "internal/events/periodic.go",
+      "language": "go",
+      "exports": [
+        "NewPeriodicReconciler",
+        "PeriodicReconciler",
+        "Run"
+      ]
+    },
+    {
+      "path": "internal/events/resync_test.go",
+      "language": "go",
+      "exports": [
+        "TestResync_EndsBindingsForVanishedTasks",
+        "TestResync_IgnoresNonResyncEvents",
+        "TestResync_NoOpWhenAllTasksAlive",
+        "TestResync_PreservesBindingForArchivedTask"
+      ]
+    },
+    {
+      "path": "internal/events/periodic_test.go",
+      "language": "go",
+      "exports": [
+        "TestPeriodic_ContextCancelExitsCleanly",
+        "TestPeriodic_IntervalRespected",
+        "TestPeriodic_NonPositiveIntervalUsesDefault",
+        "TestPeriodic_TickFiresReconcile"
+      ]
+    },
+    {
+      "path": "internal/events/types.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/events/adopt.go",
+      "language": "go",
+      "exports": [
+        "AdoptHandler",
+        "HandleEvent",
+        "NewAdoptHandler"
+      ]
+    },
+    {
+      "path": "internal/events/subscriber.go",
+      "language": "go",
+      "exports": [
+        "HandleEvent",
+        "Handler",
+        "HandlerFunc",
+        "NewSubscriber",
+        "Register",
+        "Run",
+        "Subscriber"
+      ]
+    },
+    {
+      "path": "internal/events/audit_followup_test.go",
+      "language": "go",
+      "exports": [
+        "TestAdopt_PromptAbsent_EmptyString",
+        "TestAdopt_SkippedAdoption_NoMeta_LogIncludesParentAndKey",
+        "TestAdopt_SkippedAdoption_WrongValue_LogIncludesParentAndKey"
+      ]
+    },
+    {
+      "path": "internal/events/payloads.go",
+      "language": "go",
+      "exports": [
+        "LinkCreatedPayload",
+        "ParseLinkCreated",
+        "ParseResync",
+        "ParseTaskCreated",
+        "ParseTaskStatusChanged",
+        "ResyncPayload",
+        "TaskCreatedPayload",
+        "TaskStatusChangedPayload"
+      ]
+    },
+    {
+      "path": "internal/events/doc.go",
+      "language": "go",
+      "exports": []
+    },
+    {
+      "path": "internal/events/subscriber_test.go",
+      "language": "go",
+      "exports": [
+        "TestSubscriber_AdvancesCursor",
+        "TestSubscriber_MultipleHandlersFanOut"
+      ]
+    },
+    {
+      "path": "internal/events/resync.go",
+      "language": "go",
+      "exports": [
+        "HandleEvent",
+        "NewResyncHandler",
+        "Reconcile",
+        "ResyncHandler"
+      ]
+    }
+  ],
+  "spec_files": [
+    {
+      "path": "openspec/specs/hera-view/spec.md",
+      "capability": "hera-view",
+      "sections": [
+        "hera-view Specification",
+        "Purpose",
+        "Requirements",
+        "Requirement: Plugin view registered with argus on daemon startup",
+        "Scenario: Plugin view registered on startup",
+        "Scenario: Plugin view heartbeated",
+        "Scenario: Plugin view unregistered on shutdown",
+        "Requirement: View server lives in the daemon process",
+        "Scenario: View served on the existing MCP listener",
+        "Requirement: WebSocket upgrade at /view with last-writer-wins reconnection",
+        "Scenario: WebSocket upgrade accepted",
+        "Scenario: Second connection closes the first",
+        "Requirement: PTY proxy pre-loads snapshot and SSE per live binding at daemon startup",
+        "Scenario: Snapshot and SSE opened per live binding at startup",
+        "Scenario: Rail navigation swaps without a network call",
+        "Scenario: Ring buffer bounded at ~256 KiB",
+        "Requirement: Body layout adapts to the selected row's kind",
+        "Scenario: Coordinator selection is a full-width Coord pane",
+        "Scenario: Agent selection splits Coord + AGENT",
+        "Scenario: Freelance mode collapses to rail + full-width agent",
+        "Scenario: Switching selection re-composes the mode",
+        "Scenario: Project-mode rail traversal updates both panes",
+        "Scenario: Empty coord and agent panes fill their allocation",
+        "Scenario: Top chrome bar carries no hera branding",
+        "Requirement: Freelance (unmanaged argus) agents render in a Freelance rail section grouped by repo",
+        "Scenario: Unmanaged argus tasks surface as freelancers grouped by repo",
+        "Scenario: Tasks with a live hera binding are excluded from Freelance",
+        "Scenario: A live task whose hera bindings have all ended falls back to Freelance",
+        "Scenario: Role rows rendered via the latest-binding fallback do not duplicate into Freelance",
+        "Scenario: Space toggles a Freelance repo group",
+        "Scenario: No freelancers hides the section",
+        "Scenario: Archived freelancers appear only in Archive",
+        "Requirement: Three-state focus model",
+        "Scenario: Focus border uses the argus theme color",
+        "Scenario: First-open focus is RAIL",
+        "Scenario: Focus indicator on focused element",
+        "Requirement: Focus traversal via arrow ladder and Ctrl-Q escape",
+        "Scenario: Cmd/Ctrl-right advances RAIL → COORD",
+        "Scenario: Cmd/Ctrl-right advances COORD → AGENT",
+        "Scenario: Cmd/Ctrl-left retreats AGENT → COORD",
+        "Scenario: Cmd/Ctrl-left retreats COORD → RAIL",
+        "Scenario: Enter from RAIL jumps to AGENT",
+        "Scenario: Ctrl-Q returns to RAIL from any state",
+        "Scenario: Freelance mode skips COORD on advance",
+        "Scenario: Freelance mode skips COORD on retreat",
+        "Requirement: Pane focus forwards keystrokes to the bound task's PTY input",
+        "Scenario: Typed key forwarded to COORD task",
+        "Scenario: Enter into an agent pane then type forwards to that agent",
+        "Scenario: Raw multi-byte sequence forwarded verbatim from a pane",
+        "Scenario: Bare Enter in a pane forwards CR",
+        "Scenario: Rail input is parsed, not forwarded",
+        "Scenario: In-pane control chord navigates and is not forwarded",
+        "Scenario: Failed forward is logged, not swallowed",
+        "Scenario: Focus-traversal key not forwarded",
+        "Scenario: Forwarding does not block the input event loop",
+        "Scenario: Typed bytes are forwarded in order",
+        "Scenario: Consecutive same-target bytes may coalesce into one POST",
+        "Requirement: Panes repaint live on PTY output, independent of keystroke input",
+        "Scenario: Autonomous agent output repaints the pane without input",
+        "Scenario: Echoed keystrokes appear live in the focused pane",
+        "Scenario: Output-driven redraw does not require a redraw per byte",
+        "Scenario: Pane bind paints the settled snapshot once at the tail",
+        "Scenario: A burst of chunks coalesces to a bounded number of settled draws",
+        "Requirement: Mutation keys are RAIL-focus-only",
+        "Scenario: `n` in RAIL focus opens new-project modal",
+        "Scenario: `n` in COORD focus types into the PTY",
+        "Scenario: `r` in AGENT focus types into the PTY",
+        "Scenario: `?` in AGENT focus types into the PTY",
+        "Scenario: `P` in RAIL focus toggles pin",
+        "Scenario: `P` in AGENT focus types into the PTY",
+        "Scenario: `^d` in AGENT focus forwards Ctrl-D to the PTY",
+        "Requirement: `n` creates a new orchestrator via spawned argus task",
+        "Scenario: New-project confirm spawns argus task",
+        "Scenario: New-project confirm with duplicate non-archived name rejected",
+        "Requirement: `r` renames the selected orchestrator or role",
+        "Scenario: Rename role updates DB and reflects in rail",
+        "Scenario: Rename to duplicate name rejected",
+        "Requirement: `^d` deletes a role or cascade-deletes an orchestrator",
+        "Scenario: Delete role ends binding and removes worktree",
+        "Scenario: Delete orchestrator cascades to all roles",
+        "Scenario: Worktree missing is soft no-op",
+        "Requirement: `a` toggles archived state on an orchestrator or role",
+        "Scenario: Archive role calls argus and preserves worktree",
+        "Scenario: Unarchive role unarchives the argus task too",
+        "Scenario: Mixed-flag role (hera-active + argus-archived) unarchives both sides",
+        "Scenario: Dead row treated as displayed-archived",
+        "Scenario: Archive role with an ended binding falls back to the latest binding",
+        "Scenario: Archive via an ended binding skips argus when the task is live-bound to another role",
+        "Scenario: Archive via the role's own live binding archives even when the task is shared",
+        "Scenario: Orchestrator cascade does not archive a sibling orchestrator's live task",
+        "Scenario: Unarchive role with an ended binding falls back to the latest binding",
+        "Scenario: Unarchive role with no binding at all skips argus",
+        "Scenario: Archive orchestrator cascades to roles",
+        "Scenario: Mixed-coord header repairs instead of cascading",
+        "Scenario: Unarchive orchestrator unarchives its coord task but does not cascade to workers",
+        "Scenario: Archive freelancer addresses the argus task directly",
+        "Scenario: Unarchive freelancer addresses the argus task directly",
+        "Requirement: `l` toggles visibility of archived items in the rail",
+        "Scenario: First-open hides archived items",
+        "Scenario: `l` reveals archived items",
+        "Scenario: `l` toggles back to hidden",
+        "Requirement: Resurrect archived orchestrator on Enter when Archive visible",
+        "Scenario: Resurrect spawns argus task in role's argus_project",
+        "Scenario: Resurrect inherits mission and constraints",
+        "Requirement: `?` opens argus's help overlay via a help control frame",
+        "Scenario: `?` in RAIL sends a help frame",
+        "Scenario: `?` in a pane is forwarded to the PTY",
+        "Requirement: Esc returns control to argus from RAIL via a release frame",
+        "Scenario: Esc in RAIL releases to argus",
+        "Scenario: Esc in a pane is forwarded to the PTY",
+        "Requirement: Hera advertises focus-aware hotkeys to argus and renders no internal bottom bar",
+        "Scenario: hotkeys pushed on focus change",
+        "Scenario: no internal bottom bar rendered",
+        "Scenario: spawn-worker and adopt keys advertised on the bottom bar",
+        "Requirement: Every mutation is gated behind a confirmation or input modal",
+        "Scenario: `^d` shows confirmation before deleting",
+        "Scenario: `w` shows an input modal before spawning",
+        "Scenario: `l` listall does not require a modal",
+        "Requirement: Modal overlays take keyboard focus, dismiss via Enter and Esc, restore prior focus, and use the argus theme",
+        "Scenario: Error modal from a failed mutation takes focus and Enter dismisses",
+        "Scenario: Esc dismisses an error modal",
+        "Scenario: Background refresh does not steal focus from an open modal",
+        "Scenario: Confirm modal dismisses via Esc as No",
+        "Scenario: Modals render with the argus theme",
+        "Requirement: Rail refreshes within ~100 ms of any DAO write",
+        "Scenario: Newly-adopted worker appears in rail",
+        "Scenario: No polling timer",
+        "Requirement: Resize envelope re-lays out the local view and source PTYs",
+        "Scenario: Resize re-lays out panes",
+        "Scenario: Initial bind aligns source PTY to pane allocation",
+        "Scenario: Layout change re-aligns source PTY",
+        "Scenario: Transient pre-envelope allocation never reaches argus",
+        "Scenario: Redundant resize is deduped",
+        "Scenario: Failed resize is retried with the latest size",
+        "Requirement: Rail renders coordinators as foldable rows with Archive expandos",
+        "Scenario: Coordinator row is foldable with a count",
+        "Scenario: Coordinator header carries a status icon and coordinator marker",
+        "Scenario: Sub-coordinators sort before leaf workers",
+        "Scenario: Sub-coordinator renders as a nested foldable coord row with its children",
+        "Scenario: Selecting a sub-coordinator composes full-width HERA bound to its own task",
+        "Scenario: Archived children indent one level deeper than their Archive expando",
+        "Scenario: Archived agents live in their coordinator's Archive expando",
+        "Scenario: Hera-archiving a row never makes it unreachable",
+        "Scenario: Archived root coordinators live in the top-level Archive",
+        "Scenario: Coordinator with no workers renders header-only",
+        "Scenario: Selected row is indicated by selected-text styling, not a background fill",
+        "Scenario: Selected row is identifiable without color via the marker glyph",
+        "Scenario: Marker gutter keeps columns stable across selection moves",
+        "Scenario: Non-selected rows carry no lingering background",
+        "Requirement: Enter enters the selection's primary pane",
+        "Scenario: Enter on a coordinator enters the HERA pane",
+        "Scenario: Enter on an agent enters the AGENT pane",
+        "Scenario: Traversal skips absent panes",
+        "Requirement: Archive, delete, and prune are distinct removal verbs",
+        "Scenario: Archive is reversible and moves to the fold",
+        "Scenario: Delete confirms before destroying the worktree",
+        "Scenario: Prune confirms and targets only completed agents",
+        "Requirement: Status, open-PR, scroll, and in-pane navigation keys",
+        "Scenario: s/S step the selected agent's status",
+        "Scenario: s/S on a freelancer step the argus task directly",
+        "Scenario: s/S on an orchestrator header step the coord task",
+        "Scenario: s/S on an archived row fall back to the latest ended binding",
+        "Scenario: s/S with no binding at all surface a clear error",
+        "Scenario: `^p` on a coordinator opens a PR for the coord's task",
+        "Scenario: `^p` on a freelancer opens a PR for that freelancer's argus-task branch from its worktree",
+        "Scenario: In-pane navigation keeps focus in a pane",
+        "Scenario: Shift-arrows scroll the focused pane",
+        "Requirement: Rail mutations never block the tview event loop",
+        "Scenario: Mutation key returns before the argus call completes",
+        "Scenario: Rail repaints after an in-flight mutation completes",
+        "Scenario: Mutation failure surfaces without freezing",
+        "Scenario: Second mutation while one is in flight no-ops with feedback",
+        "Requirement: Non-applicable mutation keys give visible feedback",
+        "Scenario: s on a non-addressable row gives feedback",
+        "Scenario: a on a non-addressable row gives feedback",
+        "Scenario: ^d on a freelancer gives feedback instead of a dead-end error",
+        "Scenario: w on a coordinator-shaped row with no resolvable target gives feedback",
+        "Requirement: `w` spawns a worker under the selected coordinator",
+        "Scenario: `w` in RAIL opens the spawn-worker modal on a coordinator",
+        "Scenario: `w` resolves an agent selection to its coordinator",
+        "Scenario: `w` resolves an archived or dead agent row to its coordinator",
+        "Scenario: `w` on a non-coordinator selection gives feedback",
+        "Scenario: Empty prompt is rejected with a visible notice",
+        "Scenario: Confirm spawns a task in the coordinator's project with worker meta",
+        "Scenario: Role and binding are inserted programmatically with the worktree path",
+        "Scenario: GetTask failure still binds with an empty worktree path",
+        "Scenario: Insert failure after task creation does not delete the argus task",
+        "Scenario: Role name is derived from the prompt and uniqued",
+        "Scenario: Worker prompt carries an orientation prefix",
+        "Scenario: New worker renders nested and is auto-selected",
+        "Scenario: Auto-select is abandoned if the new row never appears",
+        "Scenario: Spawn failure surfaces without freezing",
+        "Requirement: In-review status glyph",
+        "Scenario: in_review renders the clipboard-check glyph",
+        "Requirement: Role-row base indentation alignment",
+        "Scenario: Sibling worker aligns with sub-coordinator at same depth",
+        "Requirement: PR review indicator cell",
+        "Scenario: Actionable PR state renders glyph and consumes width",
+        "Scenario: Non-actionable PR state renders no cell",
+        "Scenario: No pr_state field degrades gracefully",
+        "Requirement: Coordinators with zero non-archived children default collapsed",
+        "Scenario: Empty coordinator defaults collapsed",
+        "Scenario: Coordinator with an active child defaults expanded",
+        "Scenario: Manual toggle overrides the default and persists",
+        "Scenario: `l` force-reveal overrides the collapsed default while active",
+        "Requirement: Task status never buckets a rail row",
+        "Scenario: Stepping a task to complete keeps it in the active children",
+        "Scenario: Completed coordinator header stays bound and checked",
+        "Scenario: Completed freelancer stays in its repo group",
+        "Scenario: Record-gone task still buckets as dead",
+        "Scenario: Rail rebuild issues no per-row argus HTTP",
+        "Requirement: Coordinator selection renders a right-side Details pane",
+        "Scenario: Details pane appears on coordinator selection",
+        "Scenario: Details fields are rendered from available data",
+        "Scenario: Agent and freelancer selections are unchanged",
+        "Scenario: Sub-coordinator Details describe the sub-coordinator's own group",
+        "Requirement: Live coordinators never render ✓/complete",
+        "Scenario: Live coordinator with argus-complete task renders idle glyph",
+        "Scenario: Archived coordinator with complete task still shows ✓",
+        "Requirement: Coordinator roles excluded from ^r prune targets",
+        "Scenario: Complete coordinator is not listed as a prune target",
+        "Requirement: Mixed-coord headers render a repair cue and `a` repairs first",
+        "Scenario: Mixed-coord header renders the ⊘ repair cue",
+        "Scenario: Archived orchestrator does not render the cue",
+        "Scenario: `a` on a mixed-coord header unarchives the coord task instead of cascade-archiving",
+        "Scenario: Repaired header cascades as before",
+        "Requirement: Pane byte streams are scrubbed of OSC sequences before emulation",
+        "Scenario: Inline OSC title with BEL terminator is not painted",
+        "Scenario: OSC with ST terminator is removed",
+        "Scenario: OSC split across chunk boundaries is removed",
+        "Scenario: Non-OSC escape sequences survive the scrub",
+        "Scenario: 0x9C inside an OSC payload does not terminate it",
+        "Requirement: `J` adopts a freelancer into a chosen coordinator",
+        "Scenario: `J` on a freelancer creates a worker binding under the chosen coordinator",
+        "Scenario: The default role name is de-collided",
+        "Scenario: `J` on a non-freelancer row surfaces feedback",
+        "Scenario: `J` on a freelancer with no argus task id surfaces feedback",
+        "Scenario: An already-bound task is not adopted again",
+        "Scenario: No active coordinator to adopt into surfaces feedback",
+        "Scenario: `J` in a pane forwards to the PTY",
+        "Requirement: The rail supports a `/` name filter",
+        "Scenario: `/` narrows the rail to matching rows",
+        "Scenario: A matching agent keeps its parent coordinator visible",
+        "Scenario: Esc restores the full rail",
+        "Scenario: Enter accepts the filter and returns to navigation",
+        "Scenario: Mutation keys are filter input while typing",
+        "Requirement: The selection marker is gated behind the probe env",
+        "Scenario: No marker in normal operation",
+        "Scenario: Marker present under the probe env",
+        "Scenario: Gutter does not shift content",
+        "Requirement: Pinned section at the rail top with a `P` toggle",
+        "Scenario: Pinned coordinator floats to the Pinned section",
+        "Scenario: Pinned agent floats out of its coordinator",
+        "Scenario: `P` pins the selected row and clears archived",
+        "Scenario: `P` again unpins",
+        "Scenario: Archiving a pinned row clears the pin",
+        "Scenario: `P` on a freelancer pins it at root level (BUG-024)",
+        "Scenario: Every freelance row carries the (F) marker (BUG-024 / BUG-026)",
+        "Scenario: Pinned managed sub-item renders as a stacked two-line breadcrumb (BUG-025)",
+        "Scenario: Deep ancestry chain left-truncates in breadcrumb line",
+        "Requirement: Consolidated bottom Archive with sub-groups (BUG-026, supersedes BUG-019)",
+        "Scenario: Archived freelancer renders in the consolidated bottom Archive, not vanished",
+        "Scenario: Archived freelancer does not double-render",
+        "Scenario: No per-project Archive expandos in the Freelance section",
+        "Scenario: `a` on an archived freelancer in the Archive section unarchives it",
+        "Scenario: Archived root coordinator reachable without `l` via \"Hera sessions\"",
+        "Scenario: `l` force-expands the bottom Archive and all sub-groups",
+        "Requirement: Rail status icons reflect the bound task's actual argus state",
+        "Scenario: Archive round-trip never mutates the status glyph",
+        "Scenario: Archived row with known state renders its true status dimmed",
+        "Scenario: Ended binding does not lose the state lookup",
+        "Scenario: Dead-classified row with known complete state shows the check",
+        "Scenario: Unknown-state archived row falls back to the dimmed circle",
+        "Requirement: Archive operations tolerate argus-pruned tasks",
+        "Scenario: Archiving a role whose task argus pruned succeeds",
+        "Scenario: Orchestrator cascade archives through a mix of live and pruned tasks",
+        "Scenario: Non-404 failure does not abort the cascade and leaves the orchestrator retryable",
+        "Scenario: Unarchiving a role whose task argus pruned succeeds",
+        "Scenario: Stepping status on a pruned task errors with a plain message",
+        "Requirement: Rail status glyphs mirror argus's task-panel table exactly",
+        "Scenario: in_review renders the moon-with-stars, never a check",
+        "Scenario: complete is the only state that renders a checkmark",
+        "Scenario: pending renders the open circle",
+        "Scenario: in_progress idle renders the plain moon in blue",
+        "Scenario: in_progress running renders the animated spinner in orange",
+        "Scenario: needs-input outranks idle and running within in_progress",
+        "Scenario: needs-input does not override a non-in_progress status",
+        "Scenario: archived variants keep the table glyph dimmed",
+        "Scenario: spinner driver is quiet without running rows",
+        "Requirement: All hera-rendered surfaces share one consistent background",
+        "Scenario: Chrome surfaces use the single hera background",
+        "Scenario: Modal overlays use the single hera background, not grey-blue"
+      ],
+      "source": "base"
+    },
+    {
+      "path": "openspec/specs/hera-agent-skill/spec.md",
+      "capability": "hera-agent-skill",
+      "sections": [
+        "hera-agent-skill Specification",
+        "Purpose",
+        "Requirements",
+        "Requirement: Agent-facing hera skill exists and self-gates to argus sandboxes",
+        "Scenario: Skill is inert outside an argus sandbox",
+        "Scenario: Skill description leads with the gate",
+        "Requirement: Skill documents the hera tool surface",
+        "Scenario: Every hera tool is covered",
+        "Requirement: Skill gives when-to-use decision rules",
+        "Scenario: Decision rules are present",
+        "Requirement: Skill describes composition with sibling plugins",
+        "Scenario: Sibling composition is documented",
+        "Scenario: The hera/iris seam is explicit, not silent",
+        "Requirement: Skill lists common Bash and skill mistakes",
+        "Scenario: Common mistakes are enumerated",
+        "Requirement: Skill includes worked workflows",
+        "Scenario: Three workflows are present",
+        "Requirement: Pointer snippet exists and gates first",
+        "Scenario: Snippet gate is the first content line",
+        "Scenario: Snippet points at the skill rather than duplicating it",
+        "Scenario: Snippet carries compile-pipeline frontmatter",
+        "Requirement: install-claude-skills.sh installs the agent-facing assets",
+        "Scenario: Fresh install symlinks skills and appends snippets",
+        "Scenario: Re-run is idempotent",
+        "Scenario: Existing user content and non-symlinks are protected",
+        "Scenario: Each step is independently prompted",
+        "Requirement: setup.sh offers opt-in delegation to install-claude-skills.sh",
+        "Scenario: setup.sh delegates skill install when accepted",
+        "Scenario: setup.sh skips skill install when declined",
+        "Requirement: uninstall-claude-skills.sh removes the agent-facing assets",
+        "Scenario: Uninstall removes only this repo's assets",
+        "Scenario: Foreign symlinks are not removed",
+        "Scenario: Uninstall is idempotent"
+      ],
+      "source": "base"
+    },
+    {
+      "path": "openspec/specs/hera-install/spec.md",
+      "capability": "hera-install",
+      "sections": [
+        "hera-install Specification",
+        "Purpose",
+        "Requirements",
+        "Requirement: setup.sh offers an opt-in macOS LaunchAgent install step",
+        "Scenario: User accepts the LaunchAgent prompt during interactive setup",
+        "Scenario: Non-interactive mode installs without prompting",
+        "Scenario: User declines the LaunchAgent prompt",
+        "Scenario: Plist sets EnvironmentVariables.PATH so the launchd-managed daemon can locate argus",
+        "Requirement: LaunchAgent restarts hera on crash but not on clean exit",
+        "Scenario: Hera crashes with non-zero exit",
+        "Scenario: Hera exits cleanly",
+        "Requirement: Stable symlink for launchd process identity",
+        "Scenario: Symlink is created on first install",
+        "Scenario: Symlink is refreshed on re-run",
+        "Requirement: LaunchAgent install detects and stops foreground hera",
+        "Scenario: Foreground hera is running when install runs",
+        "Scenario: No foreground hera is running",
+        "Scenario: Launchd-managed `herad` process is NOT matched by the detection",
+        "Requirement: setup.sh provides --uninstall-launchagent flag",
+        "Scenario: Uninstall when the agent is loaded",
+        "Scenario: Uninstall when nothing is installed",
+        "Scenario: Uninstall flag short-circuits other setup steps",
+        "Requirement: LaunchAgent step is skipped on non-Darwin systems",
+        "Scenario: Setup runs on Linux"
+      ],
+      "source": "base"
+    },
+    {
+      "path": "openspec/specs/hera-delivery-receipt/spec.md",
+      "capability": "hera-delivery-receipt",
+      "sections": [
+        "hera-delivery-receipt Specification",
+        "Purpose",
+        "Requirements",
+        "Requirement: read_at is the delivery receipt for idle-submit messages",
+        "Scenario: hera_inbox fetch marks returned messages read",
+        "Scenario: Message read confirms delivery",
+        "Scenario: hera_inbox only marks read the caller's own messages",
+        "Scenario: idle_submit with read_at NULL considered unconfirmed",
+        "Requirement: Schema tracks nudge delivery attempts",
+        "Scenario: New message has zero nudge state",
+        "Requirement: Doorbell re-nudge is non-duplicating",
+        "Scenario: Doorbell format is correct",
+        "Scenario: Body is not re-injected on re-nudge",
+        "Requirement: Doorbell re-nudge loop with bounded retries",
+        "Scenario: First nudge fires after NudgeAfter elapses",
+        "Scenario: Re-nudge respects NudgeEvery spacing",
+        "Scenario: Cap stops nudging at MaxNudges",
+        "Scenario: Nudge stops when read_at is set",
+        "Requirement: Agent contract for doorbell response",
+        "Scenario: Agent receives doorbell and calls hera_inbox"
+      ],
+      "source": "base"
+    },
+    {
+      "path": "openspec/specs/hera-coordination/spec.md",
+      "capability": "hera-coordination",
+      "sections": [
+        "hera-coordination Specification",
+        "Purpose",
+        "Requirements",
+        "Requirement: Role identity outlives argus task lifecycle",
+        "Scenario: Coordinator task archived, role and prompt survive",
+        "Scenario: Same role rebound across multiple incarnations",
+        "Scenario: Multi-binding task archived, every binding ends",
+        "Requirement: Seven MCP tools exposed under the `hera_` prefix",
+        "Scenario: Seven MCP tools registered on startup",
+        "Scenario: Settings_save callback present but not in MCP tool list",
+        "Scenario: Tool call with no `cwd` rejected",
+        "Scenario: Tool call with unknown `cwd` rejected",
+        "Requirement: Message delivery modes",
+        "Scenario: New messages start in pending",
+        "Requirement: Messages auto-submitted when recipient is idle",
+        "Scenario: Recipient idle, auto-inject enabled, message auto-submits",
+        "Scenario: Recipient idle, auto-inject disabled, message busy-buffers",
+        "Requirement: Unread idle_submit messages are re-nudged with a non-duplicating doorbell",
+        "Scenario: Unread idle_submit message nudged after NudgeAfter",
+        "Scenario: Nudging stops when recipient reads the message",
+        "Requirement: Messages buffered when recipient is not idle",
+        "Scenario: Recipient busy, message lands in input buffer",
+        "Requirement: Messages queued when recipient has no live binding",
+        "Scenario: Recipient role exists, no live binding",
+        "Requirement: Injected messages identify sender",
+        "Scenario: Injected body carries sender prefix",
+        "Requirement: Auto-adopt coordinator-spawned worker tasks",
+        "Scenario: Both conditions met, task adopted",
+        "Scenario: Parent link present, meta absent — not adopted",
+        "Scenario: Meta present, parent link absent — not adopted",
+        "Scenario: Parent has multiple coordinator bindings — adoption skipped",
+        "Scenario: Parent has a worker binding and a coordinator binding — adopt under the coordinator",
+        "Requirement: Auto-adopt copies prompt from task meta",
+        "Scenario: Prompt meta present",
+        "Scenario: Prompt meta absent",
+        "Requirement: New orchestrator bootstrap via `hera_new_orchestrator`",
+        "Scenario: Fresh orchestrator and coordinator created",
+        "Scenario: Existing orchestrator with no live coordinator binding resumed",
+        "Scenario: Coordinator already live elsewhere",
+        "Scenario: Calling task already bound to the named orchestrator",
+        "Scenario: Calling task bound to a different orchestrator",
+        "Requirement: Worker and freelance attach via `hera_join`",
+        "Scenario: Freelance attach with all attributes",
+        "Scenario: Freelance attach referencing unknown orchestrator",
+        "Scenario: Freelance attach conflicts with existing role kind",
+        "Scenario: `kind=coordinator` rejected by `hera_join`",
+        "Scenario: Worker attach when task is already bound to the same orchestrator",
+        "Scenario: Worker attach when task is bound to a different orchestrator",
+        "Requirement: Bare `hera_join` claims existing binding",
+        "Scenario: Re-incarnation claim succeeds (single binding)",
+        "Scenario: Bare join with no existing binding fails informatively",
+        "Scenario: Bare join with multiple bindings requires orchestrator",
+        "Scenario: Claim binding for a specific orchestrator",
+        "Scenario: Claim binding for an orchestrator with no binding on this task",
+        "Requirement: Roles live in argus projects; orchestrators do not",
+        "Scenario: Orchestrator with roles in different projects",
+        "Scenario: Role's argus_project preserved across incarnation",
+        "Requirement: Stricter rule on auto-adoption logged",
+        "Scenario: Adoption skipped (meta absent)",
+        "Scenario: Adoption skipped (meta value not worker)",
+        "Requirement: MCP tool registrations heartbeated and unregistered on shutdown",
+        "Scenario: Heartbeat keeps tools registered",
+        "Scenario: Graceful shutdown unregisters tools",
+        "Requirement: Event stream cursor persisted and replayed",
+        "Scenario: Restart resumes from cursor",
+        "Scenario: Resync triggers task snapshot",
+        "Requirement: Idle gate requires sustained `session.idle` state",
+        "Scenario: Idle for less than configured debounce",
+        "Scenario: Idle for at least configured debounce",
+        "Scenario: Session started after idle",
+        "Scenario: Debounce hot-reload changes behavior immediately",
+        "Scenario: Zero debounce, idle event makes task immediately eligible",
+        "Requirement: Default message routing for worker and freelance senders",
+        "Scenario: Worker without `to` routes to coordinator (single binding)",
+        "Scenario: Multi-binding sender without `orchestrator` rejected",
+        "Scenario: Multi-binding sender with `orchestrator` resolves the correct binding",
+        "Requirement: Coordinator senders must supply an explicit recipient",
+        "Scenario: Coordinator without `to` is rejected",
+        "Scenario: Multi-binding coordinator with `orchestrator` and `to` succeeds",
+        "Requirement: Tool inputs and outputs documented",
+        "Scenario: Tool registration carries description and schema",
+        "Requirement: Role metadata mirrored to argus task_meta",
+        "Scenario: Role meta written on binding (auto-adopt)",
+        "Scenario: Role meta written on binding (freelance attach)",
+        "Scenario: Role meta written on binding (coordinator bootstrap)",
+        "Scenario: Role meta write failure does not undo binding",
+        "Requirement: Thread status meta mirror is best-effort",
+        "Scenario: Status mirror succeeds",
+        "Scenario: Status mirror fails, status update succeeds",
+        "Requirement: Scope token loaded from filesystem; missing token aborts startup",
+        "Scenario: Token file present, daemon starts",
+        "Scenario: Token file missing",
+        "Scenario: Token file empty",
+        "Requirement: Settings section registered with argus on startup",
+        "Scenario: Exactly one settings-section registered on startup",
+        "Scenario: Settings section heartbeated and unregistered on shutdown",
+        "Requirement: Settings field descriptions explain impact",
+        "Scenario: idle_debounce_seconds description covers low/high impact",
+        "Scenario: auto_inject_enabled description covers on/off impact",
+        "Requirement: Settings save handler persists values and applies them in-process",
+        "Scenario: Valid save persists and hot-reloads",
+        "Scenario: Out-of-range debounce rejected, no rows written",
+        "Scenario: Non-boolean auto-inject rejected",
+        "Scenario: Partial save updates only supplied field",
+        "Requirement: Persisted settings override defaults on daemon start",
+        "Scenario: Persisted debounce wins on restart",
+        "Scenario: Missing keys keep defaults",
+        "Scenario: Corrupt persisted value aborts startup",
+        "Requirement: Auto-inject master switch gates idle-submit path",
+        "Scenario: Auto-inject off, idle recipient still busy-buffers",
+        "Scenario: Auto-inject toggles back to true, behavior restored",
+        "Requirement: Orchestrators and roles carry `archived_at` columns",
+        "Scenario: Migration runs on existing DB",
+        "Scenario: Indexes present after migration",
+        "Requirement: List* DAO methods default to active-only",
+        "Scenario: ListActive returns non-archived only",
+        "Scenario: ListInclusive returns all rows",
+        "Scenario: Get by id resolves archived row",
+        "Requirement: Orchestrators may be renamed",
+        "Scenario: Rename orchestrator updates only the name column",
+        "Scenario: Rename to existing non-archived name rejected",
+        "Scenario: Rename to name of archived orchestrator allowed",
+        "Requirement: Roles may be renamed within their orchestrator",
+        "Scenario: Rename role updates only the name column",
+        "Scenario: Rename role to existing non-archived sibling name rejected",
+        "Scenario: Same role name allowed across different orchestrators",
+        "Requirement: Orchestrators and roles may be archived",
+        "Scenario: Archive role preserves identity columns",
+        "Scenario: Unarchive role clears archived_at",
+        "Scenario: Archive orchestrator does not auto-archive roles",
+        "Requirement: Resurrect — fresh task in role's argus_project rebinds an archived role",
+        "Scenario: Bare hera_join in archived role's argus_project resurrects",
+        "Scenario: Resurrect preserves prompt",
+        "Scenario: Multiple archived candidates resolve by recency",
+        "Requirement: Bindings are unique per (argus_task, orchestrator), not per argus_task",
+        "Scenario: Two live bindings on the same task in different orchestrators",
+        "Scenario: Two live bindings on the same task in the same orchestrator rejected",
+        "Scenario: Two live bindings on the same worktree in different orchestrators",
+        "Requirement: `bindings` table carries `orchestrator_id`",
+        "Scenario: Migration backfills existing rows",
+        "Scenario: New bindings populate orchestrator_id",
+        "Requirement: Optional `orchestrator` parameter on caller-resolution tools",
+        "Scenario: Single-binding caller omits orchestrator",
+        "Scenario: Multi-binding caller without orchestrator rejected",
+        "Scenario: Multi-binding caller with orchestrator resolves correctly",
+        "Scenario: Caller specifies an orchestrator they have no binding to",
+        "Requirement: Tool input schemas declare optional `orchestrator`",
+        "Scenario: Registered schema exposes orchestrator field",
+        "Requirement: task.deleted event ends live bindings",
+        "Scenario: task.deleted ends a live binding",
+        "Scenario: task.deleted with no binding is a no-op",
+        "Requirement: task.archived preserves the binding",
+        "Scenario: task.archived does NOT end the binding",
+        "Scenario: task.archived multi-binding task preserves all bindings",
+        "Requirement: Coordinator-initiated atomic worker spawn",
+        "Scenario: Happy path – worker spawned and born bound",
+        "Scenario: Auto-submit – prompt runs without manual Enter",
+        "Scenario: Caller is not a coordinator – rejected",
+        "Scenario: Prompt is empty – rejected",
+        "Scenario: Project override",
+        "Scenario: Role name derived from prompt when not supplied",
+        "Scenario: Explicit role name used when supplied",
+        "Scenario: GetTask failure – binding inserted with empty worktree path",
+        "Requirement: boot reconcile on daemon startup",
+        "Scenario: boot reconcile runs at startup",
+        "Scenario: boot reconcile failure does not block startup",
+        "Scenario: reconcile preserves bindings for archived tasks"
+      ],
+      "source": "base"
+    },
+    {
+      "path": "openspec/specs/hera-substrate-link/spec.md",
+      "capability": "hera-substrate-link",
+      "sections": [
+        "hera-substrate-link Specification",
+        "Purpose",
+        "Requirements",
+        "Requirement: Argus REST port discovered on hera startup",
+        "Scenario: Socket query succeeds",
+        "Scenario: Socket query fails, hera exits non-zero",
+        "Requirement: Argus restart detected via pid-file mtime and socket ping",
+        "Scenario: Pid file mtime changes, watcher fires recovery",
+        "Scenario: Socket ping fails, watcher fires recovery",
+        "Scenario: Concurrent restart signals suppressed during in-flight recovery",
+        "Requirement: Recovery re-discovers port and force-registers tools and settings",
+        "Scenario: Pid mtime change triggers re-discovery",
+        "Scenario: Re-register fires before next heartbeat",
+        "Scenario: Heartbeat 404 triggers same recovery routine",
+        "Scenario: Recovery fails, link state set to down",
+        "Requirement: hera MCP tools return structured \"recovering\" error during gap",
+        "Scenario: Tool call mid-recovery returns recovering error",
+        "Scenario: Tool call with link down returns down error",
+        "Scenario: Tool call after recovery succeeds normally",
+        "Requirement: hera status surfaces argus link state",
+        "Scenario: Healthy link state surfaced",
+        "Scenario: Recovering link state surfaced",
+        "Scenario: Down link state surfaced with error"
+      ],
+      "source": "base"
+    },
+    {
+      "path": "openspec/changes/delegate-delivery-to-argus/specs/hera-delivery-receipt/spec.md",
+      "capability": "hera-delivery-receipt",
+      "sections": [
+        "hera-delivery-receipt Delta: delegate-delivery-to-argus",
+        "MODIFIED Requirements",
+        "Requirement: read_at is the delivery receipt for idle-submit messages",
+        "Scenario: hera_inbox fetch marks messages read and cancels delivery",
+        "Scenario: hera_mark_read marks messages read and cancels delivery",
+        "Scenario: Cancel error does not fail the handler",
+        "Scenario: hera_inbox only marks read the caller's own messages",
+        "REMOVED Requirements",
+        "Requirement: Schema tracks nudge delivery attempts",
+        "Requirement: Doorbell re-nudge is non-duplicating",
+        "Requirement: Doorbell re-nudge loop with bounded retries",
+        "Requirement: Agent contract for doorbell response"
+      ],
+      "source": "pending",
+      "pending_change": "delegate-delivery-to-argus"
+    },
+    {
+      "path": "openspec/changes/delegate-delivery-to-argus/specs/hera-coordination/spec.md",
+      "capability": "hera-coordination",
+      "sections": [
+        "hera-coordination Delta: delegate-delivery-to-argus",
+        "MODIFIED Requirements",
+        "Requirement: Message delivery modes",
+        "Scenario: New messages start in pending",
+        "Requirement: Message delivery delegated to argus notify endpoint",
+        "Scenario: Recipient idle, argus submits immediately",
+        "Scenario: Recipient busy, argus accepts for deferred delivery",
+        "Scenario: Auto-inject disabled, submit: false sent to argus",
+        "Scenario: No active session, delivery fails",
+        "REMOVED Requirements",
+        "Requirement: Messages auto-submitted when recipient is idle",
+        "Requirement: Unread idle_submit messages are re-nudged with a non-duplicating doorbell",
+        "Requirement: Messages buffered when recipient is not idle"
+      ],
+      "source": "pending",
+      "pending_change": "delegate-delivery-to-argus"
+    },
+    {
+      "path": "openspec/changes/delegate-delivery-to-argus/specs/hera-substrate-link/spec.md",
+      "capability": "hera-substrate-link",
+      "sections": [
+        "hera-substrate-link Delta: delegate-delivery-to-argus",
+        "ADDED Requirements",
+        "Requirement: Message delivery delegated to argus notify endpoint",
+        "Scenario: Notify call goes through the recovering client",
+        "Scenario: Notify during recovery gap returns structured error",
+        "Scenario: Cancel during recovery gap is silently skipped",
+        "Scenario: Client base URL updated on recovery before next notify"
+      ],
+      "source": "pending",
+      "pending_change": "delegate-delivery-to-argus"
+    }
+  ],
+  "counts": {
+    "code_files": 198,
+    "spec_files": 9,
+    "exports": 1898,
+    "pending_spec_files": 3
+  },
+  "pre_archive": "delegate-delivery-to-argus"
+}

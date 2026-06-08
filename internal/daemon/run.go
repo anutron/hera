@@ -76,7 +76,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 
 	// Override Config defaults with persisted settings (if any) before
-	// instantiating Tracker and Injector, so they see the saved values.
+	// constructing the send handler, so it sees the saved auto_inject_enabled.
 	if err := LoadPersistedSettings(ctx, cfg, database.Config); err != nil {
 		_ = database.Close()
 		return nil, fmt.Errorf("hera: load persisted settings: %w", err)

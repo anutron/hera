@@ -60,6 +60,41 @@ hera MUST return an error without setting a delivery_mode.
 - **WHEN** argus notify returns 404 (task has no active session)
 - **THEN** hera MUST return an error to the caller; the message row MUST NOT have its delivery_mode advanced past `pending`
 
+### Requirement: Settings section registered with argus on startup
+
+The system SHALL register exactly one settings-section with argus when the daemon
+starts, via `POST /api/plugins/settings/sections`. The section MUST have `type =
+"form"` and contain exactly **one** field:
+
+- `auto_inject_enabled`: boolean, default `true`. Description MUST describe BOTH
+  what "on" does (argus auto-submits the pointer when the recipient is idle) AND
+  what "off" does (argus injects the text without submitting; recipient submits
+  manually) AND name a concrete use case for "off". The description MUST reference
+  the `submit:` parameter in argus notify rather than hera-side idle detection.
+
+The `idle_debounce_seconds` field is removed from this change onward. hera no
+longer has an idle-debounce setting because argus owns idle detection.
+
+The `settings_save` callback MUST accept `auto_inject_enabled` as before and MUST
+NOT accept `idle_debounce_seconds`. Supplying `idle_debounce_seconds` in the
+callback body is silently ignored (the `any`-typed input struct discards unknown
+keys via JSON unmarshalling). The `config` table MAY retain stale
+`idle_debounce_seconds` rows from prior daemon runs; they are harmless and will not
+be written by new code.
+
+#### Scenario: Settings section has exactly one field post-change
+
+- **WHEN** the hera daemon starts after this change
+- **THEN** the registered settings section MUST have exactly one field with key
+  `auto_inject_enabled` AND MUST NOT contain a field with key `idle_debounce_seconds`
+
+#### Scenario: auto_inject_enabled description updated
+
+- **WHEN** the settings section is registered
+- **THEN** the `auto_inject_enabled` field's `description` MUST describe BOTH what
+  "on" does (argus auto-submits on idle) AND what "off" does (text injected without
+  submit; user submits manually) AND name a concrete use case for "off"
+
 ## REMOVED Requirements
 
 ### Requirement: Messages auto-submitted when recipient is idle
