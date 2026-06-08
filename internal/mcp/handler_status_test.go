@@ -77,6 +77,55 @@ func TestStatus_ArgusLink_Recovering(t *testing.T) {
 	}
 }
 
+func TestStatus_Done_AutoArchivesWorker(t *testing.T) {
+	resetLink(t)
+	e, role := statusFixture(t)
+	ctx := context.Background()
+
+	h := NewStatusHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, StatusInput{Cwd: "/tmp/w", Status: "done"}))
+	out := decodeStatusOutput(t, resp)
+
+	if got, _ := out["auto_archived"].(bool); !got {
+		t.Fatalf("auto_archived = %v, want true for worker+done", out["auto_archived"])
+	}
+
+	// Role must now be archived in hera DB.
+	updated, err := e.db.Roles.GetByID(ctx, role.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if updated.ArchivedAt == nil {
+		t.Fatal("worker role must be archived after hera_status(done)")
+	}
+}
+
+func TestStatus_Done_CoordinatorNotAutoArchived(t *testing.T) {
+	resetLink(t)
+	ctx := context.Background()
+	e := setupHandlers(t)
+	orch, _ := e.db.Orchestrators.Create(ctx, "bar")
+	role, _ := e.db.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p",
+	})
+	_, _ = e.db.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: role.ID, ArgusTaskID: "t-c", WorktreePath: "/tmp/c",
+	})
+	e.fake.addTask(argus.Task{ID: "t-c", Name: "coord", Project: "p", WorktreePath: "/tmp/c"})
+
+	h := NewStatusHandler(e.resolver, e.db, e.client)
+	resp := h.Handle(ctx, mustMarshal(t, StatusInput{Cwd: "/tmp/c", Status: "done"}))
+	out := decodeStatusOutput(t, resp)
+
+	if got, _ := out["auto_archived"].(bool); got {
+		t.Fatal("auto_archived must be false for coordinator roles")
+	}
+	updated, _ := e.db.Roles.GetByID(ctx, role.ID)
+	if updated.ArchivedAt != nil {
+		t.Fatal("coordinator role must NOT be auto-archived on done")
+	}
+}
+
 func TestStatus_ArgusLink_Down_IncludesLastError(t *testing.T) {
 	resetLink(t)
 	wantErr := "socket Ports call: dial unix /Users/aaron/.argus/daemon.sock: connect: no such file or directory"

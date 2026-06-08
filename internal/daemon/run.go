@@ -262,7 +262,6 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 	subscriber := events.NewSubscriber(client, database, log)
 	subscriber.Register(events.NewAdoptHandler(client, database, log))
-	subscriber.Register(events.NewWorkerCompleteHandler(database, log))
 	subscriber.Register(resyncHandler)
 	subscriber.Register(tracker) // tracker implements events.Handler
 
