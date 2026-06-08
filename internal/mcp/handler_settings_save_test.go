@@ -40,13 +40,6 @@ func (s *stubConfigStore) snapshot() map[string]string {
 	return out
 }
 
-// errStubNotFound mimics db.ErrNotFound for the stub.
-var errStubNotFound = stubErr("not found")
-
-type stubErr string
-
-func (e stubErr) Error() string { return string(e) }
-
 // stubAutoInject captures SetAutoInjectEnabled calls.
 type stubAutoInject struct {
 	mu    sync.Mutex
