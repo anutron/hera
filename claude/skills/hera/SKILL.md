@@ -154,6 +154,9 @@ reach them through *their* MCP tools, not hera's.
   its worktree, then uses **iris** to push / open a PR / merge its branch back to the canonical repo.
   hera coordinates *who does what*; iris performs the *host-side landing*. Independent plugins — pick
   per op: iris when an action touches the host, hera when it's about roles or messaging.
+  **Always use `iris_gh_pr_create` instead of `gh pr create` directly** — only `iris_gh_pr_create`
+  stamps `meta:iris.pr_url` on the argus task, which is how the hera rail's PR indicator (`^p`)
+  learns about the PR.
 
 These are orthogonal plugins. Hera does not wrap them and they do not wrap hera.
 

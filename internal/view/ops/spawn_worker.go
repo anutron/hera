@@ -195,7 +195,7 @@ func buildWorkerPrompt(coordName, userPrompt string) string {
 		suffix = fmt.Sprintf("You are a worker agent under coordinator %q.", coordName)
 	}
 	return fmt.Sprintf(
-		"%s\n\n---\n"+`%s You may report progress via hera_send. If this task requires changes to another repo or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name="...", coordinator_role_name="coord", prompt="...") to become a sub-coordinator, then use hera_spawn_worker(project="TARGET-PROJECT", ...) to dispatch workers in that project.`,
+		"%s\n\n---\n"+`%s You may report progress via hera_send. If this task requires changes to another repo or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name="...", coordinator_role_name="coord", prompt="...") to become a sub-coordinator, then use hera_spawn_worker(project="TARGET-PROJECT", ...) to dispatch workers in that project. When opening pull requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) so argus records the PR URL and the hera rail shows the PR indicator.`,
 		userPrompt, suffix,
 	)
 }
