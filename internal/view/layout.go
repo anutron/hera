@@ -143,7 +143,7 @@ func helpHotkeyItems(coordPresent, agentPresent bool) []HotkeyItem {
 	// Rail mutation keys (n/r/^d/a/l/w/J/P/^r/^p) are RAIL-focus-only; in a
 	// pane they forward as literal bytes to the PTY.
 	items = append(items, HotkeyItem{})
-	items = append(items, HotkeyItem{Key: "(pane note)", Label: "n/r/^d/a/l/w/J/P/^r/^p → PTY in pane"})
+	items = append(items, HotkeyItem{Key: "(pane note)", Label: "n/r/^d/a/C/l/w/J/P/^r/^p → PTY in pane"})
 
 	return items
 }
@@ -219,6 +219,7 @@ func hotkeyItems(state FocusState, coordPresent, agentPresent bool) []HotkeyItem
 			{Key: "r", Label: "rename", Bar: true},
 			{Key: "^d", Label: "del", Bar: true},
 			{Key: "a", Label: "archive", Bar: true},
+			{Key: "C", Label: "clear archive", Bar: true},
 			{Key: "←", Label: "parent", Bar: true},
 			{Key: "s", Label: "status+", Bar: true},
 			{Key: "S", Label: "status-", Bar: true},
