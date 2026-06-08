@@ -9,6 +9,7 @@ Coordinator/overlay daemon for [argus](https://github.com/drn/argus). Provides r
 - **Roles outlive tasks.** Argus tasks come and go (worktrees get archived, branches merge); hera roles persist with their decisions, messages, and status intact.
 - **Message bus with auto-delivery.** `hera_send` injects messages directly into the recipient's PTY – with `\n` (auto-submit) when the recipient is idle, without `\n` (user submits) when the recipient is busy.
 - **Auto-adopted worker tasks.** Coordinators spawn workers via argus's existing `task_create`; hera watches the event stream and adopts new tasks into the orchestrator graph automatically.
+- **Born-bound worker spawn.** `hera_spawn_worker` creates an argus task and binds it to a hera role in one call — the worker is never a transient freelancer.
 - **Cross-repo orchestration.** Roles can live in different argus projects; the orchestrator binds them logically without forcing co-location.
 - **TUI operator view.** `Ctrl+H` inside argus opens hera-view: a live three-panel terminal showing your coordinator and agent PTYs side by side, with a navigable rail of all orchestrators, agents, and freelancers.
 
@@ -24,7 +25,7 @@ The view has three regions: a fixed-width left **rail** and two right panes. The
 - **Agent mode** (a worker row selected): rail + **HERA** pane (that agent's coordinator PTY) + **AGENT** pane (the agent's own PTY)
 - **Freelance mode** (an unmanaged argus task selected): rail + full-width **AGENT** pane
 
-The rail lists active orchestrators with their agents nested below each one. Sub-coordinators sort before leaf workers. Freelancers – argus tasks hera has never bound to a role – appear below all project rows in a "Freelance" section grouped by repo. Archived items collect in an "Archive" section at the bottom of the rail (hidden by default; `l` reveals them).
+The rail lists active orchestrators with their agents nested below each one. Sub-coordinators sort before leaf workers. Freelancers – argus tasks hera has never bound to a role – appear below all project rows in a "Freelance" section grouped by repo. Archived items collect in an "Archive" section at the bottom of the rail (hidden by default; `l` reveals them). Pinned rows stay at the top.
 
 ### Focus and navigation
 
@@ -33,7 +34,7 @@ Focus starts in RAIL on open. Move between regions with the focus ladder or stay
 | Key | Where | What |
 |-----|-------|------|
 | `j` / `k` | RAIL | Move selection up / down |
-| `Enter` | RAIL | Enter the selection's primary pane (coordinator → HERA, agent or freelancer → AGENT) |
+| `Enter` | RAIL | Enter the selection's primary pane (coordinator → HERA, agent or freelancer → AGENT); reattaches a dead session |
 | `Ctrl-→` | any | Advance focus ladder (RAIL → COORD → AGENT) |
 | `Ctrl-←` | any | Retreat focus ladder (AGENT → COORD → RAIL) |
 | `Ctrl-Q` | COORD or AGENT | Return focus to RAIL |
@@ -48,20 +49,20 @@ When focus is inside a pane, all keystrokes are forwarded verbatim to the bound 
 
 | Key | What |
 |-----|------|
-| `n` | New coordinator – modal with Name / Project / Branch / Backend / Prompt (prompt auto-runs on launch) |
+| `n` | New coordinator – modal with Name / Project / Branch / Backend / Prompt |
 | `w` | Spawn worker under the selected coordinator |
 | `J` | Adopt a freelancer into a coordinator |
 | `r` | Rename the selected row |
 | `a` | Archive / unarchive (reversible, no confirmation needed) |
 | `P` | Pin / unpin |
-| `s` / `S` | Advance / revert the selected row's argus task status |
+| `s` / `S` | Advance / revert the selected row's hera status |
 | `/` | Search / filter the rail |
 | `Space` | Fold / unfold a coordinator or Archive section |
 | `l` | Toggle visibility of the Archive section |
 | `^d` | Delete the selection, removing its worktree and branch (shows confirmation) |
 | `^r` | Prune all done coords and agents (shows confirmation) |
 | `^p` | Open a GitHub PR for the selected row's worktree |
-| `?` | Open the argus help overlay with the full keyset |
+| `?` | Open the help overlay with the full keyset |
 
 ## Getting started
 
@@ -157,6 +158,18 @@ claude/
 install-claude-skills.sh    # install the agent-facing assets (skill + snippet)
 uninstall-claude-skills.sh  # reverse the above
 ```
+
+## What shipped in v1.0
+
+- **Coordination layer** – six MCP tools (`hera_new_orchestrator`, `hera_join`, `hera_send`, `hera_inbox`, `hera_mark_read`, `hera_status`), role-as-identity model, idle-gated injection bus, auto-adopt, doorbell re-nudge with `read_at` receipt.
+- **hera-substrate-link** – argus REST port discovery via daemon socket RPC; pid-mtime watcher for restart detection; degraded-state MCP gate; force re-register on recovery.
+- **hera-settings** – `idle_debounce_seconds` and `auto_inject_enabled` operator knobs, registered as an argus settings section, hot-reload, persisted in `config` SQLite table.
+- **hera-view** – argus plugin view registered with hotkey `Ctrl+H`. Three-region TUI: left rail + HERA pane (coordinator PTY) + AGENT pane (agent PTY). Three body modes (coordinator / agent / freelance). Comprehensive keyset (full table above). PTY forwarding is verbatim (raw bytes at the WebSocket boundary) for terminal fidelity. Freelance section groups unmanaged argus tasks by repo. Archive section at rail bottom. Live rail refresh within ~100 ms of any DAO write. Scrollback via Shift-↑/↓, fullscreen via Ctrl-Z, reattach on Enter for dead sessions.
+- **hera-install** – `setup.sh` manages the full install including opt-in macOS LaunchAgent (starts at login, auto-restarts on crash). `--yes` flag for non-interactive installs.
+- **`hera_spawn_worker`** – born-bound worker spawn; the worker is never a transient freelancer. Reachable via the `w` rail key and as an MCP verb.
+- **QA regression (BUG-001 through BUG-037, plus BUG-039 through BUG-046)** – comprehensive bug-bash covering background, focus, icon alignment, archive coherence, input latency, rail truthfulness, pane rendering, modal behavior, keyset correctness, bounce recovery, and reattach.
+
+See [ROADMAP.md](ROADMAP.md) for the v1.x backlog and deferred items.
 
 ## License
 
