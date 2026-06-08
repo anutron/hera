@@ -217,62 +217,28 @@ func TestRegistrar_PayloadShapeMatchesSpec(t *testing.T) {
 	if s.AuthHeader != "Bearer abc123" {
 		t.Errorf("auth_header = %q", s.AuthHeader)
 	}
-	if len(s.Fields) != 2 {
-		t.Fatalf("expected 2 fields, got %d", len(s.Fields))
+	if len(s.Fields) != 1 {
+		t.Fatalf("expected 1 field, got %d", len(s.Fields))
 	}
 
 	f0 := s.Fields[0]
-	if f0.Key != "idle_debounce_seconds" {
-		t.Errorf("field[0].key = %q, want idle_debounce_seconds", f0.Key)
+	if f0.Key != "auto_inject_enabled" {
+		t.Errorf("field[0].key = %q, want auto_inject_enabled", f0.Key)
 	}
-	// Label is the short user-facing field name argus renders next to the
-	// input. Argus rejects fields with an empty label.
 	if f0.Label == "" {
 		t.Errorf("field[0].label is empty; argus requires a non-empty label")
 	}
-	if f0.Type != "int" {
+	if f0.Type != "bool" {
 		t.Errorf("field[0].type = %q", f0.Type)
 	}
-	if f0.Default == nil {
-		t.Errorf("field[0].default is nil; want 2")
-	}
-	// JSON-decoded default comes back as float64 since SettingField.Default is `any`.
-	if fl, ok := f0.Default.(float64); !ok || fl != 2 {
-		t.Errorf("field[0].default = %v (%T), want 2", f0.Default, f0.Default)
-	}
-	if f0.Min == nil || *f0.Min != 0 {
-		t.Errorf("field[0].min = %v, want 0", f0.Min)
-	}
-	if f0.Max == nil || *f0.Max != 60 {
-		t.Errorf("field[0].max = %v, want 60", f0.Max)
-	}
-	// Description must mention low/high impact and the meaning of 0 and 60
-	// (spec requirement: "Settings field descriptions explain impact").
-	d := f0.Description
-	for _, needle := range []string{"Lower", "Higher", "0", "60"} {
-		if !strings.Contains(d, needle) {
-			t.Errorf("field[0].description missing %q; full text:\n%s", needle, d)
-		}
-	}
-
-	f1 := s.Fields[1]
-	if f1.Key != "auto_inject_enabled" {
-		t.Errorf("field[1].key = %q, want auto_inject_enabled", f1.Key)
-	}
-	if f1.Label == "" {
-		t.Errorf("field[1].label is empty; argus requires a non-empty label")
-	}
-	if f1.Type != "bool" {
-		t.Errorf("field[1].type = %q", f1.Type)
-	}
-	if b, ok := f1.Default.(bool); !ok || !b {
-		t.Errorf("field[1].default = %v (%T), want true", f1.Default, f1.Default)
+	if b, ok := f0.Default.(bool); !ok || !b {
+		t.Errorf("field[0].default = %v (%T), want true", f0.Default, f0.Default)
 	}
 	// Description must cover on/off impact and a concrete use case for off.
-	d = f1.Description
+	d := f0.Description
 	for _, needle := range []string{"on", "off"} {
 		if !strings.Contains(strings.ToLower(d), needle) {
-			t.Errorf("field[1].description missing %q; full text:\n%s", needle, d)
+			t.Errorf("field[0].description missing %q; full text:\n%s", needle, d)
 		}
 	}
 }

@@ -86,8 +86,6 @@ type Message struct {
 	ReadAt       *time.Time
 	DeliveryMode DeliveryMode
 	DeliveredAt  *time.Time
-	NudgeCount   int
-	NudgedAt     *time.Time
 }
 
 // RoleStatus is the current status for a role.

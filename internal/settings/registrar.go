@@ -53,8 +53,6 @@ const HeraCallbackURL = "http://127.0.0.1:7744/mcp/settings_save"
 // authHeader is the per-session shared secret hera shares with argus for
 // callback auth.
 func HeraSection(authHeader string) argus.SettingsSectionDefinition {
-	minZero := 0
-	maxSixty := 60
 	return argus.SettingsSectionDefinition{
 		Name:        HeraSectionName,
 		Title:       HeraSectionTitle,
@@ -63,27 +61,13 @@ func HeraSection(authHeader string) argus.SettingsSectionDefinition {
 		AuthHeader:  authHeader,
 		Fields: []argus.SettingField{
 			{
-				Key:   "idle_debounce_seconds",
-				Label: "Idle debounce (seconds)",
-				Type:  "int",
-				Description: "Seconds an agent's session must stay quiet before hera auto-submits any messages waiting in its input buffer. " +
-					"**Lower** = faster delivery once an agent goes quiet, but higher risk of submitting while the agent is still working between bursts. " +
-					"**Higher** = more padding before submit, at the cost of slower message delivery. " +
-					"**0** submits on the first quiet event. " +
-					"**60** is the ceiling — past that you're working around a substrate bug, not tuning UX. " +
-					"Default 2 reproduces v1 behavior.",
-				Default: 2,
-				Min:     &minZero,
-				Max:     &maxSixty,
-			},
-			{
 				Key:   "auto_inject_enabled",
 				Label: "Auto-inject cross-agent messages",
 				Type:  "bool",
-				Description: "When **on**, hera auto-submits cross-agent messages (presses Enter for you) once the recipient agent's session has been quiet for the debounce above. " +
-					"When **off**, every message is left sitting in the recipient's input buffer for you to read and submit manually — same as how busy sessions are already handled. " +
+				Description: "When **on**, hera passes `submit: true` to argus's delivery endpoint, causing argus to auto-submit the message (press Enter) once the recipient's session is idle. " +
+					"When **off**, argus injects the pointer text without submitting — the recipient's input buffer gets the text but the user must press Enter manually. " +
 					"Turn off when you want to QA every cross-agent message before it lands. " +
-					"Default on reproduces v1 behavior.",
+					"Default on.",
 				Default: true,
 			},
 		},

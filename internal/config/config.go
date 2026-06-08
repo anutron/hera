@@ -25,21 +25,21 @@ type Config struct {
 	// advertises to argus from the actual bound address.
 	ListenAddr string
 
-	// IdleDebounce is how long session.idle must persist before a task
-	// becomes auto-submit-eligible (see design D10).
-	// Default: 2s.
-	IdleDebounce time.Duration
-
 	// MCPHeartbeat is how often hera re-POSTs its tool registrations
 	// to argus to stay within the substrate's idle sweep window.
 	// Default: 5m.
 	MCPHeartbeat time.Duration
 
-	// AutoInjectEnabled is the master switch over the auto-submit branch
-	// of Injector.Inject. When false, every message is delivered in
-	// busy_buffer mode regardless of recipient idle state.
+	// AutoInjectEnabled controls the submit: field in argus notify calls.
+	// When true, argus auto-submits messages when the recipient is idle.
+	// When false, argus injects the text without submitting.
 	// Default: true.
 	AutoInjectEnabled bool
+
+	// NotifyDeadlineMs is the delivery deadline passed to argus notify in
+	// milliseconds. argus stops retrying after this interval.
+	// Default: 300000 (5 minutes).
+	NotifyDeadlineMs int64
 
 	// ArgusSocketPath is the unix-domain socket exposed by the argus
 	// daemon for the Daemon.* RPC family (Ports, Ping). Hera queries it
@@ -59,21 +59,6 @@ type Config struct {
 	// events without depending on substrate event-emit completeness.
 	// Default: 60s.
 	ReconcileInterval time.Duration
-
-	// NudgeAfter is how long after an idle_submit delivery hera waits before
-	// firing the first doorbell re-nudge if the message is still unread.
-	// Default: 30s.
-	NudgeAfter time.Duration
-
-	// NudgeEvery is the minimum interval between subsequent doorbell nudges
-	// for the same message after the first nudge.
-	// Default: 30s.
-	NudgeEvery time.Duration
-
-	// MaxNudges is the maximum number of doorbell re-nudges hera will emit
-	// for a single unread idle_submit message before giving up.
-	// Default: 5.
-	MaxNudges int
 }
 
 // Default returns a Config populated with the v1 defaults.
@@ -85,20 +70,16 @@ func Default() *Config {
 		StateDir:          stateDir,
 		ArgusBaseURL:      "http://127.0.0.1:7743",
 		ListenAddr:        "127.0.0.1:7744",
-		IdleDebounce:      2 * time.Second,
 		MCPHeartbeat:      5 * time.Minute,
 		AutoInjectEnabled: true,
+		NotifyDeadlineMs:  300000,
 		ArgusSocketPath:   filepath.Join(argusDir, "daemon.sock"),
 		ArgusPIDPath:      filepath.Join(argusDir, "daemon.pid"),
 		ReconcileInterval: 60 * time.Second,
-		NudgeAfter:        30 * time.Second,
-		NudgeEvery:        30 * time.Second,
-		MaxNudges:         5,
 	}
 }
 
-// TokenPath returns the path to the scope-token file hera reads on
-// startup.
+// TokenPath returns the path to the scope-token file hera reads on startup.
 func (c *Config) TokenPath() string {
 	return filepath.Join(c.StateDir, "api-token")
 }

@@ -404,6 +404,57 @@ func (c *Client) SetTaskStatus(ctx context.Context, taskID, status string) (stri
 	return out.Status, nil
 }
 
+// NotifyInput is the body of POST /api/tasks/{id}/notify.
+type NotifyInput struct {
+	Text       string `json:"text"`
+	Submit     bool   `json:"submit"`
+	DeliveryID string `json:"delivery_id"`
+	DeadlineMs int64  `json:"deadline_ms"`
+}
+
+// NotifyResponse is the 202 response from POST /api/tasks/{id}/notify.
+type NotifyResponse struct {
+	DeliveryID string `json:"delivery_id"`
+	State      string `json:"state"` // "submitted" | "pending"
+}
+
+// NotifyTask delegates PTY message delivery to argus via
+// POST /api/tasks/{id}/notify. argus owns the idle gate, pre-clear,
+// submit CR, retry, and single-writer exclusion. Returns ErrNoTaskInput
+// on 404 (task has no active session). Other non-2xx surfaces as *HTTPError.
+func (c *Client) NotifyTask(ctx context.Context, taskID string, in NotifyInput) (*NotifyResponse, error) {
+	var out NotifyResponse
+	status, err := c.doJSON(ctx, "POST", "/api/tasks/"+url.PathEscape(taskID)+"/notify", in, &out)
+	if err != nil {
+		if status == 404 {
+			return nil, ErrNoTaskInput
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CancelNotifyResponse is the 200 response from DELETE /api/tasks/{id}/notify/{id}.
+type CancelNotifyResponse struct {
+	DeliveryID string `json:"delivery_id"`
+	Cancelled  bool   `json:"cancelled"`
+}
+
+// CancelNotify asks argus to cancel a pending delivery. A 404 is treated as
+// success (already delivered or cancelled). Best-effort: callers log errors but
+// do not fail their response on cancel failures.
+func (c *Client) CancelNotify(ctx context.Context, taskID, deliveryID string) error {
+	path := "/api/tasks/" + url.PathEscape(taskID) + "/notify/" + url.PathEscape(deliveryID)
+	status, err := c.doJSON(ctx, "DELETE", path, nil, nil)
+	if err != nil {
+		if status == 404 {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func (c *Client) PostTaskInput(ctx context.Context, taskID string, payload []byte) (int, error) {
 	req, err := newRequest(ctx, "POST", c.BaseURL()+"/api/tasks/"+url.PathEscape(taskID)+"/input", payload)
 	if err != nil {

@@ -231,7 +231,6 @@ func smokeTestDaemon(t *testing.T, preSeed func(*db.DB)) (*Daemon, *fakeArgusFor
 		StateDir:        stateDir,
 		ArgusBaseURL:    srv.URL,
 		ListenAddr:      "127.0.0.1:0",
-		IdleDebounce:    100 * time.Millisecond,
 		MCPHeartbeat:    24 * time.Hour,
 		ArgusSocketPath: sockPath,
 		ArgusPIDPath:    pidPath,
