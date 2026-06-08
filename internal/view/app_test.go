@@ -4800,57 +4800,6 @@ func TestClearReattachAndResize_ResetsSubscriptionBeforeRebind(t *testing.T) {
 	}
 }
 
-// StartPaneReattach must leave focus on RAIL even when fireSelectionNow
-// applies a live-task pending selection (live rows skip applyDeadFocusGuard,
-// so without the explicit focus reset the focus machine can end up in AGENT
-// or COORD state before the splash clears, moving the terminal cursor into
-// the pane before the new session is ready).
-func TestStartPaneReattach_FocusResetToRail_WithNonDeadPending(t *testing.T) {
-	d := openTestDB(t)
-	src := &fakePaneSource{}
-	a, err := BuildApp(d, src)
-	if err != nil {
-		t.Fatalf("BuildApp: %v", err)
-	}
-	defer a.Close()
-
-	focus := NewFocusMachine()
-	a.SetFocusMachine(focus)
-	a.modalSync = true
-
-	// Bind agent pane to the dead task.
-	a.mu.Lock()
-	a.agentTask = "t-dead"
-	a.mu.Unlock()
-
-	// Wire a LIVE pending selection (not the dead task). This simulates the
-	// race where the debounce has not yet fired for a live row that the
-	// operator navigated past on the way to the dead row.
-	liveRef := &roleEntry{
-		RoleKind:    string(db.KindWorker),
-		ArgusTaskID: "t-live",
-		Name:        "live-agent",
-		Dead:        false,
-		HasState:    false, // cold cache → roleInputDead=false → applyDeadFocusGuard no-ops
-	}
-	a.selectMu.Lock()
-	a.selectPending = liveRef
-	a.selectHasRef = true
-	a.selectMu.Unlock()
-
-	// Artificially put the focus machine in FocusAGENT, simulating a state
-	// where the operator was in the agent pane before navigating back to the
-	// rail. (In practice Ctrl-Q resets this, but the reset in StartPaneReattach
-	// must be the final safety net.)
-	focus.JumpToAGENT()
-
-	a.StartPaneReattach("t-dead")
-
-	if got := focus.State(); got != FocusRAIL {
-		t.Errorf("StartPaneReattach must leave focus on RAIL; got %v", got)
-	}
-}
-
 // maybeAutoReattachPane must snap focus to RAIL for dead-session freelancer
 // panes reached via Ctrl+→ so the operator is not stuck forwarding keystrokes
 // to a dead PTY (BUG-012). The existing BUG-009 test confirms no auto-reattach

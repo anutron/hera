@@ -1288,9 +1288,10 @@ func (a *App) OnFocusChanged(state FocusState) {
 
 	// BUG-008 path 2: when focus lands on a pane (Ctrl+→ focus ladder), check
 	// whether its bound task is dead-session and auto-trigger reattach if so.
-	// Guard: only fires when entering a pane, and StartPaneReattach already sets
-	// pane.reattaching=true before calling OnFocusChanged, so the check is
-	// idempotent — no recursive trigger.
+	// Guard: only fires when entering a pane, and maybeAutoReattachPane snaps
+	// focus back to RAIL (FocusRAIL path skips this block) + StartPaneReattach
+	// sets pane.reattaching=true, so the check is idempotent — no recursive
+	// trigger.
 	if state == FocusCOORD || state == FocusAGENT {
 		a.maybeAutoReattachPane(state)
 	}
@@ -2365,9 +2366,8 @@ func (a *App) clearReattachAndResize(taskID string) {
 
 // StartPaneReattach shows the REATTACHING splash on the pane bound to taskID
 // and forces an immediate redraw so the splash renders before any cursor move.
-// Focus stays on the RAIL during the splash; clearReattachAndResize moves focus
-// to the pane once the new session is ready. Called by the mutation bridge when
-// the operator presses Enter on a dead-session row (BUG-008 path 1). Satisfies
+// Called by the mutation bridge when the operator presses Enter on a dead-session
+// row (BUG-008 path 1) and by maybeAutoReattachPane (BUG-008 path 2). Satisfies
 // the reattachPaneStarter interface. Runs on the tview event loop.
 func (a *App) StartPaneReattach(taskID string) {
 	if taskID == "" {
@@ -2389,15 +2389,6 @@ func (a *App) StartPaneReattach(taskID string) {
 	//
 	// No-op when no selection is pending (selectHasRef=false).
 	a.fireSelectionNow()
-	// BUG-012: unconditionally reset focus to RAIL after fireSelectionNow.
-	// applyRailSelection can call setBodyMode → OnFocusChanged with a
-	// non-RAIL state when the pending selection is a live task row (live rows
-	// don't trigger applyDeadFocusGuard). Focus must stay on RAIL for the
-	// entire splash period; clearReattachAndResize moves it to the pane.
-	if a.focus != nil {
-		a.focus.ToRAIL()
-	}
-	a.OnFocusChanged(FocusRAIL)
 
 	a.mu.Lock()
 	var pane *pinnedTerminalPane
@@ -2482,9 +2473,10 @@ func (a *App) scheduleSubtitleUpdate(taskID string) {
 // Freelancer agent panes are skipped: they have no hera binding and the
 // auto-reattach goroutine can hang when navigating to a dead-session freelancer
 // row. The operator uses Enter (OnReattach) to manually reattach (BUG-009).
-// For managed (non-freelancer) dead sessions, StartPaneReattach is called to
-// snap focus to RAIL before showing the splash so keystrokes during the
-// reattach window never reach the dead PTY (BUG-012).
+// For managed (non-freelancer) dead sessions, focus is snapped back to RAIL
+// before showing the splash so keystrokes during the reattach window never
+// reach the dead PTY (BUG-012). clearReattachAndResize moves focus to the
+// pane once the new session is ready.
 // Must run on the tview event loop (called from OnFocusChanged).
 func (a *App) maybeAutoReattachPane(state FocusState) {
 	if a.onDeadPaneReattach == nil {
@@ -2533,9 +2525,13 @@ func (a *App) maybeAutoReattachPane(state FocusState) {
 	if !ok || taskStatusAlive(st.Status) {
 		return
 	}
-	// StartPaneReattach snaps focus to RAIL and shows the REATTACHING splash
-	// immediately, so the operator sees feedback before any keystroke can reach
-	// the dead PTY. onDeadPaneReattach fires the actual background restart.
+	// Snap focus to RAIL so keystrokes during the reattach window never reach
+	// the dead PTY. StartPaneReattach shows the splash; onDeadPaneReattach
+	// fires the background restart; clearReattachAndResize moves focus back.
+	if a.focus != nil && a.focus.State() != FocusRAIL {
+		a.focus.ToRAIL()
+		a.OnFocusChanged(FocusRAIL)
+	}
 	a.StartPaneReattach(taskID)
 	a.onDeadPaneReattach(taskID)
 }
