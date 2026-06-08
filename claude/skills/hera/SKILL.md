@@ -36,6 +36,42 @@ orchestrator graph.
 
 You don't manage any of that plumbing. You call nine MCP tools.
 
+## What hera is NOT
+
+Hera is for managing build order across persistent worker sessions —
+multiple Claude sessions running in parallel argus worktrees, surviving
+daemon restarts, communicating over the message bus.
+
+Hera is NOT for:
+
+- **Team-of-agents patterns inside a single unit of work.** Claude's
+  native Agent tool dispatches in-process subagents in the same session
+  — shared context, faster, parallel. Replicating that pattern via
+  `hera_spawn_worker` is slower (per-session startup overhead) AND more
+  token-expensive (no shared context).
+- **Work where startup cost exceeds the work itself.** Avoid spawning a
+  hera worker for jobs small enough that the per-session startup pays
+  more than just doing the work in-place. (Legitimate exceptions exist:
+  small work that needs a different worktree / different repo / sandbox
+  isolation may still warrant a worker.)
+
+## Depth and topology
+
+A healthy hera tree mirrors your plan structure, not your dispatch
+fan-out. Practical max depth:
+
+- **Root coord** — holds the overall plan in mind. Dispatches wave coords.
+- **Wave coord** — manages ONE wave's stages. Promotes via
+  `hera_new_orchestrator(name=<wave>-team)`. Dispatches one hera worker
+  per stage.
+- **Stage worker** — executes ONE stage end-to-end. **Leaves in the hera
+  tree.** Inside their session, they use Claude's native Agent tool for
+  any in-stage parallelism.
+
+Three levels (root → wave → stage). If you find yourself promoting
+deeper, you're probably duplicating what Claude's native Agent tool
+already does.
+
 ## The model in five terms
 
 - **Orchestrator** — a named coordination graph (one per project/feature/wave). Roles live under it.
