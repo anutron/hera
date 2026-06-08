@@ -522,6 +522,163 @@ func TestApp_OnFullscreenChanged_BodyLayoutIsExclusive(t *testing.T) {
 	}
 }
 
+// BUG-013 (reflow path): forceRebindCoord replaces a.pieces.coord with a fresh
+// emulator but the old pane held tview focus. Without a fix, Application.focus
+// still points to the closed pane, the new pane renders hasFocus=false, and the
+// cursor disappears. The fix calls OnFocusChanged(FocusCOORD) after refreshBody
+// so the new pane gets SetFocus and its border color is restored to focused.
+// This is the primary trigger for BUG-013: the fullscreen-triggered reflow fires
+// ~250ms after Ctrl-Z, long after the initial QueueUpdateDraw from PR #109.
+func TestApp_ForceRebindCoord_RestoresFocusWhenCoordFocused(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Bind the coord pane to a task and place focus there.
+	a.mu.Lock()
+	a.coordTask = "task-coord"
+	a.mu.Unlock()
+	focus.JumpToCOORD()
+	a.OnFocusChanged(FocusCOORD)
+
+	// Verify pre-condition: coord border is the focused color.
+	if got := a.pieces.coord.GetBorderColor(); got != theme.ColorTitle {
+		t.Fatalf("pre-condition: coord border = %v, want focused %v", got, theme.ColorTitle)
+	}
+
+	// Simulate the reflow-triggered rebind at new dimensions.
+	a.forceRebindCoord("task-coord", 78, 22)
+
+	// The new pane must inherit focus — its border color must stay focused.
+	if got := a.pieces.coord.GetBorderColor(); got != theme.ColorTitle {
+		t.Errorf("after forceRebindCoord: coord border = %v, want focused %v (cursor invisible without fix)", got, theme.ColorTitle)
+	}
+}
+
+// forceRebindCoord must NOT steal focus when COORD is not focused (RAIL or
+// AGENT). The replacement pane's border should be unfocused.
+func TestApp_ForceRebindCoord_NoFocusStealWhenNotCoordFocused(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Focus is on RAIL (the default).
+	a.OnFocusChanged(FocusRAIL)
+	a.mu.Lock()
+	a.coordTask = "task-coord"
+	a.mu.Unlock()
+
+	a.forceRebindCoord("task-coord", 78, 22)
+
+	// Coord border must be unfocused; RAIL has focus.
+	if got := a.pieces.coord.GetBorderColor(); got == theme.ColorTitle {
+		t.Errorf("after forceRebindCoord with RAIL focus: coord border = focused, must not steal focus")
+	}
+}
+
+// BUG-013 (reflow path, agent side): forceRebindAgent must re-establish
+// focus on the replacement pane when AGENT has focus.
+func TestApp_ForceRebindAgent_RestoresFocusWhenAgentFocused(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	a.mu.Lock()
+	a.agentTask = "task-agent"
+	a.mu.Unlock()
+	focus.JumpToAGENT()
+	a.OnFocusChanged(FocusAGENT)
+
+	if got := a.pieces.agent.GetBorderColor(); got != theme.ColorTitle {
+		t.Fatalf("pre-condition: agent border = %v, want focused %v", got, theme.ColorTitle)
+	}
+
+	a.forceRebindAgent("task-agent", 78, 22)
+
+	if got := a.pieces.agent.GetBorderColor(); got != theme.ColorTitle {
+		t.Errorf("after forceRebindAgent: agent border = %v, want focused %v (cursor invisible without fix)", got, theme.ColorTitle)
+	}
+}
+
+// forceRebindAgent must NOT steal focus when AGENT is not focused.
+func TestApp_ForceRebindAgent_NoFocusStealWhenNotAgentFocused(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	a.OnFocusChanged(FocusRAIL)
+	a.mu.Lock()
+	a.agentTask = "task-agent"
+	a.mu.Unlock()
+
+	a.forceRebindAgent("task-agent", 78, 22)
+
+	if got := a.pieces.agent.GetBorderColor(); got == theme.ColorTitle {
+		t.Errorf("after forceRebindAgent with RAIL focus: agent border = focused, must not steal focus")
+	}
+}
+
+// BUG-013 (OnFullscreenChanged path): OnFullscreenChanged must re-assert
+// focus on the current pane after refreshBody() restructures the Flex.
+// Before the fix, the first post-toggle draw could show a focused border
+// (set by the prior OnFocusChanged call) but a missing hardware cursor
+// because app.SetFocus was not re-called after the Flex was rebuilt.
+func TestApp_OnFullscreenChanged_ReassertsFocusAfterRefreshBody(t *testing.T) {
+	d := openTestDB(t)
+	a, err := BuildApp(d, nil)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Enter COORD pane focus, then toggle fullscreen.
+	focus.JumpToCOORD()
+	a.OnFocusChanged(FocusCOORD)
+	a.OnFullscreenChanged(FocusCOORD, true)
+
+	// The coord pane's border must remain focused after the fullscreen layout change.
+	if got := a.pieces.coord.GetBorderColor(); got != theme.ColorTitle {
+		t.Errorf("fullscreen coord: border = %v, want focused %v", got, theme.ColorTitle)
+	}
+
+	// Exit fullscreen — focus must remain on coord.
+	a.OnFullscreenChanged(FocusCOORD, false)
+	if got := a.pieces.coord.GetBorderColor(); got != theme.ColorTitle {
+		t.Errorf("exit fullscreen: border = %v, want focused %v", got, theme.ColorTitle)
+	}
+}
+
 func TestBuildApp_EmptyDBShowsNoProjectsAndPlaceholders(t *testing.T) {
 	d := openTestDB(t)
 	a, err := BuildApp(d, nil)

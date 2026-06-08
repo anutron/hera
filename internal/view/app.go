@@ -1358,6 +1358,7 @@ func (a *App) OnFullscreenChanged(pane FocusState, active bool) {
 	a.mu.Lock()
 	a.fullscreenActive = active
 	a.fullscreenPane = pane
+	focus := a.focus
 	a.mu.Unlock()
 
 	if active {
@@ -1371,13 +1372,19 @@ func (a *App) OnFullscreenChanged(pane FocusState, active bool) {
 		a.pieces.agent.SetTitle("Agent")
 	}
 	a.refreshBody()
-	// BUG-013: after the Flex layout changes (rail + other pane added/removed),
-	// tview may not re-query the focused pane's cursor position in the first
-	// post-transition draw — leaving the cursor invisible until the next
-	// unrelated event triggers a repaint. Queue a second draw from a goroutine
-	// (mirroring the BUG-049 v2 pattern) so the pane re-establishes its cursor
-	// in the new container. The goroutine avoids calling QueueUpdateDraw from
-	// within the current draw cycle, which would self-deadlock on tview v0.42.
+	// BUG-013: re-assert tview focus on the current pane after refreshBody()
+	// restructures the Flex. The KeyRouter calls notifyBorder() right after
+	// notifyFullscreen() which also invokes OnFocusChanged, but calling it
+	// here too handles edge cases (tests, future callers) and ensures the
+	// cursor is visible in the first post-transition draw without relying on
+	// the call ordering in toggleFullscreen.
+	if focus != nil {
+		a.OnFocusChanged(focus.State())
+	}
+	// Queue a second draw (mirroring the BUG-049 v2 pattern) so tview
+	// re-establishes the cursor position in the new container. The goroutine
+	// avoids calling QueueUpdateDraw from within the current draw cycle,
+	// which would self-deadlock on tview v0.42.
 	if a.app != nil {
 		go a.app.QueueUpdateDraw(func() {})
 	}
@@ -1736,6 +1743,7 @@ func (a *App) forceRebindCoord(taskID string, cols, rows int) {
 	a.coordBridge = bridge
 	a.coordUnsub = unsub
 	a.pieces.coord = pane
+	focus := a.focus
 	a.mu.Unlock()
 
 	if oldUnsub != nil {
@@ -1748,6 +1756,15 @@ func (a *App) forceRebindCoord(taskID string, cols, rows int) {
 		oldPane.Close()
 	}
 	a.refreshBody()
+	// BUG-013: re-assert tview focus on the replacement coord pane when COORD
+	// has focus. refreshBody puts the new pane into the Flex, but
+	// Application.focus still points to the old (now-closed) pane — the new
+	// pane has hasFocus=false and renders without a cursor. OnFocusChanged
+	// calls app.SetFocus(a.pieces.coord), where coord is now the new pane,
+	// restoring cursor visibility after a fullscreen- or resize-triggered reflow.
+	if focus != nil && focus.State() == FocusCOORD {
+		a.OnFocusChanged(FocusCOORD)
+	}
 }
 
 // forceRebindAgent is the AGENT-pane counterpart of forceRebindCoord.
@@ -1765,6 +1782,7 @@ func (a *App) forceRebindAgent(taskID string, cols, rows int) {
 	a.agentBridge = bridge
 	a.agentUnsub = unsub
 	a.pieces.agent = pane
+	focus := a.focus
 	a.mu.Unlock()
 
 	if oldUnsub != nil {
@@ -1777,6 +1795,12 @@ func (a *App) forceRebindAgent(taskID string, cols, rows int) {
 		oldPane.Close()
 	}
 	a.refreshBody()
+	// BUG-013: same focus-restoration pattern as forceRebindCoord, applied to
+	// the AGENT pane. Without this the replacement pane has hasFocus=false and
+	// renders without a cursor after a fullscreen- or resize-triggered reflow.
+	if focus != nil && focus.State() == FocusAGENT {
+		a.OnFocusChanged(FocusAGENT)
+	}
 }
 
 // onRailSelectionChanged is invoked by the rail widget when the cursor
