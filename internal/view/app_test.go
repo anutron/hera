@@ -5034,6 +5034,38 @@ func TestClearReattachAndResize_ResetsSubscriptionBeforeRebind(t *testing.T) {
 	}
 }
 
+// clearReattachAndResize must NOT call ResetSubscription when the pane is not
+// showing the reattach splash (BUG-015). OnTaskReattached schedules
+// clearReattachAndResize on a timer; if the user navigates away and back before
+// the timer fires, the current pane is a fresh rebind (reattaching=false).
+// Calling ResetSubscription on such a pane wipes the ring buffer, erasing any
+// pending typed input that the user had not yet submitted.
+func TestClearReattachAndResize_SkipsResetWhenNotReattaching(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.mu.Lock()
+	a.agentTask = "t-agent"
+	// pane.reattaching is false by default (new pane from BuildApp)
+	a.mu.Unlock()
+	a.pieces.agent.SetRect(0, 0, 52, 27)
+
+	if len(src.resetSubscriptions) != 0 {
+		t.Fatalf("precondition: no ResetSubscription calls yet; got %v", src.resetSubscriptions)
+	}
+
+	a.clearReattachAndResize("t-agent")
+
+	if len(src.resetSubscriptions) != 0 {
+		t.Errorf("clearReattachAndResize must not call ResetSubscription when pane is not reattaching (BUG-015); got calls: %v", src.resetSubscriptions)
+	}
+}
+
 // maybeAutoReattachPane must snap focus to RAIL for dead-session freelancer
 // panes reached via Ctrl+→ so the operator is not stuck forwarding keystrokes
 // to a dead PTY (BUG-012). The existing BUG-009 test confirms no auto-reattach
