@@ -2281,6 +2281,25 @@ func (a *App) OnTaskReattached(taskID string) {
 	})
 }
 
+// moveFocusToPaneAfterReattach moves keyboard focus from the RAIL to the agent
+// pane (isAgent=true) or coord pane (isAgent=false) after a reattach completes.
+// Called by clearReattachAndResize to complete the focus handoff that
+// StartPaneReattach deferred. Must run on the tview event loop.
+func (a *App) moveFocusToPaneAfterReattach(isAgent bool) {
+	if a.focus != nil {
+		if isAgent {
+			a.focus.JumpToAGENT()
+		} else {
+			a.focus.JumpToCOORD()
+		}
+	}
+	target := FocusAGENT
+	if !isAgent {
+		target = FocusCOORD
+	}
+	a.OnFocusChanged(target)
+}
+
 // clearReattachAndResize clears the REATTACHING splash for taskID's pane and
 // replaces it with a fresh-subscribed pane (blank emulator) so the old
 // session's ring buffer does not flash before new output arrives. The fresh
@@ -2317,6 +2336,7 @@ func (a *App) clearReattachAndResize(taskID string) {
 		}
 		// BUG-012: explicit SIGWINCH for the new session (see OnTaskReattached).
 		a.src.ResizeTask(taskID, cols, rows)
+		a.moveFocusToPaneAfterReattach(isAgent)
 		return
 	}
 	// Layout not yet run (GetRect == 0) — just clear the splash so the operator
@@ -2332,13 +2352,15 @@ func (a *App) clearReattachAndResize(taskID string) {
 	if pane != nil {
 		pane.SetReattaching(false, "")
 	}
+	a.moveFocusToPaneAfterReattach(isAgent)
 }
 
-// StartPaneReattach shows the REATTACHING splash on the pane bound to taskID,
-// enters that pane (moves focus there), and schedules the subtitle animation.
-// Called by the mutation bridge when the operator presses Enter on a dead-session
-// row (BUG-008 path 1). Satisfies the reattachPaneStarter interface. Runs on
-// the tview event loop.
+// StartPaneReattach shows the REATTACHING splash on the pane bound to taskID
+// and forces an immediate redraw so the splash renders before any cursor move.
+// Focus stays on the RAIL during the splash; clearReattachAndResize moves focus
+// to the pane once the new session is ready. Called by the mutation bridge when
+// the operator presses Enter on a dead-session row (BUG-008 path 1). Satisfies
+// the reattachPaneStarter interface. Runs on the tview event loop.
 func (a *App) StartPaneReattach(taskID string) {
 	if taskID == "" {
 		return
@@ -2362,14 +2384,11 @@ func (a *App) StartPaneReattach(taskID string) {
 
 	a.mu.Lock()
 	var pane *pinnedTerminalPane
-	var focusTarget FocusState
 	switch {
 	case a.agentTask == taskID:
 		pane = a.pieces.agent
-		focusTarget = FocusAGENT
 	case a.coordTask == taskID:
 		pane = a.pieces.coord
-		focusTarget = FocusCOORD
 	}
 	a.mu.Unlock()
 	if pane == nil {
@@ -2377,16 +2396,16 @@ func (a *App) StartPaneReattach(taskID string) {
 	}
 	pane.SetReattaching(true, "connecting to agent...")
 	a.scheduleSubtitleUpdate(taskID)
-	// Enter the pane so the operator sees the splash with focus.
-	if a.focus != nil {
-		switch focusTarget {
-		case FocusAGENT:
-			a.focus.JumpToAGENT()
-		case FocusCOORD:
-			a.focus.JumpToCOORD()
-		}
+	// Force a redraw on the next event-loop tick so the splash paints before any
+	// cursor move. Without this, tview only redraws on the next input event,
+	// leaving the old pane content visible until something else triggers a draw
+	// (seconds later). The goroutine wrapper matches the codebase-wide pattern
+	// for QueueUpdateDraw calls from within the event loop.
+	if a.app != nil {
+		go a.app.QueueUpdateDraw(func() {})
 	}
-	a.OnFocusChanged(focusTarget)
+	// Focus deliberately stays on the RAIL here. clearReattachAndResize moves
+	// it to the pane once the new session is ready and correctly sized.
 }
 
 // ClearPaneReattach hides the REATTACHING splash on the pane bound to taskID.

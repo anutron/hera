@@ -4572,6 +4572,97 @@ func TestStartPaneReattach_FiresSelectionWhenBoundButWrongBodyMode(t *testing.T)
 	}
 }
 
+// StartPaneReattach must leave focus on the RAIL. The terminal cursor must not
+// jump to the pane before the splash renders — focus moves to the pane only
+// after clearReattachAndResize fires (the reattach + 1s minimum hold).
+func TestStartPaneReattach_FocusStaysOnRail(t *testing.T) {
+	d := openTestDB(t)
+
+	src := &aliveStatePaneSource{
+		alive: map[string]bool{"t-dead": false},
+		states: map[string]ArgusTaskState{
+			"t-dead": {Status: "complete"},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+	a.modalSync = true
+
+	// Wire in the dead-session row so fireSelectionNow binds the pane.
+	deadRef := &roleEntry{
+		RoleKind:    string(db.KindWorker),
+		ArgusTaskID: "t-dead",
+		Name:        "dead-agent",
+		Dead:        false,
+		HasState:    true,
+		Status:      "complete",
+	}
+	a.selectMu.Lock()
+	a.selectPending = deadRef
+	a.selectHasRef = true
+	a.selectMu.Unlock()
+
+	// Focus starts on RAIL.
+	if focus.State() != FocusRAIL {
+		t.Fatalf("precondition: focus must start on RAIL; got %v", focus.State())
+	}
+
+	a.StartPaneReattach("t-dead")
+
+	// Focus must still be on RAIL — the splash should hold focus there.
+	if got := focus.State(); got != FocusRAIL {
+		t.Errorf("StartPaneReattach must leave focus on RAIL; got %v", got)
+	}
+	// Pane must be in reattaching state.
+	a.mu.Lock()
+	pane := a.pieces.agent
+	a.mu.Unlock()
+	if pane == nil || !pane.reattaching {
+		t.Error("StartPaneReattach must activate the REATTACHING splash")
+	}
+}
+
+// clearReattachAndResize must move focus to the agent pane after clearing the
+// splash so the operator lands in the pane ready to type without a manual
+// Ctrl+→.
+func TestClearReattachAndResize_MoveFocusToAgent(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	focus := NewFocusMachine()
+	a.SetFocusMachine(focus)
+
+	// Bind agent pane and activate the splash (simulates the state after
+	// StartPaneReattach).
+	a.mu.Lock()
+	a.agentTask = "t-agent"
+	a.pieces.agent.SetReattaching(true, "connecting...")
+	a.mu.Unlock()
+
+	// Focus is on RAIL (as StartPaneReattach leaves it).
+	if focus.State() != FocusRAIL {
+		t.Fatalf("precondition: focus must be RAIL; got %v", focus.State())
+	}
+
+	// GetRect returns 0 (no layout run) → zero-rect path.
+	a.clearReattachAndResize("t-agent")
+
+	if got := focus.State(); got != FocusAGENT {
+		t.Errorf("clearReattachAndResize must move focus to AGENT; got %v", got)
+	}
+}
+
 // OnTaskReattached must dispatch ResizeTask with the layout-allocated rect
 // dimensions (GetRect inner) rather than PinnedSize(). The splash Draw path
 // never updates pinnedCols/Rows, leaving PinnedSize() at the 80×24 construction
