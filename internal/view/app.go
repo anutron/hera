@@ -2342,16 +2342,22 @@ func (a *App) StartPaneReattach(taskID string) {
 	if taskID == "" {
 		return
 	}
-	// BUG-012: if the pane isn't yet bound to taskID (the operator pressed Enter
-	// on a dead-session row within the 120ms selection debounce window before
-	// applyRailSelection fired), flush the pending selection immediately so the
-	// pane is bound and the splash has somewhere to appear.
-	a.mu.Lock()
-	notBound := a.agentTask != taskID && a.coordTask != taskID
-	a.mu.Unlock()
-	if notBound {
-		a.fireSelectionNow()
-	}
+	// BUG-012: always fire any pending debounced selection immediately before
+	// looking up the pane. Two cases both require this:
+	//
+	// (1) Pane not yet bound: the operator pressed Enter within the 120ms
+	//     debounce window before applyRailSelection fired, so the pane is still
+	//     bound to the previous task — fireSelectionNow binds it to taskID.
+	//
+	// (2) Pane bound but body mode wrong: the operator navigated to a coordinator
+	//     header (switching the body to COORD-only), then back to the dead-session
+	//     worker row within the debounce window. agentTask == taskID but
+	//     agentPresent=false, so the splash would appear on an invisible pane.
+	//     fireSelectionNow calls applyRailSelection → setBodyMode(true,true),
+	//     making the agent pane visible before SetReattaching stamps reattachSince.
+	//
+	// No-op when no selection is pending (selectHasRef=false).
+	a.fireSelectionNow()
 
 	a.mu.Lock()
 	var pane *pinnedTerminalPane

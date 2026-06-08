@@ -4491,6 +4491,87 @@ func TestStartPaneReattach_FiresSelectionWhenPaneNotBound(t *testing.T) {
 	}
 }
 
+// TestStartPaneReattach_FiresSelectionWhenBoundButWrongBodyMode tests that
+// StartPaneReattach fires any pending debounced selection even when the agent
+// pane IS already bound to the task. Without the unconditional fireSelectionNow,
+// a "notBound=false" pane check caused the fire to be skipped — leaving the
+// body in COORD-only mode where the agent pane (and splash) is invisible.
+// Scenario: user selected a dead-session row (pane bound, body=COORD+AGENT),
+// then navigated to an orchestrator header (body=COORD-only), then back to the
+// dead-session row within the 120ms debounce window, then pressed Enter.
+func TestStartPaneReattach_FiresSelectionWhenBoundButWrongBodyMode(t *testing.T) {
+	d := openTestDB(t)
+
+	src := &aliveStatePaneSource{
+		alive: map[string]bool{"t-dead": false},
+		states: map[string]ArgusTaskState{
+			"t-dead": {Status: "complete"},
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.modalSync = true
+
+	// Simulate the buggy state: agent pane IS bound to "t-dead" but the body
+	// is in COORD-only mode (agentPresent=false). A pending debounced selection
+	// for "t-dead" has not yet fired.
+	a.mu.Lock()
+	a.agentTask = "t-dead"
+	a.coordPresent = true
+	a.agentPresent = false // COORD-only — splash would land on invisible pane
+	a.mu.Unlock()
+
+	deadRef := &roleEntry{
+		RoleKind:    string(db.KindWorker),
+		ArgusTaskID: "t-dead",
+		Name:        "dead-agent",
+		Dead:        false,
+		HasState:    true,
+		Status:      "complete",
+	}
+	a.selectMu.Lock()
+	a.selectPending = deadRef
+	a.selectHasRef = true
+	a.selectMu.Unlock()
+
+	// Precondition: agent pane IS bound (so the old "notBound" guard skipped the fire).
+	if a.AgentTaskID() != "t-dead" {
+		t.Fatal("precondition: agent pane must be bound to t-dead")
+	}
+	// Precondition: body is COORD-only.
+	a.mu.Lock()
+	agentPresent := a.agentPresent
+	a.mu.Unlock()
+	if agentPresent {
+		t.Fatal("precondition: body must be in COORD-only mode (agentPresent=false)")
+	}
+
+	// StartPaneReattach must fire the pending selection so the body mode
+	// switches to COORD+AGENT before showing the splash.
+	a.StartPaneReattach("t-dead")
+
+	// After StartPaneReattach, the body must be in COORD+AGENT mode so the
+	// splash is visible (not hidden behind a COORD-only layout).
+	a.mu.Lock()
+	agentPresent = a.agentPresent
+	a.mu.Unlock()
+	if !agentPresent {
+		t.Error("StartPaneReattach must fire pending selection to restore COORD+AGENT mode; agentPresent=false after call")
+	}
+
+	// The agent pane must be showing the splash.
+	a.mu.Lock()
+	pane := a.pieces.agent
+	a.mu.Unlock()
+	if pane == nil || !pane.reattaching {
+		t.Error("StartPaneReattach must activate the REATTACHING splash on the agent pane")
+	}
+}
+
 // OnTaskReattached must dispatch ResizeTask with the layout-allocated rect
 // dimensions (GetRect inner) rather than PinnedSize(). The splash Draw path
 // never updates pinnedCols/Rows, leaving PinnedSize() at the 80×24 construction
