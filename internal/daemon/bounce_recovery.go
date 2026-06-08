@@ -3,18 +3,21 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 
+	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
 )
 
 const bounceResumeTldr = "argus bounced — please resume"
 const bounceResumeBody = "argus bounced — please resume any unfinished work and report back to your coordinator"
 
-// workerInjector is the minimal delivery interface BounceRecoverer needs.
-// *inject.Injector satisfies it.
-type workerInjector interface {
-	Inject(ctx context.Context, taskID, senderRoleName string, msgID int64, tldr string) (db.DeliveryMode, error)
+// workerNotifier is the minimal delivery interface BounceRecoverer needs.
+// *argus.Client satisfies it.
+type workerNotifier interface {
+	NotifyTask(ctx context.Context, taskID string, in argus.NotifyInput) (*argus.NotifyResponse, error)
 }
 
 // BounceRecoverer sends resume messages to all active managed workers when
@@ -24,9 +27,17 @@ type workerInjector interface {
 // Only kind=worker roles are messaged. Freelancers are excluded — they
 // are self-managed. Workers with no live binding are skipped.
 type BounceRecoverer struct {
-	DB       *db.DB
-	Injector workerInjector
-	Log      *slog.Logger
+	DB         *db.DB
+	Notifier   workerNotifier
+	AutoSubmit bool
+	DeadlineMs int64
+	Log        *slog.Logger
+}
+
+// bouncePointer formats the PTY pointer text injected into the worker's
+// session. Mirrors mcp.formatPointer so workers see a consistent shape.
+func bouncePointer(senderRoleName string, msgID int64, tldr string) string {
+	return fmt.Sprintf("[hera from %s] msg #%d — %s", senderRoleName, msgID, tldr)
 }
 
 // ResumeWorkers iterates every active orchestrator, finds all active worker
@@ -94,10 +105,20 @@ func (r *BounceRecoverer) resumeOrchestrator(ctx context.Context, orch *db.Orche
 			continue
 		}
 
-		mode, injectErr := r.Injector.Inject(ctx, bnd.ArgusTaskID, coord.Name, msg.ID, bounceResumeTldr)
-		if injectErr != nil {
-			log.Warn("bounce recovery: inject message", "worker", worker.Name, "err", injectErr)
+		var mode db.DeliveryMode
+		resp, notifyErr := r.Notifier.NotifyTask(ctx, bnd.ArgusTaskID, argus.NotifyInput{
+			Text:       bouncePointer(coord.Name, msg.ID, bounceResumeTldr),
+			Submit:     r.AutoSubmit,
+			DeliveryID: strconv.FormatInt(msg.ID, 10),
+			DeadlineMs: r.DeadlineMs,
+		})
+		if notifyErr != nil {
+			log.Warn("bounce recovery: notify worker", "worker", worker.Name, "err", notifyErr)
 			mode = db.DeliveryQueuedNoBinding
+		} else if resp.State == "submitted" {
+			mode = db.DeliveryIdleSubmit
+		} else {
+			mode = db.DeliveryBusyBuffer
 		}
 
 		if err := r.DB.Messages.SetDelivered(ctx, msg.ID, mode); err != nil {

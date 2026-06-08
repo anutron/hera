@@ -31,9 +31,9 @@ Worker selection criteria — a worker qualifies if ALL hold:
 - **WHEN** argus bounces AND link recovery succeeds AND a worker role has no live binding (ended_at is set)
 - **THEN** hera MUST NOT send a resume message to that worker role
 
-#### Scenario: Resume message delivery falls back to queued when PTY unavailable
+#### Scenario: Resume message delivery falls back to queued when argus notify fails
 
-- **WHEN** hera attempts PTY injection of the resume message AND the worker's argus task session is not running (inject fails)
+- **WHEN** hera delegates the resume message to argus via the notify endpoint AND the notify call fails (e.g. no active session)
 - **THEN** hera MUST persist the message with `delivery_mode = queued_no_binding` so the worker picks it up via `hera_inbox` on reconnect
 
 #### Scenario: No orchestrators result in no resume messages

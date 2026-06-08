@@ -270,7 +270,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	// failure; the registrar heartbeat fires the same callback as a
 	// passive fallback on 404 responses. After link recovery succeeds,
 	// BounceRecoverer sends resume messages to all active managed workers.
-	bounceRec := &BounceRecoverer{DB: database, Injector: injector, Log: log}
+	bounceRec := &BounceRecoverer{DB: database, Notifier: client, AutoSubmit: cfg.AutoInjectEnabled, DeadlineMs: cfg.NotifyDeadlineMs, Log: log}
 	linkRecover := argus.RecoverFunc(ports, client, registrar, settingsReg, log)
 	recover := func(ctx context.Context) {
 		linkRecover(ctx)

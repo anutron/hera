@@ -4,30 +4,42 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/anutron/hera/internal/argus"
 	"github.com/anutron/hera/internal/db"
 )
 
-// fakeInjector records Inject calls and returns a configurable result.
-type fakeInjector struct {
-	calls  []fakeInjectCall
-	mode   db.DeliveryMode
+// fakeNotifier records NotifyTask calls and returns a configurable result.
+type fakeNotifier struct {
+	calls  []fakeNotifyCall
+	state  string // "submitted" | "pending" — defaults to "submitted" when empty
 	errMsg string
 }
 
-type fakeInjectCall struct {
-	taskID, senderRoleName string
-	msgID                  int64
-	tldr                   string
+type fakeNotifyCall struct {
+	taskID     string
+	text       string
+	submit     bool
+	deliveryID string
 }
 
-func (f *fakeInjector) Inject(_ context.Context, taskID, senderRoleName string, msgID int64, tldr string) (db.DeliveryMode, error) {
-	f.calls = append(f.calls, fakeInjectCall{taskID, senderRoleName, msgID, tldr})
+func (f *fakeNotifier) NotifyTask(_ context.Context, taskID string, in argus.NotifyInput) (*argus.NotifyResponse, error) {
+	f.calls = append(f.calls, fakeNotifyCall{
+		taskID:     taskID,
+		text:       in.Text,
+		submit:     in.Submit,
+		deliveryID: in.DeliveryID,
+	})
 	if f.errMsg != "" {
-		return db.DeliveryPending, errors.New(f.errMsg)
+		return nil, errors.New(f.errMsg)
 	}
-	return f.mode, nil
+	state := f.state
+	if state == "" {
+		state = "submitted"
+	}
+	return &argus.NotifyResponse{State: state}, nil
 }
 
 func openBounceTestDB(t *testing.T) *db.DB {
@@ -79,24 +91,24 @@ func setupWorker(t *testing.T, ctx context.Context, d *db.DB, orchID int64, name
 func TestBounceRecovery_TwoWorkers(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
+	inj := &fakeNotifier{}
 
 	orch, _ := setupOrchestrator(t, ctx, d, "my-orch")
 	w1, _ := setupWorker(t, ctx, d, orch.ID, "worker-1", "task-1")
 	w2, _ := setupWorker(t, ctx, d, orch.ID, "worker-2", "task-2")
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx)
 
-	// Expect two inject calls (one per worker).
+	// Expect two notify calls (one per worker).
 	if len(inj.calls) != 2 {
-		t.Fatalf("expected 2 inject calls, got %d", len(inj.calls))
+		t.Fatalf("expected 2 notify calls, got %d", len(inj.calls))
 	}
 	tasksSent := map[string]bool{}
 	for _, c := range inj.calls {
 		tasksSent[c.taskID] = true
-		if c.tldr != bounceResumeTldr {
-			t.Errorf("tldr = %q, want %q", c.tldr, bounceResumeTldr)
+		if !strings.Contains(c.text, bounceResumeTldr) {
+			t.Errorf("pointer text %q does not contain tldr %q", c.text, bounceResumeTldr)
 		}
 	}
 	if !tasksSent["task-1"] || !tasksSent["task-2"] {
@@ -122,7 +134,7 @@ func TestBounceRecovery_TwoWorkers(t *testing.T) {
 func TestBounceRecovery_FreelancerExcluded(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
+	inj := &fakeNotifier{}
 
 	orch, _ := setupOrchestrator(t, ctx, d, "orch")
 	// Add a freelance role with a live binding.
@@ -139,12 +151,12 @@ func TestBounceRecovery_FreelancerExcluded(t *testing.T) {
 		t.Fatalf("create freelance binding: %v", err)
 	}
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx)
 
-	// No workers: no inject calls.
+	// No workers: no notify calls.
 	if len(inj.calls) != 0 {
-		t.Fatalf("expected 0 inject calls (freelance excluded), got %d", len(inj.calls))
+		t.Fatalf("expected 0 notify calls (freelance excluded), got %d", len(inj.calls))
 	}
 	// Freelancer's inbox must be empty.
 	inbox, _ := d.Messages.UnreadForRole(ctx, fl.ID)
@@ -158,7 +170,7 @@ func TestBounceRecovery_FreelancerExcluded(t *testing.T) {
 func TestBounceRecovery_WorkerWithoutBinding(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
+	inj := &fakeNotifier{}
 
 	orch, _ := setupOrchestrator(t, ctx, d, "orch")
 	// Create a worker with an ended binding.
@@ -175,11 +187,11 @@ func TestBounceRecovery_WorkerWithoutBinding(t *testing.T) {
 		t.Fatalf("end binding: %v", err)
 	}
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx)
 
 	if len(inj.calls) != 0 {
-		t.Fatalf("expected 0 inject calls (no live binding), got %d", len(inj.calls))
+		t.Fatalf("expected 0 notify calls (no live binding), got %d", len(inj.calls))
 	}
 }
 
@@ -187,13 +199,13 @@ func TestBounceRecovery_WorkerWithoutBinding(t *testing.T) {
 func TestBounceRecovery_NoOrchestrators(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
+	inj := &fakeNotifier{}
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx) // must not panic
 
 	if len(inj.calls) != 0 {
-		t.Fatalf("expected 0 inject calls on empty DB, got %d", len(inj.calls))
+		t.Fatalf("expected 0 notify calls on empty DB, got %d", len(inj.calls))
 	}
 }
 
@@ -202,7 +214,7 @@ func TestBounceRecovery_NoOrchestrators(t *testing.T) {
 func TestBounceRecovery_NoCoordinator(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
+	inj := &fakeNotifier{}
 
 	// Orchestrator with only a worker — no coordinator.
 	orch, err := d.Orchestrators.Create(ctx, "orch")
@@ -211,26 +223,26 @@ func TestBounceRecovery_NoCoordinator(t *testing.T) {
 	}
 	setupWorker(t, ctx, d, orch.ID, "lone-worker", "task-x")
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx)
 
 	if len(inj.calls) != 0 {
-		t.Fatalf("expected 0 inject calls (no coordinator), got %d", len(inj.calls))
+		t.Fatalf("expected 0 notify calls (no coordinator), got %d", len(inj.calls))
 	}
 }
 
-// TestBounceRecovery_InjectFails_MessageQueuedNoBinding verifies that when
-// PTY injection fails (argus session not running post-bounce), the message is
+// TestBounceRecovery_NotifyFails_MessageQueuedNoBinding verifies that when
+// PTY delivery fails (argus session not running post-bounce), the message is
 // persisted with delivery_mode = queued_no_binding.
-func TestBounceRecovery_InjectFails_MessageQueuedNoBinding(t *testing.T) {
+func TestBounceRecovery_NotifyFails_MessageQueuedNoBinding(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{errMsg: "argus: no active session"}
+	inj := &fakeNotifier{errMsg: "argus: no active session"}
 
 	orch, _ := setupOrchestrator(t, ctx, d, "orch")
 	w, _ := setupWorker(t, ctx, d, orch.ID, "worker", "task-1")
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx)
 
 	// Message must be persisted.
@@ -253,7 +265,7 @@ func TestBounceRecovery_InjectFails_MessageQueuedNoBinding(t *testing.T) {
 func TestBounceRecovery_MultipleOrchestrators(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{mode: db.DeliveryBusyBuffer}
+	inj := &fakeNotifier{state: "pending"}
 
 	orch1, _ := setupOrchestrator(t, ctx, d, "orch-1")
 	orch2, _ := setupOrchestrator(t, ctx, d, "orch-2")
@@ -261,20 +273,20 @@ func TestBounceRecovery_MultipleOrchestrators(t *testing.T) {
 	setupWorker(t, ctx, d, orch1.ID, "w1b", "t1b")
 	setupWorker(t, ctx, d, orch2.ID, "w2a", "t2a")
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx)
 
 	if len(inj.calls) != 3 {
-		t.Fatalf("expected 3 inject calls (2 from orch-1, 1 from orch-2), got %d", len(inj.calls))
+		t.Fatalf("expected 3 notify calls (2 from orch-1, 1 from orch-2), got %d", len(inj.calls))
 	}
 }
 
-// TestBounceRecovery_CoordinatorAlsoHasBinding verifies that the coordinator
+// TestBounceRecovery_CoordinatorNotMessaged verifies that the coordinator
 // itself (even if it has a live binding) is NOT included in resume messages.
 func TestBounceRecovery_CoordinatorNotMessaged(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
+	inj := &fakeNotifier{}
 
 	orch, coord := setupOrchestrator(t, ctx, d, "orch")
 	// Give the coordinator a live binding too (normal in production).
@@ -286,12 +298,12 @@ func TestBounceRecovery_CoordinatorNotMessaged(t *testing.T) {
 	}
 	setupWorker(t, ctx, d, orch.ID, "worker", "worker-task")
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx)
 
-	// Only 1 inject call: the worker. Coordinator must not be messaged.
+	// Only 1 notify call: the worker. Coordinator must not be messaged.
 	if len(inj.calls) != 1 {
-		t.Fatalf("expected 1 inject call (worker only), got %d", len(inj.calls))
+		t.Fatalf("expected 1 notify call (worker only), got %d", len(inj.calls))
 	}
 	if inj.calls[0].taskID != "worker-task" {
 		t.Errorf("unexpected taskID: %q", inj.calls[0].taskID)
@@ -309,7 +321,7 @@ func TestBounceRecovery_CoordinatorNotMessaged(t *testing.T) {
 func TestBounceRecovery_ArchivedOrchestratorSkipped(t *testing.T) {
 	ctx := context.Background()
 	d := openBounceTestDB(t)
-	inj := &fakeInjector{mode: db.DeliveryIdleSubmit}
+	inj := &fakeNotifier{}
 
 	// Create an orchestrator with a worker.
 	orch, _ := setupOrchestrator(t, ctx, d, "archived-orch")
@@ -320,12 +332,12 @@ func TestBounceRecovery_ArchivedOrchestratorSkipped(t *testing.T) {
 		t.Fatalf("archive orchestrator: %v", err)
 	}
 
-	rec := &BounceRecoverer{DB: d, Injector: inj}
+	rec := &BounceRecoverer{DB: d, Notifier: inj, AutoSubmit: true}
 	rec.ResumeWorkers(ctx)
 
-	// Archived orchestrator excluded — no inject calls.
+	// Archived orchestrator excluded — no notify calls.
 	if len(inj.calls) != 0 {
-		t.Fatalf("expected 0 inject calls (archived orchestrator excluded), got %d", len(inj.calls))
+		t.Fatalf("expected 0 notify calls (archived orchestrator excluded), got %d", len(inj.calls))
 	}
 	// Worker's inbox must be empty.
 	inbox, _ := d.Messages.UnreadForRole(ctx, w.ID)
