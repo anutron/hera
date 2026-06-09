@@ -14,13 +14,14 @@ import (
 // modal kind so close logic can remove a specific page without
 // guessing.
 const (
-	pageBase     = "base"
-	pageInput    = "modal-input"
-	pageForm2    = "modal-form2"
-	pageNewCoord = "modal-new-coord"
-	pageConfirm  = "modal-confirm"
-	pageError    = "modal-error"
-	pageSelect   = "modal-select"
+	pageBase          = "base"
+	pageInput         = "modal-input"
+	pageTextAreaInput = "modal-textarea-input"
+	pageForm2         = "modal-form2"
+	pageNewCoord      = "modal-new-coord"
+	pageConfirm       = "modal-confirm"
+	pageError         = "modal-error"
+	pageSelect        = "modal-select"
 )
 
 // modalWidth is the outer width every centered form modal is sized to (see
@@ -269,6 +270,75 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 
 		a.captureFocus()
 		a.pieces.pages.AddPage(pageInput, centeredModal(form, modalWidth, 7), true, true)
+		if a.app != nil {
+			a.app.SetFocus(input)
+		}
+	})
+}
+
+// ShowTextAreaInput opens a multi-line textarea input modal centered over the
+// base layout. onSubmit fires with the trimmed value when the operator hits
+// OK or presses Enter (with no modifier); onCancel fires on Cancel or Esc.
+// Shift+Enter (or any modified Enter) inserts a newline without submitting,
+// matching the pattern used by the Prompt field in ShowNewCoordForm.
+//
+// Safe to call from any goroutine — the body runs through
+// app.QueueUpdateDraw so it lands on the tview event loop.
+func (a *App) ShowTextAreaInput(title, label, initial string, onSubmit func(string), onCancel func()) {
+	a.queueModal(func() {
+		input := newStyledTextArea()
+		input.SetLabel(label + ": ")
+		if initial != "" {
+			input.SetText(initial, false)
+		}
+
+		form := tview.NewForm().
+			AddFormItem(input).
+			SetButtonsAlign(tview.AlignCenter)
+
+		dismiss := func(submitted bool) {
+			text := strings.TrimSpace(input.GetText())
+			a.closeModal(pageTextAreaInput)
+			if submitted {
+				if onSubmit != nil {
+					onSubmit(text)
+				}
+			} else if onCancel != nil {
+				onCancel()
+			}
+		}
+
+		form.AddButton("OK [enter]", func() { dismiss(true) })
+		form.AddButton("Cancel [esc]", func() { dismiss(false) })
+		form.SetCancelFunc(func() { dismiss(false) })
+
+		// Plain Enter submits; modified Enter (Shift/Ctrl) passes through so the
+		// TextArea can insert a newline.
+		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+			if ev.Key() != tcell.KeyEnter {
+				return ev
+			}
+			for i := 0; i < form.GetFormItemCount(); i++ {
+				if form.GetFormItem(i).HasFocus() {
+					if ev.Modifiers() == 0 {
+						dismiss(true)
+						return nil
+					}
+					return ev
+				}
+			}
+			return ev
+		})
+
+		themeFormStyle(form, title)
+
+		// Height: 1 textarea (3 visible rows = 4 row budget: 3 rows + 1 gap) plus
+		// button row, surrounding padding, and 2 border rows = same overhead as
+		// ShowInput (5) but textarea costs 4 rows vs 2 for a single-row field: 9.
+		const textAreaInputHeight = 9
+
+		a.captureFocus()
+		a.pieces.pages.AddPage(pageTextAreaInput, centeredModal(form, modalWidth, textAreaInputHeight), true, true)
 		if a.app != nil {
 			a.app.SetFocus(input)
 		}

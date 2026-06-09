@@ -148,6 +148,11 @@ type modalAPI interface {
 	// with the entered text when the operator confirms; onCancel runs
 	// on cancel. Either callback may be nil.
 	ShowInput(title, label, initial string, onSubmit func(value string), onCancel func())
+	// ShowTextAreaInput opens a multi-line textarea input modal. Plain Enter
+	// submits; Shift+Enter (or any modified Enter) inserts a newline. onSubmit
+	// is invoked with the entered text on confirm; onCancel runs on cancel.
+	// Either callback may be nil.
+	ShowTextAreaInput(title, label, initial string, onSubmit func(value string), onCancel func())
 	// ShowForm2 opens a two-field input modal. onSubmit is invoked with both
 	// trimmed values when the operator confirms; onCancel runs on cancel.
 	// Used by the new-project flow (name required, prompt optional). Either
@@ -608,7 +613,7 @@ func (b *mutationBridge) OnNewWorker() {
 	capturedCoordRoleID := coordRoleID
 
 	b.goUI(func() {
-		b.modals.ShowInput("New worker", "Prompt", "", func(prompt string) {
+		b.modals.ShowTextAreaInput("New worker", "Prompt", "", func(prompt string) {
 			if strings.TrimSpace(prompt) == "" {
 				// Empty/whitespace confirm: surface a dismissible notice rather
 				// than closing silently (D1). No argus/DB call on this path.

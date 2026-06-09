@@ -204,6 +204,93 @@ func TestShowInput_EscCancelsAndRestoresFocus(t *testing.T) {
 	}
 }
 
+// --- ShowTextAreaInput tests ---
+
+func TestShowTextAreaInput_EscCancelsAndRestoresFocus(t *testing.T) {
+	a := newModalTestApp(t)
+
+	cancels := 0
+	a.ShowTextAreaInput("New worker", "Prompt", "", nil, func() { cancels++ })
+
+	if !a.IsModalActive() {
+		t.Fatalf("textarea input modal must be active")
+	}
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	if a.IsModalActive() {
+		t.Fatalf("Esc must dismiss the textarea input modal")
+	}
+	if cancels != 1 {
+		t.Fatalf("Esc must fire onCancel once, got %d", cancels)
+	}
+	if !a.pieces.rail.HasFocus() {
+		t.Fatalf("textarea input dismissal must restore focus to the rail")
+	}
+}
+
+func TestShowTextAreaInput_EnterSubmits(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var got string
+	submitted := false
+	a.ShowTextAreaInput("New worker", "Prompt", "", func(v string) { got = v; submitted = true }, nil)
+
+	form := frontForm(t, a)
+	promptField, ok := form.GetFormItem(0).(*styledTextArea)
+	if !ok {
+		t.Fatalf("form item 0 must be *styledTextArea")
+	}
+	promptField.SetText("do the thing", false)
+	a.app.SetFocus(promptField)
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Enter must dismiss the textarea input modal")
+	}
+	if !submitted || got != "do the thing" {
+		t.Fatalf("Enter must submit the typed value: submitted=%v got=%q", submitted, got)
+	}
+}
+
+func TestShowTextAreaInput_ShiftEnterDoesNotSubmit(t *testing.T) {
+	a := newModalTestApp(t)
+
+	submitted := false
+	a.ShowTextAreaInput("New worker", "Prompt", "", func(_ string) { submitted = true }, nil)
+
+	form := frontForm(t, a)
+	promptField, ok := form.GetFormItem(0).(*styledTextArea)
+	if !ok {
+		t.Fatalf("form item 0 must be *styledTextArea")
+	}
+	a.app.SetFocus(promptField)
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModShift))
+
+	if submitted {
+		t.Fatalf("Shift+Enter must NOT submit the textarea input modal")
+	}
+	if !a.IsModalActive() {
+		t.Fatalf("Shift+Enter must not dismiss the textarea input modal")
+	}
+}
+
+func TestShowTextAreaInput_RendersWithArgusTheme(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowTextAreaInput("New worker", "Prompt", "", nil, nil)
+	assertArgusThemedOverlay(t, renderPages(t, a, 80, 24))
+}
+
+func TestShowTextAreaInput_FieldIsTextArea(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowTextAreaInput("New worker", "Prompt", "", nil, nil)
+
+	form := frontForm(t, a)
+	if _, ok := form.GetFormItem(0).(*styledTextArea); !ok {
+		t.Fatalf("ShowTextAreaInput form item 0 must be *styledTextArea")
+	}
+}
+
 // renderPages draws the pages root (base + any modal overlay) and returns
 // the simulation screen so cell styles can be inspected.
 func renderPages(t *testing.T, a *App, w, h int) tcell.SimulationScreen {
