@@ -146,13 +146,12 @@ func (s *Service) CompleteTaskByID(ctx context.Context, taskID string) error {
 	return nil
 }
 
-// CompleteArchivedDescendants sets the argus status to "complete" for every
-// archived non-coordinator role under the given orchestrator. Backs the `C`
-// rail key: select a coord, press C, and all archived worker tasks under it
-// are marked :checked: in argus. The coordinator role itself is skipped so
-// only workers are targeted. Returns the count of tasks completed and any
-// accumulated errors — partial success is possible when some tasks have been
-// pruned or are temporarily unreachable.
+// CompleteArchivedDescendants marks every archived non-coordinator role under
+// the given orchestrator as :checked: in argus AND prunes each from hera's
+// DB + disk. Backs the `C` rail key. The coordinator role itself is skipped.
+// Returns the count of roles completed+pruned and any accumulated errors —
+// partial success is possible when some tasks have been pruned or are
+// temporarily unreachable.
 func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64) (int, error) {
 	roles, err := s.DB.ListRolesByOrchestratorInclusive(ctx, orchID)
 	if err != nil {
@@ -168,21 +167,30 @@ func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64)
 			continue
 		}
 		bnd, err := s.resolveBinding(ctx, role.ID)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				continue // no binding ever recorded; skip
-			}
+		if err != nil && !errors.Is(err, ErrNotFound) {
 			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): %v", role.Name, role.ID, err))
 			continue
 		}
-		if bnd.ArgusTaskID == "" {
+		if bnd != nil && bnd.ArgusTaskID != "" {
+			if _, err := s.Argus.SetTaskStatus(ctx, bnd.ArgusTaskID, "complete"); err != nil {
+				if !errors.Is(err, ErrArgusTaskGone) {
+					errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): set complete: %v", role.Name, role.ID, err))
+					continue
+				}
+				// Pruned argus task: still prune the hera row below.
+			}
+		}
+		// Prune the hera role row + worktree after completing.
+		worktreePath := ""
+		if bnd != nil {
+			worktreePath = bnd.WorktreePath
+		}
+		if err := s.removeWorktree(ctx, worktreePath); err != nil {
+			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): worktree remove: %v", role.Name, role.ID, err))
 			continue
 		}
-		if _, err := s.Argus.SetTaskStatus(ctx, bnd.ArgusTaskID, "complete"); err != nil {
-			if errors.Is(err, ErrArgusTaskGone) {
-				continue // pruned; skip silently
-			}
-			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): %v", role.Name, role.ID, err))
+		if err := s.DB.DeleteRoleByID(ctx, role.ID); err != nil && !errors.Is(err, ErrNotFound) {
+			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): delete role: %v", role.Name, role.ID, err))
 			continue
 		}
 		completed++

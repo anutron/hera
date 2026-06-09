@@ -381,6 +381,10 @@ type fakeMutationService struct {
 	completeArchivedResp  int
 	completeArchivedErr   error
 
+	// PruneArchivedRole (`^d` on an archived role).
+	pruneArchivedCalls []int64
+	pruneArchivedErr   error
+
 	// SpawnWorker plumbing.
 	spawnWorkerCalls []ops.SpawnWorkerInput
 	spawnWorkerResp  *ops.SpawnWorkerResult
@@ -702,6 +706,13 @@ func (s *fakeMutationService) CompleteArchivedDescendants(_ context.Context, orc
 		return 0, s.completeArchivedErr
 	}
 	return s.completeArchivedResp, nil
+}
+
+func (s *fakeMutationService) PruneArchivedRole(_ context.Context, roleID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneArchivedCalls = append(s.pruneArchivedCalls, roleID)
+	return s.pruneArchivedErr
 }
 
 // newBridgeUnderTest wires a mutationBridge with all-fake deps. The
@@ -3495,4 +3506,132 @@ func TestBridge_OnAdopt_ReturnsBeforeSvcCompletes(t *testing.T) {
 
 	close(gate)
 	b.waitIdle()
+}
+
+// --- ^d on an archived role → prune, not delete ---
+
+// ^d on an already-archived worker triggers the prune path (not DeleteRole).
+func TestBridge_OnDelete_ArchivedRole_ConfirmYes_CallsPruneArchivedRole(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 42, Name: "w-done", Archived: true}
+	m.stubConfirmYes = true
+
+	b.OnDelete()
+	b.waitIdle()
+
+	if len(svc.pruneArchivedCalls) != 1 || svc.pruneArchivedCalls[0] != 42 {
+		t.Fatalf("want PruneArchivedRole(42); got %v", svc.pruneArchivedCalls)
+	}
+	if len(svc.deleteRoleCalls) != 0 {
+		t.Fatalf("must NOT call DeleteRole on an archived role; got %v", svc.deleteRoleCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expected rail refresh after prune; got %d", rp.Count())
+	}
+}
+
+// ^d on a role that is archived via ArgusArchived also triggers prune.
+func TestBridge_OnDelete_ArgusArchivedRole_CallsPruneArchivedRole(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 7, Name: "w-argus-archived", ArgusArchived: true}
+	m.stubConfirmYes = true
+
+	b.OnDelete()
+	b.waitIdle()
+
+	if len(svc.pruneArchivedCalls) != 1 {
+		t.Fatalf("want PruneArchivedRole call; got %v", svc.pruneArchivedCalls)
+	}
+	if len(svc.deleteRoleCalls) != 0 {
+		t.Fatalf("must NOT call DeleteRole on an argus-archived role")
+	}
+}
+
+// ^d on an archived role with ConfirmNo does not call PruneArchivedRole.
+func TestBridge_OnDelete_ArchivedRole_ConfirmNo_NoPrune(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 42, Name: "w-done", Archived: true}
+	m.stubConfirmYes = false
+
+	b.OnDelete()
+	b.waitIdle()
+
+	if len(svc.pruneArchivedCalls) != 0 || len(svc.deleteRoleCalls) != 0 {
+		t.Fatalf("confirm=No must not call any destructive op")
+	}
+	if rp.Count() != 0 {
+		t.Fatalf("confirm=No must NOT refresh")
+	}
+}
+
+// ^d on an active (non-archived) role still calls the regular DeleteRole path.
+func TestBridge_OnDelete_ActiveRole_CallsDeleteRole(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 5, Name: "w-active"}
+	m.stubConfirmYes = true
+
+	b.OnDelete()
+	b.waitIdle()
+
+	if len(svc.deleteRoleCalls) != 1 || svc.deleteRoleCalls[0] != 5 {
+		t.Fatalf("want DeleteRole(5); got %v", svc.deleteRoleCalls)
+	}
+	if len(svc.pruneArchivedCalls) != 0 {
+		t.Fatalf("must NOT call PruneArchivedRole on an active role")
+	}
+}
+
+// The prune confirm message mentions "Remove" (not "DESTRUCTIVE delete").
+func TestBridge_OnDelete_ArchivedRole_ConfirmMessageMentionsRemove(t *testing.T) {
+	b, m, sel, _, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selRole, RoleID: 42, Name: "w-done", Archived: true}
+	m.stubConfirmNotOpen = true // Don't actually fire the callback; just check the modal args.
+
+	b.OnDelete()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("expected 1 confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Title, "Remove") {
+		t.Fatalf("prune confirm title should mention Remove; got %q", m.confirms[0].Title)
+	}
+	if stringsContains(m.confirms[0].Message, "DESTRUCTIVE") {
+		t.Fatalf("prune confirm should NOT say DESTRUCTIVE; got %q", m.confirms[0].Message)
+	}
+}
+
+// --- C key: OnCompleteArchived confirm message mentions pruning ---
+
+func TestBridge_OnCompleteArchived_Orchestrator_ConfirmMentionsPrune(t *testing.T) {
+	b, m, sel, _, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 1, Name: "proj"}
+	m.stubConfirmNotOpen = true
+
+	b.OnCompleteArchived()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("expected 1 confirm modal; got %d", len(m.confirms))
+	}
+	if !stringsContains(m.confirms[0].Message, "remove") && !stringsContains(m.confirms[0].Message, "prune") && !stringsContains(m.confirms[0].Message, "deleted") {
+		t.Fatalf("C confirm must mention removal; got %q", m.confirms[0].Message)
+	}
+}
+
+func TestBridge_OnCompleteArchived_Orchestrator_ConfirmYes_CallsCompleteArchivedDescendants(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "proj"}
+	m.stubConfirmYes = true
+	svc.completeArchivedResp = 3
+
+	b.OnCompleteArchived()
+	b.waitIdle()
+
+	if len(svc.completeArchivedCalls) != 1 || svc.completeArchivedCalls[0] != 5 {
+		t.Fatalf("want CompleteArchivedDescendants(5); got %v", svc.completeArchivedCalls)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expect rail refresh; got %d", rp.Count())
+	}
 }
