@@ -206,6 +206,18 @@ type orchEntry struct {
 	// the header renders the ⊘ repair cue instead of the status glyph, while
 	// `a` repairs (unarchives the coord task) instead of cascade-archiving.
 	CoordArgusArchived bool
+
+	// CoordArgusName is the argus task name for the coord's task (the name
+	// shown in the argus view, e.g. "the-hera-detail-when-viewing"). Populated
+	// by populateRail from the state cache via TaskInfoProvider; empty when the
+	// cache has no entry for the coord task (cold cache, archived, or dead).
+	CoordArgusName string
+
+	// CoordWorktreePath is the filesystem path of the coord task's git worktree,
+	// as reported by argus (e.g. "/Users/aaron/.argus/worktrees/Hera/foo").
+	// Populated by populateRail from the state cache via TaskInfoProvider;
+	// buildCoordDetails falls back to the hera DB binding when this is empty.
+	CoordWorktreePath string
 }
 
 // roleEntry is one role under an orchestrator. Live indicates an open

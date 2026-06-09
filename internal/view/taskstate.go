@@ -51,6 +51,14 @@ type TaskStateProvider interface {
 	TaskState(taskID string) (ArgusTaskState, bool)
 }
 
+// TaskInfoProvider is an optional capability on a PaneSource: it returns the
+// full ArgusTaskInfo (name, project, worktree, elapsed, state) for a task id.
+// populateRail type-asserts for it to populate coord-level metadata
+// (CoordArgusName, CoordWorktreePath) that TaskStateProvider does not expose.
+type TaskInfoProvider interface {
+	TaskInfo(taskID string) (ArgusTaskInfo, bool)
+}
+
 // FreelanceProvider is an optional capability on a PaneSource: it returns
 // the full live argus task list so populateRail can surface unmanaged tasks
 // (freelancers) in the rail. Mirrors the optional TaskStateProvider pattern;
@@ -80,10 +88,11 @@ type ArgusStateCache struct {
 	interval time.Duration
 	log      *slog.Logger
 
-	mu     sync.RWMutex
-	states map[string]ArgusTaskState
-	infos  []ArgusTaskInfo // full snapshot, render order = argus list order
-	ready  bool            // true after the first successful poll
+	mu      sync.RWMutex
+	states  map[string]ArgusTaskState
+	infos   []ArgusTaskInfo            // full snapshot, render order = argus list order
+	infoMap map[string]ArgusTaskInfo   // keyed by task ID for O(1) TaskInfo lookups
+	ready   bool                       // true after the first successful poll
 
 	// optimistic holds predicted statuses applied by the mutation bridge at the
 	// START of a status-step goroutine (BUG-032: optimistic render). Each entry
@@ -113,6 +122,7 @@ func NewArgusStateCache(lister argusLister, interval time.Duration, log *slog.Lo
 		interval:   interval,
 		log:        log,
 		states:     map[string]ArgusTaskState{},
+		infoMap:    map[string]ArgusTaskInfo{},
 		optimistic: map[string]string{},
 		subs:       map[chan struct{}]struct{}{},
 	}
@@ -162,6 +172,16 @@ func (c *ArgusStateCache) ClearOptimistic(taskID string) {
 	c.optMu.Lock()
 	delete(c.optimistic, taskID)
 	c.optMu.Unlock()
+}
+
+// GetInfo returns the full ArgusTaskInfo for taskID from the latest poll.
+// ok is false when the task is not in the snapshot (unknown / not yet polled).
+// Unlike Get, this returns identity and worktree fields in addition to state.
+func (c *ArgusStateCache) GetInfo(taskID string) (ArgusTaskInfo, bool) {
+	c.mu.RLock()
+	info, ok := c.infoMap[taskID]
+	c.mu.RUnlock()
+	return info, ok
 }
 
 // List returns a copy of the full task snapshot from the latest poll, in
@@ -223,6 +243,7 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 		return
 	}
 	next := make(map[string]ArgusTaskState, len(tasks))
+	nextInfoMap := make(map[string]ArgusTaskInfo, len(tasks))
 	infos := make([]ArgusTaskInfo, 0, len(tasks))
 	for _, t := range tasks {
 		st := ArgusTaskState{
@@ -233,7 +254,7 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 			PRState:    t.PRState,
 		}
 		next[t.ID] = st
-		infos = append(infos, ArgusTaskInfo{
+		info := ArgusTaskInfo{
 			ID:           t.ID,
 			Name:         t.Name,
 			Project:      t.Project,
@@ -241,12 +262,15 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 			State:        st,
 			WorktreePath: t.WorktreePath,
 			PRState:      t.PRState,
-		})
+		}
+		infos = append(infos, info)
+		nextInfoMap[t.ID] = info
 	}
 	c.mu.Lock()
 	changed := !sameStates(c.states, next) || !c.ready
 	c.states = next
 	c.infos = infos
+	c.infoMap = nextInfoMap
 	c.ready = true
 	c.mu.Unlock()
 

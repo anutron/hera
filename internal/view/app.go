@@ -540,6 +540,7 @@ func (a *App) populateRail(database *db.DB) error {
 	ctx := context.Background()
 
 	stateProv, _ := a.src.(TaskStateProvider)
+	infoProv, _ := a.src.(TaskInfoProvider)
 	// Snapshot the archive-visibility flag once: it is written by the
 	// mutation bridge's background goroutine (SetShowArchived) while this
 	// runs on the event loop.
@@ -652,6 +653,15 @@ func (a *App) populateRail(database *db.DB) error {
 							// repairs (unarchives the coord task) instead of
 							// cascade-archiving.
 							entry.CoordArgusArchived = st.Archived
+						}
+					}
+					// Capture the coord task's name and worktree path from the
+					// state cache so the Details pane can show them without an
+					// extra DB lookup at draw time.
+					if infoProv != nil {
+						if info, ok := infoProv.TaskInfo(argusTaskID); ok {
+							entry.CoordArgusName = info.Name
+							entry.CoordWorktreePath = info.WorktreePath
 						}
 					}
 				}
