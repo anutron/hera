@@ -91,6 +91,11 @@ func TestBuildCoordDetails_Fields(t *testing.T) {
 	if _, ok := names["alpha-coord"]; ok {
 		t.Errorf("roster must NOT include the coordinator role itself")
 	}
+
+	// DB-fallback: CoordWorktreePath must be populated from the coord binding.
+	if cd.CoordWorktreePath != "/c" {
+		t.Errorf("CoordWorktreePath = %q, want /c (from coord binding)", cd.CoordWorktreePath)
+	}
 }
 
 // TestBuildCoordDetails_RosterIncludesSubCoordinator uses the multi-binding
@@ -142,6 +147,61 @@ func TestBuildCoordDetails_RosterIncludesSubCoordinator(t *testing.T) {
 	if !foundSub {
 		t.Errorf("roster must include the sub-coordinator 'sub'")
 	}
+}
+
+// TestBuildCoordDetails_AgentNameAndWorktreePath verifies that CoordArgusName
+// and CoordWorktreePath are threaded from orchEntry through to coordDetails.
+// The state-cache path sets them on orchEntry (tested via populateRail); here
+// we verify buildCoordDetails passes them through correctly when they are
+// already present on the entry (state-cache populated) and falls back to the
+// DB binding when they are absent.
+func TestBuildCoordDetails_AgentNameAndWorktreePath(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("passthrough from orchEntry", func(t *testing.T) {
+		oe := &orchEntry{
+			ID:                1,
+			Name:              "rel-1.0",
+			CoordTaskID:       "t-coord",
+			CoordArgusName:    "the-rel-1.0-task",
+			CoordWorktreePath: "/worktrees/Hera/the-rel-1.0-task",
+		}
+		cd, err := buildCoordDetails(ctx, nil, oe)
+		if err != nil {
+			t.Fatalf("buildCoordDetails: %v", err)
+		}
+		if cd.CoordArgusName != "the-rel-1.0-task" {
+			t.Errorf("CoordArgusName = %q, want the-rel-1.0-task", cd.CoordArgusName)
+		}
+		if cd.CoordWorktreePath != "/worktrees/Hera/the-rel-1.0-task" {
+			t.Errorf("CoordWorktreePath = %q, want /worktrees/Hera/the-rel-1.0-task", cd.CoordWorktreePath)
+		}
+	})
+
+	t.Run("DB fallback for worktree when cache empty", func(t *testing.T) {
+		d := openTestDB(t)
+		orch, _ := d.Orchestrators.Create(ctx, "beta")
+		coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+			OrchestratorID: orch.ID, Name: "beta-coord", Kind: db.KindCoordinator,
+		})
+		_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{
+			RoleID: coord.ID, ArgusTaskID: "t-beta", WorktreePath: "/wt/beta",
+		})
+		oe := &orchEntry{
+			ID:          orch.ID,
+			Name:        "beta",
+			CoordRoleID: coord.ID,
+			CoordTaskID: "t-beta",
+			// CoordWorktreePath intentionally empty (cache miss)
+		}
+		cd, err := buildCoordDetails(ctx, d, oe)
+		if err != nil {
+			t.Fatalf("buildCoordDetails: %v", err)
+		}
+		if cd.CoordWorktreePath != "/wt/beta" {
+			t.Errorf("CoordWorktreePath = %q, want /wt/beta (DB fallback)", cd.CoordWorktreePath)
+		}
+	})
 }
 
 // TestDetailsPane_OnlyInCoordinatorMode verifies the Details pane is composed
@@ -225,7 +285,8 @@ func TestDetailsPane_RendersCoordFields(t *testing.T) {
 	a.applyRailSelection(a.pieces.rail.CurrentRef())
 
 	got := renderApp(t, a, 140, 30)
-	for _, want := range []string{"Details", "alpha", "Prompt", "shipthething", "repo-zed", "builderx"} {
+	// "Worktree" label must appear: DB fallback populates /c from the coord binding.
+	for _, want := range []string{"Details", "alpha", "Prompt", "shipthething", "repo-zed", "builderx", "Worktree"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered screen missing %q\n---\n%s", want, got)
 		}
@@ -324,6 +385,83 @@ func TestDetailsPane_LiveRefreshOnRepopulate(t *testing.T) {
 			names[i] = r.Name
 		}
 		t.Errorf("Details Roster len = %d after repopulate, want 2; roster: %v", len(a.pieces.details.data.Roster), names)
+	}
+}
+
+// infoStatePaneSource extends statePaneSource with TaskInfoProvider so tests
+// can drive both state and full task info (name + worktree) via the state cache.
+type infoStatePaneSource struct {
+	statePaneSource
+	infos map[string]ArgusTaskInfo
+}
+
+func (s *infoStatePaneSource) TaskInfo(taskID string) (ArgusTaskInfo, bool) {
+	info, ok := s.infos[taskID]
+	return info, ok
+}
+
+// TestDetailsPane_RendersAgentNameAndWorktreeFromCache exercises the full path
+// from the state cache (TaskInfoProvider) through populateRail → orchEntry →
+// buildCoordDetails → Details pane rendering. When the cache has name and
+// worktree for the coord task, they must appear in the rendered output.
+func TestDetailsPane_RendersAgentNameAndWorktreeFromCache(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	orch, _ := d.Orchestrators.Create(ctx, "gamma")
+	coord, _ := d.Roles.Create(ctx, db.CreateRoleInput{
+		OrchestratorID: orch.ID, Name: "gamma-coord", Kind: db.KindCoordinator, ArgusProject: "repo-g",
+	})
+	_, _ = d.Bindings.Create(ctx, db.CreateBindingInput{
+		RoleID: coord.ID, ArgusTaskID: "t-gamma", WorktreePath: "/old/path",
+	})
+
+	src := &infoStatePaneSource{
+		statePaneSource: statePaneSource{
+			states: map[string]ArgusTaskState{
+				"t-gamma": {Status: "in_progress"},
+			},
+		},
+		infos: map[string]ArgusTaskInfo{
+			"t-gamma": {
+				ID:           "t-gamma",
+				Name:         "gamma-task-name",
+				Project:      "repo-g",
+				WorktreePath: "/cache/worktrees/gamma-task-name",
+				State:        ArgusTaskState{Status: "in_progress"},
+			},
+		},
+	}
+
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+	a.SetFocusMachine(NewFocusMachine())
+	a.selectDebounce = 0
+
+	a.pieces.rail.SelectByOrchID(orch.ID)
+	a.applyRailSelection(a.pieces.rail.CurrentRef())
+
+	// Verify the orchEntry was populated from the cache.
+	oe := findOrchEntry(a.pieces.rail, "gamma")
+	if oe == nil {
+		t.Fatalf("orchEntry for gamma not found")
+	}
+	if oe.CoordArgusName != "gamma-task-name" {
+		t.Errorf("orchEntry.CoordArgusName = %q, want gamma-task-name", oe.CoordArgusName)
+	}
+	if oe.CoordWorktreePath != "/cache/worktrees/gamma-task-name" {
+		t.Errorf("orchEntry.CoordWorktreePath = %q, want /cache/worktrees/gamma-task-name", oe.CoordWorktreePath)
+	}
+
+	// Verify they render in the Details pane screen output.
+	got := renderApp(t, a, 140, 30)
+	for _, want := range []string{"Agent", "gamma-task-name", "Worktree"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered screen missing %q\n---\n%s", want, got)
+		}
 	}
 }
 

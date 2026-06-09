@@ -3,6 +3,7 @@ package view
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -52,6 +53,16 @@ type coordDetails struct {
 	Prompt       string
 	Repos        []string
 	Roster       []rosterEntry
+
+	// CoordArgusName is the argus task name for the coord's task — the name
+	// shown in the argus task list (e.g. "the-hera-detail-when-viewing").
+	// Empty when the coord has no live argus task or the cache is cold.
+	CoordArgusName string
+
+	// CoordWorktreePath is the filesystem path of the coord task's git worktree.
+	// Sourced first from the state cache (via orchEntry.CoordWorktreePath), then
+	// from the hera DB binding as a fallback. Empty for archived/dead coords.
+	CoordWorktreePath string
 }
 
 // buildCoordDetails derives the Details metadata for the coordinator described
@@ -97,8 +108,22 @@ func buildCoordDetails(ctx context.Context, database *db.DB, orch *orchEntry) (c
 		})
 	}
 
+	// CoordArgusName: pass through what populateRail captured from the state cache.
+	cd.CoordArgusName = orch.CoordArgusName
+
+	// CoordWorktreePath: prefer the state-cache value; fall back to the hera DB
+	// binding so the field is populated even when the cache is cold or the argus
+	// daemon does not serve worktree_path (older builds).
+	cd.CoordWorktreePath = orch.CoordWorktreePath
+
 	if database == nil {
 		return cd, nil
+	}
+
+	if cd.CoordWorktreePath == "" && orch.CoordRoleID != 0 {
+		if bnd, err := database.Bindings.GetLatestByRole(ctx, orch.CoordRoleID); err == nil {
+			cd.CoordWorktreePath = bnd.WorktreePath
+		}
 	}
 
 	// Created + last-activity seed from the orchestrator row.
@@ -231,6 +256,23 @@ func fmtDetailTime(t time.Time) string {
 		return "–"
 	}
 	return t.Local().Format("2006-01-02 15:04")
+}
+
+// worktreeDisplay formats a worktree path for the Details pane. When the
+// full path fits in the available width it is returned verbatim; otherwise
+// the last two path components are shown (e.g. "Hera/the-hera-foo") so the
+// meaningful project/task portion is always visible.
+func worktreeDisplay(path string, availWidth int) string {
+	if availWidth <= 0 || runeLen(path) <= availWidth {
+		return path
+	}
+	parent := filepath.Base(filepath.Dir(path))
+	base := filepath.Base(path)
+	short := parent + "/" + base
+	if runeLen(short) <= availWidth {
+		return short
+	}
+	return base
 }
 
 // wrapText word-wraps s to width columns, preserving explicit newlines as
@@ -386,6 +428,12 @@ func (d *detailsPane) Draw(screen tcell.Screen) {
 	row++
 	field("Created", fmtDetailTime(cd.Created), theme.StyleNormal)
 	field("Last activity", fmtDetailTime(cd.LastActivity), theme.StyleNormal)
+	if cd.CoordArgusName != "" {
+		field("Agent", cd.CoordArgusName, theme.StyleNormal)
+	}
+	if cd.CoordWorktreePath != "" {
+		field("Worktree", worktreeDisplay(cd.CoordWorktreePath, w), theme.StyleNormal)
+	}
 	blank()
 
 	// Repos in scope.

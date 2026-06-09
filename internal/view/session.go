@@ -301,6 +301,16 @@ func (p managerPaneSource) TaskState(taskID string) (ArgusTaskState, bool) {
 	return p.states.Get(taskID)
 }
 
+// TaskInfo satisfies view.TaskInfoProvider, returning the full ArgusTaskInfo
+// (name, project, worktree path, elapsed, state) for a task id. Used by
+// populateRail to populate CoordArgusName and CoordWorktreePath on orchEntry.
+func (p managerPaneSource) TaskInfo(taskID string) (ArgusTaskInfo, bool) {
+	if p.states == nil || taskID == "" {
+		return ArgusTaskInfo{}, false
+	}
+	return p.states.GetInfo(taskID)
+}
+
 // StatesReady reports whether the argus state cache has completed its first
 // poll, so a cache miss can be safely treated as "task gone" rather than
 // "cache cold". Returns false (not ready) when no cache is wired.
