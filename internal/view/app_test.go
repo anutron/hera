@@ -473,12 +473,12 @@ func TestApp_OnFullscreenChanged_BodyLayoutIsExclusive(t *testing.T) {
 		t.Fatal("baseline: expected agent pane placeholder in normal split")
 	}
 
-	// Fullscreen COORD: only the coord pane fills the body. Rail and agent
-	// must be absent from the rendered surface.
+	// Fullscreen COORD: coord pane expands to fill the space right of the rail.
+	// Rail must remain visible; only the agent pane is absent.
 	a.OnFullscreenChanged(FocusCOORD, true)
 	coordFS := renderApp(t, a, 80, 24)
-	if strings.Contains(coordFS, "(no projects)") {
-		t.Error("coord fullscreen: rail must not be rendered when coord pane is fullscreen")
+	if !strings.Contains(coordFS, "(no projects)") {
+		t.Error("coord fullscreen: rail must remain visible")
 	}
 	if strings.Contains(coordFS, "(no agent selected)") {
 		t.Error("coord fullscreen: agent pane must not be rendered when coord pane is fullscreen")
@@ -497,12 +497,12 @@ func TestApp_OnFullscreenChanged_BodyLayoutIsExclusive(t *testing.T) {
 		t.Error("after exit: agent pane must be restored in normal split")
 	}
 
-	// Fullscreen AGENT: only the agent pane fills the body. Rail and coord
-	// must be absent.
+	// Fullscreen AGENT: agent pane expands to fill the space right of the rail.
+	// Rail must remain visible; only the coord pane is absent.
 	a.OnFullscreenChanged(FocusAGENT, true)
 	agentFS := renderApp(t, a, 80, 24)
-	if strings.Contains(agentFS, "(no projects)") {
-		t.Error("agent fullscreen: rail must not be rendered when agent pane is fullscreen")
+	if !strings.Contains(agentFS, "(no projects)") {
+		t.Error("agent fullscreen: rail must remain visible")
 	}
 	if strings.Contains(agentFS, "(no coord selected)") {
 		t.Error("agent fullscreen: coord pane must not be rendered when agent pane is fullscreen")
