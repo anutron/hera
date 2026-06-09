@@ -29,6 +29,12 @@ type fakeModals struct {
 	stubInputCancel    bool
 	stubInputNotOpened bool
 
+	// stubTextAreaInput* drive ShowTextAreaInput (worker prompt).
+	textAreaInputCalls       []fakeInputCall
+	stubTextAreaInputAnswer  string
+	stubTextAreaInputCancel  bool
+	stubTextAreaInputNotOpen bool
+
 	stubConfirmYes     bool
 	stubConfirmNotOpen bool
 
@@ -87,6 +93,28 @@ func (f *fakeModals) ShowInput(title, label, initial string, onSubmit func(strin
 	answer := f.stubInputAnswer
 	cancel := f.stubInputCancel
 	notOpen := f.stubInputNotOpened
+	f.mu.Unlock()
+
+	if notOpen {
+		return
+	}
+	if cancel {
+		if onCancel != nil {
+			onCancel()
+		}
+		return
+	}
+	if onSubmit != nil {
+		onSubmit(answer)
+	}
+}
+
+func (f *fakeModals) ShowTextAreaInput(title, label, initial string, onSubmit func(string), onCancel func()) {
+	f.mu.Lock()
+	f.textAreaInputCalls = append(f.textAreaInputCalls, fakeInputCall{Title: title, Label: label, Initial: initial})
+	answer := f.stubTextAreaInputAnswer
+	cancel := f.stubTextAreaInputCancel
+	notOpen := f.stubTextAreaInputNotOpen
 	f.mu.Unlock()
 
 	if notOpen {
@@ -2961,8 +2989,8 @@ func newBridgeWithRowSelector() (*mutationBridge, *fakeModals, *fakeSelector, *f
 }
 
 // TestBridge_OnNewWorker_CoordRow_OpensInputModal asserts that when a
-// coordinator row is selected and OnNewWorker is called, an input modal is
-// opened for the prompt.
+// coordinator row is selected and OnNewWorker is called, a textarea input
+// modal is opened for the prompt.
 func TestBridge_OnNewWorker_CoordRow_OpensInputModal(t *testing.T) {
 	b, m, sel, _, _, _ := newBridgeWithRowSelector()
 	sel.sel = railSelection{
@@ -2971,17 +2999,17 @@ func TestBridge_OnNewWorker_CoordRow_OpensInputModal(t *testing.T) {
 		CoordRoleID:    10,
 		Name:           "foo",
 	}
-	m.stubInputNotOpened = true // just record the open, don't submit
+	m.stubTextAreaInputNotOpen = true // just record the open, don't submit
 
 	b.OnNewWorker()
 	b.waitIdle()
 
 	m.mu.Lock()
-	openCount := len(m.inputs)
+	openCount := len(m.textAreaInputCalls)
 	m.mu.Unlock()
 
 	if openCount != 1 {
-		t.Fatalf("expected 1 input modal open for coordinator row; got %d", openCount)
+		t.Fatalf("expected 1 textarea input modal open for coordinator row; got %d", openCount)
 	}
 }
 
@@ -2998,7 +3026,7 @@ func TestBridge_OnNewWorker_AgentRow_ResolvesToCoord(t *testing.T) {
 		Name:           "some-agent",
 		RoleKind:       "worker",
 	}
-	m.stubInputAnswer = "implement X"
+	m.stubTextAreaInputAnswer = "implement X"
 
 	b.OnNewWorker()
 	b.waitIdle()
@@ -3159,7 +3187,7 @@ func TestBridge_OnNewWorker_EmptyPrompt_SurfacesNotice(t *testing.T) {
 			CoordRoleID:    10,
 			Name:           "foo",
 		}
-		m.stubInputAnswer = answer
+		m.stubTextAreaInputAnswer = answer
 
 		b.OnNewWorker()
 		b.waitIdle()
@@ -3194,7 +3222,7 @@ func TestBridge_OnNewWorker_Success_QueuesAutoSelect(t *testing.T) {
 		CoordRoleID:    10,
 		Name:           "foo",
 	}
-	m.stubInputAnswer = "do the thing"
+	m.stubTextAreaInputAnswer = "do the thing"
 	svc.spawnWorkerResp = &ops.SpawnWorkerResult{RoleID: 42, ArgusTaskID: "task-1"}
 
 	b.OnNewWorker()
@@ -3215,7 +3243,7 @@ func TestBridge_OnNewWorker_SpawnError_SurfacesErrorModal(t *testing.T) {
 		CoordRoleID:    10,
 		Name:           "foo",
 	}
-	m.stubInputAnswer = "do the thing"
+	m.stubTextAreaInputAnswer = "do the thing"
 	svc.spawnWorkerErr = errors.New("argus exploded")
 
 	b.OnNewWorker()

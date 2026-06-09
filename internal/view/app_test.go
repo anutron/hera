@@ -3515,7 +3515,7 @@ func TestApp_OnNewWorker_AgentRow_SpawnsUnderCoord_RealSelection(t *testing.T) {
 		t.Fatalf("could not select worker row")
 	}
 
-	m := &fakeModals{stubInputAnswer: "do work"}
+	m := &fakeModals{stubTextAreaInputAnswer: "do work"}
 	svc := &fakeMutationService{}
 	// Wire the REAL App as the selector; bridge resolves the target from it.
 	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
@@ -3563,7 +3563,7 @@ func TestApp_OnNewWorker_SubCoordRow_SpawnsUnderChild_RealSelection(t *testing.T
 		t.Fatalf("could not select sub-coordinator row")
 	}
 
-	m := &fakeModals{stubInputAnswer: "do work"}
+	m := &fakeModals{stubTextAreaInputAnswer: "do work"}
 	svc := &fakeMutationService{}
 	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
 
@@ -3627,7 +3627,7 @@ func TestApp_OnNewWorker_ArchivedAgentRow_SpawnsUnderCoord_RealSelection(t *test
 		t.Fatalf("archived worker row must still carry CoordRoleID %d; got %d", coord.ID, sel.CoordRoleID)
 	}
 
-	m := &fakeModals{stubInputAnswer: "do work"}
+	m := &fakeModals{stubTextAreaInputAnswer: "do work"}
 	svc := &fakeMutationService{}
 	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
 	b.OnNewWorker()
@@ -3685,7 +3685,7 @@ func TestApp_OnNewWorker_DeadAgentRow_SpawnsUnderCoord_RealSelection(t *testing.
 		t.Fatalf("dead worker row must still carry CoordRoleID %d; got %d", coord.ID, sel.CoordRoleID)
 	}
 
-	m := &fakeModals{stubInputAnswer: "do work"}
+	m := &fakeModals{stubTextAreaInputAnswer: "do work"}
 	svc := &fakeMutationService{}
 	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
 	b.OnNewWorker()
