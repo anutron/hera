@@ -6,6 +6,52 @@ import (
 	"fmt"
 )
 
+// PruneArchivedRole permanently removes an archived role from hera's DB and
+// deletes its git worktree from disk. It is the non-destructive-to-argus
+// counterpart of deleteRoleInternal: where deleteRoleInternal also destroys
+// the argus task + branch, PruneArchivedRole only cleans up hera's side
+// (DB row + disk artifacts). The argus task is already archived by the time
+// a role is pruned, so destroying it again is unnecessary.
+//
+// Behaviour:
+//   - Resolves the role's latest binding (live-first, then ended) to obtain
+//     the worktree path. A role that never had a binding is pruned without a
+//     worktree step.
+//   - Removes the worktree from disk (best-effort: missing paths are skipped).
+//   - Physically deletes the role row from the DB (bindings cascade).
+//
+// Returns ErrNotFound if no role matches id. Returns an error if the role is
+// NOT archived — callers must only prune roles that are already archived.
+func (s *Service) PruneArchivedRole(ctx context.Context, roleID int64) error {
+	role, err := s.DB.GetRoleByID(ctx, roleID)
+	if err != nil {
+		return fmt.Errorf("ops.PruneArchivedRole: load role %d: %w", roleID, err)
+	}
+	if !role.Archived {
+		return fmt.Errorf("ops.PruneArchivedRole: role %d (%s) is not archived; only archived roles may be pruned", roleID, role.Name)
+	}
+
+	// Resolve the latest binding to obtain the worktree path. A role that
+	// has never been bound has no worktree to remove.
+	worktreePath := ""
+	bnd, err := s.resolveBinding(ctx, roleID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("ops.PruneArchivedRole: binding lookup for role %d: %w", roleID, err)
+	}
+	if bnd != nil {
+		worktreePath = bnd.WorktreePath
+	}
+
+	if err := s.removeWorktree(ctx, worktreePath); err != nil {
+		return fmt.Errorf("ops.PruneArchivedRole: worktree remove: %w", err)
+	}
+
+	if err := s.DB.DeleteRoleByID(ctx, roleID); err != nil && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("ops.PruneArchivedRole: delete role %d: %w", roleID, err)
+	}
+	return nil
+}
+
 // CompletedAgent identifies one managed agent eligible for `^r` prune: a live
 // hera binding whose argus task reports status=complete. Name + ArgusTaskID
 // feed the confirmation modal so the operator sees exactly what disappears.

@@ -166,6 +166,10 @@ func (a *dbAdapter) UnpinRole(ctx context.Context, id int64) error {
 	return translateDBErr(a.d.Roles.Unpin(ctx, id))
 }
 
+func (a *dbAdapter) DeleteRoleByID(ctx context.Context, id int64) error {
+	return translateDBErr(a.d.Roles.Delete(ctx, id))
+}
+
 func (a *dbAdapter) GetLiveBindingByRole(ctx context.Context, roleID int64) (*ops.Binding, error) {
 	b, err := a.d.Bindings.GetLiveByRole(ctx, roleID)
 	if err != nil {

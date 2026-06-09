@@ -278,6 +278,26 @@ func (r *RolesDAO) Rename(ctx context.Context, id int64, newName string) error {
 	return nil
 }
 
+// Delete physically removes a role row from the database. Unlike Archive,
+// which preserves the row for future resurrection, Delete is permanent: the
+// role will not appear in any list, including ListByOrchestratorInclusive.
+// Bindings for the role are removed automatically via ON DELETE CASCADE.
+// Returns ErrNotFound if no row matches id.
+func (r *RolesDAO) Delete(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM roles WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("roles.Delete: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	if r.events != nil {
+		r.events.Emit(Event{Entity: EntityRole, Op: OpDelete, ID: id})
+	}
+	return nil
+}
+
 func (r *RolesDAO) scanOne(ctx context.Context, query string, args ...any) (*Role, error) {
 	row := r.db.QueryRowContext(ctx, query, args...)
 	role := &Role{}

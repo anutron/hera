@@ -30,6 +30,7 @@ type fakeDB struct {
 	deleteOrchCalls    []int64
 	archiveRoleCalls   []int64
 	unarchiveRoleCalls []int64
+	deleteRoleCalls    []int64
 	pinOrchCalls       []int64
 	unpinOrchCalls     []int64
 	pinRoleCalls       []int64
@@ -373,6 +374,27 @@ func (f *fakeDB) UnpinRole(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	r.Pinned = false
+	return nil
+}
+
+func (f *fakeDB) DeleteRoleByID(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteRoleCalls = append(f.deleteRoleCalls, id)
+	if _, ok := f.roles[id]; !ok {
+		return ErrNotFound
+	}
+	delete(f.roles, id)
+	for bID, b := range f.bindings {
+		if b.RoleID == id {
+			delete(f.bindings, bID)
+		}
+	}
+	for bID, b := range f.ended {
+		if b.RoleID == id {
+			delete(f.ended, bID)
+		}
+	}
 	return nil
 }
 

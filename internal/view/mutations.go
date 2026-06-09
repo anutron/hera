@@ -120,9 +120,15 @@ type mutationService interface {
 	CompleteTaskByID(ctx context.Context, taskID string) error
 
 	// CompleteArchivedDescendants marks every archived non-coordinator role
-	// under the given orchestrator as :checked: in argus. Backs the `C`
-	// rail key. Returns the count of tasks completed.
+	// under the given orchestrator as :checked: in argus and prunes each
+	// from hera's DB + disk. Backs the `C` rail key. Returns the count of
+	// roles completed+pruned.
 	CompleteArchivedDescendants(ctx context.Context, orchID int64) (int, error)
+
+	// PruneArchivedRole permanently removes an archived role from hera's DB
+	// and deletes its git worktree from disk. Only valid on already-archived
+	// roles (no live binding). Backs `^d` on an archived worker row.
+	PruneArchivedRole(ctx context.Context, roleID int64) error
 }
 
 // listAllState is the subset of *ops.ListAllState the bridge uses to
@@ -709,17 +715,33 @@ func (b *mutationBridge) OnDelete() {
 			b.notApplicable("^d: a freelancer is an unmanaged argus task — delete it from argus instead")
 			return
 		}
-		warn := ""
-		if sel.ChildCount > 0 {
-			warn = fmt.Sprintf(" WARNING: %q has %d child agent(s) that will also be destroyed.", sel.Name, sel.ChildCount)
+		// Effective archived state: mirrors rail_list.roleArchived.
+		effectiveArchived := sel.Archived || sel.ArgusArchived || sel.Dead
+		if effectiveArchived {
+			// The role is already archived and has no live binding. Use the
+			// prune flow: remove the hera row + worktree only (the argus task
+			// is already archived; no need to delete it again).
+			title = fmt.Sprintf("Remove %q?", sel.Name)
+			message = fmt.Sprintf(
+				"Remove completed worker %q? "+
+					"The role will be deleted from the rail and its worktree removed from disk. "+
+					"This cannot be undone. (y/N)",
+				sel.Name,
+			)
+			do = func() error { return b.svc.PruneArchivedRole(b.ctx, sel.RoleID) }
+		} else {
+			warn := ""
+			if sel.ChildCount > 0 {
+				warn = fmt.Sprintf(" WARNING: %q has %d child agent(s) that will also be destroyed.", sel.Name, sel.ChildCount)
+			}
+			title = fmt.Sprintf("Delete %q?", sel.Name)
+			message = fmt.Sprintf(
+				"DESTRUCTIVE: this destroys %q — its argus task, git worktree, and branch are removed. "+
+					"This cannot be undone.%s Continue? (y/N)",
+				sel.Name, warn,
+			)
+			do = func() error { return b.svc.DeleteRole(b.ctx, sel.RoleID) }
 		}
-		title = fmt.Sprintf("Delete %q?", sel.Name)
-		message = fmt.Sprintf(
-			"DESTRUCTIVE: this destroys %q — its argus task, git worktree, and branch are removed. "+
-				"This cannot be undone.%s Continue? (y/N)",
-			sel.Name, warn,
-		)
-		do = func() error { return b.svc.DeleteRole(b.ctx, sel.RoleID) }
 	default:
 		b.notApplicable("^d: not applicable to this row")
 		return
@@ -1481,8 +1503,12 @@ func (b *mutationBridge) OnCompleteArchived() {
 	capturedName := coordName
 	b.goUI(func() {
 		b.modals.ShowConfirm(
-			fmt.Sprintf("Complete archived under %q?", capturedName),
-			fmt.Sprintf("Mark all archived worker tasks under %q as :checked: in argus? (y/N)", capturedName),
+			fmt.Sprintf("Complete and prune archived under %q?", capturedName),
+			fmt.Sprintf(
+				"Mark all archived workers under %q as :checked: in argus and remove them from the rail? "+
+					"Worktrees are deleted from disk. This cannot be undone. (y/N)",
+				capturedName,
+			),
 			func() {
 				b.mutate("complete archived", true, func() error {
 					n, err := b.svc.CompleteArchivedDescendants(b.ctx, capturedOrchID)

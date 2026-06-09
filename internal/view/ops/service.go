@@ -68,6 +68,12 @@ type DB interface {
 	PinRole(ctx context.Context, id int64) error
 	UnpinRole(ctx context.Context, id int64) error
 
+	// DeleteRoleByID physically removes a role row from the database.
+	// Unlike ArchiveRole, which preserves the row for future resurrection,
+	// this is permanent: the role will not appear in any list. Bindings
+	// cascade automatically. Returns ErrNotFound if no row matches id.
+	DeleteRoleByID(ctx context.Context, id int64) error
+
 	// GetLiveBindingByRole returns the live binding for a role or
 	// ErrNotFound if the role currently has no live binding.
 	GetLiveBindingByRole(ctx context.Context, roleID int64) (*Binding, error)
