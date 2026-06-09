@@ -217,6 +217,7 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 
 	tApp.SetRoot(pieces.pages, true)
 	tApp.EnableMouse(false)
+	tApp.EnablePaste(true)
 
 	a := &App{
 		app:            tApp,
