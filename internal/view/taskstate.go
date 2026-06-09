@@ -90,9 +90,9 @@ type ArgusStateCache struct {
 
 	mu      sync.RWMutex
 	states  map[string]ArgusTaskState
-	infos   []ArgusTaskInfo            // full snapshot, render order = argus list order
-	infoMap map[string]ArgusTaskInfo   // keyed by task ID for O(1) TaskInfo lookups
-	ready   bool                       // true after the first successful poll
+	infos   []ArgusTaskInfo          // full snapshot, render order = argus list order
+	infoMap map[string]ArgusTaskInfo // keyed by task ID for O(1) TaskInfo lookups
+	ready   bool                     // true after the first successful poll
 
 	// optimistic holds predicted statuses applied by the mutation bridge at the
 	// START of a status-step goroutine (BUG-032: optimistic render). Each entry
