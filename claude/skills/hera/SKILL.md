@@ -36,24 +36,22 @@ orchestrator graph.
 
 You don't manage any of that plumbing. You call nine MCP tools.
 
-## What hera is NOT
+## What hera is (and is NOT) for
 
 Hera is for managing build order across persistent worker sessions —
 multiple Claude sessions running in parallel argus worktrees, surviving
 daemon restarts, communicating over the message bus.
 
-Hera is NOT for:
-
-- **Team-of-agents patterns inside a single unit of work.** Claude's
+- **Hera trusts Claude to execute Claude-sized units of work.** Claude's
   native Agent tool dispatches in-process subagents in the same session
-  — shared context, faster, parallel. Replicating that pattern via
-  `hera_spawn_worker` is slower (per-session startup overhead) AND more
-  token-expensive (no shared context).
-- **Work where startup cost exceeds the work itself.** Avoid spawning a
-  hera worker for jobs small enough that the per-session startup pays
-  more than just doing the work in-place. (Legitimate exceptions exist:
-  small work that needs a different worktree / different repo / sandbox
-  isolation may still warrant a worker.)
+  — shared context, faster, parallel. Hera should not replicate native
+  Claude functionality with `hera_spawn_worker` when using Claude's
+  native sub-agents would be faster and more token-efficient.
+- **Hera is for work where the session itself is the unit.** Avoid
+  spawning a hera worker for jobs small enough that the per-session
+  startup pays more than just doing the work in-place. (Legitimate
+  exceptions exist: small work that needs a different worktree /
+  different repo / sandbox isolation may still warrant a worker.)
 
 ## Depth and topology
 
@@ -64,9 +62,13 @@ fan-out. Practical max depth:
 - **Wave coord** — manages ONE wave's stages. Promotes via
   `hera_new_orchestrator(name=<wave>-team)`. Dispatches one hera worker
   per stage.
-- **Stage worker** — executes ONE stage end-to-end. **Leaves in the hera
-  tree.** Inside their session, they use Claude's native Agent tool for
-  any in-stage parallelism.
+- **Stage worker** — executes ONE stage end-to-end. Builds a robust
+  plan (reviewing with the user if needed), then executes it using
+  Claude's native Agent tool for any parallelism — not further hera
+  workers — to preserve context. Reviews its own output carefully before
+  reporting back to the coordinator. Hands off completed work by opening
+  a pull request (preferred) or leaving commits in the worktree for the
+  coordinator to pull from.
 
 Three levels (root → wave → stage). If you find yourself promoting
 deeper, you're probably duplicating what Claude's native Agent tool
