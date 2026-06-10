@@ -84,6 +84,14 @@ type mutationService interface {
 	// section visible).
 	ResurrectOrchestrator(ctx context.Context, coordRoleID int64) (*ops.CreatedTask, error)
 
+	// ResurrectRole mints a FRESH argus instance (task + worktree + session) for
+	// an existing role whose previous instance is gone — the operator pruned its
+	// worktree out-of-band (BUG-028). It is born-bound: a new binding ties the
+	// fresh task to the SAME role id, preserving role identity. Backs the
+	// "(r)evive" choice on the worktree-missing reattach modal. Works for both
+	// workers and coordinators.
+	ResurrectRole(ctx context.Context, roleID int64) (*ops.ResurrectRoleResult, error)
+
 	// ReattachAgent restarts the dead agent session for the given argus task.
 	// Backs Enter-on-dead-session-agent (BUG-033): when the user presses Enter
 	// on a row whose PTY session has ended, hera asks argus to re-spawn the
@@ -1228,6 +1236,7 @@ func (b *mutationBridge) OnReattach() bool {
 		taskID := sel.CoordTaskID
 		name := sel.Name
 		orchID := sel.OrchestratorID
+		coordRoleID := sel.CoordRoleID
 		// Show the REATTACHING splash on the coord pane immediately (BUG-008),
 		// the same feedback agents get. fireSelectionNow (inside StartPaneReattach)
 		// binds the coord pane to taskID if the Enter beat the selection debounce.
@@ -1252,12 +1261,24 @@ func (b *mutationBridge) OnReattach() bool {
 				if b.splashStart != nil {
 					b.splashStart.ClearPaneReattach(taskID)
 				}
-				// BUG-020: the coord's worktree was deleted out-of-band, so the
-				// restart can never succeed — this is an unrecoverable orphan.
-				// Instead of an opaque argus 500, offer to delete it (routing to
-				// the orchestrator-delete path). Returning nil suppresses the raw
-				// error modal; the confirm opens on its own goroutine.
+				// BUG-020 / BUG-028: the coord's worktree was deleted out-of-band, so
+				// the restart can never succeed. Rather than an opaque argus 500, offer
+				// the operator a choice: REVIVE a fresh instance (ResurrectRole, which
+				// preserves the coord role's identity and brings it live in place) or
+				// DELETE the orphan. Returning nil suppresses the raw error modal; the
+				// picker opens on its own goroutine. When the header has no coord role
+				// to rebind (CoordRoleID 0) revive is impossible, so fall back to the
+				// delete-only offer.
 				if errors.Is(err, ops.ErrWorktreeMissing) {
+					if coordRoleID != 0 {
+						b.offerReviveOrDelete(
+							fmt.Sprintf("Coordinator %q has no worktree", name),
+							"Delete coordinator permanently",
+							coordRoleID,
+							func() error { return b.svc.DeleteOrchestrator(b.ctx, orchID) },
+						)
+						return nil
+					}
 					b.offerDeleteOrphaned(
 						fmt.Sprintf("Delete orphaned coordinator %q?", name),
 						fmt.Sprintf("This coordinator's worktree is gone and can't be revived. Delete %q? (y/N)", name),
@@ -1305,15 +1326,18 @@ func (b *mutationBridge) OnReattach() bool {
 			if b.splashStart != nil {
 				b.splashStart.ClearPaneReattach(taskID)
 			}
-			// BUG-020: the agent's worktree was deleted out-of-band — restart can
-			// never succeed. Offer to delete the orphaned role rather than show an
-			// opaque argus 500. Returning nil suppresses the raw error modal. Only a
-			// MANAGED role (roleID != 0) routes to DeleteRole; a freelancer (roleID
-			// 0) has no hera role to delete, so it falls through to the raw error.
+			// BUG-020 / BUG-028: the agent's worktree was deleted out-of-band —
+			// restart can never succeed. Offer the operator a choice rather than an
+			// opaque argus 500: REVIVE a fresh instance (ResurrectRole, which
+			// preserves the role's identity and re-spawns it under its coordinator)
+			// or DELETE the orphaned role. Returning nil suppresses the raw error
+			// modal. Only a MANAGED role (roleID != 0) has a hera role to revive or
+			// delete; a freelancer (roleID 0) falls through to the raw error.
 			if errors.Is(err, ops.ErrWorktreeMissing) && roleID != 0 {
-				b.offerDeleteOrphaned(
-					fmt.Sprintf("Delete orphaned agent %q?", name),
-					fmt.Sprintf("This agent's worktree is gone and can't be revived. Delete %q? (y/N)", name),
+				b.offerReviveOrDelete(
+					fmt.Sprintf("Agent %q has no worktree", name),
+					"Delete agent permanently",
+					roleID,
 					func() error { return b.svc.DeleteRole(b.ctx, roleID) },
 				)
 				return nil
@@ -1364,6 +1388,74 @@ func (b *mutationBridge) offerDeleteOrphaned(title, message string, do func() er
 				b.refresh()
 			})
 		}, nil)
+	})
+}
+
+// offerReviveOrDelete presents the BUG-028 three-way recovery picker for a row
+// whose argus worktree is gone — the reattach target can never be `claude
+// --resume`d, so instead of only offering delete (the BUG-020 behaviour) the
+// operator chooses:
+//
+//	(r)evive a fresh instance → ResurrectRole(reviveRoleID): a born-bound fresh
+//	    argus task in the role's project, preserving role identity. On success the
+//	    REATTACHING splash shows on the new pane and the now-live row is selected.
+//	(d)elete permanently      → do() (the orchestrator- or role-delete op).
+//	esc                       → cancel, nothing happens.
+//
+// It is invoked from inside the reattach mutate op (which still holds the
+// in-flight flag), so — like offerDeleteOrphaned — the picker opens via goUI and
+// both terminal actions run via goUI rather than mutate (routing them through
+// mutate would race the reattach op's in-flight release and intermittently drop
+// the action as "busy"; the modal gate already serializes the operator).
+func (b *mutationBridge) offerReviveOrDelete(title, deleteLabel string, reviveRoleID int64, do func() error) {
+	b.goUI(func() {
+		items := []string{"Revive a fresh instance", deleteLabel}
+		b.modals.ShowSelect(
+			title,
+			"This worktree is gone — choose a recovery",
+			items,
+			func(idx int) {
+				switch idx {
+				case 0: // revive
+					b.goUI(func() {
+						res, err := b.svc.ResurrectRole(b.ctx, reviveRoleID)
+						if err != nil {
+							b.modals.ShowError(err.Error())
+							return
+						}
+						if res != nil {
+							// Show the REATTACHING splash on the fresh pane and resize the
+							// new session to the current pane dimensions, mirroring the
+							// reattach success path (the new session starts at argus's 80×24
+							// default regardless of the prior size).
+							if b.splashStart != nil {
+								b.splashStart.StartPaneReattach(res.ArgusTaskID)
+							}
+							if b.reattach != nil {
+								b.reattach.OnTaskReattached(res.ArgusTaskID)
+							}
+							// Auto-select the revived row once the born-bound binding drives
+							// the next rail repopulate.
+							if b.rowSel != nil {
+								b.rowSel.QueueSelectRole(reviveRoleID)
+							}
+						}
+						b.refresh()
+					})
+				case 1: // delete
+					b.goUI(func() {
+						if err := do(); err != nil {
+							b.modals.ShowError(err.Error())
+							return
+						}
+						b.refresh()
+					})
+				default:
+					return
+				}
+			},
+			nil,
+		)
 	})
 }
 
