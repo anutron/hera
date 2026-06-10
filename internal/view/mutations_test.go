@@ -52,6 +52,13 @@ type fakeModals struct {
 	stubNewCoordCancel  bool
 	stubNewCoordNotOpen bool
 
+	// stubNewWorker* drive the new-worker form (ShowNewWorkerForm).
+	newWorkerCalls       []fakeNewWorkerFormCall
+	stubNewWorkerProject string
+	stubNewWorkerPrompt  string
+	stubNewWorkerCancel  bool
+	stubNewWorkerNotOpen bool
+
 	// confirmGate, when non-nil, blocks ShowConfirm at entry until the test
 	// closes it. Set before driving the bridge; never mutate afterwards.
 	confirmGate chan struct{}
@@ -81,6 +88,12 @@ type fakeNewCoordFormCall struct {
 	Title    string
 	Projects []string
 	Backends []string
+}
+
+type fakeNewWorkerFormCall struct {
+	Title             string
+	Projects          []string
+	DefaultProjectIdx int
 }
 
 type fakeConfirmCall struct {
@@ -173,6 +186,33 @@ func (f *fakeModals) ShowNewCoordForm(title string, projects, backends []string,
 	}
 	if onSubmit != nil {
 		onSubmit(in)
+	}
+}
+
+func (f *fakeModals) ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, onSubmit func(project, prompt string), onCancel func()) {
+	f.mu.Lock()
+	f.newWorkerCalls = append(f.newWorkerCalls, fakeNewWorkerFormCall{
+		Title:             title,
+		Projects:          projects,
+		DefaultProjectIdx: defaultProjectIdx,
+	})
+	project := f.stubNewWorkerProject
+	prompt := f.stubNewWorkerPrompt
+	cancel := f.stubNewWorkerCancel
+	notOpen := f.stubNewWorkerNotOpen
+	f.mu.Unlock()
+
+	if notOpen {
+		return
+	}
+	if cancel {
+		if onCancel != nil {
+			onCancel()
+		}
+		return
+	}
+	if onSubmit != nil {
+		onSubmit(project, prompt)
 	}
 }
 
@@ -424,6 +464,11 @@ type fakeMutationService struct {
 	listBackendsResp []string
 	listBackendsErr  error
 
+	// CoordProject stub (for OnNewWorker project default).
+	coordProjectResp    string
+	coordProjectErr     error
+	coordProjectCapture []int64
+
 	// Adopt verbs (`J`). listOrchs is returned by ListActiveOrchestrators;
 	// adoptCalls records every AdoptTaskIntoOrchestrator input.
 	listOrchs     []*ops.Orchestrator
@@ -483,6 +528,13 @@ func (s *fakeMutationService) ListBackends(_ context.Context) ([]string, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.listBackendsResp, s.listBackendsErr
+}
+
+func (s *fakeMutationService) CoordProject(_ context.Context, coordRoleID int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.coordProjectCapture = append(s.coordProjectCapture, coordRoleID)
+	return s.coordProjectResp, s.coordProjectErr
 }
 
 func (s *fakeMutationService) RenameOrchestrator(_ context.Context, id int64, newName string) error {
@@ -2999,28 +3051,30 @@ func newBridgeWithRowSelector() (*mutationBridge, *fakeModals, *fakeSelector, *f
 	return b, m, sel, svc, rp, rowSel
 }
 
-// TestBridge_OnNewWorker_CoordRow_OpensInputModal asserts that when a
-// coordinator row is selected and OnNewWorker is called, a textarea input
-// modal is opened for the prompt.
-func TestBridge_OnNewWorker_CoordRow_OpensInputModal(t *testing.T) {
-	b, m, sel, _, _, _ := newBridgeWithRowSelector()
+// TestBridge_OnNewWorker_CoordRow_OpensWorkerForm asserts that when a
+// coordinator row is selected and OnNewWorker is called, a new-worker form
+// modal (Project cycler + Prompt textarea) is opened.
+func TestBridge_OnNewWorker_CoordRow_OpensWorkerForm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
 	sel.sel = railSelection{
 		Kind:           selOrchestrator,
 		OrchestratorID: 1,
 		CoordRoleID:    10,
 		Name:           "foo",
 	}
-	m.stubTextAreaInputNotOpen = true // just record the open, don't submit
+	svc.listProjectsResp = []string{"p1"}
+	svc.coordProjectResp = "p1"
+	m.stubNewWorkerNotOpen = true // just record the open, don't submit
 
 	b.OnNewWorker()
 	b.waitIdle()
 
 	m.mu.Lock()
-	openCount := len(m.textAreaInputCalls)
+	openCount := len(m.newWorkerCalls)
 	m.mu.Unlock()
 
 	if openCount != 1 {
-		t.Fatalf("expected 1 textarea input modal open for coordinator row; got %d", openCount)
+		t.Fatalf("expected 1 new-worker form open for coordinator row; got %d", openCount)
 	}
 }
 
@@ -3037,7 +3091,10 @@ func TestBridge_OnNewWorker_AgentRow_ResolvesToCoord(t *testing.T) {
 		Name:           "some-agent",
 		RoleKind:       "worker",
 	}
-	m.stubTextAreaInputAnswer = "implement X"
+	svc.listProjectsResp = []string{"p1"}
+	svc.coordProjectResp = "p1"
+	m.stubNewWorkerProject = "p1"
+	m.stubNewWorkerPrompt = "implement X"
 
 	b.OnNewWorker()
 	b.waitIdle()
@@ -3186,7 +3243,7 @@ func TestBridge_OnNewWorker_SubCoordNoChildOrch_NotApplicable(t *testing.T) {
 	}
 }
 
-// TestBridge_OnNewWorker_EmptyPrompt_SurfacesNotice asserts D1: confirming the
+// TestBridge_OnNewWorker_EmptyPrompt_SurfacesNotice asserts that confirming the
 // spawn-worker modal with an empty OR whitespace-only prompt surfaces a
 // dismissible notice (NOT a silent close) and issues no SpawnWorker call.
 func TestBridge_OnNewWorker_EmptyPrompt_SurfacesNotice(t *testing.T) {
@@ -3198,7 +3255,10 @@ func TestBridge_OnNewWorker_EmptyPrompt_SurfacesNotice(t *testing.T) {
 			CoordRoleID:    10,
 			Name:           "foo",
 		}
-		m.stubTextAreaInputAnswer = answer
+		svc.listProjectsResp = []string{"p1"}
+		svc.coordProjectResp = "p1"
+		m.stubNewWorkerProject = "p1"
+		m.stubNewWorkerPrompt = answer
 
 		b.OnNewWorker()
 		b.waitIdle()
@@ -3233,7 +3293,10 @@ func TestBridge_OnNewWorker_Success_QueuesAutoSelect(t *testing.T) {
 		CoordRoleID:    10,
 		Name:           "foo",
 	}
-	m.stubTextAreaInputAnswer = "do the thing"
+	svc.listProjectsResp = []string{"p1"}
+	svc.coordProjectResp = "p1"
+	m.stubNewWorkerProject = "p1"
+	m.stubNewWorkerPrompt = "do the thing"
 	svc.spawnWorkerResp = &ops.SpawnWorkerResult{RoleID: 42, ArgusTaskID: "task-1"}
 
 	b.OnNewWorker()
@@ -3254,7 +3317,10 @@ func TestBridge_OnNewWorker_SpawnError_SurfacesErrorModal(t *testing.T) {
 		CoordRoleID:    10,
 		Name:           "foo",
 	}
-	m.stubTextAreaInputAnswer = "do the thing"
+	svc.listProjectsResp = []string{"p1"}
+	svc.coordProjectResp = "p1"
+	m.stubNewWorkerProject = "p1"
+	m.stubNewWorkerPrompt = "do the thing"
 	svc.spawnWorkerErr = errors.New("argus exploded")
 
 	b.OnNewWorker()
@@ -3269,6 +3335,202 @@ func TestBridge_OnNewWorker_SpawnError_SurfacesErrorModal(t *testing.T) {
 	}
 	if !strings.Contains(errs[0], "argus exploded") {
 		t.Fatalf("error modal should contain the error text; got %q", errs[0])
+	}
+}
+
+// --- OnNewWorker: project selection wiring (task 1.5) ---
+
+// TestBridge_OnNewWorker_DefaultsToCoordProject asserts that the modal's
+// Project cycler is seeded to the index of the coordinator's project in the
+// configured project list (D2: default cycler to coord's project).
+func TestBridge_OnNewWorker_DefaultsToCoordProject(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"foo-backend", "foo-frontend"}
+	svc.coordProjectResp = "foo-frontend"
+	m.stubNewWorkerNotOpen = true // don't submit — just record the open args
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	m.mu.Lock()
+	calls := m.newWorkerCalls
+	m.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 ShowNewWorkerForm call; got %d", len(calls))
+	}
+	if calls[0].DefaultProjectIdx != 1 {
+		t.Fatalf("defaultProjectIdx: want 1 (index of \"foo-frontend\"); got %d", calls[0].DefaultProjectIdx)
+	}
+	if len(calls[0].Projects) != 2 || calls[0].Projects[0] != "foo-backend" || calls[0].Projects[1] != "foo-frontend" {
+		t.Fatalf("projects list mismatch: got %v", calls[0].Projects)
+	}
+}
+
+// TestBridge_OnNewWorker_SelectedProjectPassedToSpawnWorker asserts that the
+// project chosen in the modal's form is forwarded to SpawnWorker.Project (D3).
+func TestBridge_OnNewWorker_SelectedProjectPassedToSpawnWorker(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"foo-backend", "foo-frontend"}
+	svc.coordProjectResp = "foo-frontend"
+	// Operator cycles to "foo-backend" and provides a prompt.
+	m.stubNewWorkerProject = "foo-backend"
+	m.stubNewWorkerPrompt = "build the API"
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SpawnWorker call; got %d", len(calls))
+	}
+	if calls[0].Project != "foo-backend" {
+		t.Fatalf("SpawnWorkerInput.Project: want %q, got %q", "foo-backend", calls[0].Project)
+	}
+}
+
+// TestBridge_OnNewWorker_EmptyPromptRejectsWithNewWorkerForm asserts that the
+// empty-prompt rejection fires through ShowNewWorkerForm's submit path — the
+// notice must still appear even though the modal is a two-field form.
+func TestBridge_OnNewWorker_EmptyPromptRejectsWithNewWorkerForm(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"foo-frontend"}
+	svc.coordProjectResp = "foo-frontend"
+	m.stubNewWorkerProject = "foo-frontend"
+	m.stubNewWorkerPrompt = "   " // whitespace-only
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	spawnCount := len(svc.spawnWorkerCalls)
+	svc.mu.Unlock()
+	if spawnCount != 0 {
+		t.Fatalf("empty prompt must not trigger SpawnWorker; got %d calls", spawnCount)
+	}
+
+	m.mu.Lock()
+	errs := append([]string(nil), m.errors...)
+	m.mu.Unlock()
+	if len(errs) == 0 {
+		t.Fatal("empty prompt must surface a dismissible notice")
+	}
+	if !strings.Contains(errs[len(errs)-1], "prompt is required") {
+		t.Fatalf("notice should say \"prompt is required\"; got %q", errs[len(errs)-1])
+	}
+}
+
+// TestBridge_OnNewWorker_ListProjectsError_ShowsErrorModal asserts that a
+// ListProjects failure shows an error modal and does not open the form.
+func TestBridge_OnNewWorker_ListProjectsError_ShowsErrorModal(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsErr = errors.New("argus unavailable")
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	m.mu.Lock()
+	errs := m.errors
+	workerFormCalls := len(m.newWorkerCalls)
+	m.mu.Unlock()
+
+	if len(errs) == 0 {
+		t.Fatal("ListProjects error must surface an error modal")
+	}
+	if !strings.Contains(errs[0], "argus unavailable") {
+		t.Fatalf("error modal must include the error text; got %q", errs[0])
+	}
+	if workerFormCalls != 0 {
+		t.Fatalf("ListProjects error must not open the worker form; got %d opens", workerFormCalls)
+	}
+}
+
+// TestBridge_OnNewWorker_CoordProjectError_ShowsErrorModal asserts that a
+// CoordProject failure shows an error modal and does not open the form.
+func TestBridge_OnNewWorker_CoordProjectError_ShowsErrorModal(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"foo-frontend"}
+	svc.coordProjectErr = errors.New("role not found")
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	m.mu.Lock()
+	errs := m.errors
+	workerFormCalls := len(m.newWorkerCalls)
+	m.mu.Unlock()
+
+	if len(errs) == 0 {
+		t.Fatal("CoordProject error must surface an error modal")
+	}
+	if !strings.Contains(errs[0], "role not found") {
+		t.Fatalf("error modal must include the error text; got %q", errs[0])
+	}
+	if workerFormCalls != 0 {
+		t.Fatalf("CoordProject error must not open the worker form; got %d opens", workerFormCalls)
+	}
+}
+
+// TestBridge_OnNewWorker_CoordProjectNotInList_DefaultsToZero asserts that
+// when the coordinator's project is absent from the configured list, the
+// default index falls back to 0 (first entry).
+func TestBridge_OnNewWorker_CoordProjectNotInList_DefaultsToZero(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"alpha", "beta"}
+	svc.coordProjectResp = "gamma" // not in the list
+	m.stubNewWorkerNotOpen = true
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	m.mu.Lock()
+	calls := m.newWorkerCalls
+	m.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 ShowNewWorkerForm call; got %d", len(calls))
+	}
+	if calls[0].DefaultProjectIdx != 0 {
+		t.Fatalf("coord project absent from list: defaultProjectIdx must be 0; got %d", calls[0].DefaultProjectIdx)
 	}
 }
 

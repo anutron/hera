@@ -22,6 +22,11 @@ type SpawnWorkerInput struct {
 
 	// Prompt is the operator's text. Must be non-empty (after trimming).
 	Prompt string
+
+	// Project is an optional override for the argus project the worker task
+	// and role are created in. When empty (after trimming), the coordinator
+	// role's argus_project is used instead (today's behavior is preserved).
+	Project string
 }
 
 // SpawnWorker handles the `w` rail operation: validates the prompt,
@@ -46,13 +51,20 @@ func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnW
 		return nil, validation("prompt is required")
 	}
 
-	// Resolve the coordinator role to get its argus_project.
+	// Resolve the coordinator role to get its argus_project and name.
 	coordRole, err := s.DB.GetRoleByID(ctx, in.CoordRoleID)
 	if err != nil {
 		return nil, fmt.Errorf("ops.SpawnWorker: load coord role %d: %w", in.CoordRoleID, err)
 	}
-	if coordRole.ArgusProject == "" {
-		return nil, fmt.Errorf("ops.SpawnWorker: coord role %d has empty argus_project", in.CoordRoleID)
+
+	// Compute the effective project: use the override if provided, otherwise
+	// fall back to the coordinator role's argus_project (D3).
+	effectiveProject := strings.TrimSpace(in.Project)
+	if effectiveProject == "" {
+		effectiveProject = coordRole.ArgusProject
+	}
+	if effectiveProject == "" {
+		return nil, fmt.Errorf("ops.SpawnWorker: coord role %d has empty argus_project and no project override provided", in.CoordRoleID)
 	}
 
 	// Derive a unique role name from the prompt (D5).
@@ -70,9 +82,9 @@ func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnW
 	// row was selected.
 	taskPrompt := buildWorkerPrompt(coordRole.Name, prompt)
 
-	// Create the argus task in the coordinator's project with worker meta (D3).
+	// Create the argus task in the effective project with worker meta (D3).
 	req := CreateTaskRequest{
-		Project: coordRole.ArgusProject,
+		Project: effectiveProject,
 		Prompt:  taskPrompt,
 		Meta:    map[string]string{"role": "worker"},
 	}
@@ -99,7 +111,7 @@ func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnW
 		OrchestratorID: in.TargetOrchestratorID,
 		Name:           uniqueName,
 		Kind:           KindWorker,
-		ArgusProject:   coordRole.ArgusProject,
+		ArgusProject:   effectiveProject,
 		Prompt:         prompt,
 	})
 	if err != nil {
@@ -122,6 +134,17 @@ func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnW
 		RoleID:      role.ID,
 		ArgusTaskID: created.ID,
 	}, nil
+}
+
+// CoordProject loads the coordinator role identified by coordRoleID and
+// returns its argus_project. Propagates any DB error so callers can surface
+// a load failure as an error modal.
+func (s *Service) CoordProject(ctx context.Context, coordRoleID int64) (string, error) {
+	role, err := s.DB.GetRoleByID(ctx, coordRoleID)
+	if err != nil {
+		return "", fmt.Errorf("ops.CoordProject: load role %d: %w", coordRoleID, err)
+	}
+	return role.ArgusProject, nil
 }
 
 // uniqueWorkerName returns baseName if no non-archived role under
