@@ -212,6 +212,18 @@ func (a *dbAdapter) ListLiveBindingsByTask(ctx context.Context, argusTaskID stri
 	return out, nil
 }
 
+func (a *dbAdapter) ListBindingsByTask(ctx context.Context, argusTaskID string) ([]*ops.Binding, error) {
+	rows, err := a.d.Bindings.ListByTaskID(ctx, argusTaskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*ops.Binding, 0, len(rows))
+	for _, b := range rows {
+		out = append(out, adaptBinding(b))
+	}
+	return out, nil
+}
+
 func (a *dbAdapter) UpsertRoleStatus(ctx context.Context, roleID int64, status string) error {
 	return a.d.RoleStatus.Upsert(ctx, roleID, db.RoleStatusValue(status))
 }

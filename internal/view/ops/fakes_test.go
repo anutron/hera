@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -129,11 +130,18 @@ func (f *fakeDB) seedEndedBinding(roleID int64, argusTaskID, worktreePath string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextBindingID++
+	// Denormalize the orchestrator id from the bound role, mirroring the real
+	// DAO (and seedBinding) so ended bindings carry orchestrator_id too.
+	var orchID int64
+	if r, ok := f.roles[roleID]; ok {
+		orchID = r.OrchestratorID
+	}
 	b := &Binding{
-		ID:           f.nextBindingID,
-		RoleID:       roleID,
-		ArgusTaskID:  argusTaskID,
-		WorktreePath: worktreePath,
+		ID:             f.nextBindingID,
+		RoleID:         roleID,
+		OrchestratorID: orchID,
+		ArgusTaskID:    argusTaskID,
+		WorktreePath:   worktreePath,
 	}
 	f.ended[b.ID] = b
 	return b
@@ -517,6 +525,27 @@ func (f *fakeDB) ListLiveBindingsByTask(ctx context.Context, argusTaskID string)
 		if b.ArgusTaskID != argusTaskID {
 			continue
 		}
+		cp := *b
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
+func (f *fakeDB) ListBindingsByTask(ctx context.Context, argusTaskID string) ([]*Binding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []*Binding{}
+	// Live AND ended, ordered by binding id (the fake's started_at proxy).
+	var all []*Binding
+	for _, m := range []map[int64]*Binding{f.bindings, f.ended} {
+		for _, b := range m {
+			if b.ArgusTaskID == argusTaskID {
+				all = append(all, b)
+			}
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	for _, b := range all {
 		cp := *b
 		out = append(out, &cp)
 	}

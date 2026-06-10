@@ -134,38 +134,46 @@ func (s *Service) ReparentCoordinator(ctx context.Context, in ReparentCoordInput
 		))
 	}
 
-	// Find any existing parent linkage to tear down: a LIVE binding of C's coord
-	// task in an orchestrator OTHER than C itself (C nested under that parent).
-	// Only a live parent linkage is torn down — an ended one is already gone.
-	// C's own coordinator binding (OrchestratorID == C) is never a parent link.
-	live, err := s.DB.ListLiveBindingsByTask(ctx, taskID)
+	// Tear down EVERY prior parent linkage for C's coord task so the re-parent is
+	// IDEMPOTENT — pressing J repeatedly never piles up de-collided duplicate
+	// link roles (BUG-026). A parent link is a binding of C's coord task on any
+	// role OTHER than C's own coordinator role (identified by role id, robust
+	// against bindings with a NULL orchestrator_id on legacy rows).
+	//
+	// Both LIVE and ENDED links must go: the resync reconciler ends a link's
+	// binding when C's coord task is gone from argus (end_reason resync_missing),
+	// but leaves the link ROLE row behind. The old live-only teardown missed
+	// those, so the next re-parent's uniqueRoleName de-collided into "C-2",
+	// "C-3", … under the same parent. Delete the role (its bindings cascade) so
+	// the name frees up and exactly one clean link is recreated below.
+	links, err := s.DB.ListBindingsByTask(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("ops.ReparentCoordinator: list bindings for %s: %w", taskID, err)
 	}
-	var priorParentBindings []*Binding
-	for _, bnd := range live {
-		if bnd.OrchestratorID == in.ChildOrchestratorID {
-			// C's own coordinator binding — not a parent linkage.
-			continue
-		}
-		// A live binding of C's coord task in any OTHER orchestrator is a parent
-		// linkage (C nested under that orchestrator). Tear it down for a clean
-		// move. Includes the case where C is already nested under P (the move is
-		// then a refresh — end it and recreate so the unique-binding indexes
-		// never collide).
-		priorParentBindings = append(priorParentBindings, bnd)
+	// End live parent-link bindings first (audit: reparented) before the role
+	// delete cascades them away — preserving the end-reason on the historical row
+	// the same way a clean move always has.
+	liveLinks, err := s.DB.ListLiveBindingsByTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("ops.ReparentCoordinator: list live bindings for %s: %w", taskID, err)
 	}
-
-	// Tear down each prior parent linkage: end the binding and delete the
-	// worker role that existed solely to nest C under the old parent.
-	for _, bnd := range priorParentBindings {
+	for _, bnd := range liveLinks {
+		if bnd.RoleID == coordRole.ID {
+			continue // C's own coordinator binding — never a parent link.
+		}
 		if err := s.DB.EndBinding(ctx, bnd.ID, EndReasonReparented); err != nil {
 			return nil, fmt.Errorf("ops.ReparentCoordinator: end prior parent binding %d: %w", bnd.ID, err)
 		}
-		if bnd.RoleID != 0 {
-			if err := s.DB.DeleteRoleByID(ctx, bnd.RoleID); err != nil && !errors.Is(err, ErrNotFound) {
-				return nil, fmt.Errorf("ops.ReparentCoordinator: delete prior parent role %d: %w", bnd.RoleID, err)
-			}
+	}
+	// Delete every distinct parent-link ROLE (live or ended binding).
+	deleted := make(map[int64]bool)
+	for _, bnd := range links {
+		if bnd.RoleID == 0 || bnd.RoleID == coordRole.ID || deleted[bnd.RoleID] {
+			continue
+		}
+		deleted[bnd.RoleID] = true
+		if err := s.DB.DeleteRoleByID(ctx, bnd.RoleID); err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("ops.ReparentCoordinator: delete prior parent role %d: %w", bnd.RoleID, err)
 		}
 	}
 
