@@ -727,14 +727,14 @@ func (s *fakeMutationService) AdoptTaskIntoOrchestrator(_ context.Context, in op
 	return &ops.AdoptResult{OrchestratorName: "orch", RoleName: in.RoleName, RoleID: 1, BindingID: 1}, nil
 }
 
-func (s *fakeMutationService) CompleteArchivedDescendants(_ context.Context, orchID int64) (int, error) {
+func (s *fakeMutationService) CompleteArchivedDescendants(_ context.Context, orchID int64) (ops.PruneSummary, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.completeArchivedCalls = append(s.completeArchivedCalls, orchID)
 	if s.completeArchivedErr != nil {
-		return 0, s.completeArchivedErr
+		return ops.PruneSummary{}, s.completeArchivedErr
 	}
-	return s.completeArchivedResp, nil
+	return ops.PruneSummary{Pruned: s.completeArchivedResp}, nil
 }
 
 func (s *fakeMutationService) PruneArchivedRole(_ context.Context, roleID int64) error {

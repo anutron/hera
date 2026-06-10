@@ -200,6 +200,47 @@ func TestDeleteRole_WorktreeGitMissingIsSoftNoop(t *testing.T) {
 	}
 }
 
+// TestDeleteRole_StaleAdminEntryIsSoftNoop covers BUG-018 on the `^d` path:
+// the worktree dir + its .git FILE exist, but the admin entry the .git points
+// at was already pruned. `git worktree remove` would exit 128, so the op must
+// skip git and still archive the role without error.
+func TestDeleteRole_StaleAdminEntryIsSoftNoop(t *testing.T) {
+	dir := t.TempDir()
+	missingAdmin := filepath.Join(t.TempDir(), "worktrees", "gone")
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+missingAdmin+"\n"), 0o644); err != nil {
+		t.Fatalf("write .git: %v", err)
+	}
+
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	role := db.seedRole(orch.ID, "w1", KindWorker, "foo", false)
+	db.seedBinding(role.ID, "T1", dir)
+
+	wr := &fakeWorktreeRemover{}
+	logger := &fakeLogger{}
+	s := NewService(db, &fakeArgus{}, wr, logger)
+	if err := s.DeleteRole(context.Background(), role.ID); err != nil {
+		t.Fatalf("DeleteRole: %v", err)
+	}
+	if len(wr.calls) != 0 {
+		t.Fatalf("WorktreeRemover should not fire when the admin entry is gone: %v", wr.calls)
+	}
+	got, _ := db.GetRoleByID(context.Background(), role.ID)
+	if !got.Archived {
+		t.Fatalf("role should be archived even when the git admin entry is gone")
+	}
+	found := false
+	for _, m := range logger.messages {
+		if strings.Contains(m, "already detached") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected audit log for detached-worktree skip, got %v", logger.messages)
+	}
+}
+
 func TestDeleteRole_EmptyWorktreePathIsSoftNoop(t *testing.T) {
 	db := newFakeDB()
 	orch := db.seedOrchestrator("foo", false)

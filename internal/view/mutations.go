@@ -121,9 +121,10 @@ type mutationService interface {
 
 	// CompleteArchivedDescendants marks every archived non-coordinator role
 	// under the given orchestrator as :checked: in argus and prunes each
-	// from hera's DB + disk. Backs the `C` rail key. Returns the count of
-	// roles completed+pruned.
-	CompleteArchivedDescendants(ctx context.Context, orchID int64) (int, error)
+	// from hera's DB + disk. Backs the `C` rail key. Returns a summary of how
+	// many roles were pruned and how many worktrees were skipped (best-effort
+	// removal). A failed worktree removal never aborts the sweep (BUG-018).
+	CompleteArchivedDescendants(ctx context.Context, orchID int64) (ops.PruneSummary, error)
 
 	// PruneArchivedRole permanently removes an archived role from hera's DB
 	// and deletes its git worktree from disk. Only valid on already-archived
@@ -1546,11 +1547,11 @@ func (b *mutationBridge) OnCompleteArchived() {
 			),
 			func() {
 				b.mutate("complete archived", true, func() error {
-					n, err := b.svc.CompleteArchivedDescendants(b.ctx, capturedOrchID)
+					res, err := b.svc.CompleteArchivedDescendants(b.ctx, capturedOrchID)
 					if err != nil {
 						return err
 					}
-					if n == 0 {
+					if res.Pruned == 0 {
 						return fmt.Errorf("no archived workers to complete under %q", capturedName)
 					}
 					return nil

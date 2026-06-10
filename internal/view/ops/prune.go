@@ -42,8 +42,11 @@ func (s *Service) PruneArchivedRole(ctx context.Context, roleID int64) error {
 		worktreePath = bnd.WorktreePath
 	}
 
+	// Worktree removal is best-effort (BUG-018): a stale or already-removed
+	// worktree must not block pruning the DB row. Log the failure and proceed
+	// to delete the row regardless — rail truthfulness wins over disk cleanup.
 	if err := s.removeWorktree(ctx, worktreePath); err != nil {
-		return fmt.Errorf("ops.PruneArchivedRole: worktree remove: %w", err)
+		s.logf("prune: worktree remove failed for role %d, pruning DB row anyway: %v", roleID, err)
 	}
 
 	if err := s.DB.DeleteRoleByID(ctx, roleID); err != nil && !errors.Is(err, ErrNotFound) {
