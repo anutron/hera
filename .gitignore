@@ -24,3 +24,6 @@ go.work.sum
 
 # Local-only ralph-review reports
 .claude/reviews/
+
+# Local QA bug-bash session artifacts
+.bug-bash/
