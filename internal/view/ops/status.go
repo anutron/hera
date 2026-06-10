@@ -146,18 +146,33 @@ func (s *Service) CompleteTaskByID(ctx context.Context, taskID string) error {
 	return nil
 }
 
+// PruneSummary reports the outcome of a CompleteArchivedDescendants sweep.
+// Pruned is the number of roles removed from hera's DB (and therefore the
+// rail). WorktreeSkipped counts roles whose worktree could not be removed
+// (already gone, detached, or otherwise) but which were pruned from the DB
+// anyway — disk cleanup is best-effort and never blocks clearing the rail.
+type PruneSummary struct {
+	Pruned          int
+	WorktreeSkipped int
+}
+
 // CompleteArchivedDescendants marks every archived non-coordinator role under
 // the given orchestrator as :checked: in argus AND prunes each from hera's
 // DB + disk. Backs the `C` rail key. The coordinator role itself is skipped.
-// Returns the count of roles completed+pruned and any accumulated errors —
-// partial success is possible when some tasks have been pruned or are
-// temporarily unreachable.
-func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64) (int, error) {
+//
+// The sweep is resilient (BUG-018): a single worktree that can't be removed
+// (already deleted by an earlier cleanup, detached from its git admin entry,
+// etc.) must NOT abort the batch. Worktree removal is best-effort — failures
+// are logged and counted, the DB role row is deleted regardless, and the sweep
+// continues. The returned error is reserved for genuine failures (binding
+// lookup, argus status writes, DB deletes) that leave a role in the rail;
+// worktree skips are surfaced via the summary, not the error.
+func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64) (PruneSummary, error) {
 	roles, err := s.DB.ListRolesByOrchestratorInclusive(ctx, orchID)
 	if err != nil {
-		return 0, fmt.Errorf("ops.CompleteArchivedDescendants: list roles: %w", err)
+		return PruneSummary{}, fmt.Errorf("ops.CompleteArchivedDescendants: list roles: %w", err)
 	}
-	var completed int
+	var summary PruneSummary
 	var errMsgs []string
 	for _, role := range roles {
 		if !role.Archived {
@@ -180,26 +195,29 @@ func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64)
 				// Pruned argus task: still prune the hera row below.
 			}
 		}
-		// Prune the hera role row + worktree after completing.
+		// Prune the hera role row + worktree after completing. Worktree
+		// removal is best-effort: a stale/missing worktree must never block
+		// clearing the role from the rail. Log + count the skip and still
+		// delete the DB row below.
 		worktreePath := ""
 		if bnd != nil {
 			worktreePath = bnd.WorktreePath
 		}
 		if err := s.removeWorktree(ctx, worktreePath); err != nil {
-			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): worktree remove: %v", role.Name, role.ID, err))
-			continue
+			s.logf("prune: worktree remove failed for role %q (%d), pruning DB row anyway: %v", role.Name, role.ID, err)
+			summary.WorktreeSkipped++
 		}
 		if err := s.DB.DeleteRoleByID(ctx, role.ID); err != nil && !errors.Is(err, ErrNotFound) {
 			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): delete role: %v", role.Name, role.ID, err))
 			continue
 		}
-		completed++
+		summary.Pruned++
 	}
 	if len(errMsgs) > 0 {
-		return completed, fmt.Errorf("ops.CompleteArchivedDescendants: %d error(s): %s",
+		return summary, fmt.Errorf("ops.CompleteArchivedDescendants: %d error(s): %s",
 			len(errMsgs), strings.Join(errMsgs, "; "))
 	}
-	return completed, nil
+	return summary, nil
 }
 
 // StepTaskStatus steps an argus task's status directly by task id, bypassing

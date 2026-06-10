@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // EndReasonUserDeleted is stamped on every binding ended by `^d`. The
@@ -140,7 +141,8 @@ func (s *Service) removeWorktree(ctx context.Context, worktreePath string) error
 	// If the directory exists but has no .git file, argus already cleaned up
 	// the worktree internals. Skip the git command — it would exit 128 —
 	// and proceed with the DB deletion below.
-	if _, err := os.Stat(filepath.Join(worktreePath, ".git")); err != nil {
+	gitInfo, err := os.Stat(filepath.Join(worktreePath, ".git"))
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			s.logf("worktree remove: skipping %q (no .git, already cleaned up)", worktreePath)
 			return nil
@@ -148,11 +150,52 @@ func (s *Service) removeWorktree(ctx context.Context, worktreePath string) error
 		return fmt.Errorf("stat .git in %q: %w", worktreePath, err)
 	}
 
+	// A linked worktree's .git is a FILE pointing at the parent repo's admin
+	// entry (.git/worktrees/<name>). If an earlier cleanup pruned that admin
+	// entry while the worktree dir + .git file lingered, `git worktree remove`
+	// exits 128 ("fatal: not a git repository: .../.git/worktrees/<name>").
+	// Detect the detached state and soft-skip — there is nothing for git to
+	// remove. (BUG-018: the exact failure that aborted a bulk prune.)
+	if !gitInfo.IsDir() && !worktreeAdminEntryExists(worktreePath) {
+		s.logf("worktree remove: skipping %q (git admin entry gone, already detached)", worktreePath)
+		return nil
+	}
+
 	s.logf("worktree remove: %q", worktreePath)
 	if s.WorktreeRemover == nil {
 		return fmt.Errorf("no WorktreeRemover configured")
 	}
 	return s.WorktreeRemover.Remove(ctx, worktreePath)
+}
+
+// worktreeAdminEntryExists reports whether a linked worktree's git admin
+// entry still exists. A linked worktree's .git is a one-line file of the form
+// "gitdir: <path-to-parent/.git/worktrees/<name>>". When that target is gone
+// (e.g. pruned by an earlier cleanup) `git worktree remove` fails with exit
+// 128, so callers should soft-skip.
+//
+// Fails open: any read or parse problem returns true so git still gets a
+// chance to remove a genuinely-removable worktree rather than the guard
+// silently skipping it.
+func worktreeAdminEntryExists(worktreePath string) bool {
+	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
+	if err != nil {
+		return true // can't tell — let git try
+	}
+	line := strings.TrimSpace(string(data))
+	const prefix = "gitdir:"
+	if !strings.HasPrefix(line, prefix) {
+		return true // unexpected format — let git try
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	if gitDir == "" {
+		return true
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+	_, statErr := os.Stat(gitDir)
+	return statErr == nil
 }
 
 // logf is a nil-safe wrapper around the Logger dep. Audit logs are
