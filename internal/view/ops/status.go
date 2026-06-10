@@ -147,18 +147,31 @@ func (s *Service) CompleteTaskByID(ctx context.Context, taskID string) error {
 }
 
 // PruneSummary reports the outcome of a CompleteArchivedDescendants sweep.
+// Found is the number of archived non-coordinator descendants the sweep
+// ENCOUNTERED — every one is a prune candidate regardless of its completion
+// state (BUG-023). The view uses Found==0 (not Pruned==0) to decide there was
+// genuinely nothing to do: a coordinator with no archived descendants at all,
+// as opposed to one whose archived workers were merely already complete.
 // Pruned is the number of roles removed from hera's DB (and therefore the
 // rail). WorktreeSkipped counts roles whose worktree could not be removed
 // (already gone, detached, or otherwise) but which were pruned from the DB
 // anyway — disk cleanup is best-effort and never blocks clearing the rail.
 type PruneSummary struct {
+	Found           int
 	Pruned          int
 	WorktreeSkipped int
 }
 
-// CompleteArchivedDescendants marks every archived non-coordinator role under
-// the given orchestrator as :checked: in argus AND prunes each from hera's
-// DB + disk. Backs the `C` rail key. The coordinator role itself is skipped.
+// CompleteArchivedDescendants prunes EVERY archived non-coordinator role under
+// the given orchestrator from hera's DB + disk, regardless of completion state
+// (BUG-023). A worker that is not yet :checked: in argus is marked complete
+// first; one that is already complete is just pruned (no redundant status
+// write — argus may reject a no-op transition). Backs the `C` rail key. The
+// coordinator role itself is skipped.
+//
+// The summary's Found counts every archived descendant encountered (the prune
+// candidates); the caller fires "nothing to do" only when Found==0, so already-
+// complete archived workers are cleared rather than short-circuited.
 //
 // The sweep is resilient (BUG-018): a single worktree that can't be removed
 // (already deleted by an earlier cleanup, detached from its git admin entry,
@@ -181,18 +194,40 @@ func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64)
 		if role.Kind == KindCoordinator {
 			continue
 		}
+		// An archived non-coordinator descendant: a prune candidate regardless
+		// of its completion state. `C` clears the WHOLE archive under the
+		// coordinator, so already-complete workers count too (BUG-023). Counting
+		// every one in Found lets the caller distinguish "nothing archived to
+		// prune" from "nothing that still needed completing".
+		summary.Found++
+
 		bnd, err := s.resolveBinding(ctx, role.ID)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): %v", role.Name, role.ID, err))
 			continue
 		}
 		if bnd != nil && bnd.ArgusTaskID != "" {
-			if _, err := s.Argus.SetTaskStatus(ctx, bnd.ArgusTaskID, "complete"); err != nil {
-				if !errors.Is(err, ErrArgusTaskGone) {
-					errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): set complete: %v", role.Name, role.ID, err))
-					continue
+			// Mark :checked: ONLY when the task is not already complete. An
+			// already-complete worker just needs pruning — re-issuing the status
+			// write is redundant and argus may reject a no-op transition
+			// (BUG-023). A status read that fails (task pruned out-of-band,
+			// transient argus error) is non-fatal: skip the complete step and
+			// prune the hera row anyway.
+			needsComplete := true
+			if cur, statErr := s.Argus.GetTaskStatus(ctx, bnd.ArgusTaskID); statErr != nil {
+				s.logf("complete archived: status read failed for role %q (%d), pruning without re-completing: %v", role.Name, role.ID, statErr)
+				needsComplete = false
+			} else if cur == "complete" {
+				needsComplete = false
+			}
+			if needsComplete {
+				if _, err := s.Argus.SetTaskStatus(ctx, bnd.ArgusTaskID, "complete"); err != nil {
+					if !errors.Is(err, ErrArgusTaskGone) {
+						errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): set complete: %v", role.Name, role.ID, err))
+						continue
+					}
+					// Pruned argus task: still prune the hera row below.
 				}
-				// Pruned argus task: still prune the hera row below.
 			}
 		}
 		// Prune the hera role row + worktree after completing. Worktree
