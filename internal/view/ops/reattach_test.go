@@ -44,6 +44,26 @@ func TestReattachAgent_EmptyTaskID_ReturnsError(t *testing.T) {
 	}
 }
 
+// BUG-020: when argus reports "worktree path missing" the ops layer surfaces
+// the typed ErrWorktreeMissing sentinel so the view can offer a delete path.
+func TestReattachAgent_WorktreeMissing_SurfacesSentinel(t *testing.T) {
+	svc, _, a, _, _ := newTestService()
+	a.restartErr = &argus.HTTPError{
+		Method:     "POST",
+		Path:       "/api/tasks/task-123/restart",
+		StatusCode: 500,
+		Body:       `{"error":"worktree path missing: /tmp/gone (delete the task or recreate the worktree)"}`,
+	}
+
+	err := svc.ReattachAgent(context.Background(), "task-123")
+	if !errors.Is(err, ErrWorktreeMissing) {
+		t.Fatalf("want ErrWorktreeMissing; got %v", err)
+	}
+	if errors.Is(err, ErrRestartNotSupported) {
+		t.Fatalf("worktree-missing must not be ErrRestartNotSupported; got %v", err)
+	}
+}
+
 // Other argus errors propagate as-is (wrapped).
 func TestReattachAgent_ArgusError_Propagates(t *testing.T) {
 	svc, _, a, _, _ := newTestService()

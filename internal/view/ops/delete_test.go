@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/anutron/hera/internal/argus"
 )
 
 // makeGitWorktreeFixture initialises a main git repo + one linked
@@ -378,6 +380,75 @@ func TestDeleteOrchestrator_Cascades(t *testing.T) {
 		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("role %d should be gone after cascade delete; got err=%v", id, err)
 		}
+	}
+}
+
+// BUG-020: a coordinator whose worktree was deleted out-of-band is an orphan.
+// argus's DeleteTask chokes on the missing worktree (HTTP 500 "worktree path
+// missing"), but `^d` must still fully remove the orchestrator + roles +
+// bindings from the DB so the orphan clears from the rail.
+func TestDeleteOrchestrator_ArgusWorktreeMissing_StillDeletesDBRows(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("orphan", false)
+	coord := db.seedRole(orch.ID, "coord", KindCoordinator, "hera", false)
+	missingPath := filepath.Join(t.TempDir(), "gone")
+	db.seedBinding(coord.ID, "Torphan", missingPath)
+
+	a := &fakeArgus{
+		// argus refuses to delete because the worktree directory is gone.
+		deleteErr: &argus.HTTPError{
+			Method:     "DELETE",
+			Path:       "/api/tasks/Torphan",
+			StatusCode: 500,
+			Body:       `{"error":"worktree path missing: ` + missingPath + ` (delete the task or recreate the worktree)"}`,
+		},
+	}
+	logger := &fakeLogger{}
+	s := NewService(db, a, &fakeWorktreeRemover{}, logger)
+	if err := s.DeleteOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("DeleteOrchestrator must tolerate argus worktree-missing; got %v", err)
+	}
+
+	// The argus delete was attempted (and failed) but did not abort the cascade.
+	if len(a.deleteCalls) != 1 || a.deleteCalls[0] != "Torphan" {
+		t.Fatalf("want a single argus DeleteTask(Torphan) attempt; got %v", a.deleteCalls)
+	}
+	// Orchestrator + role gone from the DB regardless of worktree state.
+	if _, err := db.GetOrchestratorByID(context.Background(), orch.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("orchestrator should be physically deleted; got err=%v", err)
+	}
+	if _, err := db.GetRoleByID(context.Background(), coord.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("coordinator role should be gone after cascade; got err=%v", err)
+	}
+	// Skip should be recorded in the audit log.
+	found := false
+	for _, m := range logger.messages {
+		if strings.Contains(m, "worktree already gone") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected audit log for argus worktree-missing skip; got %v", logger.messages)
+	}
+}
+
+// A genuine argus delete failure (not worktree-missing) must still abort the
+// cascade — we do not want to silently orphan DB rows on transient errors.
+func TestDeleteOrchestrator_ArgusDeleteError_Aborts(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	coord := db.seedRole(orch.ID, "coord", KindCoordinator, "hera", false)
+	db.seedBinding(coord.ID, "Tc", "")
+
+	a := &fakeArgus{deleteErr: &argus.HTTPError{StatusCode: 500, Body: `{"error":"internal boom"}`}}
+	s := NewService(db, a, &fakeWorktreeRemover{}, &fakeLogger{})
+	if err := s.DeleteOrchestrator(context.Background(), orch.ID); err == nil {
+		t.Fatalf("a non-worktree-missing argus error must abort DeleteOrchestrator")
+	}
+	// Orchestrator must NOT have been deleted (cascade aborted before the DB delete).
+	if _, err := db.GetOrchestratorByID(context.Background(), orch.ID); err != nil {
+		t.Fatalf("orchestrator must survive an aborted cascade; got err=%v", err)
 	}
 }
 

@@ -2218,6 +2218,105 @@ func TestBridge_OnReattach_MixedCoord_ReattachFails_ShowsError(t *testing.T) {
 	}
 }
 
+// BUG-020: a ⊘ mixed-coord header whose worktree was deleted out-of-band can't
+// be revived. When the restart surfaces ErrWorktreeMissing, OnReattach must NOT
+// show the raw error — it offers to delete the orphan, and on confirm routes to
+// DeleteOrchestrator so the coord clears from the rail.
+func TestBridge_OnReattach_MixedCoord_WorktreeMissing_OffersDelete(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	m.stubConfirmYes = true
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     9,
+		Name:               "orphan-coord",
+		CoordTaskID:        "T1",
+		CoordArgusArchived: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must own the Enter for a ⊘ mixed-coord header")
+	}
+	// The repair unarchive + restart attempt both ran (restart is what fails).
+	if len(svc.reattachCalls) != 1 || svc.reattachCalls[0] != "T1" {
+		t.Fatalf("want one ReattachAgent(T1) attempt; got %v", svc.reattachCalls)
+	}
+	// No raw error modal — the worktree-missing condition is recognized.
+	if len(m.errors) != 0 {
+		t.Fatalf("worktree-missing must not surface a raw error modal; got %v", m.errors)
+	}
+	// A delete-offer confirmation was shown and, on Yes, DeleteOrchestrator ran.
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want one delete-offer confirm; got %d", m.ConfirmCount())
+	}
+	if len(svc.deleteOrchCalls) != 1 || svc.deleteOrchCalls[0] != 9 {
+		t.Fatalf("confirm=Yes must call DeleteOrchestrator(9); got %v", svc.deleteOrchCalls)
+	}
+	if rp.Count() < 1 {
+		t.Fatalf("a successful orphan delete must refresh the rail; got %d", rp.Count())
+	}
+}
+
+// On the delete-offer for a worktree-missing coord, confirm=No must NOT delete.
+func TestBridge_OnReattach_MixedCoord_WorktreeMissing_ConfirmNo_NoDelete(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	m.stubConfirmYes = false
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     9,
+		Name:               "orphan-coord",
+		CoordTaskID:        "T1",
+		CoordArgusArchived: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want the delete-offer confirm to be shown; got %d", m.ConfirmCount())
+	}
+	if len(svc.deleteOrchCalls) != 0 {
+		t.Fatalf("confirm=No must NOT delete; got %v", svc.deleteOrchCalls)
+	}
+}
+
+// BUG-020 (role variant): a dead-session worker whose worktree is gone offers
+// to delete the orphaned role (routing to DeleteRole) rather than show the raw
+// argus 500.
+func TestBridge_OnReattach_DeadSessionWorker_WorktreeMissing_OffersDelete(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	m.stubConfirmYes = true
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         13,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-orphan",
+		HasDeadSession: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must own the Enter for a dead-session worker")
+	}
+	if len(m.errors) != 0 {
+		t.Fatalf("worktree-missing must not surface a raw error modal; got %v", m.errors)
+	}
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want one delete-offer confirm; got %d", m.ConfirmCount())
+	}
+	if len(svc.deleteRoleCalls) != 1 || svc.deleteRoleCalls[0] != 13 {
+		t.Fatalf("confirm=Yes must call DeleteRole(13); got %v", svc.deleteRoleCalls)
+	}
+}
+
 // A HEALTHY coord header (argus coord task NOT archived) is not a reattach
 // target — Enter must fall through to normal pane-entry (OnReattach false).
 func TestBridge_OnReattach_HealthyCoordHeader_NotHandled(t *testing.T) {

@@ -34,5 +34,12 @@ func (s *Service) ReattachAgent(ctx context.Context, argusTaskID string) error {
 	if errors.Is(err, argus.ErrNoTaskRestart) {
 		return ErrRestartNotSupported
 	}
+	// BUG-020: argus reports "worktree path missing" when the task's worktree
+	// was deleted out-of-band. The task is an unrecoverable orphan — surface the
+	// typed sentinel so the view can offer a delete recovery path. The raw argus
+	// detail is preserved in the chain for logs.
+	if argus.IsWorktreeMissing(err) {
+		return fmt.Errorf("%w (%v)", ErrWorktreeMissing, err)
+	}
 	return fmt.Errorf("ops.ReattachAgent: %w", err)
 }
