@@ -1137,6 +1137,40 @@ func (b *mutationBridge) OnHelp() {
 	}
 }
 
+// prunePreviewCap is the maximum number of completed-agent names listed in the
+// prune confirmation before the remainder collapses into "… and N more"
+// (BUG-017). It keeps the modal readable regardless of fleet size — with 125+
+// completed agents the old strings.Join produced a multi-thousand-character
+// blob that overflowed (and was clipped by) the non-scrolling confirm modal,
+// hiding the scope of a DESTRUCTIVE operation.
+const prunePreviewCap = 6
+
+// buildPruneMessage composes the prune confirmation body so it scales with the
+// completed-agent count (BUG-017). It leads with the count and the
+// irreversible-action warning, follows with a capped name preview (all names
+// when few, the first prunePreviewCap plus "… and N more" when many), and ends
+// with the y/N prompt. The capped preview is the safety mechanism: tview.Modal
+// word-wraps but does not scroll, so a bounded preview is what keeps the scope
+// visible no matter how many agents are pruned.
+func buildPruneMessage(names []string) string {
+	n := len(names)
+	noun := "agents"
+	if n == 1 {
+		noun = "agent"
+	}
+	preview := names
+	suffix := ""
+	if n > prunePreviewCap {
+		preview = names[:prunePreviewCap]
+		suffix = fmt.Sprintf(" … and %d more", n-prunePreviewCap)
+	}
+	return fmt.Sprintf(
+		"DESTRUCTIVE: prune %d completed %s — removing each task, worktree, and branch. "+
+			"This cannot be undone.\n\n  %s%s\n\nContinue? (y/N)",
+		n, noun, strings.Join(preview, ", "), suffix,
+	)
+}
+
 // OnPrune confirms then prunes all completed agents fleet-wide (D15 `^r`).
 // It first lists the completed agents so the confirmation names exactly what
 // disappears; no destruction occurs unless the operator confirms. With no
@@ -1155,15 +1189,11 @@ func (b *mutationBridge) OnPrune() {
 			b.modals.ShowError("No completed agents to prune.")
 			return
 		}
-		var names []string
+		names := make([]string, 0, len(agents))
 		for _, a := range agents {
 			names = append(names, a.Name)
 		}
-		message := fmt.Sprintf(
-			"DESTRUCTIVE: prune %d completed agent(s) — %s — removing each task, worktree, and branch. "+
-				"This cannot be undone. Continue? (y/N)",
-			len(agents), strings.Join(names, ", "),
-		)
+		message := buildPruneMessage(names)
 		b.modals.ShowConfirm("Prune completed?", message, func() {
 			b.mutate("prune", true, func() error {
 				_, err := b.svc.PruneCompleted(b.ctx, agents)

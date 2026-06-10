@@ -3,6 +3,7 @@ package view
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -1504,6 +1505,104 @@ func TestBridge_OnPrune_NoCompleted_NoConfirmNoPrune(t *testing.T) {
 	}
 	if len(svc.pruneCalls) != 0 {
 		t.Fatalf("no completed agents must NOT prune; got %+v", svc.pruneCalls)
+	}
+}
+
+// BUG-017: with 100+ completed agents the confirm must NOT join every name
+// (that overflowed the non-scrolling modal). It leads with the count and caps
+// the name preview to the first prunePreviewCap, collapsing the rest into
+// "… and N more".
+func TestBridge_OnPrune_ManyAgents_CapsNamePreview(t *testing.T) {
+	b, m, _, svc, _, _ := newBridgeUnderTest()
+	const total = 125
+	agents := make([]ops.CompletedAgent, total)
+	for i := range agents {
+		agents[i] = ops.CompletedAgent{
+			RoleID:      int64(i + 1),
+			Name:        fmt.Sprintf("worker-%03d", i),
+			ArgusTaskID: fmt.Sprintf("T%d", i),
+		}
+	}
+	svc.completedAgents = agents
+	m.stubConfirmYes = false
+
+	b.OnPrune()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("prune must open a confirm modal; got %d", len(m.confirms))
+	}
+	msg := m.confirms[0].Message
+
+	// Count is prominent.
+	if !stringsContains(msg, "prune 125 completed agents") {
+		t.Fatalf("confirm must lead with the count; got %q", msg)
+	}
+	// First prunePreviewCap names appear; the (cap+1)th does not.
+	if !stringsContains(msg, "worker-000") || !stringsContains(msg, "worker-005") {
+		t.Fatalf("confirm must preview the first %d names; got %q", prunePreviewCap, msg)
+	}
+	if stringsContains(msg, "worker-006") {
+		t.Fatalf("confirm must NOT list past the cap; got %q", msg)
+	}
+	// Remainder collapses into a count, not a giant join.
+	if !stringsContains(msg, fmt.Sprintf("and %d more", total-prunePreviewCap)) {
+		t.Fatalf("confirm must collapse the remainder; got %q", msg)
+	}
+	if !stringsContains(msg, "cannot be undone") {
+		t.Fatalf("confirm must warn it is irreversible; got %q", msg)
+	}
+}
+
+// BUG-017: a small fleet (< cap) still lists every name, with no "and N more".
+func TestBridge_OnPrune_FewAgents_ListsAll(t *testing.T) {
+	b, m, _, svc, _, _ := newBridgeUnderTest()
+	svc.completedAgents = []ops.CompletedAgent{
+		{RoleID: 1, Name: "alpha", ArgusTaskID: "Ta"},
+		{RoleID: 2, Name: "bravo", ArgusTaskID: "Tb"},
+		{RoleID: 3, Name: "charlie", ArgusTaskID: "Tc"},
+	}
+	m.stubConfirmYes = false
+
+	b.OnPrune()
+	b.waitIdle()
+
+	if len(m.confirms) != 1 {
+		t.Fatalf("prune must open a confirm modal; got %d", len(m.confirms))
+	}
+	msg := m.confirms[0].Message
+	for _, name := range []string{"alpha", "bravo", "charlie"} {
+		if !stringsContains(msg, name) {
+			t.Fatalf("confirm must list every name when few; missing %q in %q", name, msg)
+		}
+	}
+	if stringsContains(msg, "more") {
+		t.Fatalf("few agents must not collapse into 'and N more'; got %q", msg)
+	}
+	if !stringsContains(msg, "prune 3 completed agents") {
+		t.Fatalf("confirm must lead with the count; got %q", msg)
+	}
+}
+
+// buildPruneMessage unit coverage: singular noun, exact-cap boundary.
+func TestBuildPruneMessage_NounAndBoundary(t *testing.T) {
+	single := buildPruneMessage([]string{"solo"})
+	if !stringsContains(single, "prune 1 completed agent ") {
+		t.Fatalf("single agent must use singular noun; got %q", single)
+	}
+
+	exact := make([]string, prunePreviewCap)
+	for i := range exact {
+		exact[i] = fmt.Sprintf("n%d", i)
+	}
+	msg := buildPruneMessage(exact)
+	if stringsContains(msg, "more") {
+		t.Fatalf("exactly cap names must not collapse; got %q", msg)
+	}
+
+	overflow := buildPruneMessage(append(exact, "extra"))
+	if !stringsContains(overflow, "and 1 more") {
+		t.Fatalf("cap+1 names must collapse one; got %q", overflow)
 	}
 }
 
