@@ -122,6 +122,47 @@ The minimal doorbell (re-nudge on unread `read_at`) shipped in 1.0. The full v1.
 
 `setup.sh` is macOS-only (non-Darwin skip). Linux/systemd flow and `hera install` / `hera uninstall` CLI subcommands are the natural next extensions.
 
+### bg-agent session recovery
+
+When hera's BounceRecoverer or the reattach restart path resumes a session, it can launch it as a Claude Code background agent (detached). Claude refuses a second concurrent attach, so hera's pane shows "Session <id> is currently running as a background agent (bg). Use `claude agents` to attach, or --fork-session" instead of the live conversation. The coord/worker is alive but unviewable.
+
+- **Key fact:** Claude persists the transcript to disk (`~/.claude/projects/.../<id>.jsonl`), so killing the bg agent process is non-destructive – `claude --resume <id>` reconstitutes it.
+- **Design (approved):** argus `POST /api/tasks/{id}/restart` detects a session held by a live bg agent → terminates that process → `claude --resume` in foreground PTY mode. Hera detects the bg banner (fixed string) → treats it as a dead-pane → triggers the existing REATTACHING reattach flow.
+- **Also investigate:** whether BounceRecoverer/restart is spawning bg agents in the first place – fixing the spawn flag prevents the orphan.
+
+### Coord plan view (`hera_set_plan` → `meta:hera.plan`)
+
+Coordinators generate stage-status tables ad-hoc in chat; they vanish. Give coords a low-token way to publish a persistent structured plan rendered live in hera-view.
+
+- **Design (approved, option #2 of 3):** New MCP verb `hera_set_plan(cwd, plan_json)` writes a compact JSON blob to the coord's argus task metadata as `meta:hera.plan`. Coord stamps once at session start, updates per stage transition.
+- **Render:** the hera Details pane reads `meta:hera.plan` and renders a stage table / dependency view.
+- **Plan shape:** `{"stages":[{"id":0,"name":"...","status":"done|in_progress|waiting","notes":"...","depends":[1]}]}`.
+
+### Minimum splash duration for REATTACHING/LAUNCH screens
+
+When reattach/launch is very fast the splash flickers. Hold it a minimum of 1 second.
+
+### Safe bounce mechanism
+
+Before a daemon restart (laptop close, `iris_reload`, crash), snapshot active sessions. After restart, offer to re-inject a resume signal into each previously-active session instead of the user manually typing "resume" into each.
+
+### Pinned section: deduplicate coordinator header
+
+When two agents under the same coordinator are pinned, the coord name repeats. Group them under one header.
+
+### Auto-report up the tree
+
+When a worker reaches a decision point or pauses/stops, it should automatically inform its coord via `hera_send`.
+
+- **Approach (a):** a hera-skill change telling workers to send a status before every `AskUserQuestion` and final summary.
+- **Approach (b):** a Claude Code Stop hook in `settings.json` that calls a `hera-report` CLI script using `ARGUS_TASK_ID` → binding lookup → `hera_send`.
+
+### Reattach still requires a keystroke (accepted v1.x)
+
+After 9+ fix attempts, pressing Enter on a dead agent shows the splash + reattaches correctly, but the splash trigger still needs one keystroke. Root cause: tview event-loop draw ordering – focus.ToRAIL's draw races the splash draw. Accepted as good-enough for 1.0; revisit if it becomes annoying.
+
+- **Cleanest remaining option:** don't reset focus at all during reattach; hide the cursor while `reattaching=true` instead.
+
 ---
 
 ## Architecture — deferred to v1.1+
