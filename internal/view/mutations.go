@@ -1058,8 +1058,65 @@ func (b *mutationBridge) OnResurrect() bool {
 // permanently Dead (task record gone — nothing to restart), and must be in a
 // terminal status (roleInputDead). A live row, an archived-coord row (handled
 // by OnResurrect), or a row with no task id is not a reattach target.
+//
+// It also owns Enter on a ⊘ MIXED-COORD orchestrator header (BUG-019): a
+// displayed-active coordinator whose argus coord task is archived. That path
+// unarchives the coord task before restarting it (see below) — without the
+// unarchive the restart fails on the archived task and Enter silently bounced
+// to the rail.
 func (b *mutationBridge) OnReattach() bool {
 	sel := b.sel.CurrentRailSelection()
+	// Mixed-coord (⊘) reattach (BUG-019). A displayed-active coordinator header
+	// whose argus COORD task is ARCHIVED (CoordArgusArchived — the hera
+	// orchestrator is live but its argus task was archived during bulk cleanup)
+	// cannot be restarted directly: argus refuses to restart an archived task,
+	// so a plain Enter showed the REATTACHING splash then bounced back to the
+	// rail. Repair FIRST — unarchive the coord task (the same op the `a` key
+	// runs, ToggleArchiveTask(…, archived=true)) — THEN restart it so the proxy
+	// subscription picks up the resumed session.
+	if sel.Kind == selOrchestrator {
+		// Only the mixed-coord state reattaches here. A hera-archived
+		// orchestrator is OnResurrect's job; a healthy (non-mixed) coord header
+		// enters its pane normally via OnRailSelectEnter.
+		if sel.Archived || !sel.CoordArgusArchived || sel.CoordTaskID == "" {
+			return false
+		}
+		taskID := sel.CoordTaskID
+		name := sel.Name
+		// Show the REATTACHING splash on the coord pane immediately (BUG-008),
+		// the same feedback agents get. fireSelectionNow (inside StartPaneReattach)
+		// binds the coord pane to taskID if the Enter beat the selection debounce.
+		if b.splashStart != nil {
+			b.splashStart.StartPaneReattach(taskID)
+		}
+		b.mutate("reattach", false, func() error {
+			// Repair: unarchive the argus coord task before restart. archived=true
+			// tells ToggleArchiveTask the task is currently archived, so it issues
+			// the UNARCHIVE; a pruned task (ErrArgusTaskGone) is tolerated as a skip.
+			if err := b.svc.ToggleArchiveTask(b.ctx, taskID, true); err != nil {
+				if b.splashStart != nil {
+					b.splashStart.ClearPaneReattach(taskID)
+				}
+				return fmt.Errorf("repair %q: %s", name, err.Error())
+			}
+			// Now restart the (no-longer-archived) coord task. A failure here —
+			// e.g. the session is held by a background agent and cannot be
+			// double-attached, or argus is too old to support restart — surfaces
+			// as a modal instead of a silent bounce to the rail.
+			if err := b.svc.ReattachAgent(b.ctx, taskID); err != nil {
+				if b.splashStart != nil {
+					b.splashStart.ClearPaneReattach(taskID)
+				}
+				return fmt.Errorf("re-attach %q: %s", name, err.Error())
+			}
+			if b.reattach != nil {
+				b.reattach.OnTaskReattached(taskID)
+			}
+			b.refresh()
+			return nil
+		})
+		return true
+	}
 	if sel.Kind != selRole {
 		return false
 	}
