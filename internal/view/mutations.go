@@ -1694,8 +1694,13 @@ func (b *mutationBridge) OnCompleteArchived() {
 					if err != nil {
 						return err
 					}
-					if res.Pruned == 0 {
-						return fmt.Errorf("no archived workers to complete under %q", capturedName)
+					// Fire "nothing to do" ONLY when there were NO archived
+					// descendants at all — not when there were merely none that
+					// still needed completing (BUG-023). Already-complete archived
+					// workers are pruned too; Found counts every archived
+					// descendant the sweep encountered.
+					if res.Found == 0 {
+						return fmt.Errorf("no archived workers to prune under %q", capturedName)
 					}
 					return nil
 				})

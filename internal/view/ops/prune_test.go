@@ -292,6 +292,106 @@ func TestPruneArchivedRole_StaleAdminEntryIsSoftNoop(t *testing.T) {
 	}
 }
 
+// BUG-023: `C` over a coordinator whose archived workers are ALL already
+// complete must prune every one — WITHOUT re-issuing a redundant status write
+// (argus may reject a no-op complete→complete transition). The old behavior
+// excluded already-complete workers from the work list and short-circuited.
+func TestCompleteArchivedDescendants_AllAlreadyComplete_PrunesWithoutReCompleting(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("proj", false)
+	db.seedRole(orch.ID, "coord", KindCoordinator, "proj", true)
+
+	const n = 4
+	var roleIDs []int64
+	argus.statuses = map[string]string{}
+	for i := 0; i < n; i++ {
+		r := db.seedRole(orch.ID, fmt.Sprintf("w%d", i), KindWorker, "proj", true)
+		roleIDs = append(roleIDs, r.ID)
+		taskID := fmt.Sprintf("T%d", i)
+		db.seedEndedBinding(r.ID, taskID, makeSimpleTempDir(t))
+		argus.statuses[taskID] = "complete" // already :checked:
+	}
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("sweep over already-complete workers must not error: %v", err)
+	}
+	if summary.Found != n {
+		t.Fatalf("Found = %d, want %d (all archived descendants are prune candidates)", summary.Found, n)
+	}
+	if summary.Pruned != n {
+		t.Fatalf("Pruned = %d, want %d (already-complete workers still pruned)", summary.Pruned, n)
+	}
+	// No status writes: every worker was already complete.
+	if len(argus.setStatusCalls) != 0 {
+		t.Fatalf("SetTaskStatus must not fire for already-complete workers; got %+v", argus.setStatusCalls)
+	}
+	for _, id := range roleIDs {
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("role %d should be pruned from DB", id)
+		}
+	}
+}
+
+// BUG-023: a mixed fleet — some archived workers complete, some not — completes
+// only the incomplete ones and prunes ALL of them.
+func TestCompleteArchivedDescendants_MixedCompletion_CompletesOnlyIncomplete(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("proj", false)
+
+	done := db.seedRole(orch.ID, "done", KindWorker, "proj", true)
+	todo := db.seedRole(orch.ID, "todo", KindWorker, "proj", true)
+	db.seedEndedBinding(done.ID, "Tdone", makeSimpleTempDir(t))
+	db.seedEndedBinding(todo.ID, "Ttodo", makeSimpleTempDir(t))
+	argus.statuses = map[string]string{"Tdone": "complete", "Ttodo": "in_progress"}
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("CompleteArchivedDescendants: %v", err)
+	}
+	if summary.Found != 2 || summary.Pruned != 2 {
+		t.Fatalf("Found/Pruned = %d/%d, want 2/2", summary.Found, summary.Pruned)
+	}
+	// Only the incomplete worker is completed.
+	if len(argus.setStatusCalls) != 1 || argus.setStatusCalls[0].TaskID != "Ttodo" || argus.setStatusCalls[0].Status != "complete" {
+		t.Fatalf("SetTaskStatus calls = %+v, want only Ttodo→complete", argus.setStatusCalls)
+	}
+	for _, id := range []int64{done.ID, todo.ID} {
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("role %d should be pruned", id)
+		}
+	}
+}
+
+// BUG-023: a coordinator with NO archived descendants reports Found==0 so the
+// view can fire "nothing to do" — distinct from a coordinator whose archived
+// workers were merely already complete (Found>0, pruned).
+func TestCompleteArchivedDescendants_NoArchivedDescendants_FoundZero(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("proj", false)
+	db.seedRole(orch.ID, "coord", KindCoordinator, "proj", true) // archived coord is skipped
+	active := db.seedRole(orch.ID, "w1", KindWorker, "proj", false)
+	db.seedBinding(active.ID, "Tw1", "")
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("CompleteArchivedDescendants: %v", err)
+	}
+	if summary.Found != 0 {
+		t.Fatalf("Found = %d, want 0 (no archived descendants)", summary.Found)
+	}
+	if summary.Pruned != 0 {
+		t.Fatalf("Pruned = %d, want 0", summary.Pruned)
+	}
+	if len(argus.setStatusCalls) != 0 {
+		t.Fatalf("no status writes expected; got %+v", argus.setStatusCalls)
+	}
+	// The active worker and coord are untouched.
+	if _, err := db.GetRoleByID(context.Background(), active.ID); err != nil {
+		t.Fatalf("active worker should still exist: %v", err)
+	}
+}
+
 // BUG-018: even a genuine worktree-removal failure must not block pruning the
 // DB row. PruneArchivedRole logs the failure and deletes the row anyway.
 func TestPruneArchivedRole_WorktreeRemoveError_StillPrunesRow(t *testing.T) {

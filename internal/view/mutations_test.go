@@ -417,8 +417,11 @@ type fakeMutationService struct {
 	completeTaskCalls []string
 	completeTaskErr   error
 
-	// CompleteArchivedDescendants (`C` key).
+	// CompleteArchivedDescendants (`C` key). completeArchivedFound is the
+	// number of archived descendants the sweep encountered (drives the
+	// "nothing to do" guard); completeArchivedResp is how many were pruned.
 	completeArchivedCalls []int64
+	completeArchivedFound int
 	completeArchivedResp  int
 	completeArchivedErr   error
 
@@ -758,7 +761,7 @@ func (s *fakeMutationService) CompleteArchivedDescendants(_ context.Context, orc
 	if s.completeArchivedErr != nil {
 		return ops.PruneSummary{}, s.completeArchivedErr
 	}
-	return ops.PruneSummary{Pruned: s.completeArchivedResp}, nil
+	return ops.PruneSummary{Found: s.completeArchivedFound, Pruned: s.completeArchivedResp}, nil
 }
 
 func (s *fakeMutationService) PruneArchivedRole(_ context.Context, roleID int64) error {
@@ -4234,6 +4237,7 @@ func TestBridge_OnCompleteArchived_Orchestrator_ConfirmYes_CallsCompleteArchived
 	b, m, sel, svc, _, rp := newBridgeUnderTest()
 	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "proj"}
 	m.stubConfirmYes = true
+	svc.completeArchivedFound = 3
 	svc.completeArchivedResp = 3
 
 	b.OnCompleteArchived()
@@ -4244,5 +4248,50 @@ func TestBridge_OnCompleteArchived_Orchestrator_ConfirmYes_CallsCompleteArchived
 	}
 	if rp.Count() != 1 {
 		t.Fatalf("expect rail refresh; got %d", rp.Count())
+	}
+}
+
+// BUG-023: `C` on a coordinator whose archived workers are ALL already complete
+// must still prune them — the sweep returns Found>0 even when nothing needed a
+// status flip, so the guard does NOT fire "nothing to do" and the rail refreshes.
+func TestBridge_OnCompleteArchived_AllAlreadyComplete_PrunesAndRefreshes(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 7, Name: "proj"}
+	m.stubConfirmYes = true
+	// 5 archived descendants found and pruned, even though none needed completing.
+	svc.completeArchivedFound = 5
+	svc.completeArchivedResp = 5
+
+	b.OnCompleteArchived()
+	b.waitIdle()
+
+	if len(m.errors) != 0 {
+		t.Fatalf("no error modal expected when archived workers were pruned; got %v", m.errors)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("expect rail refresh after pruning already-complete workers; got %d", rp.Count())
+	}
+}
+
+// BUG-023: the "nothing to do" guard fires ONLY when there are ZERO archived
+// descendants (Found==0) — not when there were merely none needing completion.
+func TestBridge_OnCompleteArchived_NoArchivedDescendants_ShowsNothingToDo(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 9, Name: "proj"}
+	m.stubConfirmYes = true
+	svc.completeArchivedFound = 0
+	svc.completeArchivedResp = 0
+
+	b.OnCompleteArchived()
+	b.waitIdle()
+
+	if len(m.errors) != 1 {
+		t.Fatalf("expect one 'nothing to do' notice; got %v", m.errors)
+	}
+	if !stringsContains(m.errors[0], "no archived workers") {
+		t.Fatalf("notice should explain there are no archived workers; got %q", m.errors[0])
+	}
+	if rp.Count() != 0 {
+		t.Fatalf("no rail refresh when there was nothing to prune; got %d", rp.Count())
 	}
 }
