@@ -44,10 +44,11 @@ type Role struct {
 // Binding is the ops-layer view of one binding row. Only the fields the
 // ops layer needs are exposed; if more are needed later add them here.
 type Binding struct {
-	ID           int64
-	RoleID       int64
-	ArgusTaskID  string
-	WorktreePath string
+	ID             int64
+	RoleID         int64
+	OrchestratorID int64
+	ArgusTaskID    string
+	WorktreePath   string
 }
 
 // CreateRoleInput is the ops-layer input for inserting a new role.
