@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+
+	"github.com/anutron/hera/internal/argus"
 )
 
 // statusOrder is argus's workflow ladder. `s` advances toward complete; `S`
@@ -156,37 +157,55 @@ func (s *Service) CompleteTaskByID(ctx context.Context, taskID string) error {
 // rail). WorktreeSkipped counts roles whose worktree could not be removed
 // (already gone, detached, or otherwise) but which were pruned from the DB
 // anyway — disk cleanup is best-effort and never blocks clearing the rail.
+// Errors counts roles that hit a non-fatal failure during the sweep (a
+// binding lookup that errored, an argus task delete that failed for a reason
+// other than already-gone, or a hera role-row delete that failed). The sweep
+// never aborts on these (BUG-029); the count lets the caller report "N pruned,
+// M errors" without the whole batch halting.
 type PruneSummary struct {
 	Found           int
 	Pruned          int
 	WorktreeSkipped int
+	Errors          int
 }
 
-// CompleteArchivedDescendants prunes EVERY archived non-coordinator role under
-// the given orchestrator from hera's DB + disk, regardless of completion state
-// (BUG-023). A worker that is not yet :checked: in argus is marked complete
-// first; one that is already complete is just pruned (no redundant status
-// write — argus may reject a no-op transition). Backs the `C` rail key. The
-// coordinator role itself is skipped.
+// CompleteArchivedDescendants clears the ENTIRE archive under the given
+// orchestrator: every archived non-coordinator role, regardless of completion
+// state (complete / incomplete / ○ fully-detached), is torn down from argus,
+// disk, and hera's DB. Backs the `C` rail key. The coordinator role itself is
+// skipped.
+//
+// For each archived descendant the sweep, in order:
+//  1. Marks the bound argus task :checked: (best-effort — `C` is "clear the
+//     archive", not "must complete first": a status read/write that fails on a
+//     dead or pruned task is logged and skipped, never aborting).
+//  2. DELETEs the underlying argus task (argus removes its worktree + branch
+//     server-side). This is the BUG-029 fix: pruning only hera's role row left
+//     the argus task alive, so it resurfaced as a freelancer — the same orphan
+//     class BUG-021 fixed for coord-delete. Best-effort: an already-gone task
+//     (404 → the client returns nil) or one whose worktree was removed
+//     out-of-band (BUG-020 IsWorktreeMissing) is a clean skip.
+//  3. Removes the worktree locally as a defensive fallback (best-effort,
+//     BUG-018 guard: a stale/detached/missing worktree never blocks the row).
+//  4. Deletes the hera role row.
+//
+// The sweep NEVER aborts on a single failure (BUG-029): the ○ detached case —
+// no live session, worktree gone, argus task dead — must not halt the batch.
+// Every per-role failure is logged and counted (summary.Errors / Worktree
+// Skipped), the role is carried as far through the teardown as possible, and
+// the sweep continues. The returned error is reserved for the top-level role
+// listing failing; per-role failures surface only through the summary so the
+// rail still refreshes and the operator sees "N pruned, M errors".
 //
 // The summary's Found counts every archived descendant encountered (the prune
 // candidates); the caller fires "nothing to do" only when Found==0, so already-
-// complete archived workers are cleared rather than short-circuited.
-//
-// The sweep is resilient (BUG-018): a single worktree that can't be removed
-// (already deleted by an earlier cleanup, detached from its git admin entry,
-// etc.) must NOT abort the batch. Worktree removal is best-effort — failures
-// are logged and counted, the DB role row is deleted regardless, and the sweep
-// continues. The returned error is reserved for genuine failures (binding
-// lookup, argus status writes, DB deletes) that leave a role in the rail;
-// worktree skips are surfaced via the summary, not the error.
+// complete archived workers are cleared rather than short-circuited (BUG-023).
 func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64) (PruneSummary, error) {
 	roles, err := s.DB.ListRolesByOrchestratorInclusive(ctx, orchID)
 	if err != nil {
 		return PruneSummary{}, fmt.Errorf("ops.CompleteArchivedDescendants: list roles: %w", err)
 	}
 	var summary PruneSummary
-	var errMsgs []string
 	for _, role := range roles {
 		if !role.Archived {
 			continue
@@ -201,56 +220,74 @@ func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64)
 		// prune" from "nothing that still needed completing".
 		summary.Found++
 
+		// Resolve the latest binding (live OR ended) to recover the argus task
+		// id + worktree path. A binding-lookup error is non-fatal: we still
+		// delete the hera role row below so the rail clears.
 		bnd, err := s.resolveBinding(ctx, role.ID)
 		if err != nil && !errors.Is(err, ErrNotFound) {
-			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): %v", role.Name, role.ID, err))
-			continue
+			s.logf("complete archived: binding lookup failed for role %q (%d), pruning hera row anyway: %v", role.Name, role.ID, err)
+			summary.Errors++
 		}
-		if bnd != nil && bnd.ArgusTaskID != "" {
+		argusTaskID := ""
+		worktreePath := ""
+		if bnd != nil {
+			argusTaskID = bnd.ArgusTaskID
+			worktreePath = bnd.WorktreePath
+		}
+
+		if argusTaskID != "" {
 			// Mark :checked: ONLY when the task is not already complete. An
-			// already-complete worker just needs pruning — re-issuing the status
+			// already-complete worker just needs deleting — re-issuing the status
 			// write is redundant and argus may reject a no-op transition
-			// (BUG-023). A status read that fails (task pruned out-of-band,
-			// transient argus error) is non-fatal: skip the complete step and
-			// prune the hera row anyway.
-			needsComplete := true
-			if cur, statErr := s.Argus.GetTaskStatus(ctx, bnd.ArgusTaskID); statErr != nil {
-				s.logf("complete archived: status read failed for role %q (%d), pruning without re-completing: %v", role.Name, role.ID, statErr)
-				needsComplete = false
-			} else if cur == "complete" {
-				needsComplete = false
+			// (BUG-023). Completion is best-effort (BUG-029): a status read or
+			// write that fails (dead/pruned/○ detached task) is logged and
+			// skipped — we proceed straight to deleting the task.
+			if cur, statErr := s.Argus.GetTaskStatus(ctx, argusTaskID); statErr != nil {
+				s.logf("complete archived: status read failed for role %q (%d), deleting task without completing: %v", role.Name, role.ID, statErr)
+			} else if cur != "complete" {
+				if _, err := s.Argus.SetTaskStatus(ctx, argusTaskID, "complete"); err != nil {
+					s.logf("complete archived: mark complete failed for role %q (%d), deleting task anyway: %v", role.Name, role.ID, err)
+				}
 			}
-			if needsComplete {
-				if _, err := s.Argus.SetTaskStatus(ctx, bnd.ArgusTaskID, "complete"); err != nil {
-					if !errors.Is(err, ErrArgusTaskGone) {
-						errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): set complete: %v", role.Name, role.ID, err))
-						continue
-					}
-					// Pruned argus task: still prune the hera row below.
+
+			// DELETE the underlying argus task so it never resurfaces as a
+			// freelancer (BUG-029, same orphan class as BUG-021). argus cleans
+			// the task's worktree + branch server-side. Best-effort: an
+			// already-gone task (404, returned as nil by the client) or one whose
+			// worktree was removed out-of-band (BUG-020 IsWorktreeMissing) is a
+			// clean skip; any other delete failure is logged + counted but never
+			// aborts the sweep (the ○ detached case must not halt the batch).
+			s.logf("complete archived: destroying argus task %q (worktree+branch)", argusTaskID)
+			if err := s.Argus.DeleteTask(ctx, argusTaskID); err != nil {
+				if errors.Is(err, ErrArgusTaskGone) || argus.IsWorktreeMissing(err) {
+					s.logf("complete archived: argus task %q already gone, skipping delete: %v", argusTaskID, err)
+				} else {
+					s.logf("complete archived: argus delete failed for task %q, pruning hera row anyway: %v", argusTaskID, err)
+					summary.Errors++
 				}
 			}
 		}
-		// Prune the hera role row + worktree after completing. Worktree
-		// removal is best-effort: a stale/missing worktree must never block
-		// clearing the role from the rail. Log + count the skip and still
-		// delete the DB row below.
-		worktreePath := ""
-		if bnd != nil {
-			worktreePath = bnd.WorktreePath
-		}
+
+		// Local worktree remove is a defensive fallback — argus already deleted
+		// the worktree above in the common case, so this is usually a soft no-op
+		// (directory gone). Best-effort (BUG-018): a stale/detached/missing
+		// worktree must never block clearing the role from the rail. The guard
+		// in removeWorktree soft-skips already-gone and detached paths (no
+		// error); a genuine removal failure is logged + counted, the row still
+		// deleted below.
 		if err := s.removeWorktree(ctx, worktreePath); err != nil {
-			s.logf("prune: worktree remove failed for role %q (%d), pruning DB row anyway: %v", role.Name, role.ID, err)
+			s.logf("complete archived: worktree remove failed for role %q (%d), pruning DB row anyway: %v", role.Name, role.ID, err)
 			summary.WorktreeSkipped++
 		}
+
+		// Delete the hera role row. The one failure that genuinely leaves a row
+		// in the rail — still non-fatal to the batch: log, count, continue.
 		if err := s.DB.DeleteRoleByID(ctx, role.ID); err != nil && !errors.Is(err, ErrNotFound) {
-			errMsgs = append(errMsgs, fmt.Sprintf("role %q (%d): delete role: %v", role.Name, role.ID, err))
+			s.logf("complete archived: delete role row failed for role %q (%d): %v", role.Name, role.ID, err)
+			summary.Errors++
 			continue
 		}
 		summary.Pruned++
-	}
-	if len(errMsgs) > 0 {
-		return summary, fmt.Errorf("ops.CompleteArchivedDescendants: %d error(s): %s",
-			len(errMsgs), strings.Join(errMsgs, "; "))
 	}
 	return summary, nil
 }
