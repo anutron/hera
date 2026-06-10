@@ -60,6 +60,12 @@ type mutationService interface {
 	ListActiveOrchestrators(ctx context.Context) ([]*ops.Orchestrator, error)
 	AdoptTaskIntoOrchestrator(ctx context.Context, in ops.AdoptInput) (*ops.AdoptResult, error)
 
+	// ReparentCoordinator nests an existing coordinator under another chosen
+	// coordinator as a sub-coordinator (the `J` key on a coordinator row,
+	// BUG-024). It creates the multi-binding the rail renders as nested and
+	// rejects cycles (adopting a coord under itself or one of its descendants).
+	ReparentCoordinator(ctx context.Context, in ops.ReparentCoordInput) (*ops.ReparentCoordResult, error)
+
 	// Stage P extended keyset.
 	ListCompletedAgents(ctx context.Context) ([]ops.CompletedAgent, error)
 	PruneCompleted(ctx context.Context, agents []ops.CompletedAgent) (int, error)
@@ -957,22 +963,35 @@ func (b *mutationBridge) OnPin() {
 	}
 }
 
-// OnAdopt adopts the selected FREELANCER into a chosen coordinator (`J`). It
-// is freelancer-only: any other selection (coordinator, managed agent,
-// orchestrator header, section row) gets visible feedback, never a silent
-// no-op. On a freelancer it lists the active orchestrators and opens a target
-// picker; selecting one creates an operator-side worker role + binding via
-// AdoptTaskIntoOrchestrator (the same DAO path hera_join attach-mode uses), so
-// the agent need not act for the binding to exist.
+// OnAdopt re-parents the selected row into a chosen coordinator (`J`):
+//
+//   - A FREELANCER row (an unmanaged argus task) is adopted as a worker via
+//     AdoptTaskIntoOrchestrator (the same DAO path hera_join attach-mode uses),
+//     so the agent need not act for the binding to exist.
+//   - A COORDINATOR row — either a root orchestrator header or a promoted
+//     sub-coordinator role row — is re-parented under the chosen coordinator as
+//     a sub-coordinator via ReparentCoordinator (BUG-024). Its whole subtree
+//     moves with it; the op rejects cycles (adopting a coord under itself or one
+//     of its own descendants).
+//
+// Any other selection (a managed leaf agent, an archived/coordless header, a
+// section row) gets visible feedback, never a silent no-op.
 //
 // The selection is read synchronously (UI state, on-loop); the orchestrator
 // listing + picker open run off-loop via goUI (each modal open bounces through
-// QueueUpdateDraw), and the adopt itself runs through mutate from the picker's
-// on-loop select callback — so the event loop is never blocked.
+// QueueUpdateDraw), and the mutation itself runs through mutate from the
+// picker's on-loop select callback — so the event loop is never blocked.
 func (b *mutationBridge) OnAdopt() {
 	sel := b.sel.CurrentRailSelection()
+
+	// Coordinator selection → re-parent under another coordinator (BUG-024).
+	if childOrchID, coordTaskID, ok := coordAdoptTarget(sel); ok {
+		b.adoptCoordinator(childOrchID, coordTaskID, sel.Name, sel.Project)
+		return
+	}
+
 	if sel.Kind != selRole || sel.RoleKind != string(db.KindFreelance) {
-		b.notApplicable("J: only freelancers can be adopted into a coordinator")
+		b.notApplicable("J: select a freelancer or a live coordinator to adopt into a coordinator")
 		return
 	}
 	if sel.ArgusTaskID == "" {
@@ -1014,6 +1033,92 @@ func (b *mutationBridge) OnAdopt() {
 						RoleName:       name,
 						ArgusProject:   project,
 						WorktreePath:   worktree,
+					})
+					return err
+				})
+			},
+			nil,
+		)
+	})
+}
+
+// coordAdoptTarget reports whether sel is a LIVE coordinator that `J` can
+// re-parent, returning the child orchestrator id and its coordinator argus
+// task. Two shapes qualify:
+//
+//   - a root orchestrator header (selOrchestrator) that is not archived and has
+//     a live coordinator task (CoordTaskID); and
+//   - a promoted sub-coordinator role row (selRole, RoleKind coordinator) that
+//     is not archived, carrying its child orchestrator id (ChildOrchestratorID)
+//     and the coordinator argus task (ArgusTaskID).
+//
+// An archived/coordless coordinator (no live task to re-parent) does not
+// qualify; ok is false and OnAdopt falls through to the freelancer path / a
+// not-applicable notice.
+func coordAdoptTarget(sel railSelection) (childOrchID int64, coordTaskID string, ok bool) {
+	switch sel.Kind {
+	case selOrchestrator:
+		if sel.Archived || sel.CoordTaskID == "" || sel.OrchestratorID == 0 {
+			return 0, "", false
+		}
+		return sel.OrchestratorID, sel.CoordTaskID, true
+	case selRole:
+		if sel.RoleKind != string(db.KindCoordinator) {
+			return 0, "", false
+		}
+		if sel.Archived || sel.ChildOrchestratorID == 0 || sel.ArgusTaskID == "" {
+			return 0, "", false
+		}
+		return sel.ChildOrchestratorID, sel.ArgusTaskID, true
+	default:
+		return 0, "", false
+	}
+}
+
+// adoptCoordinator opens the coordinator picker for re-parenting child
+// coordinator childOrchID (identified by its coordinator argus task coordTaskID)
+// under a chosen parent. The picker lists the active orchestrators EXCLUDING the
+// child itself (you cannot nest a coord under itself); descendant cycles are
+// rejected authoritatively by ReparentCoordinator with a clear message.
+func (b *mutationBridge) adoptCoordinator(childOrchID int64, coordTaskID, name, project string) {
+	b.goUI(func() {
+		orchs, err := b.svc.ListActiveOrchestrators(b.ctx)
+		if err != nil {
+			b.modals.ShowError(err.Error())
+			return
+		}
+		// Exclude the child coordinator itself from the picker.
+		targets := make([]*ops.Orchestrator, 0, len(orchs))
+		for _, o := range orchs {
+			if o.ID == childOrchID {
+				continue
+			}
+			targets = append(targets, o)
+		}
+		if len(targets) == 0 {
+			b.modals.ShowError("J: no other active coordinator to adopt this coordinator under — create one with `n` first")
+			return
+		}
+		labels := make([]string, len(targets))
+		for i, o := range targets {
+			labels[i] = o.Name
+		}
+		b.modals.ShowSelect(
+			fmt.Sprintf("Adopt coordinator %q under…", name),
+			"Parent coordinator",
+			labels,
+			func(idx int) {
+				if idx < 0 || idx >= len(targets) {
+					return
+				}
+				parentID := targets[idx].ID
+				b.mutate("adopt", true, func() error {
+					_, err := b.svc.ReparentCoordinator(b.ctx, ops.ReparentCoordInput{
+						ChildOrchestratorID:  childOrchID,
+						CoordTaskID:          coordTaskID,
+						ParentOrchestratorID: parentID,
+						RoleName:             name,
+						ArgusProject:         project,
 					})
 					return err
 				})

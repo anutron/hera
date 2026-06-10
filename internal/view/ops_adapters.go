@@ -256,10 +256,11 @@ func adaptBinding(b *db.Binding) *ops.Binding {
 		return nil
 	}
 	return &ops.Binding{
-		ID:           b.ID,
-		RoleID:       b.RoleID,
-		ArgusTaskID:  b.ArgusTaskID,
-		WorktreePath: b.WorktreePath,
+		ID:             b.ID,
+		RoleID:         b.RoleID,
+		OrchestratorID: b.OrchestratorID,
+		ArgusTaskID:    b.ArgusTaskID,
+		WorktreePath:   b.WorktreePath,
 	}
 }
 

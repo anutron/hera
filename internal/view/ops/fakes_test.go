@@ -104,11 +104,18 @@ func (f *fakeDB) seedBinding(roleID int64, argusTaskID, worktreePath string) *Bi
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextBindingID++
+	// Denormalize the orchestrator id from the bound role, mirroring the real
+	// DAO (bindings carry orchestrator_id for per-orchestrator uniqueness).
+	var orchID int64
+	if r, ok := f.roles[roleID]; ok {
+		orchID = r.OrchestratorID
+	}
 	b := &Binding{
-		ID:           f.nextBindingID,
-		RoleID:       roleID,
-		ArgusTaskID:  argusTaskID,
-		WorktreePath: worktreePath,
+		ID:             f.nextBindingID,
+		RoleID:         roleID,
+		OrchestratorID: orchID,
+		ArgusTaskID:    argusTaskID,
+		WorktreePath:   worktreePath,
 	}
 	f.bindings[b.ID] = b
 	return b
@@ -571,10 +578,11 @@ func (f *fakeDB) CreateBinding(ctx context.Context, in CreateBindingInput) (*Bin
 	}
 	f.nextBindingID++
 	b := &Binding{
-		ID:           f.nextBindingID,
-		RoleID:       in.RoleID,
-		ArgusTaskID:  in.ArgusTaskID,
-		WorktreePath: in.WorktreePath,
+		ID:             f.nextBindingID,
+		RoleID:         in.RoleID,
+		OrchestratorID: in.OrchestratorID,
+		ArgusTaskID:    in.ArgusTaskID,
+		WorktreePath:   in.WorktreePath,
 	}
 	f.bindings[b.ID] = b
 	return b, nil
