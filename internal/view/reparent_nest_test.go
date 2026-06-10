@@ -69,7 +69,7 @@ func reparentDormant(t *testing.T, childArchived, childPresent bool) (childID, p
 // session liveness.
 func TestReparent_DormantCoord_GoneTask_Nests(t *testing.T) {
 	childID, _, src, d := reparentDormant(t, false, false)
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	a, err := BuildApp(d, src)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestReparent_DormantCoord_GoneTask_Nests(t *testing.T) {
 // and its link binding was ended by the reconciler. It must still nest.
 func TestReparent_DormantCoord_ArchivedTask_Nests(t *testing.T) {
 	childID, _, src, d := reparentDormant(t, true, true)
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	a, err := BuildApp(d, src)
 	if err != nil {
@@ -111,7 +111,7 @@ func TestReparent_DormantCoord_ArchivedTask_Nests(t *testing.T) {
 func TestReparent_DormantCoord_TwiceNestsOnce(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	child, _ := d.Orchestrators.Create(ctx, "2a-team")
 	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: child.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p"})
@@ -170,7 +170,7 @@ func TestReparent_DormantCoord_TwiceNestsOnce(t *testing.T) {
 func TestReparent_LiveCoord_StillNests(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	child, _ := d.Orchestrators.Create(ctx, "child")
 	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: child.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p"})
@@ -216,7 +216,7 @@ func TestReparent_LiveCoord_StillNests(t *testing.T) {
 func TestReparent_TornDownLink_DoesNotNest(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	child, _ := d.Orchestrators.Create(ctx, "child")
 	childCoord, _ := d.Roles.Create(ctx, db.CreateRoleInput{OrchestratorID: child.ID, Name: "coord", Kind: db.KindCoordinator, ArgusProject: "p"})
