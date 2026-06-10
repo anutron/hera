@@ -4055,16 +4055,18 @@ func TestBridge_OnAdopt_ManagedWorker_NotApplicable(t *testing.T) {
 	if m.SelectCount() != 0 || len(svc.adoptCalls) != 0 {
 		t.Fatalf("J on a managed worker must not pick or adopt; selects=%d adopts=%d", m.SelectCount(), len(svc.adoptCalls))
 	}
-	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "freelancer or a live coordinator") {
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "freelancer or a coordinator") {
 		t.Fatalf("J on a managed worker must give freelancer/coordinator feedback; errors=%v", m.errors)
 	}
 }
 
-// `J` on a coordless/dormant orchestrator header (no live coord task) gives
-// feedback — there is no coordinator task to re-parent.
+// `J` on a TRULY coordless orchestrator header (no coordinator role at all,
+// CoordRoleID==0) gives feedback — there is nothing to re-parent. Only this
+// shape falls through now; a dormant coordinator (coord role exists, session
+// dead) re-parents (BUG-025, covered below).
 func TestBridge_OnAdopt_CoordlessOrchestrator_NotApplicable(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
-	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 7, Name: "alpha"} // no CoordTaskID
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 7, Name: "alpha"} // no CoordRoleID, no CoordTaskID
 
 	b.OnAdopt()
 	b.waitIdle()
@@ -4072,8 +4074,48 @@ func TestBridge_OnAdopt_CoordlessOrchestrator_NotApplicable(t *testing.T) {
 	if m.SelectCount() != 0 || len(svc.adoptCalls) != 0 || len(svc.reparentCalls) != 0 {
 		t.Fatalf("J on a coordless orchestrator must not pick, adopt, or re-parent")
 	}
-	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "freelancer or a live coordinator") {
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "freelancer or a coordinator") {
 		t.Fatalf("J on a coordless orchestrator must give feedback; errors=%v", m.errors)
+	}
+}
+
+// `J` on a DORMANT coordinator header — a coord role exists (CoordRoleID set)
+// but its session is not live (CoordTaskID empty) — STILL routes to the
+// coordinator picker and re-parents (BUG-025). The empty CoordTaskID is passed
+// through; ReparentCoordinator resolves the task id from the coord role's
+// latest binding.
+func TestBridge_OnAdopt_DormantCoordHeader_Reparents(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 5,
+		Name:           "child",
+		CoordRoleID:    42, // a coord role exists…
+		CoordTaskID:    "", // …but the coord session is not live
+		Project:        "Hera",
+	}
+	svc.listOrchs = []*ops.Orchestrator{{ID: 7, Name: "beta"}}
+	m.stubSelectIndex = 0
+
+	b.OnAdopt()
+	b.waitIdle()
+
+	if m.SelectCount() != 1 {
+		t.Fatalf("J on a dormant coordinator must open the picker once; got %d", m.SelectCount())
+	}
+	if len(svc.adoptCalls) != 0 {
+		t.Fatalf("a dormant coordinator must re-parent, not adopt-as-freelancer; got %d adopt calls", len(svc.adoptCalls))
+	}
+	if len(svc.reparentCalls) != 1 {
+		t.Fatalf("selecting a parent must re-parent once; got %d", len(svc.reparentCalls))
+	}
+	in := svc.reparentCalls[0]
+	if in.ChildOrchestratorID != 5 || in.CoordTaskID != "" ||
+		in.ParentOrchestratorID != 7 || in.ArgusProject != "Hera" {
+		t.Fatalf("re-parent input mismatch (CoordTaskID must pass through empty): %+v", in)
+	}
+	if rp.Count() != 1 {
+		t.Fatalf("a successful re-parent must refresh the rail once; got %d", rp.Count())
 	}
 }
 
@@ -4154,6 +4196,7 @@ func TestBridge_OnAdopt_LiveCoordHeader_Reparents(t *testing.T) {
 		Kind:           selOrchestrator,
 		OrchestratorID: 5,
 		Name:           "child",
+		CoordRoleID:    42, // live coord header carries its coord role id
 		CoordTaskID:    "task-child-coord",
 		Project:        "Hera",
 	}
@@ -4223,7 +4266,7 @@ func TestBridge_OnAdopt_SubCoordRow_Reparents(t *testing.T) {
 // (no other coordinator to adopt it under) and never re-parents.
 func TestBridge_OnAdopt_Coord_OnlySelfActive_Feedback(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
-	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "child", CoordTaskID: "task-child-coord"}
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "child", CoordRoleID: 42, CoordTaskID: "task-child-coord"}
 	svc.listOrchs = []*ops.Orchestrator{{ID: 5, Name: "child"}} // only the child itself
 
 	b.OnAdopt()
@@ -4240,7 +4283,7 @@ func TestBridge_OnAdopt_Coord_OnlySelfActive_Feedback(t *testing.T) {
 // A failing re-parent surfaces an error modal and refreshes nothing.
 func TestBridge_OnAdopt_Coord_ServiceError_ShowsErrorModal(t *testing.T) {
 	b, m, sel, svc, _, rp := newBridgeUnderTest()
-	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "child", CoordTaskID: "task-child-coord"}
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "child", CoordRoleID: 42, CoordTaskID: "task-child-coord"}
 	svc.listOrchs = []*ops.Orchestrator{{ID: 7, Name: "beta"}}
 	svc.reparentErr = errors.New("would create a cycle")
 	m.stubSelectIndex = 0
@@ -4256,11 +4299,12 @@ func TestBridge_OnAdopt_Coord_ServiceError_ShowsErrorModal(t *testing.T) {
 	}
 }
 
-// An ARCHIVED coordinator header is not a re-parent target (no live coord task);
-// it falls through to the not-applicable feedback.
+// An ARCHIVED coordinator header is not a re-parent target (it is handled by
+// the resurrect/unarchive flows); it falls through to the not-applicable
+// feedback even with a coord role present.
 func TestBridge_OnAdopt_ArchivedCoord_NotApplicable(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
-	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "child", CoordTaskID: "task-child-coord", Archived: true}
+	sel.sel = railSelection{Kind: selOrchestrator, OrchestratorID: 5, Name: "child", CoordRoleID: 42, CoordTaskID: "task-child-coord", Archived: true}
 
 	b.OnAdopt()
 	b.waitIdle()
@@ -4268,7 +4312,7 @@ func TestBridge_OnAdopt_ArchivedCoord_NotApplicable(t *testing.T) {
 	if m.SelectCount() != 0 || len(svc.reparentCalls) != 0 {
 		t.Fatalf("an archived coordinator must not pick or re-parent")
 	}
-	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "freelancer or a live coordinator") {
+	if m.ErrorCount() != 1 || !stringsContains(m.errors[0], "freelancer or a coordinator") {
 		t.Fatalf("an archived coordinator must give feedback; errors=%v", m.errors)
 	}
 }

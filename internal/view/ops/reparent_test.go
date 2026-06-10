@@ -207,9 +207,13 @@ func TestReparentCoordinator_RejectsUnknownParent(t *testing.T) {
 	}
 }
 
-// A coordinator whose coord task has no live binding (dormant/archived) cannot
-// be re-parented — there is no worktree to carry onto the new link binding.
-func TestReparentCoordinator_RejectsDormantCoordinator(t *testing.T) {
+// A coordinator whose coord session is NOT live (its coord binding has ended)
+// is STILL re-parentable (BUG-025): re-parenting links to the coordinator's
+// argus TASK, which outlives its session. The new link binding recovers the
+// task id + worktree from the coord role's most-recent ENDED binding. The
+// operator does not pass CoordTaskID (the rail carries none for a dormant
+// coordinator) — the op resolves it.
+func TestReparentCoordinator_DormantCoordinatorResolvesFromEndedBinding(t *testing.T) {
 	s, db, _, _, _ := newTestService()
 	parent := db.seedOrchestrator("parent", false)
 	child := db.seedOrchestrator("child", false)
@@ -217,13 +221,58 @@ func TestReparentCoordinator_RejectsDormantCoordinator(t *testing.T) {
 	coordRole := db.seedRole(child.ID, "coord", KindCoordinator, "Hera", false)
 	db.seedEndedBinding(coordRole.ID, "task-child-coord", "/wt/child")
 
+	res, err := s.ReparentCoordinator(context.Background(), ReparentCoordInput{
+		ChildOrchestratorID:  child.ID,
+		ParentOrchestratorID: parent.ID,
+		RoleName:             "child",
+		// CoordTaskID intentionally empty — the rail carries no live coord task.
+	})
+	if err != nil {
+		t.Fatalf("ReparentCoordinator on a dormant coordinator: unexpected error: %v", err)
+	}
+	if res == nil || res.ChildOrchestratorName != "child" || res.ParentOrchestratorName != "parent" {
+		t.Fatalf("result mismatch: %+v", res)
+	}
+
+	// The new link binding under the parent recovers the coord task + worktree
+	// from the ended binding.
+	roles, _ := db.ListRolesByOrchestrator(context.Background(), parent.ID)
+	var link *Role
+	for _, r := range roles {
+		if r.Name == "child" {
+			link = r
+		}
+	}
+	if link == nil {
+		t.Fatal("expected a worker link role named 'child' under the parent")
+	}
+	bnd, err := db.GetLiveBindingByRole(context.Background(), link.ID)
+	if err != nil {
+		t.Fatalf("expected a live binding on the link role: %v", err)
+	}
+	if bnd.ArgusTaskID != "task-child-coord" {
+		t.Fatalf("link binding task mismatch (should recover from ended binding): %q", bnd.ArgusTaskID)
+	}
+	if bnd.WorktreePath != "/wt/child" {
+		t.Fatalf("link binding worktree mismatch (should recover from ended binding): %q", bnd.WorktreePath)
+	}
+}
+
+// A coordinator whose coord role has NEVER been bound cannot be re-parented —
+// there is no argus task or worktree to carry onto the new link binding.
+func TestReparentCoordinator_RejectsNeverBoundCoordinator(t *testing.T) {
+	s, db, _, _, _ := newTestService()
+	parent := db.seedOrchestrator("parent", false)
+	child := db.seedOrchestrator("child", false)
+	// A coord role exists but was never bound to an argus task.
+	db.seedRole(child.ID, "coord", KindCoordinator, "Hera", false)
+
 	_, err := s.ReparentCoordinator(context.Background(), ReparentCoordInput{
 		ChildOrchestratorID:  child.ID,
-		CoordTaskID:          "task-child-coord",
 		ParentOrchestratorID: parent.ID,
 	})
 	if asValidation(err) == nil {
-		t.Fatalf("expected validation error for a dormant coordinator, got %v", err)
+		t.Fatalf("expected validation error for a never-bound coordinator, got %v", err)
 	}
 }
 
