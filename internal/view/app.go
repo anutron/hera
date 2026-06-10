@@ -13,6 +13,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/anutron/hera/internal/db"
+	"github.com/anutron/hera/internal/view/ops"
 )
 
 // DefaultRailSelectDebounce is the window over which rail j/k cursor
@@ -592,6 +593,7 @@ func (a *App) populateRail(database *db.DB) error {
 			bnd, _ := database.Bindings.GetLiveByRole(ctx, role.ID)
 			live := bnd != nil
 			var argusTaskID string
+			var linkEndReason string
 			startedAt := role.CreatedAt
 			if live {
 				argusTaskID = bnd.ArgusTaskID
@@ -606,6 +608,11 @@ func (a *App) populateRail(database *db.DB) error {
 				// task id and the pane never rebinds off them (stuck panes).
 				argusTaskID = hist[0].ArgusTaskID
 				startedAt = hist[0].StartedAt
+				// Carry the end_reason so resolveSubCoordinators can tell a
+				// structurally-valid dormant parent link (resync_missing /
+				// argus_archived / task_deleted) from a torn-down one
+				// (reparented / user_deleted) — BUG-027.
+				linkEndReason = hist[0].EndReason
 			}
 			// Dead = the argus task RECORD no longer exists (warm-cache miss).
 			// Status never feeds this: a completed task that still exists is
@@ -632,6 +639,16 @@ func (a *App) populateRail(database *db.DB) error {
 				// live) root coordinator header.
 				if entry.CoordRoleID == 0 {
 					entry.CoordRoleID = role.ID
+				}
+				// Capture the STRUCTURAL nesting key from the coord role's
+				// latest binding regardless of liveness/dead/archived state.
+				// Unlike CoordTaskID (gated below so the COORD pane never binds
+				// a tombstone), this must survive a dormant/pruned coord task so
+				// resolveSubCoordinators can still nest a re-parented coordinator
+				// under its parent (BUG-027). First coord role wins, mirroring
+				// CoordRoleID and CoordTaskID.
+				if entry.CoordLinkTaskID == "" && argusTaskID != "" {
+					entry.CoordLinkTaskID = argusTaskID
 				}
 				if !dead && !archived && entry.CoordTaskID == "" && argusTaskID != "" {
 					// Prefer a live coord; fall back to its most-recent binding
@@ -677,6 +694,7 @@ func (a *App) populateRail(database *db.DB) error {
 				Live:           live,
 				Dead:           dead,
 				ArgusTaskID:    argusTaskID,
+				LinkEndReason:  linkEndReason,
 				Archived:       role.ArchivedAt != nil,
 				Pinned:         role.PinnedAt != nil,
 				StartedAt:      startedAt,
@@ -756,17 +774,21 @@ func (a *App) populateRail(database *db.DB) error {
 // child. The buildRows cycle guard (seen set) protects against any remaining
 // pathological cross-links at render time.
 func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
-	// Index orchestrators by their coord task so a worker can find the child
-	// orchestrator it coordinates. Skip empty coord tasks (no binding) and only
-	// keep the first orchestrator per coord task (a coord task is unique to one
-	// orchestrator in practice; first-wins is deterministic).
+	// Index orchestrators by their STRUCTURAL coord-task key (CoordLinkTaskID,
+	// the coord role's latest binding regardless of liveness) so a worker can
+	// find the child orchestrator it coordinates even when that child's coord
+	// session is dormant and its argus task is gone (BUG-027). CoordTaskID is
+	// deliberately cleared for a dead/archived coord (so the COORD pane never
+	// binds a tombstone), which is why nesting must NOT key off it. Skip empty
+	// keys (no binding) and keep the first orchestrator per key (a coord task is
+	// unique to one orchestrator in practice; first-wins is deterministic).
 	byCoordTask := make(map[string]*orchEntry, len(entries))
 	for _, o := range entries {
-		if o.CoordTaskID == "" {
+		if o.CoordLinkTaskID == "" {
 			continue
 		}
-		if _, dup := byCoordTask[o.CoordTaskID]; !dup {
-			byCoordTask[o.CoordTaskID] = o
+		if _, dup := byCoordTask[o.CoordLinkTaskID]; !dup {
+			byCoordTask[o.CoordLinkTaskID] = o
 		}
 	}
 
@@ -774,6 +796,17 @@ func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
 	for _, o := range entries {
 		for _, role := range o.Roles {
 			if role.ArgusTaskID == "" {
+				continue
+			}
+			// A parent link is structural only while its binding is live OR was
+			// ended for a task-lifecycle reason (the coord task went away). A
+			// link the operator tore down (re-parented the child elsewhere, or
+			// deleted the link) is stale and must NOT nest — otherwise a leftover
+			// "reparented" row would re-nest the child under its OLD parent
+			// (BUG-027). The latest-binding fallback in populateRail sets
+			// ArgusTaskID on those torn-down rows too, so the guard is on the
+			// end_reason, not the task id.
+			if !role.Live && isLinkTeardownReason(role.LinkEndReason) {
 				continue
 			}
 			child, ok := byCoordTask[role.ArgusTaskID]
@@ -801,6 +834,22 @@ func resolveSubCoordinators(entries []*orchEntry) []*orchEntry {
 		out = append(out, o)
 	}
 	return out
+}
+
+// isLinkTeardownReason reports whether an ended parent-link binding's
+// end_reason marks a link the operator explicitly tore down — re-parenting the
+// child under a different coordinator (EndReasonReparented) or deleting the
+// link/subtree (EndReasonUserDeleted). Such a row is stale and must not nest
+// its child. Every OTHER end_reason (resync_missing, argus_archived,
+// task_deleted, normal session end) is a task-lifecycle event that leaves the
+// structural parent link intact, so the child still nests (BUG-027).
+func isLinkTeardownReason(reason string) bool {
+	switch reason {
+	case ops.EndReasonReparented, ops.EndReasonUserDeleted:
+		return true
+	default:
+		return false
+	}
 }
 
 // findOrchestratorByID returns the orchEntry with the given ID from the

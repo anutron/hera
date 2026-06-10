@@ -187,7 +187,16 @@ type orchEntry struct {
 	// presses Enter on this (archived root coordinator) header. Zero when the
 	// orchestrator has no coord role.
 	CoordRoleID int64
-	Roles       []*roleEntry
+	// CoordLinkTaskID is the coord role's LATEST-binding argus task id —
+	// captured regardless of the coord task's liveness (live, ended, dead, or
+	// argus-archived), unlike CoordTaskID which is intentionally cleared for a
+	// dead/archived coord so the COORD pane never binds a tombstone. This is the
+	// STRUCTURAL nesting key: resolveSubCoordinators joins a parent's worker role
+	// to this so a re-parented coordinator nests under its parent even when its
+	// own coord session is dormant and its argus task is gone (BUG-027). Empty
+	// when the orchestrator's coord role never had a binding.
+	CoordLinkTaskID string
+	Roles           []*roleEntry
 
 	// Coord-task argus state, populated from the ArgusStateCache for the
 	// orchestrator's CoordTaskID. Drives the status icon on the coordinator
@@ -243,6 +252,15 @@ type roleEntry struct {
 	// Mutually exclusive with the archived state.
 	Pinned    bool
 	StartedAt time.Time
+
+	// LinkEndReason is the end_reason of this role's latest binding when that
+	// binding is NOT live (empty while a live binding exists). It lets
+	// resolveSubCoordinators tell a structurally-valid-but-dormant parent link
+	// (a coord task that argus pruned/archived → resync_missing/argus_archived/
+	// task_deleted) from a torn-down link (the user re-parented or deleted it →
+	// reparented/user_deleted): only the former should still nest its child
+	// sub-coordinator (BUG-027).
+	LinkEndReason string
 
 	// CoordRoleID is the coord role id of the orchestrator this role belongs
 	// to (the same value as the owning orchEntry.CoordRoleID, captured when the
