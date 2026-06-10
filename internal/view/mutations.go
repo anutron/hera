@@ -991,7 +991,7 @@ func (b *mutationBridge) OnAdopt() {
 	}
 
 	if sel.Kind != selRole || sel.RoleKind != string(db.KindFreelance) {
-		b.notApplicable("J: select a freelancer or a live coordinator to adopt into a coordinator")
+		b.notApplicable("J: select a freelancer or a coordinator to adopt into a coordinator")
 		return
 	}
 	if sel.ArgusTaskID == "" {
@@ -1042,23 +1042,30 @@ func (b *mutationBridge) OnAdopt() {
 	})
 }
 
-// coordAdoptTarget reports whether sel is a LIVE coordinator that `J` can
-// re-parent, returning the child orchestrator id and its coordinator argus
-// task. Two shapes qualify:
+// coordAdoptTarget reports whether sel is a coordinator that `J` can re-parent,
+// returning the child orchestrator id and its coordinator argus task (which may
+// be empty when the coord session is not live — ReparentCoordinator then
+// resolves the task id from the coord role's latest binding, BUG-025). Two
+// shapes qualify:
 //
-//   - a root orchestrator header (selOrchestrator) that is not archived and has
-//     a live coordinator task (CoordTaskID); and
+//   - a root orchestrator header (selOrchestrator) that is not archived and HAS
+//     a coordinator role (CoordRoleID != 0), whether or not its coord session is
+//     live. The CoordTaskID is passed through as a hint (empty for a dormant
+//     coordinator); and
 //   - a promoted sub-coordinator role row (selRole, RoleKind coordinator) that
 //     is not archived, carrying its child orchestrator id (ChildOrchestratorID)
 //     and the coordinator argus task (ArgusTaskID).
 //
-// An archived/coordless coordinator (no live task to re-parent) does not
-// qualify; ok is false and OnAdopt falls through to the freelancer path / a
-// not-applicable notice.
+// Only an orchestrator with NO coordinator role at all, or an archived
+// coordinator, fails to qualify; ok is then false and OnAdopt falls through to
+// the freelancer path / a not-applicable notice.
 func coordAdoptTarget(sel railSelection) (childOrchID int64, coordTaskID string, ok bool) {
 	switch sel.Kind {
 	case selOrchestrator:
-		if sel.Archived || sel.CoordTaskID == "" || sel.OrchestratorID == 0 {
+		// A coordinator role exists (live OR dead) iff CoordRoleID is set. The
+		// re-parent is structural — it does not need a live coord task, so route
+		// on the coordinator role's existence rather than a live CoordTaskID.
+		if sel.Archived || sel.OrchestratorID == 0 || sel.CoordRoleID == 0 {
 			return 0, "", false
 		}
 		return sel.OrchestratorID, sel.CoordTaskID, true

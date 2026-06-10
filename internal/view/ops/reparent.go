@@ -9,9 +9,9 @@ import (
 
 // ReparentCoordInput describes an operator-side coordinator re-parent: nest an
 // existing coordinator C (its own orchestrator) under another coordinator P as
-// a sub-coordinator. The view supplies the child orchestrator id + its
-// coordinator argus task (resolved from the rail selection) and the chosen
-// parent orchestrator id.
+// a sub-coordinator. The view supplies the child orchestrator id and the chosen
+// parent orchestrator id; C's coordinator argus task + worktree are resolved
+// from C's coordinator role's latest binding (see ReparentCoordinator).
 //
 // The re-parent linkage is the SAME multi-binding the renderer already nests
 // (resolveSubCoordinators): a worker role under P whose binding's argus task is
@@ -21,8 +21,11 @@ import (
 type ReparentCoordInput struct {
 	// ChildOrchestratorID is the orchestrator being re-parented (C).
 	ChildOrchestratorID int64
-	// CoordTaskID is C's coordinator argus task — the multi-binding key that
-	// nests C under its parent.
+	// CoordTaskID is an OPTIONAL hint for C's coordinator argus task (the
+	// multi-binding key that nests C under its parent), carried from the rail
+	// selection when the coord session is live. It may be empty for a dormant
+	// coordinator whose coord session has ended; the op then resolves the task
+	// id from C's coordinator role's latest binding (BUG-025).
 	CoordTaskID string
 	// ParentOrchestratorID is the chosen new parent (P).
 	ParentOrchestratorID int64
@@ -59,14 +62,14 @@ const EndReasonReparented = "reparented"
 //   - P must exist and differ from C (a coordinator cannot adopt itself).
 //   - P must not be a descendant of C (SubtreeOrchIDs(C) — reusing the BUG-021
 //     subtree walk): nesting C under its own descendant would create a cycle.
-//   - C must have a LIVE coordinator binding for CoordTaskID (the worktree path
-//     for the new binding is derived from it). A dormant/archived coordinator
-//     has no live binding to re-parent.
+//   - C must have a coordinator role with at least one binding (live OR ended).
+//     Re-parenting is structural — it links P's new worker role to C's
+//     coordinator argus TASK, which exists regardless of session liveness
+//     (BUG-025). The coord task id + worktree are resolved from C's coordinator
+//     role's LATEST binding, so a dormant/archived coordinator re-parents from
+//     its most-recent ended binding (same fallback BUG-021's cascade uses). A
+//     coordinator whose coord role never had a binding cannot be re-parented.
 func (s *Service) ReparentCoordinator(ctx context.Context, in ReparentCoordInput) (*ReparentCoordResult, error) {
-	taskID := strings.TrimSpace(in.CoordTaskID)
-	if taskID == "" {
-		return nil, validation("this coordinator has no argus task id to re-parent")
-	}
 	if in.ParentOrchestratorID == in.ChildOrchestratorID {
 		return nil, validation("a coordinator cannot be adopted under itself")
 	}
@@ -102,20 +105,47 @@ func (s *Service) ReparentCoordinator(ctx context.Context, in ReparentCoordInput
 		}
 	}
 
-	// Resolve C's coordinator binding (for the worktree path) and any existing
-	// parent linkage to tear down. C's coordinator task may hold multiple live
-	// bindings: its coordinator binding in C, plus a worker binding in a current
-	// parent if it is already nested.
+	// Resolve C's coordinator argus task id + worktree path from C's coordinator
+	// role's LATEST binding — LIVE if one exists, otherwise the most-recent
+	// ENDED binding (BUG-025). Re-parenting links to C's coordinator TASK, which
+	// outlives its session; deriving the worktree from a live-only binding made
+	// the gesture inapplicable to a dormant coordinator (the reported symptom).
+	coordRole, err := s.coordRoleOf(ctx, in.ChildOrchestratorID, child.Name)
+	if err != nil {
+		return nil, err
+	}
+	latest, err := s.DB.GetLatestBindingByRole(ctx, coordRole.ID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, validation(fmt.Sprintf(
+			"%q has never had a coordinator binding to re-parent", child.Name,
+		))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ops.ReparentCoordinator: latest coord binding for role %d: %w", coordRole.ID, err)
+	}
+	taskID := strings.TrimSpace(latest.ArgusTaskID)
+	if taskID == "" {
+		return nil, validation(fmt.Sprintf("%q has no argus task id to re-parent", child.Name))
+	}
+	coordWorktree := latest.WorktreePath
+	if coordWorktree == "" {
+		return nil, validation(fmt.Sprintf(
+			"%q has no coordinator worktree to re-parent", child.Name,
+		))
+	}
+
+	// Find any existing parent linkage to tear down: a LIVE binding of C's coord
+	// task in an orchestrator OTHER than C itself (C nested under that parent).
+	// Only a live parent linkage is torn down — an ended one is already gone.
+	// C's own coordinator binding (OrchestratorID == C) is never a parent link.
 	live, err := s.DB.ListLiveBindingsByTask(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("ops.ReparentCoordinator: list bindings for %s: %w", taskID, err)
 	}
-	var coordWorktree string
 	var priorParentBindings []*Binding
 	for _, bnd := range live {
 		if bnd.OrchestratorID == in.ChildOrchestratorID {
-			// C's own coordinator binding — source of the worktree path.
-			coordWorktree = bnd.WorktreePath
+			// C's own coordinator binding — not a parent linkage.
 			continue
 		}
 		// A live binding of C's coord task in any OTHER orchestrator is a parent
@@ -124,11 +154,6 @@ func (s *Service) ReparentCoordinator(ctx context.Context, in ReparentCoordInput
 		// then a refresh — end it and recreate so the unique-binding indexes
 		// never collide).
 		priorParentBindings = append(priorParentBindings, bnd)
-	}
-	if coordWorktree == "" {
-		return nil, validation(fmt.Sprintf(
-			"%q has no live coordinator binding to re-parent — resurrect it first", child.Name,
-		))
 	}
 
 	// Tear down each prior parent linkage: end the binding and delete the
@@ -176,6 +201,25 @@ func (s *Service) ReparentCoordinator(ctx context.Context, in ReparentCoordInput
 		RoleID:                 role.ID,
 		BindingID:              bnd.ID,
 	}, nil
+}
+
+// coordRoleOf returns the coordinator role under orchID (the first
+// KindCoordinator role, active or archived), or a validation error when the
+// orchestrator has no coordinator role at all. Used by ReparentCoordinator to
+// recover the coordinator argus task + worktree from the coord role's latest
+// binding regardless of session liveness (BUG-025). name is the orchestrator's
+// name, used only for the error message.
+func (s *Service) coordRoleOf(ctx context.Context, orchID int64, name string) (*Role, error) {
+	roles, err := s.DB.ListRolesByOrchestratorInclusive(ctx, orchID)
+	if err != nil {
+		return nil, fmt.Errorf("ops.ReparentCoordinator: list roles for %d: %w", orchID, err)
+	}
+	for _, r := range roles {
+		if r.Kind == KindCoordinator {
+			return r, nil
+		}
+	}
+	return nil, validation(fmt.Sprintf("%q has no coordinator role to re-parent", name))
 }
 
 // defaultStr returns s trimmed, or fallback when s is blank.
