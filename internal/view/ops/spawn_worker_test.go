@@ -530,6 +530,150 @@ func TestSpawnWorker_BindingInsertFailureAfterCreate_NoRollback(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Project override tests (D3 — Tasks 1.1–1.4)
+// ---------------------------------------------------------------------------
+
+// TestSpawnWorker_ProjectOverride_UsesInProject asserts that when in.Project
+// is set (and different from the coord's project), both the argus task and the
+// inserted worker role use the override project.
+func TestSpawnWorker_ProjectOverride_UsesInProject(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	// Coord role lives in "foo-frontend".
+	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "foo-frontend", false)
+	argus.createResp = &CreatedTask{ID: "T10", Name: "build-the-api"}
+	argus.getTaskResp = &TaskDetails{ID: "T10", WorktreePath: "/wt/foo-backend/build-the-api"}
+
+	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
+		TargetOrchestratorID: orch.ID,
+		CoordRoleID:          coordRole.ID,
+		Prompt:               "build the API",
+		Project:              "foo-backend", // override: different from coord's project
+	})
+	if err != nil {
+		t.Fatalf("SpawnWorker: %v", err)
+	}
+
+	// CreateTaskRequest.Project must be the override.
+	if len(argus.createCalls) != 1 {
+		t.Fatalf("expected 1 CreateTask call, got %d", len(argus.createCalls))
+	}
+	if got := argus.createCalls[0].Project; got != "foo-backend" {
+		t.Fatalf("CreateTaskRequest.Project: want %q, got %q", "foo-backend", got)
+	}
+
+	// Worker role's ArgusProject must also be the override.
+	db.mu.Lock()
+	var workerRole *Role
+	for _, r := range db.roles {
+		if r.Kind == KindWorker {
+			workerRole = r
+			break
+		}
+	}
+	db.mu.Unlock()
+
+	if workerRole == nil {
+		t.Fatal("expected a worker role to be inserted")
+	}
+	if workerRole.ArgusProject != "foo-backend" {
+		t.Fatalf("worker role ArgusProject: want %q, got %q", "foo-backend", workerRole.ArgusProject)
+	}
+}
+
+// TestSpawnWorker_ProjectOverride_EmptyFallsBackToCoordProject asserts that
+// when in.Project is empty (the default), both the argus task and the worker
+// role use the coordinator role's argus_project — preserving today's behavior.
+func TestSpawnWorker_ProjectOverride_EmptyFallsBackToCoordProject(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "foo-frontend", false)
+	argus.createResp = &CreatedTask{ID: "T11", Name: "build-the-sidebar"}
+	argus.getTaskResp = &TaskDetails{ID: "T11", WorktreePath: "/wt/foo-frontend/build-the-sidebar"}
+
+	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
+		TargetOrchestratorID: orch.ID,
+		CoordRoleID:          coordRole.ID,
+		Prompt:               "build the sidebar",
+		// Project deliberately omitted (empty) — should fall back to coord's project.
+	})
+	if err != nil {
+		t.Fatalf("SpawnWorker: %v", err)
+	}
+
+	if len(argus.createCalls) != 1 {
+		t.Fatalf("expected 1 CreateTask call, got %d", len(argus.createCalls))
+	}
+	if got := argus.createCalls[0].Project; got != "foo-frontend" {
+		t.Fatalf("CreateTaskRequest.Project fallback: want %q, got %q", "foo-frontend", got)
+	}
+
+	db.mu.Lock()
+	var workerRole *Role
+	for _, r := range db.roles {
+		if r.Kind == KindWorker {
+			workerRole = r
+			break
+		}
+	}
+	db.mu.Unlock()
+
+	if workerRole == nil {
+		t.Fatal("expected a worker role to be inserted")
+	}
+	if workerRole.ArgusProject != "foo-frontend" {
+		t.Fatalf("worker role ArgusProject fallback: want %q, got %q", "foo-frontend", workerRole.ArgusProject)
+	}
+}
+
+// TestSpawnWorker_EmptyEffectiveProject_GuardFires asserts that when both
+// in.Project and the coord role's ArgusProject are empty, the empty-project
+// guard fires (validation error) and no argus task is created.
+func TestSpawnWorker_EmptyEffectiveProject_GuardFires(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("no-project-coord", false)
+	// Coord role intentionally has an empty ArgusProject.
+	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "", false)
+
+	argus.createCalls = nil
+	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
+		TargetOrchestratorID: orch.ID,
+		CoordRoleID:          coordRole.ID,
+		Prompt:               "do something",
+		Project:              "", // also empty
+	})
+	if err == nil {
+		t.Fatal("expected an error when effective project is empty; got nil")
+	}
+	if len(argus.createCalls) != 0 {
+		t.Fatalf("no argus task must be created when effective project is empty; got %d calls", len(argus.createCalls))
+	}
+}
+
+// TestCoordProject_ReturnsArgusProject asserts that CoordProject returns the
+// role's ArgusProject for a known role id, and returns an error for an unknown
+// role id.
+func TestCoordProject_ReturnsArgusProject(t *testing.T) {
+	s, db, _, _, _ := newTestService()
+	orch := db.seedOrchestrator("acme", false)
+	role := db.seedRole(orch.ID, "acme-coord", KindCoordinator, "acme-frontend", false)
+
+	got, err := s.CoordProject(context.Background(), role.ID)
+	if err != nil {
+		t.Fatalf("CoordProject: unexpected error: %v", err)
+	}
+	if got != "acme-frontend" {
+		t.Fatalf("CoordProject: want %q, got %q", "acme-frontend", got)
+	}
+
+	// Unknown role id must return an error.
+	_, err = s.CoordProject(context.Background(), 99999)
+	if err == nil {
+		t.Fatal("CoordProject: expected error for unknown role id, got nil")
+	}
+}
+
 // TestSpawnWorker_EmptySlugFallsBackToWorkerStem asserts that a prompt whose
 // slug is empty (e.g. all punctuation) falls back to the "worker" stem.
 func TestSpawnWorker_EmptySlugFallsBackToWorkerStem(t *testing.T) {

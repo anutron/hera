@@ -14,14 +14,14 @@ import (
 // modal kind so close logic can remove a specific page without
 // guessing.
 const (
-	pageBase          = "base"
-	pageInput         = "modal-input"
-	pageTextAreaInput = "modal-textarea-input"
-	pageForm2         = "modal-form2"
-	pageNewCoord      = "modal-new-coord"
-	pageConfirm       = "modal-confirm"
-	pageError         = "modal-error"
-	pageSelect        = "modal-select"
+	pageBase      = "base"
+	pageInput     = "modal-input"
+	pageForm2     = "modal-form2"
+	pageNewCoord  = "modal-new-coord"
+	pageNewWorker = "modal-new-worker"
+	pageConfirm   = "modal-confirm"
+	pageError     = "modal-error"
+	pageSelect    = "modal-select"
 )
 
 // modalWidth is the outer width every centered form modal is sized to (see
@@ -270,75 +270,6 @@ func (a *App) ShowInput(title, label, initial string, onSubmit func(string), onC
 
 		a.captureFocus()
 		a.pieces.pages.AddPage(pageInput, centeredModal(form, modalWidth, 7), true, true)
-		if a.app != nil {
-			a.app.SetFocus(input)
-		}
-	})
-}
-
-// ShowTextAreaInput opens a multi-line textarea input modal centered over the
-// base layout. onSubmit fires with the trimmed value when the operator hits
-// OK or presses Enter (with no modifier); onCancel fires on Cancel or Esc.
-// Shift+Enter (or any modified Enter) inserts a newline without submitting,
-// matching the pattern used by the Prompt field in ShowNewCoordForm.
-//
-// Safe to call from any goroutine — the body runs through
-// app.QueueUpdateDraw so it lands on the tview event loop.
-func (a *App) ShowTextAreaInput(title, label, initial string, onSubmit func(string), onCancel func()) {
-	a.queueModal(func() {
-		input := newStyledTextArea()
-		input.SetLabel(label + ": ")
-		if initial != "" {
-			input.SetText(initial, false)
-		}
-
-		form := tview.NewForm().
-			AddFormItem(input).
-			SetButtonsAlign(tview.AlignCenter)
-
-		dismiss := func(submitted bool) {
-			text := strings.TrimSpace(input.GetText())
-			a.closeModal(pageTextAreaInput)
-			if submitted {
-				if onSubmit != nil {
-					onSubmit(text)
-				}
-			} else if onCancel != nil {
-				onCancel()
-			}
-		}
-
-		form.AddButton("OK [enter]", func() { dismiss(true) })
-		form.AddButton("Cancel [esc]", func() { dismiss(false) })
-		form.SetCancelFunc(func() { dismiss(false) })
-
-		// Plain Enter submits; modified Enter (Shift/Ctrl) passes through so the
-		// TextArea can insert a newline.
-		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-			if ev.Key() != tcell.KeyEnter {
-				return ev
-			}
-			for i := 0; i < form.GetFormItemCount(); i++ {
-				if form.GetFormItem(i).HasFocus() {
-					if ev.Modifiers() == 0 {
-						dismiss(true)
-						return nil
-					}
-					return ev
-				}
-			}
-			return ev
-		})
-
-		themeFormStyle(form, title)
-
-		// Height: 1 textarea (3 visible rows = 4 row budget: 3 rows + 1 gap) plus
-		// button row, surrounding padding, and 2 border rows = same overhead as
-		// ShowInput (5) but textarea costs 4 rows vs 2 for a single-row field: 9.
-		const textAreaInputHeight = 9
-
-		a.captureFocus()
-		a.pieces.pages.AddPage(pageTextAreaInput, centeredModal(form, modalWidth, textAreaInputHeight), true, true)
 		if a.app != nil {
 			a.app.SetFocus(input)
 		}
@@ -708,6 +639,111 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		a.pieces.pages.AddPage(pageNewCoord, centeredModal(form, modalWidth, newCoordModalHeight), true, true)
 		if a.app != nil {
 			a.app.SetFocus(nameField)
+		}
+	})
+}
+
+// ShowNewWorkerForm opens the two-field new-worker form modal:
+// Project (inline cycler) and Prompt (multi-line textarea).
+// onSubmit fires with (selectedProject, trimmedPrompt) when the operator
+// confirms; onCancel fires on Esc.
+//
+// projects is the list loaded before open (from argus). defaultProjectIdx is
+// the index of the coordinator's own project within that list; it initializes
+// the cycler. When projects is empty the cycler shows "(no projects
+// configured)" and submit maps that sentinel to "" (the ops layer falls back
+// to the coordinator's project).
+//
+// Enter on the Project cycler advances focus (does NOT submit — the cycler's
+// own InputHandler calls finishedFunc(KeyTab)). Plain Enter on the Prompt
+// textarea submits; Shift/Ctrl+Enter inserts a newline (BUG-011).
+//
+// Safe to call from any goroutine — the body runs through app.QueueUpdateDraw
+// so it lands on the tview event loop.
+func (a *App) ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, onSubmit func(project, prompt string), onCancel func()) {
+	a.queueModal(func() {
+		fw := formFieldWidth("Project", "Prompt")
+
+		projOptions := projects
+		if len(projOptions) == 0 {
+			projOptions = []string{"(no projects configured)"}
+		}
+		projectCycler := newInlineCycler("Project: ", projOptions, defaultProjectIdx, fw)
+
+		promptField := newStyledTextArea()
+		promptField.SetLabel("Prompt: ")
+
+		form := tview.NewForm().
+			AddFormItem(projectCycler).
+			AddFormItem(promptField).
+			SetButtonsAlign(tview.AlignCenter)
+
+		dismiss := func(submitted bool) {
+			_, projOpt := projectCycler.GetCurrentOption()
+			if projOpt == "(no projects configured)" {
+				projOpt = ""
+			}
+			prompt := strings.TrimSpace(promptField.GetText())
+			a.closeModal(pageNewWorker)
+			if submitted {
+				if onSubmit != nil {
+					onSubmit(projOpt, prompt)
+				}
+			} else if onCancel != nil {
+				onCancel()
+			}
+		}
+
+		form.AddButton("Submit [enter]", func() { dismiss(true) })
+		form.AddButton("Cancel [esc]", func() { dismiss(false) })
+		form.SetCancelFunc(func() { dismiss(false) })
+
+		// Enter on the inlineCycler must NOT submit — the cycler passes Enter
+		// through to its own InputHandler, which calls finishedFunc(KeyTab) to
+		// advance focus without submitting. On the TextArea, plain Enter submits;
+		// modified Enter (Ctrl/Shift) passes through so the TextArea can insert a
+		// newline (BUG-011).
+		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+			if ev.Key() != tcell.KeyEnter {
+				return ev
+			}
+			for i := 0; i < form.GetFormItemCount(); i++ {
+				item := form.GetFormItem(i)
+				if !item.HasFocus() {
+					continue
+				}
+				switch item.(type) {
+				case *inlineCycler:
+					return ev // Cycler: Enter handled by its own InputHandler
+				case *styledTextArea:
+					// Plain Enter submits; modified Enter inserts newline in TextArea.
+					if ev.Modifiers() == 0 {
+						dismiss(true)
+						return nil
+					}
+					return ev
+				default:
+					dismiss(true)
+					return nil
+				}
+			}
+			return ev
+		})
+
+		themeFormStyle(form, title)
+
+		// Modal height: 1 single-row field (Project cycler) and 1 three-row
+		// TextArea (Prompt), with itemPadding=1 between each, plus button row,
+		// surrounding padding rows, and 2 border rows. The TextArea adds 4 rows
+		// (3 visible + 1 gap) vs 2 rows for a single-row field. Overhead is the
+		// same as ShowNewCoordForm (border + padding + button + padding = 5),
+		// but with 1 cycler row + 1 textarea row (heights 2 + 4) = 11.
+		const newWorkerModalHeight = 11
+
+		a.captureFocus()
+		a.pieces.pages.AddPage(pageNewWorker, centeredModal(form, modalWidth, newWorkerModalHeight), true, true)
+		if a.app != nil {
+			a.app.SetFocus(projectCycler)
 		}
 	})
 }

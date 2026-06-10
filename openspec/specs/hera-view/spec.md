@@ -887,15 +887,17 @@ The system SHALL give visible feedback (a dismissible message naming the key and
 
 ### Requirement: `w` spawns a worker under the selected coordinator
 
-The system SHALL, when the operator presses `w` while focus is `RAIL`, open a single-field input modal prompting for the new worker's **Prompt**. On confirm with a non-empty prompt, the system SHALL spawn a worker agent under the coordinator implied by the current selection and attach it programmatically, WITHOUT requiring the spawned worker's agent to call any hera MCP tool for the attachment.
+The system SHALL, when the operator presses `w` while focus is `RAIL`, open an input modal with a **Project** selector and a **Prompt** field. The Project selector SHALL be initialized to the coordinator's own `argus_project` and SHALL allow the operator to cycle to any other configured argus project. On confirm with a non-empty prompt, the system SHALL spawn a worker agent under the coordinator implied by the current selection, in the **selected project**, and attach it programmatically, WITHOUT requiring the spawned worker's agent to call any hera MCP tool for the attachment.
 
 Selection resolves to a target coordinator as follows: a coordinator row (root orchestrator header OR a sub-coordinator role row) targets that coordinator; an agent/worker row whose role belongs to a coordinator targets that agent's coordinator (the orchestrator of the agent's role). The selected agent/worker row's own liveness is irrelevant to resolution: an archived or dead agent row still resolves to its (valid) coordinator and spawns. A freelance row, a separator/expando row, or any selection not attached to a coordinator MUST NOT spawn anything — it MUST surface a dismissible "not applicable" notice (never a silent no-op).
 
-On confirm the system SHALL, in order: (1) resolve the target orchestrator and the coordinator role's `argus_project`; (2) derive a worker role name from the prompt and make it unique among the orchestrator's non-archived roles; (3) create an argus task via `POST /api/tasks` in that `argus_project` whose body carries the worker's prompt, AND mirror `meta:hera.role=worker` to the created task; (4) read the created task's `worktree_path` via `GET /api/tasks/{id}`; (5) insert a worker role (`kind=worker`, the resolved `argus_project`, `mission` set to the operator's prompt, the derived name) and a binding tying the role to the created task id and carrying the resolved `worktree_path`. The role and binding inserts MUST emit on the rail broadcaster so the rail repopulates, rendering the new worker nested under its coordinator within approximately 100 ms, and the system MUST auto-select the new worker row while leaving focus in `RAIL`. Auto-select is best-effort and broadcaster-driven: the new row is selected on the next `populateRail` in which it exists; if the row does not appear within a bounded number of repopulates, the pending selection MUST be abandoned and the abandonment logged (the cursor simply does not move), never retried unboundedly.
+The **effective project** is the project chosen in the modal's Project selector; when the operator leaves the selector untouched it is the coordinator role's `argus_project` (the default). When the configured project list is empty, the selector MUST degrade to a visible "(no projects configured)" entry that maps to the coordinator's `argus_project` on confirm.
+
+On confirm the system SHALL, in order: (1) resolve the target orchestrator and the effective project; (2) derive a worker role name from the prompt and make it unique among the orchestrator's non-archived roles; (3) create an argus task via `POST /api/tasks` in the effective project whose body carries the worker's prompt, AND mirror `meta:hera.role=worker` to the created task; (4) read the created task's `worktree_path` via `GET /api/tasks/{id}`; (5) insert a worker role (`kind=worker`, the effective project as its `argus_project`, `mission` set to the operator's prompt, the derived name) and a binding tying the role to the created task id and carrying the resolved `worktree_path`. The role and binding inserts MUST emit on the rail broadcaster so the rail repopulates, rendering the new worker nested under its coordinator within approximately 100 ms, and the system MUST auto-select the new worker row while leaving focus in `RAIL`. Auto-select is best-effort and broadcaster-driven: the new row is selected on the next `populateRail` in which it exists; if the row does not appear within a bounded number of repopulates, the pending selection MUST be abandoned and the abandonment logged (the cursor simply does not move), never retried unboundedly.
 
 The created task's prompt SHALL be a short hera orientation prefix (naming the coordinator and noting the worker may report progress via `hera_send`) followed by the operator's prompt text verbatim. An empty (or whitespace-only) prompt MUST be rejected: no argus task MUST be created and no role or binding row MUST be inserted, AND the rejection MUST be operator-visible — a dismissible notice (never a silent modal close).
 
-The spawn's blocking work (argus calls and DB inserts) MUST run off the tview event loop per the rail-mutation contract; a failure MUST surface as an error modal via the event-loop queue without freezing the UI. The argus task is created via the existing scope-token `POST /api/tasks`, so the worker branches off the coordinator's argus-project default ref; no base branch is selected.
+The spawn's blocking work (argus calls and DB inserts) MUST run off the tview event loop per the rail-mutation contract; a failure MUST surface as an error modal via the event-loop queue without freezing the UI. The argus task is created via the existing scope-token `POST /api/tasks`, so the worker branches off the effective project's default ref; no base branch is selected.
 
 The spawn is resilient to two partial-failure modes after the argus task has been created:
 
@@ -905,7 +907,12 @@ The spawn is resilient to two partial-failure modes after the argus task has bee
 #### Scenario: `w` in RAIL opens the spawn-worker modal on a coordinator
 
 - **WHEN** focus is `RAIL`, a coordinator row (root or sub) is selected, and the operator presses `w`
-- **THEN** the view MUST open a single-field input modal prompting for the worker's prompt
+- **THEN** the view MUST open an input modal with a Project selector and a Prompt field
+
+#### Scenario: Project selector defaults to the coordinator's project
+
+- **WHEN** focus is `RAIL`, a coordinator whose coord role's `argus_project` is `foo-frontend` is selected, and the operator presses `w`
+- **THEN** the modal's Project selector MUST be initialized to `foo-frontend`
 
 #### Scenario: `w` resolves an agent selection to its coordinator
 
@@ -927,10 +934,20 @@ The spawn is resilient to two partial-failure modes after the argus task has bee
 - **WHEN** the operator confirms the spawn-worker modal with an empty (or whitespace-only) prompt
 - **THEN** a dismissible "prompt is required" notice MUST appear (NOT a silent modal close) AND no argus task MUST be created AND no role or binding row MUST be inserted
 
-#### Scenario: Confirm spawns a task in the coordinator's project with worker meta
+#### Scenario: Untouched selector spawns in the coordinator's project
 
-- **WHEN** the operator confirms the spawn-worker modal against coordinator `foo` whose coord role's `argus_project` is `foo-frontend`, with prompt `build the sidebar`
-- **THEN** the daemon MUST issue a `POST /api/tasks` with project `foo-frontend` AND MUST mirror `meta:hera.role=worker` to the created task
+- **WHEN** the operator confirms the spawn-worker modal against coordinator `foo` whose coord role's `argus_project` is `foo-frontend` WITHOUT cycling the Project selector, with prompt `build the sidebar`
+- **THEN** the daemon MUST issue a `POST /api/tasks` with project `foo-frontend` AND MUST mirror `meta:hera.role=worker` to the created task AND the inserted worker role's `argus_project` MUST be `foo-frontend`
+
+#### Scenario: Cycled selector spawns in the chosen project
+
+- **WHEN** the operator confirms the spawn-worker modal against coordinator `foo` (coord project `foo-frontend`) after cycling the Project selector to `foo-backend`, with prompt `build the API`
+- **THEN** the daemon MUST issue a `POST /api/tasks` with project `foo-backend` AND the inserted worker role's `argus_project` MUST be `foo-backend`
+
+#### Scenario: Empty project list degrades to the coordinator's project
+
+- **WHEN** the configured argus project list is empty and the operator confirms the spawn-worker modal against coordinator `foo` (coord project `foo-frontend`) with a non-empty prompt
+- **THEN** the Project selector MUST have shown a "(no projects configured)" entry AND the daemon MUST issue a `POST /api/tasks` with project `foo-frontend`
 
 #### Scenario: Role and binding are inserted programmatically with the worktree path
 

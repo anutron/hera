@@ -92,6 +92,11 @@ type mutationService interface {
 	// prompt; other errors surface as an error modal.
 	SpawnWorker(ctx context.Context, in ops.SpawnWorkerInput) (*ops.SpawnWorkerResult, error)
 
+	// CoordProject loads the coordinator role identified by coordRoleID and
+	// returns its argus_project. Used by OnNewWorker to seed the Project
+	// cycler default before opening the new-worker form modal.
+	CoordProject(ctx context.Context, coordRoleID int64) (string, error)
+
 	// Task-direct verbs for freelance rows (unmanaged argus tasks with no hera
 	// role or binding): both bypass the hera-binding lookup and address the
 	// argus task by id. ToggleArchiveTask backs `a`; archived is the task's
@@ -149,11 +154,6 @@ type modalAPI interface {
 	// with the entered text when the operator confirms; onCancel runs
 	// on cancel. Either callback may be nil.
 	ShowInput(title, label, initial string, onSubmit func(value string), onCancel func())
-	// ShowTextAreaInput opens a multi-line textarea input modal. Plain Enter
-	// submits; Shift+Enter (or any modified Enter) inserts a newline. onSubmit
-	// is invoked with the entered text on confirm; onCancel runs on cancel.
-	// Either callback may be nil.
-	ShowTextAreaInput(title, label, initial string, onSubmit func(value string), onCancel func())
 	// ShowForm2 opens a two-field input modal. onSubmit is invoked with both
 	// trimmed values when the operator confirms; onCancel runs on cancel.
 	// Used by the new-project flow (name required, prompt optional). Either
@@ -165,6 +165,13 @@ type modalAPI interface {
 	// non-empty name; onCancel fires on Esc or empty-name submit.
 	// Either callback may be nil.
 	ShowNewCoordForm(title string, projects, backends []string, onSubmit func(NewCoordFormInput), onCancel func())
+	// ShowNewWorkerForm opens the two-field new-worker form modal:
+	// Project (inline cycler) and Prompt (multi-line textarea).
+	// projects and defaultProjectIdx are loaded before open; defaultProjectIdx
+	// initializes the cycler to the coordinator's own project. onSubmit fires
+	// with (selectedProject, trimmedPrompt) on confirm; onCancel fires on Esc.
+	// Either callback may be nil.
+	ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, onSubmit func(project, prompt string), onCancel func())
 	// ShowConfirm opens a y/N confirmation modal. onYes runs when the
 	// operator picks Yes; onNo runs on No or cancel. Either may be nil.
 	ShowConfirm(title, message string, onYes func(), onNo func())
@@ -548,17 +555,19 @@ func (b *mutationBridge) OnNew() {
 	})
 }
 
-// OnNewWorker handles the `w` RAIL-focus-only key (D1). It:
+// OnNewWorker handles the `w` RAIL-focus-only key. It:
 //  1. Resolves the target coordinator from the current rail selection.
-//  2. Opens a single-field input modal prompting for the worker's prompt.
-//  3. On confirm with a non-empty prompt, runs SpawnWorker off the event loop.
-//  4. On success, auto-selects the new worker row while keeping focus RAIL.
+//  2. Fetches the project list and the coordinator's own project (for default).
+//  3. Opens a two-field form modal (Project cycler + Prompt textarea).
+//  4. On confirm with a non-empty prompt, runs SpawnWorker off the event loop
+//     passing the operator-selected project.
+//  5. On success, auto-selects the new worker row while keeping focus RAIL.
 //
-// Selection resolution (D2):
+// Selection resolution:
 //   - Orchestrator header → that orchestrator's coord role (CoordRoleID).
 //   - Sub-coordinator role row (a promoted worker whose own task coordinates a
 //     child orchestrator) → that CHILD orchestrator, with this row's own role
-//     as coord (D2: a sub-coordinator row targets itself).
+//     as coord (a sub-coordinator row targets itself).
 //   - Leaf agent/worker role row → that agent's orchestrator (OrchestratorID),
 //     using CoordRoleID carried on the selection.
 //   - Freelance row, selNone, or any selection without a coordinator →
@@ -614,10 +623,29 @@ func (b *mutationBridge) OnNewWorker() {
 	capturedCoordRoleID := coordRoleID
 
 	b.goUI(func() {
-		b.modals.ShowTextAreaInput("New worker", "Prompt", "", func(prompt string) {
+		projects, err := b.svc.ListProjects(b.ctx)
+		if err != nil {
+			b.modals.ShowError("new worker: could not load projects: " + err.Error())
+			return
+		}
+		coordProj, err := b.svc.CoordProject(b.ctx, capturedCoordRoleID)
+		if err != nil {
+			b.modals.ShowError("new worker: could not load coordinator project: " + err.Error())
+			return
+		}
+		// Compute the default cycler index: the position of the coordinator's
+		// project in the list, falling back to 0 if not found or list is empty.
+		defaultIdx := 0
+		for i, p := range projects {
+			if p == coordProj {
+				defaultIdx = i
+				break
+			}
+		}
+		b.modals.ShowNewWorkerForm("New worker", projects, defaultIdx, func(project, prompt string) {
 			if strings.TrimSpace(prompt) == "" {
 				// Empty/whitespace confirm: surface a dismissible notice rather
-				// than closing silently (D1). No argus/DB call on this path.
+				// than closing silently. No argus/DB call on this path.
 				b.notApplicable("w: prompt is required")
 				return
 			}
@@ -626,11 +654,12 @@ func (b *mutationBridge) OnNewWorker() {
 					TargetOrchestratorID: capturedOrchID,
 					CoordRoleID:          capturedCoordRoleID,
 					Prompt:               prompt,
+					Project:              project,
 				})
 				if err != nil {
 					return err
 				}
-				// Auto-select the new worker row (D3/D7). The rail repopulate is
+				// Auto-select the new worker row. The rail repopulate is
 				// broadcaster-driven (~100ms) and has NOT run yet, so the row does
 				// not exist in the rail at this instant — an immediate select would
 				// silently no-op. Instead we STASH the role id; the App applies it

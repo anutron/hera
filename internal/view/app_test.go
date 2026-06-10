@@ -3555,8 +3555,8 @@ func TestApp_OnNewWorker_AgentRow_SpawnsUnderCoord_RealSelection(t *testing.T) {
 		t.Fatalf("could not select worker row")
 	}
 
-	m := &fakeModals{stubTextAreaInputAnswer: "do work"}
-	svc := &fakeMutationService{}
+	m := &fakeModals{stubNewWorkerProject: "proj", stubNewWorkerPrompt: "do work"}
+	svc := &fakeMutationService{listProjectsResp: []string{"proj"}, coordProjectResp: "proj"}
 	// Wire the REAL App as the selector; bridge resolves the target from it.
 	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
 
@@ -3603,8 +3603,8 @@ func TestApp_OnNewWorker_SubCoordRow_SpawnsUnderChild_RealSelection(t *testing.T
 		t.Fatalf("could not select sub-coordinator row")
 	}
 
-	m := &fakeModals{stubTextAreaInputAnswer: "do work"}
-	svc := &fakeMutationService{}
+	m := &fakeModals{stubNewWorkerProject: "p", stubNewWorkerPrompt: "do work"}
+	svc := &fakeMutationService{listProjectsResp: []string{"p"}, coordProjectResp: "p"}
 	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
 
 	b.OnNewWorker()
@@ -3667,8 +3667,8 @@ func TestApp_OnNewWorker_ArchivedAgentRow_SpawnsUnderCoord_RealSelection(t *test
 		t.Fatalf("archived worker row must still carry CoordRoleID %d; got %d", coord.ID, sel.CoordRoleID)
 	}
 
-	m := &fakeModals{stubTextAreaInputAnswer: "do work"}
-	svc := &fakeMutationService{}
+	m := &fakeModals{stubNewWorkerProject: "proj", stubNewWorkerPrompt: "do work"}
+	svc := &fakeMutationService{listProjectsResp: []string{"proj"}, coordProjectResp: "proj"}
 	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
 	b.OnNewWorker()
 	b.waitIdle()
@@ -3725,8 +3725,8 @@ func TestApp_OnNewWorker_DeadAgentRow_SpawnsUnderCoord_RealSelection(t *testing.
 		t.Fatalf("dead worker row must still carry CoordRoleID %d; got %d", coord.ID, sel.CoordRoleID)
 	}
 
-	m := &fakeModals{stubTextAreaInputAnswer: "do work"}
-	svc := &fakeMutationService{}
+	m := &fakeModals{stubNewWorkerProject: "proj", stubNewWorkerPrompt: "do work"}
+	svc := &fakeMutationService{listProjectsResp: []string{"proj"}, coordProjectResp: "proj"}
 	b := newMutationBridge(context.Background(), m, a, svc, &fakeListAll{}, &fakeRepopulator{}, nil, nil)
 	b.OnNewWorker()
 	b.waitIdle()
