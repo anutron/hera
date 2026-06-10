@@ -384,22 +384,24 @@ type fakeMutationService struct {
 	unpinRoleCalls     []int64
 	unpinRoleErr       error
 
-	completedAgents  []ops.CompletedAgent
-	listCompletedErr error
-	pruneCalls       [][]ops.CompletedAgent
-	pruneErr         error
-	advanceCalls     []int64
-	advanceErr       error
-	revertCalls      []int64
-	revertErr        error
-	openPRCalls      []int64
-	openPRErr        error
-	openPRWtCalls    []string
-	openPRWtErr      error
-	resurrectCalls   []int64
-	resurrectErr     error
-	reattachCalls    []string
-	reattachErr      error
+	completedAgents    []ops.CompletedAgent
+	listCompletedErr   error
+	pruneCalls         [][]ops.CompletedAgent
+	pruneErr           error
+	advanceCalls       []int64
+	advanceErr         error
+	revertCalls        []int64
+	revertErr          error
+	openPRCalls        []int64
+	openPRErr          error
+	openPRWtCalls      []string
+	openPRWtErr        error
+	resurrectCalls     []int64
+	resurrectErr       error
+	resurrectRoleCalls []int64
+	resurrectRoleErr   error
+	reattachCalls      []string
+	reattachErr        error
 
 	// Task-direct verbs (freelance rows).
 	toggleArchiveTaskCalls []toggleTaskCall
@@ -716,6 +718,16 @@ func (s *fakeMutationService) ResurrectOrchestrator(_ context.Context, coordRole
 	return &ops.CreatedTask{ID: "task-resurrect"}, nil
 }
 
+func (s *fakeMutationService) ResurrectRole(_ context.Context, roleID int64) (*ops.ResurrectRoleResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resurrectRoleCalls = append(s.resurrectRoleCalls, roleID)
+	if s.resurrectRoleErr != nil {
+		return nil, s.resurrectRoleErr
+	}
+	return &ops.ResurrectRoleResult{RoleID: roleID, ArgusTaskID: "task-revived"}, nil
+}
+
 func (s *fakeMutationService) ReattachAgent(_ context.Context, argusTaskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -818,6 +830,22 @@ type fakeReattachNotifier struct{ notified []string }
 
 func (f *fakeReattachNotifier) OnTaskReattached(taskID string) {
 	f.notified = append(f.notified, taskID)
+}
+
+// fakeReattachPaneStarter records StartPaneReattach / ClearPaneReattach calls so
+// BUG-028 revive tests can assert the REATTACHING splash was shown on the fresh
+// task's pane.
+type fakeReattachPaneStarter struct {
+	started []string
+	cleared []string
+}
+
+func (f *fakeReattachPaneStarter) StartPaneReattach(taskID string) {
+	f.started = append(f.started, taskID)
+}
+
+func (f *fakeReattachPaneStarter) ClearPaneReattach(taskID string) {
+	f.cleared = append(f.cleared, taskID)
 }
 
 func newBridgeUnderTestWithHelp() (*mutationBridge, *fakeModals, *fakeSelector, *fakeMutationService, *fakeListAll, *fakeRepopulator, *fakeHelpSender) {
@@ -2242,16 +2270,16 @@ func TestBridge_OnReattach_MixedCoord_ReattachFails_ShowsError(t *testing.T) {
 	}
 }
 
-// BUG-020: a ⊘ mixed-coord header whose worktree was deleted out-of-band can't
-// be revived. When the restart surfaces ErrWorktreeMissing, OnReattach must NOT
-// show the raw error — it offers to delete the orphan, and on confirm routes to
-// DeleteOrchestrator so the coord clears from the rail.
-func TestBridge_OnReattach_MixedCoord_WorktreeMissing_OffersDelete(t *testing.T) {
+// BUG-028: a ⊘ mixed-coord header whose worktree was deleted out-of-band offers
+// a THREE-way recovery picker (revive / delete / esc). Choosing DELETE (index 1)
+// routes to DeleteOrchestrator so the coord clears from the rail.
+func TestBridge_OnReattach_MixedCoord_WorktreeMissing_OffersReviveAndDelete_DeleteChoice(t *testing.T) {
 	b, m, sel, svc, _, rp := newBridgeUnderTest()
-	m.stubConfirmYes = true
+	m.stubSelectIndex = 1 // delete
 	sel.sel = railSelection{
 		Kind:               selOrchestrator,
 		OrchestratorID:     9,
+		CoordRoleID:        77,
 		Name:               "orphan-coord",
 		CoordTaskID:        "T1",
 		CoordArgusArchived: true,
@@ -2272,22 +2300,92 @@ func TestBridge_OnReattach_MixedCoord_WorktreeMissing_OffersDelete(t *testing.T)
 	if len(m.errors) != 0 {
 		t.Fatalf("worktree-missing must not surface a raw error modal; got %v", m.errors)
 	}
-	// A delete-offer confirmation was shown and, on Yes, DeleteOrchestrator ran.
-	if m.ConfirmCount() != 1 {
-		t.Fatalf("want one delete-offer confirm; got %d", m.ConfirmCount())
+	// A revive/delete picker was shown; the picker lists revive first.
+	if m.SelectCount() != 1 {
+		t.Fatalf("want one revive/delete picker; got %d", m.SelectCount())
+	}
+	if items := m.selects[0].Items; len(items) != 2 || items[0] != "Revive a fresh instance" {
+		t.Fatalf("picker items = %v; want revive first", items)
 	}
 	if len(svc.deleteOrchCalls) != 1 || svc.deleteOrchCalls[0] != 9 {
-		t.Fatalf("confirm=Yes must call DeleteOrchestrator(9); got %v", svc.deleteOrchCalls)
+		t.Fatalf("delete choice must call DeleteOrchestrator(9); got %v", svc.deleteOrchCalls)
+	}
+	if len(svc.resurrectRoleCalls) != 0 {
+		t.Fatalf("delete choice must NOT resurrect; got %v", svc.resurrectRoleCalls)
 	}
 	if rp.Count() < 1 {
 		t.Fatalf("a successful orphan delete must refresh the rail; got %d", rp.Count())
 	}
 }
 
-// On the delete-offer for a worktree-missing coord, confirm=No must NOT delete.
-func TestBridge_OnReattach_MixedCoord_WorktreeMissing_ConfirmNo_NoDelete(t *testing.T) {
+// BUG-028: choosing REVIVE (index 0) on the mixed-coord worktree-missing picker
+// routes to ResurrectRole with the header's coord role id, shows the REATTACHING
+// splash on the fresh task, and selects the revived row.
+func TestBridge_OnReattach_MixedCoord_WorktreeMissing_ReviveChoice(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
-	m.stubConfirmYes = false
+	splash := &fakeReattachPaneStarter{}
+	rowSel := &fakeRowSelector{}
+	b.splashStart = splash
+	b.rowSel = rowSel
+	m.stubSelectIndex = 0 // revive
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     9,
+		CoordRoleID:        77,
+		Name:               "orphan-coord",
+		CoordTaskID:        "T1",
+		CoordArgusArchived: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if len(svc.resurrectRoleCalls) != 1 || svc.resurrectRoleCalls[0] != 77 {
+		t.Fatalf("revive must call ResurrectRole(77); got %v", svc.resurrectRoleCalls)
+	}
+	if len(svc.deleteOrchCalls) != 0 {
+		t.Fatalf("revive must NOT delete; got %v", svc.deleteOrchCalls)
+	}
+	if n := len(splash.started); n == 0 || splash.started[n-1] != "task-revived" {
+		t.Fatalf("revive must show the splash on the fresh task; got %v", splash.started)
+	}
+	if rowSel.LastQueued() != 77 {
+		t.Fatalf("revive must select the revived role row; got %d", rowSel.LastQueued())
+	}
+}
+
+// On the revive/delete picker for a worktree-missing coord, esc (cancel) must do
+// neither.
+func TestBridge_OnReattach_MixedCoord_WorktreeMissing_Cancel_NoAction(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	m.stubSelectCancel = true
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     9,
+		CoordRoleID:        77,
+		Name:               "orphan-coord",
+		CoordTaskID:        "T1",
+		CoordArgusArchived: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if m.SelectCount() != 1 {
+		t.Fatalf("want the revive/delete picker to be shown; got %d", m.SelectCount())
+	}
+	if len(svc.deleteOrchCalls) != 0 || len(svc.resurrectRoleCalls) != 0 {
+		t.Fatalf("esc must do nothing; del=%v revive=%v", svc.deleteOrchCalls, svc.resurrectRoleCalls)
+	}
+}
+
+// A mixed-coord header with NO coord role (CoordRoleID 0) cannot be revived, so
+// it falls back to the BUG-020 delete-only confirm.
+func TestBridge_OnReattach_MixedCoord_WorktreeMissing_NoCoordRole_DeleteOnly(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	m.stubConfirmYes = true
 	sel.sel = railSelection{
 		Kind:               selOrchestrator,
 		OrchestratorID:     9,
@@ -2300,20 +2398,22 @@ func TestBridge_OnReattach_MixedCoord_WorktreeMissing_ConfirmNo_NoDelete(t *test
 	b.OnReattach()
 	b.waitIdle()
 
-	if m.ConfirmCount() != 1 {
-		t.Fatalf("want the delete-offer confirm to be shown; got %d", m.ConfirmCount())
+	if m.SelectCount() != 0 {
+		t.Fatalf("no coord role → no revive picker; got %d", m.SelectCount())
 	}
-	if len(svc.deleteOrchCalls) != 0 {
-		t.Fatalf("confirm=No must NOT delete; got %v", svc.deleteOrchCalls)
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want the delete-only confirm; got %d", m.ConfirmCount())
+	}
+	if len(svc.deleteOrchCalls) != 1 || svc.deleteOrchCalls[0] != 9 {
+		t.Fatalf("confirm=Yes must call DeleteOrchestrator(9); got %v", svc.deleteOrchCalls)
 	}
 }
 
-// BUG-020 (role variant): a dead-session worker whose worktree is gone offers
-// to delete the orphaned role (routing to DeleteRole) rather than show the raw
-// argus 500.
-func TestBridge_OnReattach_DeadSessionWorker_WorktreeMissing_OffersDelete(t *testing.T) {
+// BUG-028 (role variant): a dead-session worker whose worktree is gone offers the
+// revive/delete picker. Choosing DELETE (index 1) routes to DeleteRole.
+func TestBridge_OnReattach_DeadSessionWorker_WorktreeMissing_DeleteChoice(t *testing.T) {
 	b, m, sel, svc, _, _ := newBridgeUnderTest()
-	m.stubConfirmYes = true
+	m.stubSelectIndex = 1 // delete
 	sel.sel = railSelection{
 		Kind:           selRole,
 		RoleID:         13,
@@ -2333,11 +2433,84 @@ func TestBridge_OnReattach_DeadSessionWorker_WorktreeMissing_OffersDelete(t *tes
 	if len(m.errors) != 0 {
 		t.Fatalf("worktree-missing must not surface a raw error modal; got %v", m.errors)
 	}
-	if m.ConfirmCount() != 1 {
-		t.Fatalf("want one delete-offer confirm; got %d", m.ConfirmCount())
+	if m.SelectCount() != 1 {
+		t.Fatalf("want one revive/delete picker; got %d", m.SelectCount())
 	}
 	if len(svc.deleteRoleCalls) != 1 || svc.deleteRoleCalls[0] != 13 {
-		t.Fatalf("confirm=Yes must call DeleteRole(13); got %v", svc.deleteRoleCalls)
+		t.Fatalf("delete choice must call DeleteRole(13); got %v", svc.deleteRoleCalls)
+	}
+	if len(svc.resurrectRoleCalls) != 0 {
+		t.Fatalf("delete choice must NOT resurrect; got %v", svc.resurrectRoleCalls)
+	}
+}
+
+// BUG-028 (role variant): choosing REVIVE (index 0) on a worktree-missing worker
+// routes to ResurrectRole with the role id, shows the splash, and selects the row.
+func TestBridge_OnReattach_DeadSessionWorker_WorktreeMissing_ReviveChoice(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	splash := &fakeReattachPaneStarter{}
+	rowSel := &fakeRowSelector{}
+	notifier := &fakeReattachNotifier{}
+	b.splashStart = splash
+	b.rowSel = rowSel
+	b.reattach = notifier
+	m.stubSelectIndex = 0 // revive
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         13,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-orphan",
+		HasDeadSession: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if len(svc.resurrectRoleCalls) != 1 || svc.resurrectRoleCalls[0] != 13 {
+		t.Fatalf("revive must call ResurrectRole(13); got %v", svc.resurrectRoleCalls)
+	}
+	if len(svc.deleteRoleCalls) != 0 {
+		t.Fatalf("revive must NOT delete; got %v", svc.deleteRoleCalls)
+	}
+	if n := len(splash.started); n == 0 || splash.started[n-1] != "task-revived" {
+		t.Fatalf("revive must show the splash on the fresh task; got %v", splash.started)
+	}
+	if len(notifier.notified) != 1 || notifier.notified[0] != "task-revived" {
+		t.Fatalf("revive must notify the reattach notifier for the fresh task; got %v", notifier.notified)
+	}
+	if rowSel.LastQueued() != 13 {
+		t.Fatalf("revive must select the revived role row; got %d", rowSel.LastQueued())
+	}
+}
+
+// A revive that fails surfaces the error modal and does not delete.
+func TestBridge_OnReattach_DeadSessionWorker_WorktreeMissing_ReviveError(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	m.stubSelectIndex = 0 // revive
+	svc.resurrectRoleErr = errors.New("boom")
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         13,
+		Name:           "agent-1",
+		RoleKind:       "worker",
+		ArgusTaskID:    "task-orphan",
+		HasDeadSession: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if len(svc.resurrectRoleCalls) != 1 {
+		t.Fatalf("want one ResurrectRole attempt; got %v", svc.resurrectRoleCalls)
+	}
+	if len(m.errors) != 1 || !strings.Contains(m.errors[0], "boom") {
+		t.Fatalf("revive failure must surface its error; got %v", m.errors)
+	}
+	if len(svc.deleteRoleCalls) != 0 {
+		t.Fatalf("revive failure must NOT delete; got %v", svc.deleteRoleCalls)
 	}
 }
 

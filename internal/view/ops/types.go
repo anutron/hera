@@ -81,6 +81,18 @@ type SpawnWorkerResult struct {
 	ArgusTaskID string
 }
 
+// ResurrectRoleResult carries the identifiers of the EXISTING role and the
+// FRESH argus task ResurrectRole bound to it (BUG-028). The bridge uses RoleID
+// to auto-select the now-live row after the rail repopulates and ArgusTaskID to
+// drive the REATTACHING splash + pane resize on the new session.
+type ResurrectRoleResult struct {
+	// RoleID is the resurrected role's database id — UNCHANGED from before the
+	// resurrection (role identity is preserved; no new role is created).
+	RoleID int64
+	// ArgusTaskID is the freshly-created argus task's id, now bound to RoleID.
+	ArgusTaskID string
+}
+
 // NewOrchestratorResult carries the identifiers of the orchestrator, coordinator
 // role, and argus task created by NewOrchestrator. The bridge uses RoleID for
 // auto-selection so the new coordinator appears selected after the rail repopulates.
