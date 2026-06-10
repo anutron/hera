@@ -418,6 +418,8 @@ type fakeMutationService struct {
 	completeRoleErr   error
 	completeTaskCalls []string
 	completeTaskErr   error
+	deleteTaskCalls   []string
+	deleteTaskErr     error
 
 	// CompleteArchivedDescendants (`C` key). completeArchivedFound is the
 	// number of archived descendants the sweep encountered (drives the
@@ -651,6 +653,13 @@ func (s *fakeMutationService) CompleteTaskByID(_ context.Context, taskID string)
 	defer s.mu.Unlock()
 	s.completeTaskCalls = append(s.completeTaskCalls, taskID)
 	return s.completeTaskErr
+}
+
+func (s *fakeMutationService) DeleteTaskByID(_ context.Context, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteTaskCalls = append(s.deleteTaskCalls, taskID)
+	return s.deleteTaskErr
 }
 
 func (s *fakeMutationService) ListCompletedAgents(_ context.Context) ([]ops.CompletedAgent, error) {
@@ -2441,6 +2450,78 @@ func TestBridge_OnReattach_DeadSessionWorker_WorktreeMissing_DeleteChoice(t *tes
 	}
 	if len(svc.resurrectRoleCalls) != 0 {
 		t.Fatalf("delete choice must NOT resurrect; got %v", svc.resurrectRoleCalls)
+	}
+}
+
+// BUG-030 (freelancer addendum to BUG-028): a dead-session FREELANCER (RoleID 0)
+// whose worktree is gone cannot be revived — there is no durable hera role to
+// rebind — so it falls back to the BUG-020 delete-only confirm, deleting the
+// argus task directly by id. It MUST NOT surface the raw argus 500 (the prior
+// behaviour) and MUST NOT open the revive picker.
+func TestBridge_OnReattach_DeadSessionFreelancer_WorktreeMissing_DeleteOnly(t *testing.T) {
+	b, m, sel, svc, _, rp := newBridgeUnderTest()
+	m.stubConfirmYes = true
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         0, // freelancer: no hera role
+		Name:           "free-orphan",
+		RoleKind:       "freelance",
+		ArgusTaskID:    "task-free-orphan",
+		HasDeadSession: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must own the Enter for a dead-session freelancer")
+	}
+	if len(m.errors) != 0 {
+		t.Fatalf("worktree-missing must not surface a raw error modal; got %v", m.errors)
+	}
+	// Delete-only confirm, NOT the revive picker (revive needs a durable role).
+	if m.SelectCount() != 0 {
+		t.Fatalf("freelancer has no role to revive → no revive picker; got %d", m.SelectCount())
+	}
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want the delete-only confirm; got %d", m.ConfirmCount())
+	}
+	// Delete targets the argus task directly by id (the freelancer IS the task).
+	if len(svc.deleteTaskCalls) != 1 || svc.deleteTaskCalls[0] != "task-free-orphan" {
+		t.Fatalf("confirm=Yes must call DeleteTaskByID(task-free-orphan); got %v", svc.deleteTaskCalls)
+	}
+	if len(svc.deleteRoleCalls) != 0 || len(svc.deleteOrchCalls) != 0 || len(svc.resurrectRoleCalls) != 0 {
+		t.Fatalf("freelancer delete must not touch role/orch/resurrect; del=%v orch=%v rev=%v",
+			svc.deleteRoleCalls, svc.deleteOrchCalls, svc.resurrectRoleCalls)
+	}
+	if rp.Count() < 1 {
+		t.Fatalf("delete must refresh the rail so the orphan clears; got %d", rp.Count())
+	}
+}
+
+// BUG-030: esc/No on the freelancer delete-only confirm deletes nothing.
+func TestBridge_OnReattach_DeadSessionFreelancer_WorktreeMissing_NoChoice_NoAction(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	m.stubConfirmYes = false // operator declines
+	sel.sel = railSelection{
+		Kind:           selRole,
+		RoleID:         0,
+		Name:           "free-orphan",
+		RoleKind:       "freelance",
+		ArgusTaskID:    "task-free-orphan",
+		HasDeadSession: true,
+	}
+	svc.reattachErr = ops.ErrWorktreeMissing
+
+	b.OnReattach()
+	b.waitIdle()
+
+	if m.ConfirmCount() != 1 {
+		t.Fatalf("want the delete-only confirm to be shown; got %d", m.ConfirmCount())
+	}
+	if len(svc.deleteTaskCalls) != 0 {
+		t.Fatalf("declining the confirm must delete nothing; got %v", svc.deleteTaskCalls)
 	}
 }
 

@@ -36,6 +36,33 @@ func (s *Service) DeleteRole(ctx context.Context, id int64) error {
 	return s.deleteRoleInternal(ctx, role)
 }
 
+// DeleteTaskByID destroys an argus task directly by id, bypassing the hera
+// binding lookup. Backs the worktree-missing reattach delete-only offer on a
+// FREELANCE row — an unmanaged argus task with no hera role to delete (BUG-030,
+// the freelancer addendum to BUG-028's revive-or-delete picker). argus removes
+// the task's git worktree AND branch server-side; a task argus reports as
+// already gone (HTTP 404) is treated as success by the client.
+//
+// An orphaned freelancer's worktree is exactly the thing that's already gone
+// (it's why the reattach failed), so a worktree-missing failure (BUG-020) is
+// tolerated as a soft skip (logged) — the same spirit as deleteRoleInternal's
+// guard — so the orphan still clears from the rail. Any other failure is
+// returned. Returns an error on an empty task id (nothing to delete).
+func (s *Service) DeleteTaskByID(ctx context.Context, taskID string) error {
+	if taskID == "" {
+		return fmt.Errorf("ops.DeleteTaskByID: empty argus task id")
+	}
+	s.logf("delete: destroying freelance argus task %q (worktree+branch)", taskID)
+	if err := s.Argus.DeleteTask(ctx, taskID); err != nil {
+		if argus.IsWorktreeMissing(err) {
+			s.logf("delete: freelance task %q worktree already gone, treating as deleted: %v", taskID, err)
+			return nil
+		}
+		return fmt.Errorf("ops.DeleteTaskByID: argus delete task %s: %w", taskID, err)
+	}
+	return nil
+}
+
 // deleteRoleInternal is the shared body of DeleteRole and the cascade
 // inside DeleteOrchestrator. Operates on a pre-loaded role to avoid a
 // second DB read in the cascade case.

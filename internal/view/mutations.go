@@ -139,6 +139,13 @@ type mutationService interface {
 	// have no hera binding to resolve.
 	CompleteTaskByID(ctx context.Context, taskID string) error
 
+	// DeleteTaskByID destroys an argus task directly by id (worktree + branch),
+	// bypassing the hera binding lookup. Backs the worktree-missing reattach
+	// delete-only offer on a FREELANCE row (BUG-030): a freelancer has no hera
+	// role to delete, so the orphan is cleared by deleting its argus task. An
+	// already-gone (404) or worktree-missing task is tolerated as success.
+	DeleteTaskByID(ctx context.Context, taskID string) error
+
 	// CompleteArchivedDescendants marks every archived non-coordinator role
 	// under the given orchestrator as :checked: in argus and prunes each
 	// from hera's DB + disk. Backs the `C` rail key. Returns a summary of how
@@ -1328,17 +1335,30 @@ func (b *mutationBridge) OnReattach() bool {
 			}
 			// BUG-020 / BUG-028: the agent's worktree was deleted out-of-band —
 			// restart can never succeed. Offer the operator a choice rather than an
-			// opaque argus 500: REVIVE a fresh instance (ResurrectRole, which
-			// preserves the role's identity and re-spawns it under its coordinator)
-			// or DELETE the orphaned role. Returning nil suppresses the raw error
-			// modal. Only a MANAGED role (roleID != 0) has a hera role to revive or
-			// delete; a freelancer (roleID 0) falls through to the raw error.
-			if errors.Is(err, ops.ErrWorktreeMissing) && roleID != 0 {
-				b.offerReviveOrDelete(
-					fmt.Sprintf("Agent %q has no worktree", name),
-					"Delete agent permanently",
-					roleID,
-					func() error { return b.svc.DeleteRole(b.ctx, roleID) },
+			// opaque argus 500.
+			if errors.Is(err, ops.ErrWorktreeMissing) {
+				if roleID != 0 {
+					// MANAGED role: REVIVE a fresh instance (ResurrectRole, which
+					// preserves the role's identity and re-spawns it under its
+					// coordinator) or DELETE the orphaned role.
+					b.offerReviveOrDelete(
+						fmt.Sprintf("Agent %q has no worktree", name),
+						"Delete agent permanently",
+						roleID,
+						func() error { return b.svc.DeleteRole(b.ctx, roleID) },
+					)
+					return nil
+				}
+				// BUG-030 (freelancer addendum to BUG-028): a freelancer (roleID 0)
+				// has no durable hera role to rebind, so revive is impossible — fall
+				// back to the BUG-020 delete-only confirmation, deleting the argus
+				// task directly by id (the freelancer IS the task). This fulfils
+				// BUG-028's "revive impossible → delete-only" promise for the
+				// freelance case, which previously fell through to the raw argus 500.
+				b.offerDeleteOrphaned(
+					fmt.Sprintf("Delete orphaned freelancer %q?", name),
+					fmt.Sprintf("This freelancer's worktree is gone and can't be revived. Delete its argus task %q? (y/N)", name),
+					func() error { return b.svc.DeleteTaskByID(b.ctx, taskID) },
 				)
 				return nil
 			}
