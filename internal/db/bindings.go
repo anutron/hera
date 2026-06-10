@@ -155,6 +155,34 @@ func (b *BindingsDAO) ListLiveByTaskID(ctx context.Context, taskID string) ([]*B
 	return out, rows.Err()
 }
 
+// ListByTaskID returns EVERY binding for an argus task id — live AND ended —
+// across all roles and orchestrators, ordered by started_at ascending (id
+// breaks same-instant ties). Backs ReparentCoordinator's idempotent teardown
+// (BUG-026): a parent-link binding the resync reconciler ended (end_reason
+// 'resync_missing', when the coord task is gone from argus) leaves its link
+// role behind, so a live-only lookup misses it and the next re-parent piles up
+// a de-collided duplicate. Listing all states lets the re-parent delete every
+// stale link role first.
+func (b *BindingsDAO) ListByTaskID(ctx context.Context, taskID string) ([]*Binding, error) {
+	rows, err := b.db.QueryContext(ctx,
+		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM bindings WHERE argus_task_id = ?
+		 ORDER BY started_at ASC, id ASC`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("bindings.ListByTaskID: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*Binding
+	for rows.Next() {
+		bnd, err := scanBindingRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bnd)
+	}
+	return out, rows.Err()
+}
+
 // GetLiveByWorktree returns the live binding (if any) for a worktree path.
 // Returns ErrAmbiguous if 2+ live bindings exist for that worktree (the
 // multi-binding case). Most callers should use the per-orchestrator

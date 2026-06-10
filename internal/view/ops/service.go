@@ -110,6 +110,15 @@ type DB interface {
 	// stale binding and archive a task an active role depends on.
 	ListLiveBindingsByTask(ctx context.Context, argusTaskID string) ([]*Binding, error)
 
+	// ListBindingsByTask returns EVERY binding (live AND ended) for an argus
+	// task id, across all roles and orchestrators. Backs ReparentCoordinator's
+	// idempotent teardown (BUG-026): the resync reconciler ends a parent-link
+	// binding when C's coord task is gone from argus, but leaves the link role
+	// row behind — so a live-only lookup misses it and the next re-parent piles
+	// up a de-collided duplicate ("C-2", "C-3", …). Listing all states lets the
+	// re-parent delete every stale link role first.
+	ListBindingsByTask(ctx context.Context, argusTaskID string) ([]*Binding, error)
+
 	// UpsertRoleStatus sets the hera role's thread_status. Backs
 	// MarkRoleDone (the `s` → done → confirm-no path in hera-view).
 	UpsertRoleStatus(ctx context.Context, roleID int64, status string) error

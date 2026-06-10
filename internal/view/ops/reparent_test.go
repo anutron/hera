@@ -76,6 +76,79 @@ func TestReparentCoordinator_CreatesNestingBinding(t *testing.T) {
 	}
 }
 
+// linksUnder counts the worker LINK roles under orchestrator orchID bound (live
+// OR ended) to coordTask — the multi-binding rows the rail would render as the
+// re-parented coordinator. Duplicate links here are exactly the BUG-026 symptom.
+func linksUnder(db *fakeDB, orchID int64, coordTask string) []*Role {
+	var out []*Role
+	seen := map[int64]bool{}
+	all, _ := db.ListBindingsByTask(context.Background(), coordTask)
+	for _, b := range all {
+		r, ok := db.roles[b.RoleID]
+		if !ok || seen[r.ID] || r.OrchestratorID != orchID || r.Kind != KindWorker {
+			continue
+		}
+		seen[r.ID] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// Re-parenting a DORMANT coordinator is IDEMPOTENT: pressing J repeatedly must
+// not pile up de-collided duplicate link roles (BUG-026). The resync reconciler
+// ends a parent-link binding when the coord task is gone from argus, leaving the
+// link role behind; the next re-parent must delete that stale role (resolved via
+// ListBindingsByTask, not the live-only lookup) rather than de-collide a new one.
+func TestReparentCoordinator_DormantCoord_NoDuplicateLinks(t *testing.T) {
+	s, db, _, _, _ := newTestService()
+	parent := db.seedOrchestrator("parent", false)
+	child := seedCoordinator(db, "child", "task-child-coord", "/wt/child")
+
+	in := ReparentCoordInput{
+		ChildOrchestratorID:  child.ID,
+		ParentOrchestratorID: parent.ID,
+		RoleName:             "child",
+		ArgusProject:         "Hera",
+	}
+
+	// First J: creates the link role + live binding under the parent.
+	if _, err := s.ReparentCoordinator(context.Background(), in); err != nil {
+		t.Fatalf("first re-parent: %v", err)
+	}
+	links := linksUnder(db, parent.ID, "task-child-coord")
+	if len(links) != 1 {
+		t.Fatalf("after first J want 1 link role, got %d: %v", len(links), links)
+	}
+
+	// The resync reconciler ends the link's live binding (coord task gone from
+	// argus → end_reason resync_missing). The link ROLE row survives.
+	live, _ := db.ListLiveBindingsByTask(context.Background(), "task-child-coord")
+	for _, b := range live {
+		if b.RoleID == links[0].ID {
+			_ = db.EndBinding(context.Background(), b.ID, "resync_missing")
+		}
+	}
+
+	// Second J on the same dormant coordinator under the same parent.
+	if _, err := s.ReparentCoordinator(context.Background(), in); err != nil {
+		t.Fatalf("second re-parent: %v", err)
+	}
+
+	// BUG-026: without idempotent teardown this is 2 (the stale "child" plus a
+	// de-collided "child-2"). With the fix it stays exactly 1.
+	links = linksUnder(db, parent.ID, "task-child-coord")
+	if len(links) != 1 {
+		names := make([]string, len(links))
+		for i, r := range links {
+			names[i] = r.Name
+		}
+		t.Fatalf("after second J want 1 link role (no duplicates), got %d: %v", len(links), names)
+	}
+	if links[0].Name != "child" {
+		t.Fatalf("link role must keep the clean name %q, not a de-collided dup; got %q", "child", links[0].Name)
+	}
+}
+
 // A coordinator already nested under one parent is MOVED to a new parent: the
 // old link binding ends and the old link role is removed, leaving exactly one
 // parent linkage.
