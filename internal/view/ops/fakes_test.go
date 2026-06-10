@@ -666,6 +666,10 @@ type fakeArgus struct {
 
 	deleteCalls []string
 	deleteErr   error
+	// deleteErrByTask overrides deleteErr for specific task ids — backing
+	// mixed sweeps where only some tasks fail to delete (e.g. the ○ detached
+	// case whose argus delete errors while siblings delete cleanly).
+	deleteErrByTask map[string]error
 
 	// statuses maps taskID -> current status, consulted by GetTaskStatus
 	// and updated by SetTaskStatus. setStatusCalls records every write.
@@ -771,6 +775,9 @@ func (a *fakeArgus) DeleteTask(ctx context.Context, taskID string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.deleteCalls = append(a.deleteCalls, taskID)
+	if err, ok := a.deleteErrByTask[taskID]; ok {
+		return err
+	}
 	return a.deleteErr
 }
 

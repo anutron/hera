@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	arguspkg "github.com/anutron/hera/internal/argus"
 )
 
 // makeSimpleTempDir creates a temp directory that looks like a healthy linked
@@ -215,6 +217,12 @@ func TestCompleteArchivedDescendants_CompletesAndPrunesArchivedWorkers(t *testin
 	// w1 completed in argus.
 	if len(argus.setStatusCalls) != 1 || argus.setStatusCalls[0].TaskID != "Tw1" || argus.setStatusCalls[0].Status != "complete" {
 		t.Fatalf("SetTaskStatus calls = %+v, want Tw1→complete", argus.setStatusCalls)
+	}
+	// BUG-029: the underlying argus task is DELETED so it never resurfaces as a
+	// freelancer. Only w1's task (the archived worker) is destroyed; the active
+	// w2 and the coord are left alone.
+	if len(argus.deleteCalls) != 1 || argus.deleteCalls[0] != "Tw1" {
+		t.Fatalf("argus DeleteTask calls = %v, want [Tw1]", argus.deleteCalls)
 	}
 	// w1 physically deleted.
 	if _, err := db.GetRoleByID(context.Background(), w1.ID); !errors.Is(err, ErrNotFound) {
@@ -513,6 +521,121 @@ func TestCompleteArchivedDescendants_WorktreeRemoveError_CountedNotAborted(t *te
 	for _, id := range []int64{w1.ID, w2.ID} {
 		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("role %d should be pruned from DB despite worktree failure", id)
+		}
+	}
+}
+
+// BUG-029 (freelancer spray): `C` must DELETE the underlying argus task for
+// EVERY archived descendant — complete, incomplete, AND ○ fully-detached.
+// Pruning only the hera role row leaves the argus task alive, and it resurfaces
+// as a freelancer (the bug). Here all three states clear and all three tasks
+// are destroyed argus-side, with no abort.
+func TestCompleteArchivedDescendants_DeletesArgusTasks_AllStates(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("proj", false)
+	db.seedRole(orch.ID, "coord", KindCoordinator, "proj", true)
+
+	done := db.seedRole(orch.ID, "done", KindWorker, "proj", true)        // complete
+	todo := db.seedRole(orch.ID, "todo", KindWorker, "proj", true)        // incomplete
+	detached := db.seedRole(orch.ID, "detached", KindWorker, "proj", true) // ○ detached
+	db.seedEndedBinding(done.ID, "Tdone", makeSimpleTempDir(t))
+	db.seedEndedBinding(todo.ID, "Ttodo", makeSimpleTempDir(t))
+	// ○ detached: no live session, worktree gone entirely.
+	db.seedEndedBinding(detached.ID, "Tdetached", filepath.Join(t.TempDir(), "gone"))
+	argus.statuses = map[string]string{"Tdone": "complete", "Ttodo": "in_progress"}
+	// Tdetached has no status entry → GetTaskStatus returns "" (not complete).
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("sweep over all states must not error: %v", err)
+	}
+	if summary.Found != 3 || summary.Pruned != 3 || summary.Errors != 0 {
+		t.Fatalf("Found/Pruned/Errors = %d/%d/%d, want 3/3/0", summary.Found, summary.Pruned, summary.Errors)
+	}
+	// Every archived worker's argus task is destroyed — no freelancer spray.
+	gotDeletes := map[string]bool{}
+	for _, id := range argus.deleteCalls {
+		gotDeletes[id] = true
+	}
+	for _, want := range []string{"Tdone", "Ttodo", "Tdetached"} {
+		if !gotDeletes[want] {
+			t.Fatalf("argus task %q must be DELETED (else it sprays into freelance); deleteCalls=%v", want, argus.deleteCalls)
+		}
+	}
+	for _, id := range []int64{done.ID, todo.ID, detached.ID} {
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("role %d should be pruned from DB", id)
+		}
+	}
+}
+
+// BUG-029 (○ detached, no abort): a fully-detached archived worker whose argus
+// delete ERRORS with a worktree-missing failure (the dead-task case BUG-018
+// resilience was supposed to cover end-to-end) must NOT halt the sweep. The
+// detached role and every sibling still clear; the delete is tolerated as a
+// soft skip (not counted as an error).
+func TestCompleteArchivedDescendants_DetachedDeleteWorktreeMissing_NoAbort(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("proj", false)
+
+	detached := db.seedRole(orch.ID, "detached", KindWorker, "proj", true)
+	sibling := db.seedRole(orch.ID, "sibling", KindWorker, "proj", true)
+	db.seedEndedBinding(detached.ID, "Tdetached", filepath.Join(t.TempDir(), "gone"))
+	db.seedEndedBinding(sibling.ID, "Tsibling", makeSimpleTempDir(t))
+	// argus's DELETE for the detached task fails because its worktree is gone
+	// (BUG-020 marker) — exactly the failure that used to abort the batch.
+	argus.deleteErrByTask = map[string]error{
+		"Tdetached": &arguspkg.HTTPError{
+			Method: "DELETE", Path: "/api/tasks/Tdetached", StatusCode: 500,
+			Body: "worktree path missing: /gone (delete the task or recreate the worktree)",
+		},
+	}
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("○ detached delete failure must not abort the sweep: %v", err)
+	}
+	if summary.Pruned != 2 {
+		t.Fatalf("Pruned = %d, want 2 (detached + sibling both cleared)", summary.Pruned)
+	}
+	// worktree-missing is a clean skip, NOT a counted error.
+	if summary.Errors != 0 {
+		t.Fatalf("Errors = %d, want 0 (worktree-missing delete is a soft skip)", summary.Errors)
+	}
+	for _, id := range []int64{detached.ID, sibling.ID} {
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("role %d should be pruned from DB despite the detached delete failure", id)
+		}
+	}
+}
+
+// BUG-029: a genuine (non-already-gone) argus delete failure is counted in
+// summary.Errors but still does NOT abort the sweep — the hera row is pruned
+// regardless and every sibling clears.
+func TestCompleteArchivedDescendants_ArgusDeleteError_CountedNotAborted(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("proj", false)
+	w1 := db.seedRole(orch.ID, "w1", KindWorker, "proj", true)
+	w2 := db.seedRole(orch.ID, "w2", KindWorker, "proj", true)
+	db.seedEndedBinding(w1.ID, "Tw1", makeSimpleTempDir(t))
+	db.seedEndedBinding(w2.ID, "Tw2", makeSimpleTempDir(t))
+	argus.deleteErrByTask = map[string]error{
+		"Tw1": fmt.Errorf("argus delete: connection refused"),
+	}
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("argus delete errors must not abort the sweep: %v", err)
+	}
+	if summary.Pruned != 2 {
+		t.Fatalf("Pruned = %d, want 2 (rows cleared despite argus delete failure)", summary.Pruned)
+	}
+	if summary.Errors != 1 {
+		t.Fatalf("Errors = %d, want 1 (Tw1 delete failed)", summary.Errors)
+	}
+	for _, id := range []int64{w1.ID, w2.ID} {
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("role %d should be pruned from DB despite argus delete failure", id)
 		}
 	}
 }
