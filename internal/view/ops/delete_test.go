@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -346,6 +347,128 @@ func TestDeleteOrchestrator_DestroysEveryArgusTask(t *testing.T) {
 		if !got[want] {
 			t.Fatalf("expected argus DeleteTask(%s); got %v", want, a.deleteCalls)
 		}
+	}
+}
+
+// BUG-021: `^d` on a coordinator must tear down its WHOLE subtree. A
+// sub-coordinator's workers live in a descendant orchestrator (linked by the
+// shared coord task); deleting only the root would leave those descendant
+// argus tasks alive and unmanaged — freelancer spray. Every task in the
+// subtree must be destroyed and every orchestrator removed.
+func TestDeleteOrchestrator_DeletesSubtree(t *testing.T) {
+	db := newFakeDB()
+
+	// Parent orchestrator A: coordinator Ca (task Tca) + worker Wa (task Twa).
+	a := db.seedOrchestrator("A", false)
+	ca := db.seedRole(a.ID, "coord", KindCoordinator, "proj", false)
+	wa := db.seedRole(a.ID, "wa", KindWorker, "proj", false)
+	db.seedBinding(ca.ID, "Tca", "")
+	db.seedBinding(wa.ID, "Twa", "")
+
+	// Worker Wa became a sub-coordinator: child orchestrator B's coordinator Cb
+	// is bound to the SAME argus task (Twa). B has workers Wb1 (Twb1) + Wb2 (Twb2).
+	b := db.seedOrchestrator("B", false)
+	cb := db.seedRole(b.ID, "coord", KindCoordinator, "proj", false)
+	wb1 := db.seedRole(b.ID, "wb1", KindWorker, "proj", false)
+	wb2 := db.seedRole(b.ID, "wb2", KindWorker, "proj", false)
+	db.seedBinding(cb.ID, "Twa", "")
+	db.seedBinding(wb1.ID, "Twb1", "")
+	db.seedBinding(wb2.ID, "Twb2", "")
+
+	argusFake := &fakeArgus{}
+	s := NewService(db, argusFake, &fakeWorktreeRemover{}, &fakeLogger{})
+	if err := s.DeleteOrchestrator(context.Background(), a.ID); err != nil {
+		t.Fatalf("DeleteOrchestrator: %v", err)
+	}
+
+	// Every argus task across the whole subtree is destroyed.
+	got := map[string]bool{}
+	for _, id := range argusFake.deleteCalls {
+		got[id] = true
+	}
+	for _, want := range []string{"Tca", "Twa", "Twb1", "Twb2"} {
+		if !got[want] {
+			t.Fatalf("expected argus DeleteTask(%s); got %v", want, argusFake.deleteCalls)
+		}
+	}
+
+	// Both orchestrators are physically gone — no orphaned descendant subtree.
+	for _, orch := range []*Orchestrator{a, b} {
+		if _, err := db.GetOrchestratorByID(context.Background(), orch.ID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("orchestrator %q should be deleted; got err=%v", orch.Name, err)
+		}
+	}
+}
+
+// BUG-021 (zombie freelancer): an ARCHIVED child role whose argus task is still
+// alive must have that task destroyed by `^d`. The physical cascade deletes the
+// archived role row regardless, so skipping the task would orphan it into a
+// freelancer (often with an already-removed worktree).
+func TestDeleteOrchestrator_DestroysArchivedChildArgusTask(t *testing.T) {
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	coord := db.seedRole(orch.ID, "coord", KindCoordinator, "proj", false)
+	// Archived worker: its hera binding has ENDED but its argus task lives on.
+	archived := db.seedRole(orch.ID, "old-worker", KindWorker, "proj", true)
+	db.seedBinding(coord.ID, "Tc", "")
+	db.seedEndedBinding(archived.ID, "Tarchived", "")
+
+	argusFake := &fakeArgus{}
+	s := NewService(db, argusFake, &fakeWorktreeRemover{}, &fakeLogger{})
+	if err := s.DeleteOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("DeleteOrchestrator: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, id := range argusFake.deleteCalls {
+		got[id] = true
+	}
+	if !got["Tarchived"] {
+		t.Fatalf("archived child role's argus task must be destroyed; got %v", argusFake.deleteCalls)
+	}
+	if !got["Tc"] {
+		t.Fatalf("coordinator task must be destroyed; got %v", argusFake.deleteCalls)
+	}
+}
+
+// BUG-018 / BUG-021: a worktree-removal failure must NOT abort the cascade. The
+// argus task is still destroyed and the orchestrator still removed.
+func TestDeleteOrchestrator_WorktreeFailureDoesNotAbort(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not in PATH: %v", err)
+	}
+	// A real linked worktree so removeWorktree's BUG-018 guards pass and it
+	// actually delegates to the (failing) remover, rather than soft-skipping.
+	wt := makeGitWorktreeFixture(t)
+
+	db := newFakeDB()
+	orch := db.seedOrchestrator("foo", false)
+	coord := db.seedRole(orch.ID, "coord", KindCoordinator, "proj", false)
+	w1 := db.seedRole(orch.ID, "w1", KindWorker, "proj", false)
+	db.seedBinding(coord.ID, "Tc", "")
+	db.seedBinding(w1.ID, "Tw1", wt)
+
+	argusFake := &fakeArgus{}
+	wr := &fakeWorktreeRemover{err: fmt.Errorf("git worktree remove: exit status 128")}
+	s := NewService(db, argusFake, wr, &fakeLogger{})
+
+	if err := s.DeleteOrchestrator(context.Background(), orch.ID); err != nil {
+		t.Fatalf("DeleteOrchestrator must not abort on worktree failure: %v", err)
+	}
+
+	// The failing remover was actually reached.
+	if len(wr.calls) == 0 {
+		t.Fatalf("expected the worktree remover to be invoked")
+	}
+	got := map[string]bool{}
+	for _, id := range argusFake.deleteCalls {
+		got[id] = true
+	}
+	if !got["Tw1"] {
+		t.Fatalf("sibling task Tw1 must still be destroyed despite worktree failure; got %v", argusFake.deleteCalls)
+	}
+	if _, err := db.GetOrchestratorByID(context.Background(), orch.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("orchestrator should be deleted despite worktree failure; got err=%v", err)
 	}
 }
 

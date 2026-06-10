@@ -40,18 +40,38 @@ func (s *Service) DeleteRole(ctx context.Context, id int64) error {
 // inside DeleteOrchestrator. Operates on a pre-loaded role to avoid a
 // second DB read in the cascade case.
 func (s *Service) deleteRoleInternal(ctx context.Context, role *Role) error {
-	bnd, err := s.DB.GetLiveBindingByRole(ctx, role.ID)
+	// Resolve the role's binding to recover its argus task id + worktree path.
+	// Prefer the LIVE binding (which we must also END); fall back to the most
+	// recent ENDED binding so an ARCHIVED role still surrenders its task for
+	// destruction. Archiving a task ends its binding (end_reason=argus_archived)
+	// while keeping the argus_task_id, so an archived role fails the live-only
+	// lookup even when its argus task is still alive. Without the fallback, an
+	// archived child role swept up by a `^d` subtree teardown would leave its
+	// live argus task orphaned — exactly the freelancer spray BUG-021 reports.
+	liveBnd, err := s.DB.GetLiveBindingByRole(ctx, role.ID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("ops.DeleteRole: live binding lookup for role %d: %w", role.ID, err)
 	}
 
 	worktreePath := ""
 	argusTaskID := ""
-	if bnd != nil {
-		worktreePath = bnd.WorktreePath
-		argusTaskID = bnd.ArgusTaskID
-		if err := s.DB.EndBinding(ctx, bnd.ID, EndReasonUserDeleted); err != nil {
-			return fmt.Errorf("ops.DeleteRole: end binding %d: %w", bnd.ID, err)
+	if liveBnd != nil {
+		worktreePath = liveBnd.WorktreePath
+		argusTaskID = liveBnd.ArgusTaskID
+		if err := s.DB.EndBinding(ctx, liveBnd.ID, EndReasonUserDeleted); err != nil {
+			return fmt.Errorf("ops.DeleteRole: end binding %d: %w", liveBnd.ID, err)
+		}
+	} else {
+		// No live binding — recover the argus task id from the latest ended
+		// binding (archived-role case). ErrNotFound means the role was never
+		// bound, so there is nothing to destroy argus-side.
+		latest, err := s.DB.GetLatestBindingByRole(ctx, role.ID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("ops.DeleteRole: latest binding lookup for role %d: %w", role.ID, err)
+		}
+		if latest != nil {
+			worktreePath = latest.WorktreePath
+			argusTaskID = latest.ArgusTaskID
 		}
 	}
 
@@ -85,42 +105,71 @@ func (s *Service) deleteRoleInternal(ctx context.Context, role *Role) error {
 	// Local worktree remove is a defensive fallback: argus already cleaned
 	// the worktree above, so this is a soft no-op in the common case
 	// (directory already gone). It still runs to cover bindings whose argus
-	// task vanished out-of-band but whose worktree lingers on disk.
+	// task vanished out-of-band but whose worktree lingers on disk. Best-effort
+	// (BUG-018 / BUG-021): a stale or unremovable worktree must never abort the
+	// delete — least of all a subtree cascade where one bad worktree would
+	// strand every sibling task. Log and proceed.
 	if err := s.removeWorktree(ctx, worktreePath); err != nil {
-		return fmt.Errorf("ops.DeleteRole: worktree remove: %w", err)
+		s.logf("delete: worktree remove failed for role %d, continuing: %v", role.ID, err)
 	}
 	return nil
 }
 
-// DeleteOrchestrator handles `^d` against an orchestrator. Cascades the
-// argus-task-delete + worktree-remove path to every active role under the
-// orchestrator, then physically removes the orchestrator row from the DB.
+// DeleteOrchestrator handles `^d` against an orchestrator. It tears down the
+// orchestrator's ENTIRE subtree: every descendant orchestrator reachable via
+// shared sub-coordinator argus tasks, every role under each (active AND
+// archived), and every bound argus task + worktree. Then it physically removes
+// each orchestrator row from the DB.
+//
+// Two enumeration details are load-bearing for BUG-021 ("deleting a
+// coordinator orphans its workers' argus tasks into freelancers"):
+//
+//   - SUBTREE, not just this orchestrator. A sub-coordinator's workers live in
+//     a descendant orchestrator. Deleting only this orchestrator's roles would
+//     leave those descendant tasks alive and unmanaged — freelancer spray.
+//   - INCLUSIVE roles, not just active ones. The physical DELETE cascades to
+//     archived role rows too, so their still-alive argus tasks must be
+//     destroyed here; otherwise an archived worker's task is orphaned (often
+//     with an already-removed worktree — the "zombie freelancer" of the bug).
+//
 // The physical DELETE cascades (via ON DELETE CASCADE) to roles and bindings,
 // so no ghost row remains in the rail — neither in the active section nor in
 // the Archive section. This is intentionally more destructive than `a` (which
 // only archives, preserving rows for resurrection); `^d` tears down the whole
-// orchestrator permanently.
+// subtree permanently.
 func (s *Service) DeleteOrchestrator(ctx context.Context, id int64) error {
 	if _, err := s.DB.GetOrchestratorByID(ctx, id); err != nil {
 		return fmt.Errorf("ops.DeleteOrchestrator: load %d: %w", id, err)
 	}
 
-	roles, err := s.DB.ListRolesByOrchestrator(ctx, id)
+	// Snapshot the subtree BEFORE any deletion — the BFS follows LIVE coord
+	// bindings, which the cascade below ends. Capturing IDs up front keeps the
+	// frontier intact for the whole teardown.
+	orchIDs, err := s.DB.SubtreeOrchIDs(ctx, id)
 	if err != nil {
-		return fmt.Errorf("ops.DeleteOrchestrator: list roles: %w", err)
+		return fmt.Errorf("ops.DeleteOrchestrator: subtree of %d: %w", id, err)
 	}
-	for _, role := range roles {
-		if err := s.deleteRoleInternal(ctx, role); err != nil {
-			return fmt.Errorf("ops.DeleteOrchestrator: cascade role %d: %w", role.ID, err)
+
+	for _, orchID := range orchIDs {
+		roles, err := s.DB.ListRolesByOrchestratorInclusive(ctx, orchID)
+		if err != nil {
+			return fmt.Errorf("ops.DeleteOrchestrator: list roles for %d: %w", orchID, err)
+		}
+		for _, role := range roles {
+			if err := s.deleteRoleInternal(ctx, role); err != nil {
+				return fmt.Errorf("ops.DeleteOrchestrator: cascade role %d: %w", role.ID, err)
+			}
 		}
 	}
 
-	// Physical delete: removes the orchestrator row and, via ON DELETE CASCADE,
-	// all child roles and bindings. Unlike ArchiveOrchestrator, this leaves no
-	// row in the DB — the rail's ListInclusive will not return it and the
-	// Archive section will not show a ghost.
-	if err := s.DB.DeleteOrchestratorByID(ctx, id); err != nil && !errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("ops.DeleteOrchestrator: delete: %w", err)
+	// Physical delete every orchestrator in the subtree. Removes each row and,
+	// via ON DELETE CASCADE, all its roles and bindings. Unlike
+	// ArchiveOrchestrator, this leaves no row in the DB — the rail's
+	// ListInclusive will not return them and the Archive section shows no ghost.
+	for _, orchID := range orchIDs {
+		if err := s.DB.DeleteOrchestratorByID(ctx, orchID); err != nil && !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("ops.DeleteOrchestrator: delete %d: %w", orchID, err)
+		}
 	}
 	return nil
 }

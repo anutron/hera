@@ -35,6 +35,14 @@ type DB interface {
 	PinOrchestrator(ctx context.Context, id int64) error
 	UnpinOrchestrator(ctx context.Context, id int64) error
 
+	// SubtreeOrchIDs returns the orchestrator IDs in the subtree rooted at
+	// rootOrchID, reachable via shared sub-coordinator argus tasks: a child
+	// orchestrator's coordinator role is bound to the same argus task as a
+	// role in the parent set. The root ID is always included. Backs `^d`
+	// subtree teardown (BUG-021) — without it, a sub-coordinator's workers
+	// would survive in descendant orchestrators and resurface as freelancers.
+	SubtreeOrchIDs(ctx context.Context, rootOrchID int64) ([]int64, error)
+
 	GetRoleByID(ctx context.Context, id int64) (*Role, error)
 	ListRolesByOrchestrator(ctx context.Context, orchID int64) ([]*Role, error)
 
