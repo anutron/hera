@@ -114,6 +114,16 @@ func (a *dbAdapter) GetRoleByID(ctx context.Context, id int64) (*ops.Role, error
 	return adaptRole(r), nil
 }
 
+// subtreeMaxDepth bounds the sub-coordinator BFS. Six levels matches the
+// other SubtreeOrchIDs callers (handler_get_messages, handler_tree_updates)
+// and is far deeper than any real orchestration tree.
+const subtreeMaxDepth = 6
+
+func (a *dbAdapter) SubtreeOrchIDs(ctx context.Context, rootOrchID int64) ([]int64, error) {
+	ids, _, err := db.SubtreeOrchIDs(ctx, a.d.Raw(), rootOrchID, subtreeMaxDepth)
+	return ids, err
+}
+
 func (a *dbAdapter) ListRolesByOrchestrator(ctx context.Context, orchID int64) ([]*ops.Role, error) {
 	rows, err := a.d.Roles.ListByOrchestrator(ctx, orchID)
 	if err != nil {

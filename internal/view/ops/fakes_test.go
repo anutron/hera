@@ -274,6 +274,62 @@ func (f *fakeDB) RenameOrchestrator(ctx context.Context, id int64, newName strin
 	return nil
 }
 
+// SubtreeOrchIDs mirrors db.SubtreeOrchIDs over the in-memory maps: BFS from
+// rootOrchID following LIVE coordinator bindings that share an argus task id
+// with a LIVE binding in the parent frontier. Only active (non-archived) child
+// coordinators and orchestrators extend the frontier, matching the SQL.
+func (f *fakeDB) SubtreeOrchIDs(ctx context.Context, rootOrchID int64) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	seen := map[int64]struct{}{rootOrchID: {}}
+	result := []int64{rootOrchID}
+	frontier := []int64{rootOrchID}
+
+	for len(frontier) > 0 {
+		frontierSet := map[int64]struct{}{}
+		for _, id := range frontier {
+			frontierSet[id] = struct{}{}
+		}
+
+		// Live argus task ids bound to any role in the frontier orchestrators.
+		parentTasks := map[string]struct{}{}
+		for _, b := range f.bindings {
+			role, ok := f.roles[b.RoleID]
+			if !ok {
+				continue
+			}
+			if _, in := frontierSet[role.OrchestratorID]; in {
+				parentTasks[b.ArgusTaskID] = struct{}{}
+			}
+		}
+
+		var next []int64
+		for _, b := range f.bindings {
+			if _, shared := parentTasks[b.ArgusTaskID]; !shared {
+				continue
+			}
+			role, ok := f.roles[b.RoleID]
+			if !ok || role.Kind != KindCoordinator || role.Archived {
+				continue
+			}
+			childOrch := role.OrchestratorID
+			if _, ok := seen[childOrch]; ok {
+				continue
+			}
+			o, ok := f.orchestrators[childOrch]
+			if !ok || o.Archived {
+				continue
+			}
+			seen[childOrch] = struct{}{}
+			result = append(result, childOrch)
+			next = append(next, childOrch)
+		}
+		frontier = next
+	}
+	return result, nil
+}
+
 func (f *fakeDB) GetRoleByID(ctx context.Context, id int64) (*Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

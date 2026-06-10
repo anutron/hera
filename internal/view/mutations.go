@@ -710,9 +710,11 @@ func (b *mutationBridge) OnDelete() {
 	case selOrchestrator:
 		title = fmt.Sprintf("Delete project %q?", sel.Name)
 		message = fmt.Sprintf(
-			"DESTRUCTIVE: this destroys %q and all %d of its child agents — "+
-				"each agent's argus task, git worktree, and branch are removed. "+
-				"This cannot be undone. Continue? (y/N)",
+			"DESTRUCTIVE: this destroys %q and its ENTIRE agent subtree — its "+
+				"%d direct child agent(s), plus any sub-coordinators and their "+
+				"descendants, including completed/archived agents. Every agent's "+
+				"argus task, git worktree, and branch are removed (nothing is left "+
+				"behind as a freelancer). This cannot be undone. Continue? (y/N)",
 			sel.Name, sel.ChildCount,
 		)
 		do = func() error { return b.svc.DeleteOrchestrator(b.ctx, sel.OrchestratorID) }
