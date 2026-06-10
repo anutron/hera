@@ -603,3 +603,57 @@ func TestDeleteOrchestrator_CoordOnly(t *testing.T) {
 		t.Fatalf("coordinator role should be gone after cascade delete; got err=%v", err)
 	}
 }
+
+// BUG-030: DeleteTaskByID destroys a freelancer's argus task directly by id —
+// the delete-only path for a worktree-missing freelancer reattach (no hera role
+// to delete). Backs the freelancer addendum to BUG-028's revive-or-delete picker.
+func TestDeleteTaskByID_DeletesArgusTask(t *testing.T) {
+	s, _, a, _, _ := newTestService()
+
+	if err := s.DeleteTaskByID(context.Background(), "Tfree"); err != nil {
+		t.Fatalf("DeleteTaskByID: %v", err)
+	}
+	if len(a.deleteCalls) != 1 || a.deleteCalls[0] != "Tfree" {
+		t.Fatalf("want argus DeleteTask(Tfree); got %v", a.deleteCalls)
+	}
+}
+
+// BUG-030: an orphaned freelancer's worktree is exactly what's already gone, so
+// a worktree-missing delete failure (BUG-020) is tolerated as a soft success —
+// the orphan still clears from the rail.
+func TestDeleteTaskByID_WorktreeMissingIsSoftSuccess(t *testing.T) {
+	s, _, a, _, _ := newTestService()
+	a.deleteErr = &argus.HTTPError{
+		Method: "DELETE", Path: "/api/tasks/Tfree", StatusCode: 500,
+		Body: "worktree path missing: /gone (delete the task or recreate the worktree)",
+	}
+
+	if err := s.DeleteTaskByID(context.Background(), "Tfree"); err != nil {
+		t.Fatalf("worktree-missing must be tolerated as success; got %v", err)
+	}
+	if len(a.deleteCalls) != 1 {
+		t.Fatalf("argus DeleteTask should still have been attempted; got %v", a.deleteCalls)
+	}
+}
+
+// BUG-030: any other delete failure is surfaced (not swallowed).
+func TestDeleteTaskByID_OtherErrorSurfaces(t *testing.T) {
+	s, _, a, _, _ := newTestService()
+	a.deleteErr = fmt.Errorf("argus delete: connection refused")
+
+	if err := s.DeleteTaskByID(context.Background(), "Tfree"); err == nil {
+		t.Fatalf("a non-worktree-missing delete error must surface")
+	}
+}
+
+// BUG-030: an empty task id is a programming error, not a no-op.
+func TestDeleteTaskByID_EmptyID_Errors(t *testing.T) {
+	s, _, a, _, _ := newTestService()
+
+	if err := s.DeleteTaskByID(context.Background(), ""); err == nil {
+		t.Fatalf("empty task id must error")
+	}
+	if len(a.deleteCalls) != 0 {
+		t.Fatalf("empty id must not call argus; got %v", a.deleteCalls)
+	}
+}
