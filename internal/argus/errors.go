@@ -62,6 +62,42 @@ func IsWorktreeMissing(err error) bool {
 	return strings.Contains(httpErr.Body, worktreeMissingMarker)
 }
 
+// alreadyExistsMarker is the stable substring argus emits in the error body of
+// /restart when a concurrent Start already created the session for this task —
+// argus phrases it `session already exists for task <id>`. It surfaces as a 500
+// because two restart calls raced past the non-atomic 409 guard (one spawned
+// the session, the loser's Start then hit the duplicate). hera matches the
+// stable prefix.
+const alreadyExistsMarker = "session already exists"
+
+// IsAlreadyRunning reports whether err indicates argus already has a LIVE
+// session for the task — either a 409 ("task already running": the agent is
+// live, so no restart was needed) or the Start-race 500 carrying
+// alreadyExistsMarker. For a reattach this is SUCCESS, not a failure: the goal
+// is a live session the proxy subscription can pick up, and one already exists.
+//
+// BUG-022: a ⊘ mixed-coord reattach (and any other reattach) could surface this
+// as a red error modal even though the session connected — the manual reattach
+// raced the focus-driven auto-reattach, or the archived coord's session was
+// never dead (archiving an argus task does not stop its PTY). Treating an
+// already-live session as success suppresses that false-failure modal while
+// genuine failures (worktree missing, restart unsupported, network) still
+// surface.
+//
+// The typed *HTTPError is unwrapped via errors.As; the 409 is matched by status
+// and the race-500 by its body marker (NOT by status alone — a genuine start
+// failure also 500s).
+func IsAlreadyRunning(err error) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	if httpErr.StatusCode == 409 {
+		return true
+	}
+	return httpErr.StatusCode == 500 && strings.Contains(httpErr.Body, alreadyExistsMarker)
+}
+
 // IsNotFound reports whether err is (or wraps) an argus HTTP 404 — the
 // addressed resource no longer exists on the argus side. Callers use this
 // to treat operations against pruned tasks as no-ops instead of failures
