@@ -39,6 +39,10 @@ type fakePaneSource struct {
 	channels map[string]chan []byte
 	// sizes, if set, supplies the (cols, rows) returned per taskID.
 	sizes map[string][2]int
+	// sizeCalls records every TaskSize call in order. TaskSize is a blocking
+	// argus HTTP GET in production, so tests assert it is NOT invoked on the
+	// event-loop rebind path (rail-nav-freeze regression).
+	sizeCalls []string
 	// resizes records every ResizeTask call in order.
 	resizes []paneResizeCall
 	// invalidated records every InvalidateResize call (BUG-053).
@@ -69,6 +73,7 @@ func (f *fakePaneSource) SubscribeTask(taskID string) ([]byte, <-chan []byte, fu
 }
 
 func (f *fakePaneSource) TaskSize(taskID string) (int, int) {
+	f.sizeCalls = append(f.sizeCalls, taskID)
 	if f.sizes == nil {
 		return 0, 0
 	}
@@ -1039,6 +1044,41 @@ func TestBuildApp_LiveBindingMarksRoleAndSubscribesPanes(t *testing.T) {
 	}
 	if !gotLive["w1"] {
 		t.Errorf("expected live worker role; rail orchestrators=%+v", a.pieces.rail.orchestrators)
+	}
+}
+
+// TestRebind_DoesNotQueryTaskSize is the rail-nav-freeze regression guard.
+// rebindCoord / rebindAgent run on the tview event loop (via
+// applyRailSelection's QueueUpdateDraw). TaskSize is a synchronous argus HTTP
+// GET bounded only by the 30s client timeout, so calling it from the rebind
+// path froze the whole TUI mid-navigation when argus's /size was slow. The
+// panes must construct at the 80x24 default and recover the real size on the
+// first Draw via onReflow — never block the loop on TaskSize.
+func TestRebind_DoesNotQueryTaskSize(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// BuildApp's initial pane construction is off the event loop and may query
+	// TaskSize; the freeze is on the rebind path, so reset and watch only that.
+	src.sizeCalls = nil
+
+	a.rebindCoord("coord-task-id")
+	a.rebindAgent("worker-task-id")
+
+	if len(src.sizeCalls) != 0 {
+		t.Errorf("rebind must not call TaskSize on the event loop; got calls=%v", src.sizeCalls)
+	}
+	// The rebinds must still have wired the new subscriptions.
+	if a.coordTask != "coord-task-id" {
+		t.Errorf("coord pane not rebound; coordTask=%q", a.coordTask)
+	}
+	if a.agentTask != "worker-task-id" {
+		t.Errorf("agent pane not rebound; agentTask=%q", a.agentTask)
 	}
 }
 

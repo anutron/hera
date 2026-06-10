@@ -1628,7 +1628,14 @@ func (a *App) rebindCoord(taskID string) {
 	oldUnsub := a.coordUnsub
 	oldBridge := a.coordBridge
 	oldPane := a.pieces.coord
-	pane, bridge, unsub := newBoundPane("Coord", "(no coord selected)", taskID, a.src, a.scheduleRedraw)
+	// Construct at the 80x24 default (cols/rows == 0) rather than querying
+	// src.TaskSize: rebind runs on the tview event loop (via applyRailSelection's
+	// QueueUpdateDraw), and TaskSize is a synchronous argus HTTP GET bounded only
+	// by the 30s client timeout. A slow /size response would freeze the whole
+	// TUI mid-navigation. The real worker size is recovered on the first Draw via
+	// onReflow → forceRebindCoord, so the queried initial size was only a one-frame
+	// transient — not worth blocking the loop for.
+	pane, bridge, unsub := newBoundPaneAt("Coord", "(no coord selected)", taskID, a.src, a.scheduleRedraw, 0, 0)
 	pane.onReflow = a.makeCoordReflowCallback(taskID)
 	a.coordTask = taskID
 	a.coordBridge = bridge
@@ -1660,7 +1667,12 @@ func (a *App) rebindAgent(taskID string) {
 	oldUnsub := a.agentUnsub
 	oldBridge := a.agentBridge
 	oldPane := a.pieces.agent
-	pane, bridge, unsub := newBoundPane("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw)
+	// Construct at the 80x24 default (cols/rows == 0) rather than querying
+	// src.TaskSize — see the rationale in rebindCoord: TaskSize is a blocking
+	// argus HTTP GET and rebind runs on the event loop, so a slow /size would
+	// freeze the TUI. onReflow → forceRebindAgent restores the real size on the
+	// first Draw.
+	pane, bridge, unsub := newBoundPaneAt("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw, 0, 0)
 	pane.onReflow = a.makeAgentReflowCallback(taskID)
 	a.agentTask = taskID
 	a.agentIsFreelancer = false // reset; caller sets true for freelancer rows
