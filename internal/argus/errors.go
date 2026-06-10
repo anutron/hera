@@ -3,6 +3,7 @@ package argus
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrNoTaskSize is returned by GetTaskSize when argus reports 404 — the
@@ -34,6 +35,31 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("argus: %s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
+}
+
+// worktreeMissingMarker is the stable substring argus emits in the error body
+// of /restart (and /delete) when a task's worktree directory no longer exists
+// on disk — e.g. an earlier bulk cleanup removed it. Argus phrases the full
+// message as `worktree path missing: <path> (delete the task or recreate the
+// worktree)`; hera matches only the stable prefix.
+const worktreeMissingMarker = "worktree path missing"
+
+// IsWorktreeMissing reports whether err is (or wraps) an argus HTTP error whose
+// body indicates the task's worktree directory is gone (BUG-020). Such a task
+// cannot be restarted (the agent backend has no working tree to resume in), so
+// callers surface a "delete the orphan" recovery path instead of an opaque 500,
+// and the delete path treats it as a soft skip so the DB rows still clear.
+//
+// The signal is the argus error body — the formatted JSON envelope is the only
+// place argus reports it — so this is a substring match on the body, NOT on the
+// fully-formatted error string (the typed *HTTPError is unwrapped via errors.As
+// first; only its Body is matched).
+func IsWorktreeMissing(err error) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return strings.Contains(httpErr.Body, worktreeMissingMarker)
 }
 
 // IsNotFound reports whether err is (or wraps) an argus HTTP 404 — the

@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/anutron/hera/internal/argus"
 )
 
 // EndReasonUserDeleted is stamped on every binding ended by `^d`. The
@@ -67,7 +69,16 @@ func (s *Service) deleteRoleInternal(ctx context.Context, role *Role) error {
 	if argusTaskID != "" {
 		s.logf("delete: destroying argus task %q (worktree+branch)", argusTaskID)
 		if err := s.Argus.DeleteTask(ctx, argusTaskID); err != nil {
-			return fmt.Errorf("ops.DeleteRole: argus delete task %s: %w", argusTaskID, err)
+			// BUG-020: an orphaned task whose worktree was deleted out-of-band can
+			// make argus's delete choke on the missing worktree. Treat that exact
+			// condition as a soft skip (same spirit as the BUG-018 worktree-remove
+			// guard) so the role + orchestrator DB rows are still removed and the
+			// orphan clears from the rail. Any OTHER delete failure still aborts.
+			if argus.IsWorktreeMissing(err) {
+				s.logf("delete: argus task %q worktree already gone, skipping argus delete: %v", argusTaskID, err)
+			} else {
+				return fmt.Errorf("ops.DeleteRole: argus delete task %s: %w", argusTaskID, err)
+			}
 		}
 	}
 

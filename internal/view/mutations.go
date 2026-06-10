@@ -2,6 +2,7 @@ package view
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -1083,6 +1084,7 @@ func (b *mutationBridge) OnReattach() bool {
 		}
 		taskID := sel.CoordTaskID
 		name := sel.Name
+		orchID := sel.OrchestratorID
 		// Show the REATTACHING splash on the coord pane immediately (BUG-008),
 		// the same feedback agents get. fireSelectionNow (inside StartPaneReattach)
 		// binds the coord pane to taskID if the Enter beat the selection debounce.
@@ -1106,6 +1108,19 @@ func (b *mutationBridge) OnReattach() bool {
 			if err := b.svc.ReattachAgent(b.ctx, taskID); err != nil {
 				if b.splashStart != nil {
 					b.splashStart.ClearPaneReattach(taskID)
+				}
+				// BUG-020: the coord's worktree was deleted out-of-band, so the
+				// restart can never succeed — this is an unrecoverable orphan.
+				// Instead of an opaque argus 500, offer to delete it (routing to
+				// the orchestrator-delete path). Returning nil suppresses the raw
+				// error modal; the confirm opens on its own goroutine.
+				if errors.Is(err, ops.ErrWorktreeMissing) {
+					b.offerDeleteOrphaned(
+						fmt.Sprintf("Delete orphaned coordinator %q?", name),
+						fmt.Sprintf("This coordinator's worktree is gone and can't be revived. Delete %q? (y/N)", name),
+						func() error { return b.svc.DeleteOrchestrator(b.ctx, orchID) },
+					)
+					return nil
 				}
 				return fmt.Errorf("re-attach %q: %s", name, err.Error())
 			}
@@ -1132,6 +1147,7 @@ func (b *mutationBridge) OnReattach() bool {
 
 	taskID := sel.ArgusTaskID
 	name := sel.Name
+	roleID := sel.RoleID
 
 	// BUG-008: show the REATTACHING splash on the pane and enter it immediately
 	// (on the event loop), so the operator sees progress feedback right away.
@@ -1145,6 +1161,19 @@ func (b *mutationBridge) OnReattach() bool {
 			// Clear the splash since reattach failed so the operator is not stuck.
 			if b.splashStart != nil {
 				b.splashStart.ClearPaneReattach(taskID)
+			}
+			// BUG-020: the agent's worktree was deleted out-of-band — restart can
+			// never succeed. Offer to delete the orphaned role rather than show an
+			// opaque argus 500. Returning nil suppresses the raw error modal. Only a
+			// MANAGED role (roleID != 0) routes to DeleteRole; a freelancer (roleID
+			// 0) has no hera role to delete, so it falls through to the raw error.
+			if errors.Is(err, ops.ErrWorktreeMissing) && roleID != 0 {
+				b.offerDeleteOrphaned(
+					fmt.Sprintf("Delete orphaned agent %q?", name),
+					fmt.Sprintf("This agent's worktree is gone and can't be revived. Delete %q? (y/N)", name),
+					func() error { return b.svc.DeleteRole(b.ctx, roleID) },
+				)
+				return nil
 			}
 			// Surface a human-readable message: distinguish "not supported"
 			// (update argus) from other failures (e.g. network error).
@@ -1167,6 +1196,32 @@ func (b *mutationBridge) OnReattach() bool {
 		return nil
 	})
 	return true
+}
+
+// offerDeleteOrphaned opens a y/N confirmation offering to delete a row whose
+// argus worktree is gone (BUG-020) — a reattach target that can never be
+// revived. On Yes it runs do (the orchestrator- or role-delete op) off the
+// event loop and refreshes the rail so the orphan clears.
+//
+// It is invoked from inside the reattach mutate op (which still holds the
+// in-flight flag), so the confirm opens via goUI on its own goroutine. The
+// delete itself runs via goUI rather than mutate ON PURPOSE: routing it through
+// mutate would have its in-flight CompareAndSwap race the reattach op's flag
+// release and intermittently drop the delete as "busy". The delete is fired
+// from a modal callback, not a rail key, and the modal gate already serializes
+// the operator — so the in-flight guard is unnecessary here.
+func (b *mutationBridge) offerDeleteOrphaned(title, message string, do func() error) {
+	b.goUI(func() {
+		b.modals.ShowConfirm(title, message, func() {
+			b.goUI(func() {
+				if err := do(); err != nil {
+					b.modals.ShowError(err.Error())
+					return
+				}
+				b.refresh()
+			})
+		}, nil)
+	})
 }
 
 // OnListAll toggles archive-section visibility. No DB write, no argus
