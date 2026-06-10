@@ -29,12 +29,6 @@ type fakeModals struct {
 	stubInputCancel    bool
 	stubInputNotOpened bool
 
-	// stubTextAreaInput* drive ShowTextAreaInput (worker prompt).
-	textAreaInputCalls       []fakeInputCall
-	stubTextAreaInputAnswer  string
-	stubTextAreaInputCancel  bool
-	stubTextAreaInputNotOpen bool
-
 	stubConfirmYes     bool
 	stubConfirmNotOpen bool
 
@@ -106,28 +100,6 @@ func (f *fakeModals) ShowInput(title, label, initial string, onSubmit func(strin
 	answer := f.stubInputAnswer
 	cancel := f.stubInputCancel
 	notOpen := f.stubInputNotOpened
-	f.mu.Unlock()
-
-	if notOpen {
-		return
-	}
-	if cancel {
-		if onCancel != nil {
-			onCancel()
-		}
-		return
-	}
-	if onSubmit != nil {
-		onSubmit(answer)
-	}
-}
-
-func (f *fakeModals) ShowTextAreaInput(title, label, initial string, onSubmit func(string), onCancel func()) {
-	f.mu.Lock()
-	f.textAreaInputCalls = append(f.textAreaInputCalls, fakeInputCall{Title: title, Label: label, Initial: initial})
-	answer := f.stubTextAreaInputAnswer
-	cancel := f.stubTextAreaInputCancel
-	notOpen := f.stubTextAreaInputNotOpen
 	f.mu.Unlock()
 
 	if notOpen {
