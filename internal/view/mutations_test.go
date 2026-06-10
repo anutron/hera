@@ -2092,6 +2092,157 @@ func TestBridge_OnReattach_NotSupported_ShowsError(t *testing.T) {
 	}
 }
 
+// BUG-019: Enter on a ⊘ mixed-coord header (displayed-active orchestrator whose
+// argus coord task is archived) must REPAIR first — unarchive the coord task —
+// then restart it, instead of bouncing back to the rail. The unarchive MUST
+// precede the restart (argus refuses to restart an archived task).
+func TestBridge_OnReattach_MixedCoord_UnarchivesThenReattaches(t *testing.T) {
+	b, _, sel, svc, _, rp := newBridgeUnderTest()
+	notifier := &fakeReattachNotifier{}
+	b.reattach = notifier
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     5,
+		Name:               "coord-1",
+		CoordTaskID:        "T1",
+		CoordArgusArchived: true,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must return true for a ⊘ mixed-coord header")
+	}
+	if len(svc.toggleArchiveTaskCalls) != 1 ||
+		svc.toggleArchiveTaskCalls[0] != (toggleTaskCall{TaskID: "T1", Archived: true}) {
+		t.Fatalf("want ToggleArchiveTask(T1, archived=true) — the repair unarchive; got %+v", svc.toggleArchiveTaskCalls)
+	}
+	if len(svc.reattachCalls) != 1 || svc.reattachCalls[0] != "T1" {
+		t.Fatalf("want ReattachAgent(T1) after the unarchive; got %v", svc.reattachCalls)
+	}
+	if len(notifier.notified) != 1 || notifier.notified[0] != "T1" {
+		t.Fatalf("success must notify the reattach notifier with T1; got %v", notifier.notified)
+	}
+	if rp.Count() < 1 {
+		t.Fatalf("mixed-coord reattach success must trigger a rail refresh; got %d", rp.Count())
+	}
+}
+
+// If the repair (unarchive) fails, the restart must NOT run and the error is
+// surfaced as a modal — never a silent bounce.
+func TestBridge_OnReattach_MixedCoord_UnarchiveFails_NoReattach(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	notifier := &fakeReattachNotifier{}
+	b.reattach = notifier
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     5,
+		Name:               "coord-1",
+		CoordTaskID:        "T1",
+		CoordArgusArchived: true,
+	}
+	svc.toggleArchiveTaskErr = errors.New("argus unreachable")
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must return true (it owned the Enter) even when repair fails")
+	}
+	if len(svc.reattachCalls) != 0 {
+		t.Fatalf("restart must not run when the unarchive repair fails; got %v", svc.reattachCalls)
+	}
+	if len(notifier.notified) != 0 {
+		t.Fatalf("notifier must not fire on repair failure; got %v", notifier.notified)
+	}
+	if len(m.errors) != 1 || !strings.Contains(m.errors[0], "coord-1") {
+		t.Fatalf("want 1 error modal naming the coord; got %v", m.errors)
+	}
+}
+
+// If the restart fails after a successful unarchive (e.g. argus too old, or the
+// session is held by a background agent), the error is surfaced as a modal and
+// the notifier is not called — no silent bounce.
+func TestBridge_OnReattach_MixedCoord_ReattachFails_ShowsError(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeUnderTest()
+	notifier := &fakeReattachNotifier{}
+	b.reattach = notifier
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     5,
+		Name:               "coord-1",
+		CoordTaskID:        "T1",
+		CoordArgusArchived: true,
+	}
+	svc.reattachErr = ops.ErrRestartNotSupported
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if !handled {
+		t.Fatalf("OnReattach must return true even when restart is not supported")
+	}
+	if len(svc.toggleArchiveTaskCalls) != 1 {
+		t.Fatalf("repair unarchive must still run; got %+v", svc.toggleArchiveTaskCalls)
+	}
+	if len(notifier.notified) != 0 {
+		t.Fatalf("notifier must not fire on restart failure; got %v", notifier.notified)
+	}
+	if len(m.errors) != 1 || !strings.Contains(m.errors[0], "coord-1") {
+		t.Fatalf("want 1 error modal naming the coord; got %v", m.errors)
+	}
+}
+
+// A HEALTHY coord header (argus coord task NOT archived) is not a reattach
+// target — Enter must fall through to normal pane-entry (OnReattach false).
+func TestBridge_OnReattach_HealthyCoordHeader_NotHandled(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     5,
+		Name:               "coord-1",
+		CoordTaskID:        "T1",
+		CoordArgusArchived: false,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if handled {
+		t.Fatalf("OnReattach must return false for a healthy (non-mixed) coord header")
+	}
+	if len(svc.toggleArchiveTaskCalls) != 0 || len(svc.reattachCalls) != 0 {
+		t.Fatalf("healthy coord header must not unarchive or reattach; got toggle=%v reattach=%v",
+			svc.toggleArchiveTaskCalls, svc.reattachCalls)
+	}
+}
+
+// A hera-archived orchestrator header is OnResurrect's job, not OnReattach's,
+// even if its coord task is also argus-archived.
+func TestBridge_OnReattach_ArchivedOrchestrator_NotHandled(t *testing.T) {
+	b, _, sel, svc, _, _ := newBridgeUnderTest()
+	sel.sel = railSelection{
+		Kind:               selOrchestrator,
+		OrchestratorID:     5,
+		Name:               "coord-1",
+		Archived:           true,
+		CoordTaskID:        "T1",
+		CoordArgusArchived: true,
+	}
+
+	handled := b.OnReattach()
+	b.waitIdle()
+
+	if handled {
+		t.Fatalf("OnReattach must return false for a hera-archived orchestrator (OnResurrect handles it)")
+	}
+	if len(svc.toggleArchiveTaskCalls) != 0 || len(svc.reattachCalls) != 0 {
+		t.Fatalf("archived orchestrator must not unarchive or reattach; got toggle=%v reattach=%v",
+			svc.toggleArchiveTaskCalls, svc.reattachCalls)
+	}
+}
+
 func stringsContains(s, sub string) bool { return strings.Contains(s, sub) }
 
 // --- Deadlock fix: every mutation path hands its blocking work off the
