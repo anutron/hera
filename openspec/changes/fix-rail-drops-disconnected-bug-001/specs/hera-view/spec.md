@@ -17,3 +17,8 @@ This is the transitive form of the invariant that archiving a row never makes it
 
 - **WHEN** a worker role's hera binding has ENDED (its session disconnected) but its most-recent binding's argus task RECORD still exists in the warm state cache and is not archived
 - **THEN** the row MUST render among its coordinator's ACTIVE children (selectable and bindable, carrying the most-recent binding's task id), at most DIMMED by binding liveness, and MUST NOT be dropped from the rail or bucketed into Archive on account of the ended binding
+
+#### Scenario: Recursed subtree placed inside an Archive expando renders dimmed
+
+- **WHEN** a child orchestrator's subtree (the sub-coordinator row AND all its descendants, of any status — including live, non-archived rows) renders nested beneath a bucketed parent-link row inside a coordinator's `Archive (N)` expando
+- **THEN** every row in that recursed subtree MUST render in the DIMMED (grey) style consistent with its Archive PLACEMENT, regardless of each row's own status or archive state — Archive placement modulates STYLE (dimmed) for the WHOLE placed subtree, not only the bucketed parent-link row. The status GLYPH on each row MUST stay truthful to the bound task's argus state (only the style dims), per the status-icon rule
