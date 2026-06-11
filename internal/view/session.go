@@ -318,6 +318,15 @@ func (p managerPaneSource) StatesReady() bool {
 	return p.states != nil && p.states.Ready()
 }
 
+// StatesFresh reports whether the cache snapshot is recent enough to be trusted
+// for record-nonexistence. A stale snapshot (polls stopped succeeding while the
+// frozen snapshot is retained — argus bounced / hung) returns false so a cache
+// MISS is treated as "unknown", not "task gone" (BUG-002). False when no cache
+// is wired.
+func (p managerPaneSource) StatesFresh() bool {
+	return p.states != nil && p.states.Fresh()
+}
+
 // LiveTasks satisfies view.FreelanceProvider, exposing the cache's full
 // argus task snapshot so the rail can compute the Freelance section. Returns
 // nil when no cache is wired (the rail then renders no freelancers).

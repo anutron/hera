@@ -540,6 +540,15 @@ func applyArgusState(r *roleEntry, prov TaskStateProvider) {
 // the cache snapshot keeps rail rebuilds free of per-row argus HTTP calls —
 // populateRail runs on the tview event loop, where a synchronous roundtrip
 // per row serializes ahead of input handling.
+//
+// Deadness also requires the snapshot to be FRESH, not merely ever-ready
+// (BUG-002): once polling stops succeeding (argus bounced / hung / slow — the
+// poll error path retains the frozen snapshot while StatesReady stays latched
+// true), a task created or changed after the freeze is simply absent from the
+// stale snapshot. Argus's own state (MCP task_list) still reports it live, so
+// classifying it Dead strands it. A stale cache therefore reports "unknown",
+// not "gone": the row stays in the active tree, driven by its live / most-
+// recent binding, until a fresh poll can confirm the task's true state.
 func taskGone(prov TaskStateProvider, taskID string) bool {
 	if prov == nil || taskID == "" {
 		return false
@@ -548,6 +557,9 @@ func taskGone(prov TaskStateProvider, taskID string) bool {
 		return false
 	}
 	if rp, ok := prov.(interface{ StatesReady() bool }); ok && !rp.StatesReady() {
+		return false
+	}
+	if fp, ok := prov.(interface{ StatesFresh() bool }); ok && !fp.StatesFresh() {
 		return false
 	}
 	return true
