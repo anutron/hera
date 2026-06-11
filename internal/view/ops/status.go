@@ -200,6 +200,14 @@ type PruneSummary struct {
 // The summary's Found counts every archived descendant encountered (the prune
 // candidates); the caller fires "nothing to do" only when Found==0, so already-
 // complete archived workers are cleared rather than short-circuited (BUG-023).
+//
+// "Archived descendant" is the RAIL's definition (rail_list.roleArchived), NOT
+// merely hera's archived_at column (BUG-032): a role is a prune candidate when
+// hera stamped archived_at, OR its argus task RECORD is gone (Dead), OR the
+// argus task is argus-side archived. The prior code filtered on archived_at
+// alone, so workers the operator had already pruned argus-side (gone task,
+// archived_at NULL) showed in the rail's Archive section yet `C` skipped them —
+// "17 visible, 0 pruned". rolePruneCandidate re-derives the rail's set off-loop.
 func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64) (PruneSummary, error) {
 	roles, err := s.DB.ListRolesByOrchestratorInclusive(ctx, orchID)
 	if err != nil {
@@ -207,26 +215,19 @@ func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64)
 	}
 	var summary PruneSummary
 	for _, role := range roles {
-		if !role.Archived {
-			continue
-		}
 		if role.Kind == KindCoordinator {
 			continue
 		}
-		// An archived non-coordinator descendant: a prune candidate regardless
-		// of its completion state. `C` clears the WHOLE archive under the
-		// coordinator, so already-complete workers count too (BUG-023). Counting
-		// every one in Found lets the caller distinguish "nothing archived to
-		// prune" from "nothing that still needed completing".
-		summary.Found++
 
 		// Resolve the latest binding (live OR ended) to recover the argus task
-		// id + worktree path. A binding-lookup error is non-fatal: we still
-		// delete the hera role row below so the rail clears.
-		bnd, err := s.resolveBinding(ctx, role.ID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			s.logf("complete archived: binding lookup failed for role %q (%d), pruning hera row anyway: %v", role.Name, role.ID, err)
-			summary.Errors++
+		// id + worktree path. Needed BOTH to classify the role (its argus task's
+		// gone/archived state is half the rail-archived definition) and to tear
+		// it down. A binding-lookup error is non-fatal; it is only counted once
+		// the role is confirmed a prune candidate (an active role we skip must
+		// not inflate the error count).
+		bnd, bErr := s.resolveBinding(ctx, role.ID)
+		if bErr != nil && !errors.Is(bErr, ErrNotFound) {
+			s.logf("complete archived: binding lookup failed for role %q (%d): %v", role.Name, role.ID, bErr)
 		}
 		argusTaskID := ""
 		worktreePath := ""
@@ -235,21 +236,40 @@ func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64)
 			worktreePath = bnd.WorktreePath
 		}
 
-		if argusTaskID != "" {
+		// Classify against the rail's Archive-section membership (BUG-032):
+		// hera-archived OR argus task gone (Dead) OR argus-side archived. status
+		// is the single argus fetch's result, reused below for the mark-:checked:
+		// step so we don't re-read; gone short-circuits the completion attempt
+		// (a vanished task can't be stepped).
+		candidate, status, gone, readOK := s.rolePruneCandidate(ctx, role, argusTaskID)
+		if !candidate {
+			continue
+		}
+		// A confirmed prune candidate regardless of its completion state. `C`
+		// clears the WHOLE archive under the coordinator, so already-complete
+		// workers count too (BUG-023). Counting every one in Found lets the
+		// caller distinguish "nothing archived to prune" from "nothing that
+		// still needed completing".
+		summary.Found++
+		if bErr != nil && !errors.Is(bErr, ErrNotFound) {
+			summary.Errors++
+		}
+
+		if argusTaskID != "" && !gone && readOK {
 			// Mark :checked: ONLY when the task is not already complete. An
 			// already-complete worker just needs deleting — re-issuing the status
 			// write is redundant and argus may reject a no-op transition
-			// (BUG-023). Completion is best-effort (BUG-029): a status read or
-			// write that fails (dead/pruned/○ detached task) is logged and
-			// skipped — we proceed straight to deleting the task.
-			if cur, statErr := s.Argus.GetTaskStatus(ctx, argusTaskID); statErr != nil {
-				s.logf("complete archived: status read failed for role %q (%d), deleting task without completing: %v", role.Name, role.ID, statErr)
-			} else if cur != "complete" {
+			// (BUG-023). Completion is best-effort (BUG-029): when the state read
+			// failed (readOK false) or the task is gone, we skip straight to the
+			// delete rather than issue a doomed write.
+			if status != "complete" {
 				if _, err := s.Argus.SetTaskStatus(ctx, argusTaskID, "complete"); err != nil {
 					s.logf("complete archived: mark complete failed for role %q (%d), deleting task anyway: %v", role.Name, role.ID, err)
 				}
 			}
+		}
 
+		if argusTaskID != "" {
 			// DELETE the underlying argus task so it never resurfaces as a
 			// freelancer (BUG-029, same orphan class as BUG-021). argus cleans
 			// the task's worktree + branch server-side. Best-effort: an
@@ -290,6 +310,41 @@ func (s *Service) CompleteArchivedDescendants(ctx context.Context, orchID int64)
 		summary.Pruned++
 	}
 	return summary, nil
+}
+
+// rolePruneCandidate reports whether role is part of the rail's Archive section
+// — and therefore a `C` prune candidate — mirroring rail_list.roleArchived
+// exactly (BUG-032). A role is rail-archived when ANY of:
+//   - hera stamped archived_at (role.Archived), OR
+//   - its argus task RECORD is gone / Dead (GetTaskState → ErrArgusTaskGone), OR
+//   - the argus task is argus-side archived (the archived bit).
+//
+// It returns the task's status alongside (when the state read succeeded, signalled
+// by readOK) so the caller can reuse the single argus fetch for the mark-:checked:
+// step instead of issuing a second GetTaskStatus; gone=true when the record has
+// vanished (so the caller skips the doomed completion write). readOK is false
+// when there was no task to probe or the read failed for any reason — the caller
+// then skips the completion attempt but still attempts the argus delete.
+//
+// With no argus task id (a never-bound archived role) only the hera bit can
+// classify it — there is no task to probe. A non-gone state-read failure does
+// NOT strand a hera-archived role: we fall back to role.Archived so a flaky
+// argus never makes the archive un-prunable.
+func (s *Service) rolePruneCandidate(ctx context.Context, role *Role, argusTaskID string) (candidate bool, status string, gone bool, readOK bool) {
+	if argusTaskID == "" {
+		return role.Archived, "", false, false
+	}
+	st, argusArchived, err := s.Argus.GetTaskState(ctx, argusTaskID)
+	if err != nil {
+		if errors.Is(err, ErrArgusTaskGone) {
+			// Dead: the argus task record no longer exists. The rail shows the
+			// row in the Archive section regardless of hera's archived_at.
+			return true, "", true, false
+		}
+		s.logf("complete archived: state read failed for role %q (%d), falling back to hera archived bit: %v", role.Name, role.ID, err)
+		return role.Archived, "", false, false
+	}
+	return role.Archived || argusArchived, st, false, true
 }
 
 // StepTaskStatus steps an argus task's status directly by task id, bypassing

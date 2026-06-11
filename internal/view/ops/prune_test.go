@@ -535,8 +535,8 @@ func TestCompleteArchivedDescendants_DeletesArgusTasks_AllStates(t *testing.T) {
 	orch := db.seedOrchestrator("proj", false)
 	db.seedRole(orch.ID, "coord", KindCoordinator, "proj", true)
 
-	done := db.seedRole(orch.ID, "done", KindWorker, "proj", true)        // complete
-	todo := db.seedRole(orch.ID, "todo", KindWorker, "proj", true)        // incomplete
+	done := db.seedRole(orch.ID, "done", KindWorker, "proj", true)         // complete
+	todo := db.seedRole(orch.ID, "todo", KindWorker, "proj", true)         // incomplete
 	detached := db.seedRole(orch.ID, "detached", KindWorker, "proj", true) // ○ detached
 	db.seedEndedBinding(done.ID, "Tdone", makeSimpleTempDir(t))
 	db.seedEndedBinding(todo.ID, "Ttodo", makeSimpleTempDir(t))
@@ -730,6 +730,126 @@ func TestCompleteArchivedDescendants_MixedTaskResolvability_AllPruned(t *testing
 		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("role %d should be pruned regardless of task-resolvability", id)
 		}
+	}
+}
+
+// BUG-032 (THE REPRO): the live smoking gun. A worker whose hera archived_at is
+// NULL (role NOT hera-archived) but whose argus task RECORD was pruned
+// out-of-band shows in the rail's Archive section (rail_list.roleArchived buckets
+// it via Dead), yet the pre-fix `C` filtered on archived_at alone and skipped it
+// — "17 visible archived, 0 pruned". The classification must now mirror the rail:
+// a gone (Dead) argus task makes the role a prune candidate regardless of
+// archived_at. The active sibling (live, existing task, archived_at NULL) must
+// be left untouched — `C` clears the archive, not live work.
+func TestCompleteArchivedDescendants_DeadTaskArchivedAtNull_Pruned(t *testing.T) {
+	s, db, argus, wt, _ := newTestService()
+	orch := db.seedOrchestrator("hera-1.0-ftw", false)
+	db.seedRole(orch.ID, "coord", KindCoordinator, "hera-1.0-ftw", false)
+
+	// Three workers the operator pruned argus-side: hera archived_at NULL, but
+	// the argus task RECORD is gone (GetTaskState → ErrArgusTaskGone = Dead).
+	const dead = 3
+	var deadIDs []int64
+	argus.goneTasks = map[string]bool{}
+	for i := 0; i < dead; i++ {
+		r := db.seedRole(orch.ID, fmt.Sprintf("dead%d", i), KindWorker, "hera-1.0-ftw", false) // NOT archived
+		deadIDs = append(deadIDs, r.ID)
+		taskID := fmt.Sprintf("Tdead%d", i)
+		db.seedEndedBinding(r.ID, taskID, makeSimpleTempDir(t))
+		argus.goneTasks[taskID] = true
+	}
+	// An active worker: archived_at NULL, live binding, task exists & in progress.
+	// The rail renders it ACTIVE — `C` must not touch it.
+	active := db.seedRole(orch.ID, "active", KindWorker, "hera-1.0-ftw", false)
+	db.seedBinding(active.ID, "Tactive", makeSimpleTempDir(t))
+	argus.statuses = map[string]string{"Tactive": "in_progress"}
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("CompleteArchivedDescendants over dead-task archive must not error: %v", err)
+	}
+	// Found counts ONLY the rail-archived (Dead) workers; the active worker is
+	// excluded. The pre-fix code reported Found==0 here (none hera-archived).
+	if summary.Found != dead || summary.Pruned != dead {
+		t.Fatalf("Found/Pruned = %d/%d, want %d/%d (dead workers pruned despite archived_at NULL)", summary.Found, summary.Pruned, dead, dead)
+	}
+	for _, id := range deadIDs {
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("dead worker %d (archived_at NULL, argus task gone) should be pruned", id)
+		}
+	}
+	// The active worker survives — its role row AND its live binding.
+	if _, err := db.GetRoleByID(context.Background(), active.ID); err != nil {
+		t.Fatalf("active worker must NOT be pruned: %v", err)
+	}
+	if _, err := db.GetLiveBindingByRole(context.Background(), active.ID); err != nil {
+		t.Fatalf("active worker's live binding must survive: %v", err)
+	}
+	// The active worker's task is never deleted argus-side.
+	for _, id := range argus.deleteCalls {
+		if id == "Tactive" {
+			t.Fatalf("active worker's argus task must never be deleted; deleteCalls=%v", argus.deleteCalls)
+		}
+	}
+	// No worktree removal nor status write touches the active worker.
+	for _, c := range argus.setStatusCalls {
+		if c.TaskID == "Tactive" {
+			t.Fatalf("active worker's status must never be stepped; setStatusCalls=%+v", argus.setStatusCalls)
+		}
+	}
+	_ = wt
+}
+
+// BUG-032: a worker that is argus-side archived (the argus task's archived bit
+// is set) but whose hera archived_at is NULL — the "mixed" state the rail also
+// buckets into the Archive section via roleArchived's ArgusArchived clause. `C`
+// must prune it too, mirroring the rail.
+func TestCompleteArchivedDescendants_ArgusArchivedNotHera_Pruned(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("proj", false)
+	db.seedRole(orch.ID, "coord", KindCoordinator, "proj", false)
+
+	w := db.seedRole(orch.ID, "argus-archived", KindWorker, "proj", false) // hera NOT archived
+	db.seedEndedBinding(w.ID, "Tarch", makeSimpleTempDir(t))
+	argus.statuses = map[string]string{"Tarch": "in_progress"}
+	argus.archivedTasks = map[string]bool{"Tarch": true} // argus-side archived
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("CompleteArchivedDescendants: %v", err)
+	}
+	if summary.Found != 1 || summary.Pruned != 1 {
+		t.Fatalf("Found/Pruned = %d/%d, want 1/1 (argus-archived worker is rail-archived)", summary.Found, summary.Pruned)
+	}
+	if _, err := db.GetRoleByID(context.Background(), w.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("argus-side-archived worker (archived_at NULL) should be pruned")
+	}
+}
+
+// BUG-032: a coordinator whose ONLY non-coordinator descendant is an active,
+// live worker (archived_at NULL, existing task) has NOTHING rail-archived —
+// Found must be 0 so the bridge fires "nothing to prune", and the worker is
+// untouched. Guards the new classification against over-pruning live agents.
+func TestCompleteArchivedDescendants_OnlyActiveWorkers_FoundZero(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("proj", false)
+	db.seedRole(orch.ID, "coord", KindCoordinator, "proj", false)
+	active := db.seedRole(orch.ID, "w1", KindWorker, "proj", false)
+	db.seedBinding(active.ID, "Tw1", makeSimpleTempDir(t))
+	argus.statuses = map[string]string{"Tw1": "in_progress"}
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("CompleteArchivedDescendants: %v", err)
+	}
+	if summary.Found != 0 || summary.Pruned != 0 {
+		t.Fatalf("Found/Pruned = %d/%d, want 0/0 (no rail-archived descendants)", summary.Found, summary.Pruned)
+	}
+	if _, err := db.GetRoleByID(context.Background(), active.ID); err != nil {
+		t.Fatalf("active worker must survive: %v", err)
+	}
+	if len(argus.deleteCalls) != 0 {
+		t.Fatalf("no argus task should be deleted; deleteCalls=%v", argus.deleteCalls)
 	}
 }
 

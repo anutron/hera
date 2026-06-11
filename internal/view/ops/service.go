@@ -188,6 +188,17 @@ type ArgusClient interface {
 	// completed agents.
 	GetTaskStatus(ctx context.Context, taskID string) (string, error)
 
+	// GetTaskState returns the task's workflow status AND its argus-side
+	// archived bit in a single fetch, wrapping ErrArgusTaskGone when the task
+	// RECORD no longer exists (HTTP 404). Backs CompleteArchivedDescendants'
+	// rail-archived classification (BUG-032): the rail buckets a worker into
+	// the Archive section when its argus task is gone (Dead), argus-side
+	// archived, or the hera row is archived (rail_list.roleArchived). Matching
+	// that set in the ops layer needs both the archived bit and the gone signal,
+	// which GetTaskStatus alone cannot supply. The production adapter already
+	// fetches the full task record (GetTask), so returning both is free.
+	GetTaskState(ctx context.Context, taskID string) (status string, archived bool, err error)
+
 	// SetTaskStatus sets the task's workflow status, returning the
 	// resolved status. Backs `s`/`S`.
 	SetTaskStatus(ctx context.Context, taskID, status string) (string, error)
