@@ -207,6 +207,38 @@ ALTER TABLE messages DROP COLUMN nudge_count;
 ALTER TABLE messages DROP COLUMN nudged_at;
 `,
 	},
+	{
+		name: "0010_tree_cursors_cascade",
+		sql: `
+-- tree_read_cursors.role_id was created (migration 0008) with a bare
+-- REFERENCES roles(id) and NO ON DELETE action — so it defaults to NO ACTION,
+-- which BLOCKS deleting a parent role that still has a cursor row. Every other
+-- roles-child table (messages, role_status, bindings) cascades on role delete;
+-- this one is the odd one out. A coordinator that consumed tree updates owns a
+-- cursor row, and that row blocks the role delete that DeleteOrchestrator
+-- cascades from the orchestrator delete — surfacing as
+-- "FOREIGN KEY constraint failed (787)" when ^d targets such an orchestrator
+-- (BUG-034). foreign_key_check stays clean because a NO ACTION FK that blocks a
+-- delete is not an orphan violation, which is why the bug looked mysterious.
+--
+-- Rebuild the table with ON DELETE CASCADE so it matches its siblings.
+-- tree_read_cursors is a LEAF (nothing references it), so dropping it cascades
+-- to nothing and no connection-level FK-off is required — a plain transaction
+-- suffices. Orphaned cursors cannot exist while the NO ACTION FK held, but the
+-- WHERE guard drops any anyway: a cursor is a disposable read bookmark,
+-- re-seeded on the next tree read.
+CREATE TABLE tree_read_cursors_new (
+    role_id    INTEGER PRIMARY KEY REFERENCES roles(id) ON DELETE CASCADE,
+    cursor     INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+INSERT INTO tree_read_cursors_new (role_id, cursor, updated_at)
+    SELECT role_id, cursor, updated_at FROM tree_read_cursors
+    WHERE role_id IN (SELECT id FROM roles);
+DROP TABLE tree_read_cursors;
+ALTER TABLE tree_read_cursors_new RENAME TO tree_read_cursors;
+`,
+	},
 }
 
 const initialSchema = `

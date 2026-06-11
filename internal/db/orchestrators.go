@@ -227,19 +227,44 @@ func (o *OrchestratorsDAO) Unpin(ctx context.Context, id int64) error {
 	return nil
 }
 
-// Delete physically removes an orchestrator row. All child roles and
-// bindings are removed automatically via ON DELETE CASCADE. Unlike
-// Archive (which preserves the row for resurrection), Delete is
-// permanent and is used by the `^d` destructive-delete verb. Returns
-// ErrNotFound if no row matches id.
+// Delete physically removes an orchestrator row. Child roles and bindings are
+// removed automatically via ON DELETE CASCADE. Unlike Archive (which preserves
+// the row for resurrection), Delete is permanent and is used by the `^d`
+// destructive-delete verb. Returns ErrNotFound if no row matches id.
+//
+// The whole teardown runs in one transaction. Before the orchestrator row is
+// removed, every tree_read_cursors row for this orchestrator's roles is
+// cleared explicitly. tree_read_cursors.role_id (migration 0008) was created
+// without an ON DELETE action, so until migration 0010 rebuilt it with
+// ON DELETE CASCADE a coordinator's cursor row would BLOCK the role delete the
+// orchestrator-delete cascades into — the FOREIGN KEY constraint failed (787)
+// of BUG-034. The explicit clear is belt-and-suspenders that keeps Delete
+// robust regardless of the cursor table's cascade behavior (and against any
+// future non-cascading role child).
 func (o *OrchestratorsDAO) Delete(ctx context.Context, id int64) error {
-	res, err := o.db.ExecContext(ctx, `DELETE FROM orchestrators WHERE id = ?`, id)
+	tx, err := o.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("orchestrators.Delete: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM tree_read_cursors
+		 WHERE role_id IN (SELECT id FROM roles WHERE orchestrator_id = ?)`, id,
+	); err != nil {
+		return fmt.Errorf("orchestrators.Delete: clear tree cursors: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM orchestrators WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("orchestrators.Delete: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("orchestrators.Delete: commit: %w", err)
 	}
 	if o.events != nil {
 		o.events.Emit(Event{Entity: EntityOrchestrator, Op: OpDelete, ID: id})
