@@ -640,6 +640,99 @@ func TestCompleteArchivedDescendants_ArgusDeleteError_CountedNotAborted(t *testi
 	}
 }
 
+// BUG-031: `C` confirm counts N but prune finds 0 — task-less archived roles
+// were excluded from the prune list. The pre-BUG-029 sweep `continue`d past any
+// role whose argus task couldn't be resolved/completed (counting it in Found
+// but never pruning it), so a coordinator whose archived workers' argus tasks
+// were already cleaned out-of-band reported "N found, 0 pruned" → the bridge
+// fired "no archived workers to prune" with a non-empty archive. The fix
+// (BUG-029 rewrite) prunes the hera row for EVERY archived descendant regardless
+// of task-resolvability. This test pins the headline scenario: ALL archived
+// workers' argus tasks are already gone (some with an ended binding pointing at
+// a 404'd task, one with NO binding at all). Every row must clear, Found must
+// equal Pruned, and there must be no error.
+func TestCompleteArchivedDescendants_AllTasksGone_PrunesAllCountMatches(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("hera-1.0-ftw", false)
+	db.seedRole(orch.ID, "coord", KindCoordinator, "hera-1.0-ftw", true) // skipped
+
+	// Two archived workers whose ended bindings still name an argus task, but
+	// that task was pruned out-of-band — argus DELETE returns task-gone (404).
+	gone1 := db.seedRole(orch.ID, "gone1", KindWorker, "hera-1.0-ftw", true)
+	gone2 := db.seedRole(orch.ID, "gone2", KindWorker, "hera-1.0-ftw", true)
+	db.seedEndedBinding(gone1.ID, "Tgone1", makeSimpleTempDir(t))
+	db.seedEndedBinding(gone2.ID, "Tgone2", makeSimpleTempDir(t))
+	argus.deleteErrByTask = map[string]error{
+		"Tgone1": fmt.Errorf("argus task gone: %w", ErrArgusTaskGone),
+		"Tgone2": fmt.Errorf("argus task gone: %w", ErrArgusTaskGone),
+	}
+
+	// A third archived worker with NO binding at all — resolveBinding returns
+	// ErrNotFound, so there is no argus task id to resolve. The pre-fix sweep
+	// skipped these too; the fix prunes the hera row anyway. (No prior test
+	// covered the never-bound archived role.)
+	nobind := db.seedRole(orch.ID, "nobind", KindWorker, "hera-1.0-ftw", true)
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("sweep over all-task-gone archive must not error: %v", err)
+	}
+	// The count (Found) and the prune (Pruned) operate on the IDENTICAL list:
+	// a 3-count archive prunes exactly 3.
+	if summary.Found != 3 || summary.Pruned != 3 {
+		t.Fatalf("Found/Pruned = %d/%d, want 3/3 (count must equal pruned)", summary.Found, summary.Pruned)
+	}
+	// An already-gone argus task is a clean skip, not a counted error.
+	if summary.Errors != 0 {
+		t.Fatalf("Errors = %d, want 0 (already-gone tasks are clean skips)", summary.Errors)
+	}
+	for _, id := range []int64{gone1.ID, gone2.ID, nobind.ID} {
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("role %d should be pruned from DB even though its argus task was gone", id)
+		}
+	}
+}
+
+// BUG-031: a mixed archive — one worker's argus task is still resolvable, one's
+// is already gone (404 on delete), one has no binding at all — must prune ALL
+// three. No role is excluded on task-resolvability grounds; Found == Pruned.
+func TestCompleteArchivedDescendants_MixedTaskResolvability_AllPruned(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("hera-1.0-ftw", false)
+
+	live := db.seedRole(orch.ID, "live", KindWorker, "hera-1.0-ftw", true)
+	gone := db.seedRole(orch.ID, "gone", KindWorker, "hera-1.0-ftw", true)
+	nobind := db.seedRole(orch.ID, "nobind", KindWorker, "hera-1.0-ftw", true)
+	db.seedEndedBinding(live.ID, "Tlive", makeSimpleTempDir(t))
+	db.seedEndedBinding(gone.ID, "Tgone", makeSimpleTempDir(t))
+	argus.statuses = map[string]string{"Tlive": "in_progress"}
+	argus.deleteErrByTask = map[string]error{
+		"Tgone": fmt.Errorf("argus task gone: %w", ErrArgusTaskGone),
+	}
+
+	summary, err := s.CompleteArchivedDescendants(context.Background(), orch.ID)
+	if err != nil {
+		t.Fatalf("mixed-resolvability sweep must not error: %v", err)
+	}
+	if summary.Found != 3 || summary.Pruned != 3 || summary.Errors != 0 {
+		t.Fatalf("Found/Pruned/Errors = %d/%d/%d, want 3/3/0", summary.Found, summary.Pruned, summary.Errors)
+	}
+	// The resolvable task is deleted argus-side; the gone task's delete is
+	// attempted (and tolerated); the never-bound role issues no argus call.
+	gotDeletes := map[string]bool{}
+	for _, id := range argus.deleteCalls {
+		gotDeletes[id] = true
+	}
+	if !gotDeletes["Tlive"] || !gotDeletes["Tgone"] {
+		t.Fatalf("both bound tasks should see a delete attempt; deleteCalls=%v", argus.deleteCalls)
+	}
+	for _, id := range []int64{live.ID, gone.ID, nobind.ID} {
+		if _, err := db.GetRoleByID(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("role %d should be pruned regardless of task-resolvability", id)
+		}
+	}
+}
+
 func TestListCompletedAgents_SkipsCoordinatorRoles(t *testing.T) {
 	db := newFakeDB()
 	orch := db.seedOrchestrator("live-proj", false)
