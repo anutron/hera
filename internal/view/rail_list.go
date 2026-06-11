@@ -1706,6 +1706,21 @@ func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int
 		if rl.archiveOpen(o.ID) {
 			for _, role := range sortFoldersFirst(archivedRoles) {
 				rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role, depth: childDepth + 1})
+				// A bucketed sub-coordinator still owns a child orchestrator that
+				// resolveSubCoordinators removed from the top level (it nests ONLY
+				// beneath this parent-link row). Recurse into its subtree here —
+				// mirroring the active branch above — so the child's roles stay
+				// REACHABLE inside the Archive expando rather than dropping out of
+				// the rail entirely when the parent-link row buckets (dead /
+				// archived). Without this, "archiving a row never makes it
+				// unreachable" (spec) is violated transitively for the whole
+				// subtree (BUG-001). Same cycle guard and fold check as the active
+				// branch; nested one level deeper than this archived row.
+				if role.childOrch != nil && !seen[role.childOrch.ID] && !rl.orchCollapsed(role.childOrch) {
+					seen[role.childOrch.ID] = true
+					appendOrchChildren(rl, role.childOrch, childDepth+2, seen)
+					delete(seen, role.childOrch.ID)
+				}
 			}
 		}
 	}
