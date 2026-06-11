@@ -371,6 +371,17 @@ func (a *argusAdapter) GetTaskStatus(ctx context.Context, taskID string) (string
 	return t.Status, nil
 }
 
+func (a *argusAdapter) GetTaskState(ctx context.Context, taskID string) (string, bool, error) {
+	if a.c == nil {
+		return "", false, fmt.Errorf("argusAdapter: nil client")
+	}
+	t, err := a.c.GetTask(ctx, taskID)
+	if err != nil {
+		return "", false, translateArgusTaskErr(err)
+	}
+	return t.Status, t.Archived, nil
+}
+
 func (a *argusAdapter) SetTaskStatus(ctx context.Context, taskID, status string) (string, error) {
 	if a.c == nil {
 		return "", fmt.Errorf("argusAdapter: nil client")

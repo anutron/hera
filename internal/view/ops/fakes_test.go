@@ -678,6 +678,14 @@ type fakeArgus struct {
 	setStatusCalls []setStatusCall
 	setStatusErr   error
 
+	// archivedTasks maps taskID -> argus-side archived bit, consulted by
+	// GetTaskState (BUG-032). Absent key = not archived.
+	archivedTasks map[string]bool
+	// goneTasks marks taskIDs whose RECORD no longer exists argus-side:
+	// GetTaskState returns an error wrapping ErrArgusTaskGone for them (the
+	// Dead signal — the real client's HTTP 404 translation). Absent = exists.
+	goneTasks map[string]bool
+
 	// meta records PutTaskMeta writes keyed by "taskID\x00key"; putMetaErr,
 	// when set, makes every PutTaskMeta fail (the best-effort path).
 	meta       map[string]string
@@ -791,6 +799,21 @@ func (a *fakeArgus) GetTaskStatus(ctx context.Context, taskID string) (string, e
 		return "", nil
 	}
 	return a.statuses[taskID], nil
+}
+
+func (a *fakeArgus) GetTaskState(ctx context.Context, taskID string) (string, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// A gone RECORD reports ErrArgusTaskGone (the Dead signal) — NEVER inferred
+	// from an unknown taskID: an existing task simply absent from the statuses
+	// map is "exists, status unknown", not gone.
+	if a.goneTasks[taskID] {
+		return "", false, fmt.Errorf("fake: task %s gone: %w", taskID, ErrArgusTaskGone)
+	}
+	if a.getStatusErr != nil {
+		return "", false, a.getStatusErr
+	}
+	return a.statuses[taskID], a.archivedTasks[taskID], nil
 }
 
 func (a *fakeArgus) SetTaskStatus(ctx context.Context, taskID, status string) (string, error) {
