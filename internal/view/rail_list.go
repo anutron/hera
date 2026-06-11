@@ -419,6 +419,16 @@ type railRow struct {
 	// item's name + age and is always rendered at depth > 0 (indented under
 	// its breadcrumb line).
 	isBreadcrumbContinuation bool
+
+	// dimmed marks a railRowRole that is PLACED inside an Archive expando — a row
+	// in the recursed subtree the BUG-001 fix nests beneath a bucketed parent-link
+	// row (its sub-coordinator descendants of any status). Such a row MUST render
+	// dimmed (grey) by Archive PLACEMENT even when its OWN status is active/live,
+	// per the spec rule that Archive placement modulates STYLE (spec.md:1482) —
+	// "they should all be grey since they are in the archive" (BUG-003). A row's
+	// own archived/dead state still dims it independently; this flag carries the
+	// placement-derived dimming the row's own state can't express.
+	dimmed bool
 }
 
 // pinnedRole pairs a floating pinned managed role with its computed ancestry
@@ -1419,7 +1429,7 @@ func (rl *railList) buildRows() {
 		if rl.orchCollapsed(o) {
 			return
 		}
-		appendOrchChildren(rl, o, depth+1, map[int64]bool{o.ID: true})
+		appendOrchChildren(rl, o, depth+1, map[int64]bool{o.ID: true}, false)
 	}
 
 	// Pinned section at the very TOP of the rail (above the orchestrator list),
@@ -1459,7 +1469,7 @@ func (rl *railList) buildRows() {
 			// The children are NOT rendered elsewhere (appendOrchChildren skips
 			// rolePinnedOut roles), so expand them here when not collapsed.
 			if r.childOrch != nil && !rl.orchCollapsed(r.childOrch) {
-				appendOrchChildren(rl, r.childOrch, 2, map[int64]bool{r.childOrch.ID: true})
+				appendOrchChildren(rl, r.childOrch, 2, map[int64]bool{r.childOrch.ID: true}, false)
 			}
 		}
 		// BUG-024: pinned freelancers render at root level alongside pinned
@@ -1663,7 +1673,15 @@ func (rl *railList) buildRows() {
 // D14) whose archived children sit one level DEEPER than the expando header.
 // seen carries the current ancestry path so a cyclic multi-binding chain never
 // loops; the expando header is keyed by the owning orchestrator's ID.
-func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int64]bool) {
+//
+// underArchive reports whether this coordinator's children are themselves PLACED
+// inside an ancestor's Archive expando — true only down the BUG-001 archived-
+// branch recursion (a bucketed parent-link row's nested subtree). When true,
+// every emitted row carries the placement-dimmed flag so the whole recursed
+// subtree renders grey, consistent with its Archive placement (BUG-003), even
+// when a row's own status is active. The top-level (root / pinned) calls pass
+// false; a row's own archived/dead state still dims it independently.
+func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int64]bool, underArchive bool) {
 	var activeRoles, archivedRoles []*roleEntry
 	for _, role := range o.Roles {
 		// Skip a child here when EITHER: an active filter narrows it out
@@ -1681,14 +1699,16 @@ func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int
 		}
 	}
 	for _, role := range sortFoldersFirst(activeRoles) {
-		rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role, depth: childDepth})
+		rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role, depth: childDepth, dimmed: underArchive})
 		// A sub-coordinator (multi-binding) is a foldable coord row: nest its
 		// child orchestrator's roles one level deeper, recursively, unless it
 		// is collapsed or would form a cycle (its child already on the ancestry
-		// path). The role row itself is drawn coord-style by drawRoleRow.
+		// path). The role row itself is drawn coord-style by drawRoleRow. The
+		// placement-dimmed flag propagates DOWN: an active subtree under an
+		// archived ancestor stays dimmed all the way down (BUG-003).
 		if role.childOrch != nil && !seen[role.childOrch.ID] && !rl.orchCollapsed(role.childOrch) {
 			seen[role.childOrch.ID] = true
-			appendOrchChildren(rl, role.childOrch, childDepth+1, seen)
+			appendOrchChildren(rl, role.childOrch, childDepth+1, seen, underArchive)
 			delete(seen, role.childOrch.ID)
 		}
 	}
@@ -1705,7 +1725,7 @@ func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int
 		})
 		if rl.archiveOpen(o.ID) {
 			for _, role := range sortFoldersFirst(archivedRoles) {
-				rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role, depth: childDepth + 1})
+				rl.rows = append(rl.rows, railRow{kind: railRowRole, role: role, depth: childDepth + 1, dimmed: underArchive})
 				// A bucketed sub-coordinator still owns a child orchestrator that
 				// resolveSubCoordinators removed from the top level (it nests ONLY
 				// beneath this parent-link row). Recurse into its subtree here —
@@ -1718,7 +1738,11 @@ func appendOrchChildren(rl *railList, o *orchEntry, childDepth int, seen map[int
 				// branch; nested one level deeper than this archived row.
 				if role.childOrch != nil && !seen[role.childOrch.ID] && !rl.orchCollapsed(role.childOrch) {
 					seen[role.childOrch.ID] = true
-					appendOrchChildren(rl, role.childOrch, childDepth+2, seen)
+					// This subtree is PLACED inside the Archive expando — force the
+					// placement-dimmed flag so the entire recursed subtree (the
+					// sub-coord row and all its descendants, of any status) renders
+					// grey, consistent with its Archive placement (BUG-003).
+					appendOrchChildren(rl, role.childOrch, childDepth+2, seen, true)
 					delete(seen, role.childOrch.ID)
 				}
 			}
@@ -1870,7 +1894,7 @@ func (rl *railList) Draw(screen tcell.Screen) {
 					idx-1 == rl.cursor
 				rl.drawBreadcrumbNameRow(screen, cx, y+i, cw, row.role, row.depth, prevSelected)
 			} else {
-				rl.drawRoleRow(screen, cx, y+i, cw, row.role, row.depth, cursor)
+				rl.drawRoleRow(screen, cx, y+i, cw, row.role, row.depth, cursor, row.dimmed)
 			}
 		case railRowPinnedBreadcrumb:
 			// Line 1 of a two-line pinned entry (BUG-025): dimmed status icon +
@@ -2016,7 +2040,13 @@ func (rl *railList) visibleRoleCount(o *orchEntry) int {
 	return n
 }
 
-func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, depth int, cursor bool) {
+// drawRoleRow renders a leaf role (or delegates a sub-coordinator). dimmed is
+// true when the row is PLACED inside an Archive expando (the recursed subtree
+// the BUG-001 fix nests beneath a bucketed parent-link row): it forces the
+// dimmed (grey) style even when the row's own status is active, so the whole
+// archived subtree reads grey (BUG-003). A row's own archived/dead state dims it
+// independently of this flag.
+func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, depth int, cursor, dimmed bool) {
 	if r == nil {
 		return
 	}
@@ -2024,14 +2054,14 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	// coord) renders as a foldable coordinator row — chevron + 󰹻 marker + count
 	// + status icon — just like a root coordinator header, only nested.
 	if r.childOrch != nil {
-		rl.drawSubCoordRow(screen, x, y, w, r, depth, cursor)
+		rl.drawSubCoordRow(screen, x, y, w, r, depth, cursor, dimmed)
 		return
 	}
 
 	// Layout: "<icon> [PR] name           10m"
 	col := x + depth*indentStep
 
-	icon, iconStyle := rl.roleIcon(r)
+	icon, iconStyle := rl.roleIconDimmed(r, dimmed)
 	screen.SetContent(col, y, icon, nil, iconStyle)
 	col += 2 // icon + space
 
@@ -2054,7 +2084,7 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 	}
 
 	nameStyle := theme.StyleNormal
-	if r.Archived || r.Dead || r.ArgusArchived {
+	if dimmed || r.Archived || r.Dead || r.ArgusArchived {
 		nameStyle = theme.StyleDimmed
 	}
 	if cursor {
@@ -2085,10 +2115,15 @@ func (rl *railList) drawRoleRow(screen tcell.Screen, x, y, w int, r *roleEntry, 
 // marker, name, live-child (N) count — at the given depth. The status icon
 // comes from the role's own argus state (roleIcon), so the row reads with the
 // same ☾/○/✓/? vocabulary as any coordinator.
-func (rl *railList) drawSubCoordRow(screen tcell.Screen, x, y, w int, r *roleEntry, depth int, cursor bool) {
+//
+// dimmed forces the grey placement style when the row sits inside an Archive
+// expando (BUG-003), in addition to the row's own archived/dead state.
+func (rl *railList) drawSubCoordRow(screen tcell.Screen, x, y, w int, r *roleEntry, depth int, cursor, dimmed bool) {
 	col := x + depth*indentStep
 
-	icon, iconStyle := rl.roleIcon(r)
+	archived := dimmed || r.Archived || r.Dead || r.ArgusArchived
+
+	icon, iconStyle := rl.roleIconDimmed(r, dimmed)
 	screen.SetContent(col, y, icon, nil, iconStyle)
 	col += 2
 
@@ -2100,14 +2135,14 @@ func (rl *railList) drawSubCoordRow(screen tcell.Screen, x, y, w int, r *roleEnt
 	col += 2
 
 	markerStyle := tcell.StyleDefault.Foreground(theme.ColorProject)
-	if r.Archived || r.Dead || r.ArgusArchived {
+	if archived {
 		markerStyle = theme.StyleDimmed
 	}
 	screen.SetContent(col, y, iconCoord, nil, markerStyle)
 	col += 2
 
 	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
-	if r.Archived || r.Dead || r.ArgusArchived {
+	if archived {
 		nameStyle = tcell.StyleDefault.Foreground(theme.ColorDimmed).Bold(true)
 	}
 	if cursor {
@@ -2356,7 +2391,17 @@ func prGlyph(state string) (rune, tcell.Style, bool) {
 // as a fallback, binding) state. Archived or dead (binding open in DB but
 // argus task is gone) dims the style; the glyph stays truthful.
 func (rl *railList) roleIcon(r *roleEntry) (rune, tcell.Style) {
-	return statusIcon(r.Archived || r.Dead || r.ArgusArchived, r.HasState, r.NeedsInput, r.Status, r.ArgusIdle, r.Live, rl.animFrame())
+	return rl.roleIconDimmed(r, false)
+}
+
+// roleIconDimmed is roleIcon with an extra placement-dim override: forceDim is
+// set for rows PLACED inside an Archive expando (the recursed subtree the
+// BUG-001 fix nests beneath a bucketed parent-link row), so their icon dims even
+// when their own status is active (BUG-003). The GLYPH stays truthful — only the
+// STYLE dims — exactly as statusIcon does for a row's own archived state.
+func (rl *railList) roleIconDimmed(r *roleEntry, forceDim bool) (rune, tcell.Style) {
+	archived := forceDim || r.Archived || r.Dead || r.ArgusArchived
+	return statusIcon(archived, r.HasState, r.NeedsInput, r.Status, r.ArgusIdle, r.Live, rl.animFrame())
 }
 
 // orchIcon picks the status icon for a coordinator header from the coord task's
