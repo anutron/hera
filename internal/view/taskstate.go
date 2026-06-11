@@ -79,6 +79,10 @@ type argusLister interface {
 // without hammering the local daemon.
 const DefaultArgusPollInterval = 2 * time.Second
 
+// minStaleAfter floors the staleness window so a tiny poll interval can't make
+// the freshness gate hair-trigger on a single transient blip.
+const minStaleAfter = 15 * time.Second
+
 // ArgusStateCache polls argus's task list and caches each task's state so the
 // rail can read it without blocking the tview event loop. It notifies
 // subscribers when the snapshot changes so the rail can repaint to reflect
@@ -92,7 +96,19 @@ type ArgusStateCache struct {
 	states  map[string]ArgusTaskState
 	infos   []ArgusTaskInfo          // full snapshot, render order = argus list order
 	infoMap map[string]ArgusTaskInfo // keyed by task ID for O(1) TaskInfo lookups
-	ready   bool                     // true after the first successful poll
+	ready   bool                     // true after the first successful poll (latches)
+	// lastSuccess is the wall-clock time of the most recent SUCCESSFUL poll.
+	// Fresh() compares it against staleAfter so a frozen snapshot (polls erroring
+	// — argus bounced / hung — while the snapshot is retained) stops being
+	// treated as authoritative for record-nonexistence (BUG-002). Guarded by mu.
+	lastSuccess time.Time
+
+	// staleAfter bounds how long a snapshot stays trustworthy without a fresh
+	// successful poll. Beyond it, a cache MISS is "unknown", not "task gone".
+	staleAfter time.Duration
+	// now returns the current time; overridable in tests to drive staleness
+	// deterministically. Defaults to time.Now.
+	now func() time.Time
 
 	// optimistic holds predicted statuses applied by the mutation bridge at the
 	// START of a status-step goroutine (BUG-032: optimistic render). Each entry
@@ -117,6 +133,13 @@ func NewArgusStateCache(lister argusLister, interval time.Duration, log *slog.Lo
 	if log == nil {
 		log = slog.Default()
 	}
+	// Tolerate a few missed polls before distrusting the snapshot: scale the
+	// window with the interval, floored so a tiny interval doesn't make it
+	// hair-trigger.
+	staleAfter := interval * 8
+	if staleAfter < minStaleAfter {
+		staleAfter = minStaleAfter
+	}
 	return &ArgusStateCache{
 		lister:     lister,
 		interval:   interval,
@@ -125,6 +148,8 @@ func NewArgusStateCache(lister argusLister, interval time.Duration, log *slog.Lo
 		infoMap:    map[string]ArgusTaskInfo{},
 		optimistic: map[string]string{},
 		subs:       map[chan struct{}]struct{}{},
+		staleAfter: staleAfter,
+		now:        time.Now,
 	}
 }
 
@@ -196,11 +221,29 @@ func (c *ArgusStateCache) List() []ArgusTaskInfo {
 }
 
 // Ready reports whether at least one successful poll has completed. Callers
-// use it to avoid treating a cold-cache miss as "task gone".
+// use it to avoid treating a cold-cache miss as "task gone". Latches true and
+// never resets, so it alone cannot detect a snapshot that has gone STALE — use
+// Fresh for that.
 func (c *ArgusStateCache) Ready() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.ready
+}
+
+// Fresh reports whether the snapshot is BOTH ready and recent enough to be
+// trusted for record-nonexistence: a successful poll landed within staleAfter.
+// When polls stop succeeding (argus bounced / hung / slow — the error path
+// retains the frozen snapshot while Ready stays latched true), the snapshot
+// goes stale and Fresh returns false. Deadness classification gates on this so
+// a live task that simply postdates the freeze (absent from a frozen snapshot)
+// is treated as "unknown", not "gone" (BUG-002).
+func (c *ArgusStateCache) Fresh() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.ready {
+		return false
+	}
+	return c.now().Sub(c.lastSuccess) <= c.staleAfter
 }
 
 // Subscribe returns a channel that receives a (coalesced) signal whenever the
@@ -272,6 +315,7 @@ func (c *ArgusStateCache) poll(ctx context.Context) {
 	c.infos = infos
 	c.infoMap = nextInfoMap
 	c.ready = true
+	c.lastSuccess = c.now()
 	c.mu.Unlock()
 
 	// Auto-clear optimistic entries that the poll has now confirmed, keeping

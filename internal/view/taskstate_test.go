@@ -2,6 +2,7 @@ package view
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -23,6 +24,71 @@ func newTestCache(tasks []argus.Task) *ArgusStateCache {
 	c := NewArgusStateCache(lister, time.Second, nil)
 	c.poll(context.Background())
 	return c
+}
+
+// --- Snapshot freshness (BUG-002) ---
+
+func TestArgusStateCache_Fresh_TrueRightAfterSuccessfulPoll(t *testing.T) {
+	c := newTestCache([]argus.Task{{ID: "T1", Status: "in_progress"}})
+	if !c.Fresh() {
+		t.Fatal("Fresh must be true immediately after a successful poll")
+	}
+}
+
+func TestArgusStateCache_Fresh_FalseBeforeFirstPoll(t *testing.T) {
+	c := NewArgusStateCache(&fakeArgusLister{}, time.Second, nil)
+	if c.Fresh() {
+		t.Fatal("Fresh must be false before any successful poll (cold cache)")
+	}
+}
+
+// The headline BUG-002 condition at the cache layer: polling stops succeeding,
+// the frozen snapshot is retained, Ready stays latched true — but Fresh must
+// flip false once the staleness window elapses with no fresh success.
+func TestArgusStateCache_Fresh_FalseWhenPollsStopSucceeding(t *testing.T) {
+	base := time.Unix(1_000_000, 0)
+	lister := &fakeArgusLister{tasks: []argus.Task{{ID: "T1", Status: "in_progress"}}}
+	c := NewArgusStateCache(lister, time.Second, nil)
+	c.now = func() time.Time { return base }
+
+	c.poll(context.Background()) // success at base
+	if !c.Fresh() {
+		t.Fatal("Fresh must be true right after the successful poll")
+	}
+
+	// Argus is now down: polls fail and the snapshot freezes.
+	lister.err = errors.New("argus unreachable")
+	c.now = func() time.Time { return base.Add(c.staleAfter + time.Second) }
+	c.poll(context.Background()) // fails, retains the frozen snapshot
+
+	if !c.Ready() {
+		t.Fatal("Ready must stay latched true after a failed poll")
+	}
+	if c.Fresh() {
+		t.Fatal("Fresh must be false once the staleness window elapses with no fresh success")
+	}
+	// The frozen snapshot is still readable — a stale cache is not an empty one.
+	if _, ok := c.Get("T1"); !ok {
+		t.Fatal("stale cache must still serve its last good snapshot")
+	}
+}
+
+// A brief blip (one fast-failing poll well within the window) must NOT flip the
+// cache stale — the staleness tolerance exists precisely to ride out blips.
+func TestArgusStateCache_Fresh_TolerantOfBriefBlip(t *testing.T) {
+	base := time.Unix(2_000_000, 0)
+	lister := &fakeArgusLister{tasks: []argus.Task{{ID: "T1", Status: "in_progress"}}}
+	c := NewArgusStateCache(lister, time.Second, nil)
+	c.now = func() time.Time { return base }
+	c.poll(context.Background())
+
+	lister.err = errors.New("transient")
+	c.now = func() time.Time { return base.Add(c.staleAfter / 2) } // within the window
+	c.poll(context.Background())
+
+	if !c.Fresh() {
+		t.Fatal("a brief blip within the staleness window must keep the cache fresh")
+	}
 }
 
 // --- Optimistic overlay (BUG-032) ---
