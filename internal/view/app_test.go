@@ -1082,6 +1082,148 @@ func TestRebind_DoesNotQueryTaskSize(t *testing.T) {
 	}
 }
 
+// waitForAgentPaneContains polls the rendered screen until the agent pane
+// shows want, or fails after a short deadline. Used by the BUG-033 nav-wipe
+// tests where pane content arrives asynchronously via the bridge consume
+// goroutine.
+func waitForAgentPaneContains(t *testing.T, a *App, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		last = renderApp(t, a, 100, 30)
+		if strings.Contains(last, want) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("agent pane never showed %q; last render:\n%s", want, last)
+}
+
+// In-progress, unsubmitted input must survive navigating away from a live
+// agent pane and back (BUG-033). hera does not echo locally: typed input only
+// appears in the pane via the PTY echo that arrives on the LIVE byte channel,
+// never as part of the ring-buffer snapshot. The fakePaneSource models that by
+// keeping the typed bytes OUT of the static snapshot — they exist only on the
+// live channel. Before the fix, navigating away tore the pane down and a
+// nav-back rebuilt a fresh emulator from the (input-less) snapshot, wiping the
+// input. The fix parks the live pane on nav-away and restores it on nav-back,
+// so its emulator — which already consumed the input off the live channel —
+// is reused intact.
+func TestRebindAgent_PreservesInProgressInputAcrossNavAwayAndBack(t *testing.T) {
+	d := openTestDB(t)
+	chA := make(chan []byte, 8)
+	src := &fakePaneSource{
+		snapshots: map[string][]byte{
+			"task-A": []byte("promptA$ "),
+			"task-B": []byte("promptB$ "),
+		},
+		channels: map[string]chan []byte{
+			"task-A": chA,
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.rebindAgent("task-A")
+	// The operator types; the echo arrives only on the live channel.
+	chA <- []byte("hello-typed")
+	waitForAgentPaneContains(t, a, "hello-typed")
+
+	// Navigate away to another agent, then back.
+	a.rebindAgent("task-B")
+	a.rebindAgent("task-A")
+
+	got := renderApp(t, a, 100, 30)
+	if !strings.Contains(got, "hello-typed") {
+		t.Fatalf("in-progress input wiped on nav-away-and-back (BUG-033); agent pane:\n%s", got)
+	}
+}
+
+// Restoring a parked live pane on nav-back must NOT re-subscribe: a fresh
+// SubscribeTask would replay the lossy ring snapshot through a new emulator,
+// which is exactly the wipe BUG-033 fixes. Assert the proxy sees only one
+// SubscribeTask per task across an A→B→A round trip.
+func TestRebindAgent_NavBackReusesParkedPaneNoResubscribe(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{
+		channels: map[string]chan []byte{
+			"task-A": make(chan []byte, 1),
+			"task-B": make(chan []byte, 1),
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.rebindAgent("task-A")
+	firstA := a.pieces.agent
+	a.rebindAgent("task-B")
+	a.rebindAgent("task-A")
+
+	if a.pieces.agent != firstA {
+		t.Errorf("nav-back rebuilt the agent pane; want the parked pane reused")
+	}
+	subs := map[string]int{}
+	for _, c := range src.calls {
+		subs[c]++
+	}
+	if subs["task-A"] != 1 {
+		t.Errorf("task-A subscribed %d times; want exactly 1 (nav-back must reuse parked pane), calls=%v", subs["task-A"], src.calls)
+	}
+}
+
+// The parked-pane cache is bounded: navigating through more than maxParkedPanes
+// distinct agents evicts (and tears down) the least-recently-parked pane, so an
+// unbounded session cannot accumulate live off-screen emulators (BUG-033). A
+// return to an evicted task re-subscribes (rebuild); a return to a still-cached
+// task reuses its pane.
+func TestRebindAgent_ParkedCacheIsBoundedLRU(t *testing.T) {
+	d := openTestDB(t)
+	src := &fakePaneSource{channels: map[string]chan []byte{}}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	// Visit maxParkedPanes+2 distinct agents. The first one visited (oldest
+	// parked) must be evicted once the cache overflows.
+	order := []string{"A", "B", "C", "D", "E", "F", "G", "H"}
+	for _, id := range order {
+		src.channels["task-"+id] = make(chan []byte, 1)
+		a.rebindAgent("task-" + id)
+	}
+
+	a.mu.Lock()
+	parkedCount := len(a.agentParked)
+	a.mu.Unlock()
+	if parkedCount != maxParkedPanes {
+		t.Errorf("parked cache size = %d; want capped at %d", parkedCount, maxParkedPanes)
+	}
+
+	// Returning to the oldest (evicted) agent rebuilds → second subscribe.
+	a.rebindAgent("task-A")
+	// Returning to a recently-parked agent reuses → still one subscribe.
+	a.rebindAgent("task-F")
+
+	subs := map[string]int{}
+	for _, c := range src.calls {
+		subs[c]++
+	}
+	if subs["task-A"] != 2 {
+		t.Errorf("task-A subscribed %d times; want 2 (evicted then rebuilt), calls=%v", subs["task-A"], src.calls)
+	}
+	if subs["task-F"] != 1 {
+		t.Errorf("task-F subscribed %d times; want 1 (still parked, reused), calls=%v", subs["task-F"], src.calls)
+	}
+}
+
 func TestBuildApp_NoLiveAgentLeavesPlaceholders(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
