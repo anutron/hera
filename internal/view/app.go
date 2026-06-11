@@ -52,6 +52,23 @@ type App struct {
 	coordBridge       *paneBridge
 	agentBridge       *paneBridge
 
+	// coordParked / agentParked cache panes the operator navigated AWAY from
+	// but that are still live, keyed by argus task id (BUG-033). A parked pane
+	// keeps its bridge + proxy listener attached, so its emulator keeps
+	// consuming the live PTY byte stream while off-screen. Navigating back
+	// restores the exact on-screen state — INCLUDING in-progress unsubmitted
+	// input — instead of tearing the pane down and rebuilding a fresh emulator
+	// from a ring-buffer snapshot replay, which races the live screen and
+	// intermittently drops the not-yet-submitted input line. The least-recently
+	// parked entry is closed when a cache exceeds maxParkedPanes. Guarded by mu;
+	// the currently-displayed task is never in its cache (invariant: a parked
+	// pane is, by definition, not the one on screen).
+	coordParked map[string]*parkedPane
+	agentParked map[string]*parkedPane
+	// parkSeq is a monotonic recency stamp for LRU eviction of parked panes.
+	// Guarded by mu.
+	parkSeq uint64
+
 	// closed is set after Close runs so subsequent Close calls are no-ops.
 	closed bool
 
@@ -236,6 +253,8 @@ func BuildApp(database *db.DB, src PaneSource) (*App, error) {
 		agentPresent:   true,
 		redraw:         redrawCoalescer,
 		spinnerStop:    make(chan struct{}),
+		coordParked:    make(map[string]*parkedPane),
+		agentParked:    make(map[string]*parkedPane),
 	}
 
 	// Wire reflow callbacks on the initial panes so dimension changes after
@@ -431,7 +450,22 @@ func (a *App) Close() {
 	a.agentUnsub = nil
 	a.coordBridge = nil
 	a.agentBridge = nil
+	// Collect parked panes (BUG-033) so their bridges + listeners are torn down
+	// alongside the displayed panes. Drained under the lock, closed off it.
+	parked := make([]*parkedPane, 0, len(a.coordParked)+len(a.agentParked))
+	for _, p := range a.coordParked {
+		parked = append(parked, p)
+	}
+	for _, p := range a.agentParked {
+		parked = append(parked, p)
+	}
+	a.coordParked = make(map[string]*parkedPane)
+	a.agentParked = make(map[string]*parkedPane)
 	a.mu.Unlock()
+
+	for _, p := range parked {
+		p.close()
+	}
 
 	a.selectMu.Lock()
 	if a.selectTimer != nil {
@@ -1665,6 +1699,110 @@ func (a *App) focusForCurrentSelection() FocusState {
 	return FocusRAIL
 }
 
+// maxParkedPanes bounds each per-slot live-pane cache (BUG-033). Navigating
+// away from a live pane parks it (its emulator stays attached to the live PTY
+// stream) instead of tearing it down, so navigating back restores the on-screen
+// state — including in-progress input — losslessly. The cap bounds how many
+// off-screen emulators stay live; the least-recently-parked is closed on
+// overflow. Six covers realistic back-and-forth between a handful of agents
+// without holding an unbounded number of live emulators (each can retain up to
+// the proxy ring's worth of derived screen + scrollback state).
+const maxParkedPanes = 6
+
+// parkedPane is a navigated-away-from but still-live pane: its bridge + proxy
+// listener stay attached so its emulator keeps reflecting the live PTY while
+// off-screen (BUG-033). seq is the LRU recency stamp.
+type parkedPane struct {
+	pane   *pinnedTerminalPane
+	bridge *paneBridge
+	unsub  func()
+	seq    uint64
+}
+
+// close tears down a parked pane: release the proxy listener, stop the bridge
+// pump, and close the emulator's consume goroutine. Must be called OFF a.mu
+// (mirrors the rebind teardown pattern) since unsub reaches into the proxy.
+func (p *parkedPane) close() {
+	if p == nil {
+		return
+	}
+	if p.unsub != nil {
+		p.unsub()
+	}
+	if p.bridge != nil {
+		p.bridge.stop()
+	}
+	if p.pane != nil {
+		p.pane.Close()
+	}
+}
+
+// restoreOrParkLocked swaps the displayed pane in a per-slot cache: it removes
+// and returns any parked pane for newTask (to restore), parks the outgoing
+// (old*) pane under oldTask, and builds a fresh pane via build() when no parked
+// pane exists for newTask. Returns the pane trio to install plus the list of
+// panes the caller must close() AFTER releasing a.mu — the LRU-evicted entries
+// and (when the outgoing pane is the unbound placeholder) the placeholder
+// itself. Callers hold a.mu.
+//
+// Ordering matters: newTask is pulled from the cache FIRST so a freshly-parked
+// outgoing pane can never evict the very pane we are about to restore.
+func (a *App) restoreOrParkLocked(
+	cache map[string]*parkedPane,
+	oldTask, newTask string,
+	oldPane *pinnedTerminalPane, oldBridge *paneBridge, oldUnsub func(),
+	build func() (*pinnedTerminalPane, *paneBridge, func()),
+) (pane *pinnedTerminalPane, bridge *paneBridge, unsub func(), toClose []*parkedPane) {
+	// 1. Reclaim the target task's parked pane, if any (remove so it is never an
+	//    eviction candidate below).
+	var restored *parkedPane
+	if newTask != "" {
+		if p, ok := cache[newTask]; ok {
+			restored = p
+			delete(cache, newTask)
+		}
+	}
+
+	// 2. Park the outgoing live pane, or mark the placeholder for teardown.
+	if oldTask != "" && oldPane != nil {
+		a.parkSeq++
+		cache[oldTask] = &parkedPane{pane: oldPane, bridge: oldBridge, unsub: oldUnsub, seq: a.parkSeq}
+	} else if oldPane != nil {
+		toClose = append(toClose, &parkedPane{pane: oldPane, bridge: oldBridge, unsub: oldUnsub})
+	}
+
+	// 3. Restore or build the incoming pane.
+	if restored != nil {
+		pane, bridge, unsub = restored.pane, restored.bridge, restored.unsub
+	} else {
+		pane, bridge, unsub = build()
+	}
+
+	// 4. Evict LRU overflow.
+	toClose = append(toClose, evictParkedLocked(cache)...)
+	return pane, bridge, unsub, toClose
+}
+
+// evictParkedLocked removes least-recently-parked entries until cache is within
+// maxParkedPanes, returning the evicted panes for the caller to close() off the
+// lock. Callers hold a.mu.
+func evictParkedLocked(cache map[string]*parkedPane) []*parkedPane {
+	var evicted []*parkedPane
+	for len(cache) > maxParkedPanes {
+		var lruKey string
+		lruSeq := ^uint64(0)
+		for k, p := range cache {
+			if p.seq < lruSeq {
+				lruSeq = p.seq
+				lruKey = k
+			}
+		}
+		evicted = append(evicted, cache[lruKey])
+		delete(cache, lruKey)
+	}
+	return evicted
+}
+
 // rebindCoord swaps the COORD pane's underlying paneBridge / subscription
 // over to the given argus task ID. No-op when the pane is already bound
 // to that task or the App has been closed.
@@ -1674,32 +1812,38 @@ func (a *App) rebindCoord(taskID string) {
 		a.mu.Unlock()
 		return
 	}
+	oldTask := a.coordTask
 	oldUnsub := a.coordUnsub
 	oldBridge := a.coordBridge
 	oldPane := a.pieces.coord
-	// Construct at the 80x24 default (cols/rows == 0) rather than querying
-	// src.TaskSize: rebind runs on the tview event loop (via applyRailSelection's
-	// QueueUpdateDraw), and TaskSize is a synchronous argus HTTP GET bounded only
-	// by the 30s client timeout. A slow /size response would freeze the whole
-	// TUI mid-navigation. The real worker size is recovered on the first Draw via
-	// onReflow → forceRebindCoord, so the queried initial size was only a one-frame
-	// transient — not worth blocking the loop for.
-	pane, bridge, unsub := newBoundPaneAt("Coord", "(no coord selected)", taskID, a.src, a.scheduleRedraw, 0, 0)
-	pane.onReflow = a.makeCoordReflowCallback(taskID)
+	// Park the outgoing live pane and restore a previously-parked one for taskID
+	// (BUG-033) rather than always tearing down + rebuilding. A rebuild replays
+	// the proxy ring snapshot through a fresh emulator, which races the live PTY
+	// and can drop in-progress unsubmitted input; reusing the parked pane keeps
+	// its emulator (and that input) intact.
+	//
+	// The fresh-build path constructs at the 80x24 default (cols/rows == 0)
+	// rather than querying src.TaskSize: rebind runs on the tview event loop
+	// (via applyRailSelection's QueueUpdateDraw), and TaskSize is a synchronous
+	// argus HTTP GET bounded only by the 30s client timeout. A slow /size
+	// response would freeze the whole TUI mid-navigation. The real worker size
+	// is recovered on the first Draw via onReflow → forceRebindCoord.
+	pane, bridge, unsub, toClose := a.restoreOrParkLocked(
+		a.coordParked, oldTask, taskID, oldPane, oldBridge, oldUnsub,
+		func() (*pinnedTerminalPane, *paneBridge, func()) {
+			p, b, u := newBoundPaneAt("Coord", "(no coord selected)", taskID, a.src, a.scheduleRedraw, 0, 0)
+			p.onReflow = a.makeCoordReflowCallback(taskID)
+			return p, b, u
+		},
+	)
 	a.coordTask = taskID
 	a.coordBridge = bridge
 	a.coordUnsub = unsub
 	a.pieces.coord = pane
 	a.mu.Unlock()
 
-	if oldUnsub != nil {
-		oldUnsub()
-	}
-	if oldBridge != nil {
-		oldBridge.stop()
-	}
-	if oldPane != nil {
-		oldPane.Close()
+	for _, p := range toClose {
+		p.close()
 	}
 	a.refreshBody()
 }
@@ -1713,16 +1857,24 @@ func (a *App) rebindAgent(taskID string) {
 		a.mu.Unlock()
 		return
 	}
+	oldTask := a.agentTask
 	oldUnsub := a.agentUnsub
 	oldBridge := a.agentBridge
 	oldPane := a.pieces.agent
-	// Construct at the 80x24 default (cols/rows == 0) rather than querying
-	// src.TaskSize — see the rationale in rebindCoord: TaskSize is a blocking
-	// argus HTTP GET and rebind runs on the event loop, so a slow /size would
-	// freeze the TUI. onReflow → forceRebindAgent restores the real size on the
-	// first Draw.
-	pane, bridge, unsub := newBoundPaneAt("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw, 0, 0)
-	pane.onReflow = a.makeAgentReflowCallback(taskID)
+	// Park the outgoing live pane and restore a previously-parked one for taskID
+	// (BUG-033) rather than always tearing down + rebuilding from a lossy ring
+	// snapshot replay — see the rationale in rebindCoord. The fresh-build path
+	// constructs at the 80x24 default (cols/rows == 0) for the same
+	// no-blocking-TaskSize reason; onReflow → forceRebindAgent restores the real
+	// size on the first Draw.
+	pane, bridge, unsub, toClose := a.restoreOrParkLocked(
+		a.agentParked, oldTask, taskID, oldPane, oldBridge, oldUnsub,
+		func() (*pinnedTerminalPane, *paneBridge, func()) {
+			p, b, u := newBoundPaneAt("Agent", "(no agent selected)", taskID, a.src, a.scheduleRedraw, 0, 0)
+			p.onReflow = a.makeAgentReflowCallback(taskID)
+			return p, b, u
+		},
+	)
 	a.agentTask = taskID
 	a.agentIsFreelancer = false // reset; caller sets true for freelancer rows
 	a.agentBridge = bridge
@@ -1730,14 +1882,8 @@ func (a *App) rebindAgent(taskID string) {
 	a.pieces.agent = pane
 	a.mu.Unlock()
 
-	if oldUnsub != nil {
-		oldUnsub()
-	}
-	if oldBridge != nil {
-		oldBridge.stop()
-	}
-	if oldPane != nil {
-		oldPane.Close()
+	for _, p := range toClose {
+		p.close()
 	}
 	a.refreshBody()
 }
