@@ -1224,6 +1224,134 @@ func TestRebindAgent_ParkedCacheIsBoundedLRU(t *testing.T) {
 	}
 }
 
+// waitForCoordPaneContains is the COORD-slot counterpart of
+// waitForAgentPaneContains (BUG-005): it polls the rendered screen until the
+// coord pane shows want. The coord pane renders full-width in coordinator
+// mode, so a wide render captures it.
+func waitForCoordPaneContains(t *testing.T, a *App, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		last = renderApp(t, a, 100, 30)
+		if strings.Contains(last, want) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("coord pane never showed %q; last render:\n%s", want, last)
+}
+
+// BUG-005: in-progress, unsubmitted input typed into a COORDINATOR pane must
+// survive navigating away to another coord and back, exactly as BUG-033 (#150)
+// guarantees for worker/agent panes. This is the COORD-slot mirror of
+// TestRebindAgent_PreservesInProgressInputAcrossNavAwayAndBack — input arrives
+// only on the live channel (never in the snapshot), so a snapshot-replay
+// rebuild on nav-back would drop it. The slot-level park/restore (#150 wired
+// rebindCoord through restoreOrParkLocked) should keep the emulator intact.
+func TestRebindCoord_PreservesInProgressInputAcrossNavAwayAndBack(t *testing.T) {
+	d := openTestDB(t)
+	chA := make(chan []byte, 8)
+	src := &fakePaneSource{
+		snapshots: map[string][]byte{
+			"coord-A": []byte("coordA$ "),
+			"coord-B": []byte("coordB$ "),
+		},
+		channels: map[string]chan []byte{
+			"coord-A": chA,
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.rebindCoord("coord-A")
+	chA <- []byte("hello-coord")
+	waitForCoordPaneContains(t, a, "hello-coord")
+
+	a.rebindCoord("coord-B")
+	a.rebindCoord("coord-A")
+
+	got := renderApp(t, a, 100, 30)
+	if !strings.Contains(got, "hello-coord") {
+		t.Fatalf("in-progress coord input wiped on nav-away-and-back (BUG-005); coord pane:\n%s", got)
+	}
+}
+
+// BUG-005: the real operator scenario. The operator types into a full-width
+// coordinator pane, then drills into one of THAT coordinator's own workers. A
+// worker selection re-lays the body from full-width-coord to coord+agent split,
+// shrinking the coord pane. The width change fires the coord pane's onReflow,
+// which (before the fix) rebuilt the emulator from the ring-buffer snapshot to
+// reflow scrollback at the new width (BUG-038). That rebuild races the live
+// screen and drops the not-yet-submitted input — the same wipe BUG-033 fixed
+// for the nav path but NOT for the resize path. The reflow path must now resize
+// the live emulator IN PLACE (reflowCoordInPlace) so in-progress input survives.
+func TestReflowCoordInPlace_PreservesInProgressInputOnResize(t *testing.T) {
+	d := openTestDB(t)
+	chA := make(chan []byte, 8)
+	src := &fakePaneSource{
+		snapshots: map[string][]byte{
+			"coord-A": []byte("coordA$ "),
+		},
+		channels: map[string]chan []byte{
+			"coord-A": chA,
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.rebindCoord("coord-A")
+	chA <- []byte("hello-coord")
+	waitForCoordPaneContains(t, a, "hello-coord")
+
+	// The full-width -> split resize reflow now resizes the live emulator in
+	// place rather than rebuilding from the (input-less) snapshot.
+	a.reflowCoordInPlace("coord-A", 50, 20)
+
+	got := renderApp(t, a, 100, 30)
+	if !strings.Contains(got, "hello-coord") {
+		t.Fatalf("in-progress coord input wiped on resize reflow (BUG-005); coord pane:\n%s", got)
+	}
+}
+
+// BUG-005 (agent symmetry): the agent reflow path must likewise preserve
+// in-progress input by resizing in place rather than rebuilding from the
+// snapshot.
+func TestReflowAgentInPlace_PreservesInProgressInputOnResize(t *testing.T) {
+	d := openTestDB(t)
+	chA := make(chan []byte, 8)
+	src := &fakePaneSource{
+		snapshots: map[string][]byte{
+			"task-A": []byte("promptA$ "),
+		},
+		channels: map[string]chan []byte{
+			"task-A": chA,
+		},
+	}
+	a, err := BuildApp(d, src)
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer a.Close()
+
+	a.rebindAgent("task-A")
+	chA <- []byte("hello-typed")
+	waitForAgentPaneContains(t, a, "hello-typed")
+
+	a.reflowAgentInPlace("task-A", 50, 20)
+
+	got := renderApp(t, a, 100, 30)
+	if !strings.Contains(got, "hello-typed") {
+		t.Fatalf("in-progress agent input wiped on resize reflow (BUG-005); agent pane:\n%s", got)
+	}
+}
+
 func TestBuildApp_NoLiveAgentLeavesPlaceholders(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

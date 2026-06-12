@@ -542,10 +542,12 @@ func TestPinnedTerminalPane_FocusDelegatesToEmbeddedPaneForCursorRendering(t *te
 	}
 }
 
-// TestPinnedTerminalPane_ReflowCallbackFiresOnDimsChange pins the BUG-038 fix:
+// TestPinnedTerminalPane_ReflowCallbackFiresOnDimsChange pins the reflow hook:
 // when a bound pane's inner rect changes, onReflow must be called with the new
-// dimensions so the App can replay the ring buffer through a fresh emulator at
-// the new size, reflowing scrollback to the new width.
+// dimensions so the App can reflow the pane to the new size. (BUG-005 changed
+// what the App's callback DOES — it now resizes the live emulator in place to
+// preserve in-progress input rather than rebuilding from the ring snapshot —
+// but the hook-firing contract this test pins is unchanged.)
 func TestPinnedTerminalPane_ReflowCallbackFiresOnDimsChange(t *testing.T) {
 	src := make(chan []byte)
 	defer close(src)

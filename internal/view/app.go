@@ -1839,7 +1839,7 @@ func (a *App) rebindCoord(taskID string) {
 	// (via applyRailSelection's QueueUpdateDraw), and TaskSize is a synchronous
 	// argus HTTP GET bounded only by the 30s client timeout. A slow /size
 	// response would freeze the whole TUI mid-navigation. The real worker size
-	// is recovered on the first Draw via onReflow → forceRebindCoord.
+	// is recovered on the first Draw via onReflow → reflowCoordInPlace.
 	pane, bridge, unsub, toClose := a.restoreOrParkLocked(
 		a.coordParked, oldTask, taskID, oldPane, oldBridge, oldUnsub,
 		func() (*pinnedTerminalPane, *paneBridge, func()) {
@@ -1877,7 +1877,7 @@ func (a *App) rebindAgent(taskID string) {
 	// (BUG-033) rather than always tearing down + rebuilding from a lossy ring
 	// snapshot replay — see the rationale in rebindCoord. The fresh-build path
 	// constructs at the 80x24 default (cols/rows == 0) for the same
-	// no-blocking-TaskSize reason; onReflow → forceRebindAgent restores the real
+	// no-blocking-TaskSize reason; onReflow → reflowAgentInPlace restores the real
 	// size on the first Draw.
 	pane, bridge, unsub, toClose := a.restoreOrParkLocked(
 		a.agentParked, oldTask, taskID, oldPane, oldBridge, oldUnsub,
@@ -1902,17 +1902,18 @@ func (a *App) rebindAgent(taskID string) {
 
 // makeCoordReflowCallback returns a pinnedTerminalPane.onReflow callback for
 // the COORD pane. When the pane's inner rect changes, the callback schedules
-// a forceRebindCoord via QueueUpdateDraw so the ring buffer snapshot is
-// replayed through a fresh emulator at the new dimensions, reflowing
-// scrollback to the new width (BUG-038). Returns nil for empty taskIDs
-// (placeholder panes never fire onReflow).
+// a reflowCoordInPlace via QueueUpdateDraw so the live emulator is resized to
+// the new dimensions while PRESERVING in-progress input (BUG-005); the prior
+// implementation rebuilt the emulator from the ring snapshot, which dropped the
+// not-yet-submitted input line. Returns nil for empty taskIDs (placeholder
+// panes never fire onReflow).
 //
 // The callback is debounced by the same defaultResizeDebounce window used for
 // PTY resize dispatches: the initial frames of a session draw at the SDK
 // default 80x24 surface (producing 20x21 pane inners) before the real
 // resize envelope arrives. Without debounce that transient size triggers a
 // useless reflow at 20x21 that is immediately superseded by the correct one;
-// with debounce only the settled final size reaches forceRebindCoord.
+// with debounce only the settled final size reaches reflowCoordInPlace.
 //
 // The dispatch is wrapped in a goroutine so the timer callback does not
 // block the calling goroutine in tests where no event loop is running.
@@ -1934,7 +1935,7 @@ func (a *App) makeCoordReflowCallback(taskID string) func(int, int) {
 			c, r := latestCols, latestRows
 			mu.Unlock()
 			go a.app.QueueUpdateDraw(func() {
-				a.forceRebindCoord(taskID, c, r)
+				a.reflowCoordInPlace(taskID, c, r)
 			})
 		})
 		mu.Unlock()
@@ -1960,11 +1961,57 @@ func (a *App) makeAgentReflowCallback(taskID string) func(int, int) {
 			c, r := latestCols, latestRows
 			mu.Unlock()
 			go a.app.QueueUpdateDraw(func() {
-				a.forceRebindAgent(taskID, c, r)
+				a.reflowAgentInPlace(taskID, c, r)
 			})
 		})
 		mu.Unlock()
 	}
+}
+
+// reflowCoordInPlace resizes the live COORD emulator to (cols, rows) IN PLACE,
+// preserving its on-screen state — INCLUDING in-progress, unsubmitted input —
+// across a pane-dimension change (BUG-005).
+//
+// The original BUG-038 reflow tore the pane down and replayed the proxy ring
+// snapshot through a FRESH emulator (forceRebindCoord) to re-wrap scrollback at
+// the new width. That replay is the same lossy/racy path BUG-033 (#150)
+// identified: it races the in-flight live PTY frame and intermittently drops
+// the not-yet-submitted input line. #150 fixed the cross-task NAV rebuild (park
+// + restore the live pane) but left the RESIZE rebuild on this reflow path. A
+// coordinator pane hits that resize on every full-width <-> split transition
+// (drilling from a coord into one of its own workers and back), so the
+// operator's typed-but-unsent coord input was wiped — exactly the slot the
+// #150 fix did not cover.
+//
+// Reusing the live emulator keeps that input. The SDK emulator reflows its
+// ACTIVE screen on Resize; only scrollback HISTORY retains its prior wrapping
+// (a cosmetic cost visible solely when scrolling up after a resize) — an
+// accepted trade to never lose operator input. The reattach path keeps using
+// forceRebindCoord, where a fresh-session rebuild IS intended (ResetSubscription
+// has already discarded the ring buffer).
+//
+// No-op when the App is closed, the coord task changed since the callback was
+// registered (stale closure), or no coord pane is bound.
+func (a *App) reflowCoordInPlace(taskID string, cols, rows int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.coordTask != taskID || a.pieces.coord == nil {
+		return
+	}
+	a.pieces.coord.Resize(cols, rows)
+}
+
+// reflowAgentInPlace is the AGENT-pane counterpart of reflowCoordInPlace
+// (BUG-005). Worker↔worker navigation does not resize the agent pane, so the
+// agent slot rarely triggers this path in practice; it is kept symmetric so the
+// same lossless in-place reflow applies whenever the agent pane is resized.
+func (a *App) reflowAgentInPlace(taskID string, cols, rows int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.agentTask != taskID || a.pieces.agent == nil {
+		return
+	}
+	a.pieces.agent.Resize(cols, rows)
 }
 
 // forceRebindCoord is like rebindCoord but bypasses the same-task guard.
