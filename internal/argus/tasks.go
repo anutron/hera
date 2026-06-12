@@ -287,17 +287,21 @@ func (c *Client) CreateProject(ctx context.Context, in CreateProjectInput) error
 	return err
 }
 
-// ListProjects fetches the names of every configured argus project via
-// GET /api/projects. Returns an empty slice (not an error) when the
-// daemon has no projects configured.
+// ListProjects returns the names of every configured argus project. Names are
+// derived from ListProjectsFull (GET /api/projects/full) so all of hera's
+// project discovery — modals, hera_projects, and spawn-worker validation —
+// flows through one endpoint and one parse. Returns an empty slice (not an
+// error) when the daemon has no projects configured.
 func (c *Client) ListProjects(ctx context.Context) ([]string, error) {
-	var resp struct {
-		Projects []string `json:"projects"`
-	}
-	if _, err := c.doJSON(ctx, "GET", "/api/projects", nil, &resp); err != nil {
+	full, err := c.ListProjectsFull(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return resp.Projects, nil
+	names := make([]string, 0, len(full))
+	for _, p := range full {
+		names = append(names, p.Name)
+	}
+	return names, nil
 }
 
 // BackendEntry describes one argus backend entry as returned by

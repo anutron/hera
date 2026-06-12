@@ -57,6 +57,11 @@ type fakeArgusForHandlers struct {
 	notifyNotFound bool // returns 404 for POST .../notify (task has no active session)
 	cancels        []struct{ taskID, deliveryID string }
 	cancelFail     bool // returns 500 for DELETE .../notify/{id}
+
+	// projectsFull, when non-nil, is served by GET /api/projects/full. When
+	// nil the route 404s (mirrors the endpoint being unreachable for a test);
+	// a non-nil empty slice serves a 200 with zero projects.
+	projectsFull []argus.Project
 }
 
 func (f *fakeArgusForHandlers) addTask(task argus.Task) {
@@ -99,6 +104,17 @@ func (f *fakeArgusForHandlers) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(struct {
 			Tasks []argus.Task `json:"tasks"`
 		}{f.tasks})
+	})
+	mux.HandleFunc("/api/projects/full", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.projectsFull == nil {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(struct {
+			Projects []argus.Project `json:"projects"`
+		}{f.projectsFull})
 	})
 	mux.HandleFunc("/api/tasks/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/tasks/")

@@ -129,6 +129,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	mcpSrv.RegisterHandler("hera_mark_read", mcp.NewMarkReadHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_status", mcp.NewStatusHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_spawn_worker", mcp.NewSpawnWorkerHandler(resolver, database, client))
+	mcpSrv.RegisterHandler("hera_projects", mcp.NewProjectsHandler(client))
 	mcpSrv.RegisterHandler("settings_save", mcp.NewSettingsSaveHandler(database.Config, sendHandler))
 	mcpSrv.RegisterHandler("hera_tree_updates", mcp.NewTreeUpdatesHandler(resolver, database))
 	mcpSrv.RegisterHandler("hera_get_messages", mcp.NewGetMessagesHandler(resolver, database))
@@ -497,6 +498,16 @@ func toolDefinitions() []mcp.ToolDefinition {
 					"backend":      map[string]any{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
 				},
 				"required": []string{"cwd", "prompt"},
+			},
+		},
+		{
+			Name:        "hera_projects",
+			Description: "List the configured argus projects (read-only). Returns each project's name and, where configured, its default branch and backend. Use this to discover valid `project` values for hera_spawn_worker before spawning. No side effects; callable from any cwd.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"cwd": map[string]any{"type": "string", "description": "(optional) Caller's worktree path (use $PWD). Accepted for uniformity but unused — project discovery is global, not caller-scoped."},
+				},
 			},
 		},
 		{

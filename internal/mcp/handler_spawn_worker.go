@@ -97,6 +97,21 @@ func (h *SpawnWorkerHandler) Handle(ctx context.Context, raw json.RawMessage) Re
 		return ErrorResponse("hera_spawn_worker: no project resolved (coordinator has no argus_project and none was supplied)")
 	}
 
+	// Validate the project against hera's known argus project list UP FRONT so
+	// an unknown project yields a hera-owned, self-correcting error (listing the
+	// valid names) instead of an opaque argus HTTP 500 with no discoverable
+	// alternatives. Best-effort: if the list can't be fetched (transient argus
+	// unavailability), fall through to CreateTask, which surfaces its own error.
+	if projects, perr := h.client.ListProjectsFull(ctx); perr != nil {
+		slog.Default().Warn("hera_spawn_worker: could not list projects for validation; skipping pre-check",
+			"err", perr)
+	} else if !swProjectKnown(projects, project) {
+		return ErrorResponse(fmt.Sprintf(
+			"hera_spawn_worker: project %q not found; valid projects: %s",
+			project, swProjectNames(projects),
+		))
+	}
+
 	// Load orchestrator for the name used in orientation prefix.
 	orch, err := h.db.Orchestrators.GetByID(ctx, role.OrchestratorID)
 	if err != nil {
@@ -194,6 +209,29 @@ func (h *SpawnWorkerHandler) Handle(ctx context.Context, raw json.RawMessage) Re
 		ArgusTaskID:         created.ID,
 		PromptAutoSubmitted: autoSubmitted,
 	})
+}
+
+// swProjectKnown reports whether name matches a configured argus project.
+func swProjectKnown(projects []argus.Project, name string) bool {
+	for _, p := range projects {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// swProjectNames renders the configured project names for the unknown-project
+// error message: comma-separated, or a clear placeholder when none exist.
+func swProjectNames(projects []argus.Project) string {
+	if len(projects) == 0 {
+		return "(none configured)"
+	}
+	names := make([]string, 0, len(projects))
+	for _, p := range projects {
+		names = append(names, p.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // swWorkerNameRe matches ASCII lowercase letters, digits, and hyphens.
