@@ -89,6 +89,7 @@ hera's modal text fields (`styledInputField`, `styledTextArea`) wrap tview's `In
 ## Cross-repo follow-ups
 
 - **argus / argus-sdk bracketed-paste forwarding (conditional).** If the paste diagnostic shows hera does not receive `tcell.EventPaste` for a paste, file a follow-up against the argus plugin-view client / argus-sdk pluginview transport to forward `ESC[200~`/`ESC[201~` markers end to end. Once delivered, hera's already-paste-ready modal closes BUG-004 with no further hera change. Must be executed by an agent spawned in the argus / argus-sdk project.
+- **Per-project default backend.** Both spawn modals initialize the Backend cycler to the first configured backend, not the effective project's configured default, because `ListBackends` returns a flat global list with no per-project default marker (the new-coordinator form already shipped with this simplification). A future follow-up could plumb a per-project default backend (e.g. via argus `GET /api/projects`) and thread its index into both `ShowNewCoordForm` and `ShowNewWorkerForm` so the cycler opens on the project's real default. Touches the argus client / API, so the argus side is executed by an agent spawned in the argus project.
 
 ## Risks / Trade-offs
 
@@ -122,7 +123,7 @@ Project selector (both modals):
 new-worker modal field set:
 
 - it should open with Project (list), Branch, Backend (cycler), and Prompt fields
-- it should default the Branch field empty-or-to the project default and the Backend to the project default
+- it should default the Branch field empty (empty = project default ref) and the Backend cycler to the first configured backend
 - it should issue `POST /api/tasks` carrying the chosen Branch and Backend when the operator sets them
 - it should branch the worker off the project's default ref when the Branch field is left empty
 
