@@ -582,6 +582,64 @@ func TestSpawnWorker_ProjectOverride_UsesInProject(t *testing.T) {
 	}
 }
 
+// TestSpawnWorker_BranchAndBackendThreadedIntoCreateTask asserts that a chosen
+// Branch and Backend are forwarded into the argus CreateTaskRequest
+// (align-modals-with-argus delta: the spawn carries the chosen Branch/Backend).
+func TestSpawnWorker_BranchAndBackendThreadedIntoCreateTask(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "foo-frontend", false)
+	argus.createResp = &CreatedTask{ID: "T12", Name: "build-x"}
+	argus.getTaskResp = &TaskDetails{ID: "T12", WorktreePath: "/wt/foo-frontend/build-x"}
+
+	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
+		TargetOrchestratorID: orch.ID,
+		CoordRoleID:          coordRole.ID,
+		Prompt:               "build X",
+		Branch:               "origin/release",
+		Backend:              "codex",
+	})
+	if err != nil {
+		t.Fatalf("SpawnWorker: %v", err)
+	}
+	if len(argus.createCalls) != 1 {
+		t.Fatalf("expected 1 CreateTask call, got %d", len(argus.createCalls))
+	}
+	if got := argus.createCalls[0].Branch; got != "origin/release" {
+		t.Fatalf("CreateTaskRequest.Branch: want %q, got %q", "origin/release", got)
+	}
+	if got := argus.createCalls[0].Backend; got != "codex" {
+		t.Fatalf("CreateTaskRequest.Backend: want %q, got %q", "codex", got)
+	}
+}
+
+// TestSpawnWorker_EmptyBranchLeavesCreateTaskBranchUnset asserts that an empty
+// Branch leaves CreateTaskRequest.Branch unset, so the worker branches off the
+// effective project's default ref.
+func TestSpawnWorker_EmptyBranchLeavesCreateTaskBranchUnset(t *testing.T) {
+	s, db, argus, _, _ := newTestService()
+	orch := db.seedOrchestrator("foo", false)
+	coordRole := db.seedRole(orch.ID, "coord", KindCoordinator, "foo-frontend", false)
+	argus.createResp = &CreatedTask{ID: "T13", Name: "build-y"}
+	argus.getTaskResp = &TaskDetails{ID: "T13", WorktreePath: "/wt/foo-frontend/build-y"}
+
+	_, err := s.SpawnWorker(context.Background(), SpawnWorkerInput{
+		TargetOrchestratorID: orch.ID,
+		CoordRoleID:          coordRole.ID,
+		Prompt:               "build Y",
+		// Branch deliberately omitted (empty).
+	})
+	if err != nil {
+		t.Fatalf("SpawnWorker: %v", err)
+	}
+	if len(argus.createCalls) != 1 {
+		t.Fatalf("expected 1 CreateTask call, got %d", len(argus.createCalls))
+	}
+	if got := argus.createCalls[0].Branch; got != "" {
+		t.Fatalf("CreateTaskRequest.Branch: want empty (project default ref), got %q", got)
+	}
+}
+
 // TestSpawnWorker_ProjectOverride_EmptyFallsBackToCoordProject asserts that
 // when in.Project is empty (the default), both the argus task and the worker
 // role use the coordinator role's argus_project — preserving today's behavior.

@@ -27,6 +27,14 @@ type SpawnWorkerInput struct {
 	// and role are created in. When empty (after trimming), the coordinator
 	// role's argus_project is used instead (today's behavior is preserved).
 	Project string
+
+	// Branch is an optional base ref for the worker's worktree. When empty
+	// the worker branches off the effective project's default ref.
+	Branch string
+
+	// Backend is an optional argus backend for the worker. When empty the
+	// effective project's default backend is used.
+	Backend string
 }
 
 // SpawnWorker handles the `w` rail operation: validates the prompt,
@@ -83,10 +91,14 @@ func (s *Service) SpawnWorker(ctx context.Context, in SpawnWorkerInput) (*SpawnW
 	taskPrompt := buildWorkerPrompt(coordRole.Name, prompt)
 
 	// Create the argus task in the effective project with worker meta (D3).
+	// Branch / Backend are optional: empty Branch lets argus branch off the
+	// project's default ref; empty Backend uses the project's default backend.
 	req := CreateTaskRequest{
 		Project: effectiveProject,
 		Prompt:  taskPrompt,
 		Meta:    map[string]string{"role": "worker"},
+		Branch:  strings.TrimSpace(in.Branch),
+		Backend: strings.TrimSpace(in.Backend),
 	}
 	created, err := s.Argus.CreateTask(ctx, req)
 	if err != nil {
