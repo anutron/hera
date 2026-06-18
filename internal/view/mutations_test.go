@@ -50,6 +50,8 @@ type fakeModals struct {
 	// stubNewWorker* drive the new-worker form (ShowNewWorkerForm).
 	newWorkerCalls       []fakeNewWorkerFormCall
 	stubNewWorkerProject string
+	stubNewWorkerBranch  string
+	stubNewWorkerBackend string
 	stubNewWorkerPrompt  string
 	stubNewWorkerCancel  bool
 	stubNewWorkerNotOpen bool
@@ -89,6 +91,8 @@ type fakeNewWorkerFormCall struct {
 	Title             string
 	Projects          []string
 	DefaultProjectIdx int
+	Backends          []string
+	DefaultBackendIdx int
 }
 
 type fakeConfirmCall struct {
@@ -162,14 +166,18 @@ func (f *fakeModals) ShowNewCoordForm(title string, projects, backends []string,
 	}
 }
 
-func (f *fakeModals) ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, onSubmit func(project, prompt string), onCancel func()) {
+func (f *fakeModals) ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, backends []string, defaultBackendIdx int, onSubmit func(project, branch, backend, prompt string), onCancel func()) {
 	f.mu.Lock()
 	f.newWorkerCalls = append(f.newWorkerCalls, fakeNewWorkerFormCall{
 		Title:             title,
 		Projects:          projects,
 		DefaultProjectIdx: defaultProjectIdx,
+		Backends:          backends,
+		DefaultBackendIdx: defaultBackendIdx,
 	})
 	project := f.stubNewWorkerProject
+	branch := f.stubNewWorkerBranch
+	backend := f.stubNewWorkerBackend
 	prompt := f.stubNewWorkerPrompt
 	cancel := f.stubNewWorkerCancel
 	notOpen := f.stubNewWorkerNotOpen
@@ -185,7 +193,7 @@ func (f *fakeModals) ShowNewWorkerForm(title string, projects []string, defaultP
 		return
 	}
 	if onSubmit != nil {
-		onSubmit(project, prompt)
+		onSubmit(project, branch, backend, prompt)
 	}
 }
 
@@ -4000,6 +4008,139 @@ func TestBridge_OnNewWorker_SelectedProjectPassedToSpawnWorker(t *testing.T) {
 	}
 	if calls[0].Project != "foo-backend" {
 		t.Fatalf("SpawnWorkerInput.Project: want %q, got %q", "foo-backend", calls[0].Project)
+	}
+}
+
+// TestBridge_OnNewWorker_BranchAndBackendForwardedToSpawnWorker asserts that
+// the Branch + Backend chosen in the modal are threaded into the SpawnWorker
+// input (delta: "Chosen Branch and Backend are forwarded to the spawn").
+func TestBridge_OnNewWorker_BranchAndBackendForwardedToSpawnWorker(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"foo-frontend"}
+	svc.listBackendsResp = []string{"claude", "codex"}
+	svc.coordProjectResp = "foo-frontend"
+	m.stubNewWorkerProject = "foo-frontend"
+	m.stubNewWorkerBranch = "origin/release"
+	m.stubNewWorkerBackend = "codex"
+	m.stubNewWorkerPrompt = "build it"
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SpawnWorker call; got %d", len(calls))
+	}
+	if calls[0].Branch != "origin/release" {
+		t.Fatalf("SpawnWorkerInput.Branch: want %q, got %q", "origin/release", calls[0].Branch)
+	}
+	if calls[0].Backend != "codex" {
+		t.Fatalf("SpawnWorkerInput.Backend: want %q, got %q", "codex", calls[0].Backend)
+	}
+}
+
+// TestBridge_OnNewWorker_EmptyBranchForwardedAsEmpty asserts that leaving the
+// Branch empty threads an empty Branch into SpawnWorker (delta: "Empty Branch
+// branches off the project default ref").
+func TestBridge_OnNewWorker_EmptyBranchForwardedAsEmpty(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"foo-frontend"}
+	svc.coordProjectResp = "foo-frontend"
+	m.stubNewWorkerProject = "foo-frontend"
+	m.stubNewWorkerBranch = "" // left empty
+	m.stubNewWorkerPrompt = "build it"
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	svc.mu.Lock()
+	calls := svc.spawnWorkerCalls
+	svc.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SpawnWorker call; got %d", len(calls))
+	}
+	if calls[0].Branch != "" {
+		t.Fatalf("SpawnWorkerInput.Branch: want empty, got %q", calls[0].Branch)
+	}
+}
+
+// TestBridge_OnNewWorker_LoadsBackendsForModal asserts that OnNewWorker loads
+// the backend list and passes it to ShowNewWorkerForm so the modal can offer a
+// Backend cycler (mirroring the coord path).
+func TestBridge_OnNewWorker_LoadsBackendsForModal(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"foo-frontend"}
+	svc.listBackendsResp = []string{"claude", "codex"}
+	svc.coordProjectResp = "foo-frontend"
+	m.stubNewWorkerNotOpen = true // just record the open args
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	m.mu.Lock()
+	calls := m.newWorkerCalls
+	m.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 ShowNewWorkerForm call; got %d", len(calls))
+	}
+	if len(calls[0].Backends) != 2 || calls[0].Backends[0] != "claude" || calls[0].Backends[1] != "codex" {
+		t.Fatalf("worker form must receive the backend list; got %v", calls[0].Backends)
+	}
+}
+
+// TestBridge_OnNewWorker_ListBackendsError_ShowsErrorModal asserts that a
+// ListBackends failure shows an error modal and does not open the form.
+func TestBridge_OnNewWorker_ListBackendsError_ShowsErrorModal(t *testing.T) {
+	b, m, sel, svc, _, _ := newBridgeWithRowSelector()
+	sel.sel = railSelection{
+		Kind:           selOrchestrator,
+		OrchestratorID: 1,
+		CoordRoleID:    10,
+		Name:           "foo",
+	}
+	svc.listProjectsResp = []string{"foo-frontend"}
+	svc.coordProjectResp = "foo-frontend"
+	svc.listBackendsErr = errors.New("backends unavailable")
+
+	b.OnNewWorker()
+	b.waitIdle()
+
+	m.mu.Lock()
+	errs := m.errors
+	workerFormCalls := len(m.newWorkerCalls)
+	m.mu.Unlock()
+
+	if len(errs) == 0 {
+		t.Fatal("ListBackends error must surface an error modal")
+	}
+	if !strings.Contains(errs[0], "backends unavailable") {
+		t.Fatalf("error modal must include the error text; got %q", errs[0])
+	}
+	if workerFormCalls != 0 {
+		t.Fatalf("ListBackends error must not open the worker form; got %d opens", workerFormCalls)
 	}
 }
 

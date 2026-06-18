@@ -222,6 +222,55 @@ func submitOnEnter(form *tview.Form, onOK func()) {
 	})
 }
 
+// enterRoutingCapture returns the Enter-routing input capture shared by the
+// new-coordinator and new-worker forms. Both modals mix selector widgets
+// (inlineCycler, inlineListSelect) with text fields (styledInputField,
+// styledTextArea), and Enter must mean different things per widget:
+//
+//   - *inlineCycler / *inlineListSelect: Enter must NOT submit — the event is
+//     returned so the widget's own InputHandler handles it (it calls
+//     finishedFunc(KeyTab) to lock the value and advance focus). This is the
+//     BUG-035 guard: a selector must never submit the form while focused.
+//   - *styledTextArea: plain Enter submits; modified Enter (Ctrl/Shift) passes
+//     through so the TextArea can insert a newline (BUG-011).
+//   - any other focused item (e.g. styledInputField): Enter submits.
+//
+// Non-Enter keys pass through untouched (printable runes reach the focused
+// widget for filtering; arrows reach the cycler/list cursor). submit is the
+// form's dismiss(true) callback.
+func enterRoutingCapture(form *tview.Form, submit func()) func(*tcell.EventKey) *tcell.EventKey {
+	return func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Key() != tcell.KeyEnter {
+			return ev
+		}
+		for i := 0; i < form.GetFormItemCount(); i++ {
+			item := form.GetFormItem(i)
+			if !item.HasFocus() {
+				continue
+			}
+			switch item.(type) {
+			case *inlineCycler:
+				return ev // Cycler: Enter handled by its own InputHandler
+			case *inlineListSelect:
+				// List: Enter handled by its own InputHandler, which calls
+				// finishedFunc(KeyTab) to lock + advance focus — not submit.
+				return ev
+			case *styledTextArea:
+				// Plain Enter submits; modified Enter inserts newline in TextArea.
+				if ev.Modifiers() == 0 {
+					submit()
+					return nil
+				}
+				return ev
+			default:
+				submit()
+				return nil
+			}
+		}
+		return ev
+	}
+}
+
 // captureFocus records the primitive currently holding tview focus so
 // closeModal can restore it after the modal goes. Runs on the event loop
 // (queueModal body), immediately before focus moves to the modal.
@@ -508,6 +557,333 @@ func (c *inlineCycler) InputHandler() func(event *tcell.EventKey, setFocus func(
 	})
 }
 
+// listSelectVisibleRows is the number of option rows the inlineListSelect
+// shows at once (its scrollable window). The widget's total field height is
+// this plus one row for the inline filter/counter line.
+const listSelectVisibleRows = 5
+
+// noProjectsSentinel is the single visible entry shown when the configured
+// project list is empty. GetCurrentOption maps it to "" so the ops layer
+// falls back to the coordinator's project (preserving the empty-list
+// contract the cycler had).
+const noProjectsSentinel = "(no projects configured)"
+
+// inlineListSelect is a custom tview.FormItem presenting a set of options as
+// a scrollable, type-to-filter list — the same control argus's New Task modal
+// uses for project selection. It replaces inlineCycler for the Project field
+// while keeping the full tview.FormItem interface, so it drops into the
+// existing tview.NewForm() flow unchanged.
+//
+// It is deliberately NOT a tview.DropDown: DropDown brings a green popup
+// overlay, an un-themed background, and "Enter submits while the list is open"
+// behaviour (BUG-035). This widget draws its own bounded, scrolling list.
+//
+// Display:
+//   - a one-line filter/counter row: the typed filter string plus an (N/M)
+//     counter (cursor position within filtered options / filtered count);
+//   - up to listSelectVisibleRows option rows, the highlighted one prefixed
+//     with a '>' cursor; the visible window scrolls to keep the cursor in view.
+//
+// Key handling (only while focused):
+//   - Down / Up        — move the cursor within the FILTERED options (clamped,
+//     no wrap); does NOT submit;
+//   - printable rune   — append to the filter, re-filter (case-insensitive
+//     substring over labels), reset cursor to the first match;
+//   - Backspace        — delete the last filter rune (empty filter restores
+//     the full list);
+//   - Enter            — lock current selection; advance focus via
+//     finishedFunc(KeyTab) (does NOT submit the form);
+//   - Tab              — advance focus (finishedFunc(KeyTab));
+//   - Backtab          — retreat focus (finishedFunc(KeyBacktab));
+//   - Esc              — cancel (finishedFunc(KeyEscape)).
+type inlineListSelect struct {
+	*tview.Box
+
+	label   string
+	options []string // the full, unfiltered option list (never empty: sentinel filled)
+
+	// filter is the live type-to-filter string; filtered holds the indices
+	// into options that currently match (case-insensitive substring). cursor
+	// indexes into filtered (the highlighted FILTERED row). top is the index
+	// into filtered of the first visible row (scroll window).
+	filter   string
+	filtered []int
+	cursor   int
+	top      int
+
+	// fieldWidth is the declared field width for the form layout.
+	fieldWidth int
+
+	// form attributes injected by SetFormAttributes
+	labelWidth     int
+	labelColor     tcell.Color
+	bgColor        tcell.Color
+	fieldTextColor tcell.Color
+	fieldBgColor   tcell.Color
+
+	disabled     bool
+	finishedFunc func(tcell.Key)
+}
+
+// newInlineListSelect builds a list selector over options. An empty options
+// slice degrades to a single noProjectsSentinel entry (mapped to "" on
+// confirm). initial selects an option index (clamped) when in range.
+func newInlineListSelect(label string, options []string, initial, fw int) *inlineListSelect {
+	opts := options
+	if len(opts) == 0 {
+		opts = []string{noProjectsSentinel}
+	}
+	if initial < 0 || initial >= len(opts) {
+		initial = 0
+	}
+	ls := &inlineListSelect{
+		Box:        tview.NewBox(),
+		label:      label,
+		options:    opts,
+		fieldWidth: fw,
+	}
+	ls.refilter()
+	// Place the cursor on the requested initial option within the (full) list.
+	for i, fi := range ls.filtered {
+		if fi == initial {
+			ls.cursor = i
+			break
+		}
+	}
+	ls.scrollToCursor()
+	return ls
+}
+
+// refilter recomputes ls.filtered from ls.filter (case-insensitive substring
+// over option labels). An empty filter matches all options. The cursor is
+// reset to the first filtered row and the scroll window re-anchored.
+func (ls *inlineListSelect) refilter() {
+	needle := strings.ToLower(ls.filter)
+	ls.filtered = ls.filtered[:0]
+	for i, o := range ls.options {
+		if needle == "" || strings.Contains(strings.ToLower(o), needle) {
+			ls.filtered = append(ls.filtered, i)
+		}
+	}
+	ls.cursor = 0
+	ls.top = 0
+}
+
+// scrollToCursor adjusts ls.top so the cursor row is within the visible
+// window of listSelectVisibleRows rows.
+func (ls *inlineListSelect) scrollToCursor() {
+	if ls.cursor < ls.top {
+		ls.top = ls.cursor
+	}
+	if ls.cursor >= ls.top+listSelectVisibleRows {
+		ls.top = ls.cursor - listSelectVisibleRows + 1
+	}
+	if ls.top < 0 {
+		ls.top = 0
+	}
+}
+
+// filteredCounter returns the 1-based cursor position within the filtered set
+// and the filtered count — the (N/M) the widget renders. With no matches it
+// returns (0, 0).
+func (ls *inlineListSelect) filteredCounter() (int, int) {
+	m := len(ls.filtered)
+	if m == 0 {
+		return 0, 0
+	}
+	return ls.cursor + 1, m
+}
+
+// GetCurrentOption returns the cursor position within the currently FILTERED
+// options and the highlighted option's label (the (N/M) N is this index + 1).
+// The empty-list sentinel maps to (0, "") so callers fall back to the
+// coordinator's project. With no current match it returns (-1, "").
+func (ls *inlineListSelect) GetCurrentOption() (int, string) {
+	if len(ls.filtered) == 0 || ls.cursor < 0 || ls.cursor >= len(ls.filtered) {
+		return -1, ""
+	}
+	label := ls.options[ls.filtered[ls.cursor]]
+	if label == noProjectsSentinel {
+		return 0, ""
+	}
+	return ls.cursor, label
+}
+
+// GetLabel implements tview.FormItem.
+func (ls *inlineListSelect) GetLabel() string { return ls.label }
+
+// SetFormAttributes implements tview.FormItem.
+func (ls *inlineListSelect) SetFormAttributes(labelWidth int, labelColor, bgColor, fieldTextColor, fieldBgColor tcell.Color) tview.FormItem {
+	ls.labelWidth = labelWidth
+	ls.labelColor = labelColor
+	ls.bgColor = bgColor
+	ls.fieldTextColor = fieldTextColor
+	ls.fieldBgColor = fieldBgColor
+	return ls
+}
+
+// GetFieldWidth implements tview.FormItem.
+func (ls *inlineListSelect) GetFieldWidth() int { return ls.fieldWidth }
+
+// GetFieldHeight implements tview.FormItem. The widget occupies a fixed
+// multi-row block: one filter/counter row plus listSelectVisibleRows option
+// rows.
+func (ls *inlineListSelect) GetFieldHeight() int { return 1 + listSelectVisibleRows }
+
+// SetFinishedFunc implements tview.FormItem.
+func (ls *inlineListSelect) SetFinishedFunc(handler func(key tcell.Key)) tview.FormItem {
+	ls.finishedFunc = handler
+	return ls
+}
+
+// SetDisabled implements tview.FormItem.
+func (ls *inlineListSelect) SetDisabled(disabled bool) tview.FormItem {
+	ls.disabled = disabled
+	return ls
+}
+
+// Draw implements tview.Primitive. Row 0 is the label + filter/counter line;
+// the following rows are the scrolling option window with a '>' cursor on the
+// highlighted (focused) row.
+func (ls *inlineListSelect) Draw(screen tcell.Screen) {
+	ls.DrawForSubclass(screen, ls)
+	x, y, width, height := ls.GetInnerRect()
+	if width <= 0 || height <= 0 {
+		return
+	}
+
+	focused := ls.HasFocus()
+	fStyle := fieldBlurredStyle
+	if focused {
+		fStyle = fieldFocusedStyle
+	}
+
+	// --- Row 0: label + filter/counter ---
+	labelStyle := tcell.StyleDefault.Foreground(ls.labelColor).Background(ls.bgColor)
+	labelRunes := []rune(ls.label)
+	for i := 0; i < ls.labelWidth && i < width; i++ {
+		r := ' '
+		if i < len(labelRunes) {
+			r = labelRunes[i]
+		}
+		screen.SetContent(x+i, y, r, nil, labelStyle)
+	}
+
+	fieldX := x + ls.labelWidth
+	fieldW := width - ls.labelWidth
+	if fieldW <= 0 {
+		return
+	}
+	// Paint the filter row background.
+	for i := 0; i < fieldW; i++ {
+		screen.SetContent(fieldX+i, y, ' ', nil, fStyle)
+	}
+	n, m := ls.filteredCounter()
+	var header string
+	if focused {
+		header = fmt.Sprintf("%s (%d/%d)", ls.filter, n, m)
+	} else {
+		// Blurred: show the current selection, no filter chrome.
+		_, cur := ls.GetCurrentOption()
+		if cur == "" {
+			cur = noProjectsSentinel
+		}
+		header = cur
+	}
+	for i, r := range []rune(header) {
+		if i >= fieldW {
+			break
+		}
+		screen.SetContent(fieldX+i, y, r, nil, fStyle)
+	}
+
+	// --- Rows 1..: option window ---
+	rows := height - 1
+	if rows > listSelectVisibleRows {
+		rows = listSelectVisibleRows
+	}
+	for r := 0; r < rows; r++ {
+		fi := ls.top + r
+		ry := y + 1 + r
+		// Clear the option row background to the field background.
+		rowStyle := fieldBlurredStyle
+		for i := 0; i < fieldW; i++ {
+			screen.SetContent(fieldX+i, ry, ' ', nil, rowStyle)
+		}
+		if fi >= len(ls.filtered) {
+			continue
+		}
+		opt := ls.options[ls.filtered[fi]]
+		cursorMark := "  "
+		oStyle := fieldBlurredStyle
+		if fi == ls.cursor {
+			cursorMark = "> "
+			if focused {
+				oStyle = fieldFocusedStyle
+			}
+		}
+		line := cursorMark + opt
+		for i, ch := range []rune(line) {
+			if i >= fieldW {
+				break
+			}
+			screen.SetContent(fieldX+i, ry, ch, nil, oStyle)
+		}
+	}
+}
+
+// InputHandler implements tview.Primitive.
+func (ls *inlineListSelect) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+	return ls.WrapInputHandler(func(event *tcell.EventKey, _ func(p tview.Primitive)) {
+		if ls.disabled {
+			return
+		}
+		switch event.Key() {
+		case tcell.KeyDown:
+			if ls.cursor < len(ls.filtered)-1 {
+				ls.cursor++
+				ls.scrollToCursor()
+			}
+		case tcell.KeyUp:
+			if ls.cursor > 0 {
+				ls.cursor--
+				ls.scrollToCursor()
+			}
+		case tcell.KeyRune:
+			r := event.Rune()
+			// Printable runes filter; ignore control/space-only noise but
+			// allow space inside a filter (some project names contain it).
+			if r == 0 {
+				return
+			}
+			ls.filter += string(r)
+			ls.refilter()
+		case tcell.KeyBackspace, tcell.KeyBackspace2:
+			if ls.filter != "" {
+				rs := []rune(ls.filter)
+				ls.filter = string(rs[:len(rs)-1])
+				ls.refilter()
+			}
+		case tcell.KeyEnter:
+			if ls.finishedFunc != nil {
+				ls.finishedFunc(tcell.KeyTab)
+			}
+		case tcell.KeyTab:
+			if ls.finishedFunc != nil {
+				ls.finishedFunc(tcell.KeyTab)
+			}
+		case tcell.KeyBacktab:
+			if ls.finishedFunc != nil {
+				ls.finishedFunc(tcell.KeyBacktab)
+			}
+		case tcell.KeyEscape:
+			if ls.finishedFunc != nil {
+				ls.finishedFunc(tcell.KeyEscape)
+			}
+		}
+	})
+}
+
 // ShowNewCoordForm opens the five-field new-coordinator form modal:
 // Name (required), Project (inline cycler), Branch (optional, defaults to
 // "origin/main"), Backend (inline cycler), Prompt (multi-line textarea).
@@ -533,11 +909,7 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		nameField.SetLabel("Name: ")
 		nameField.SetFieldWidth(fw)
 
-		projOptions := projects
-		if len(projOptions) == 0 {
-			projOptions = []string{"(no projects configured)"}
-		}
-		projectCycler := newInlineCycler("Project: ", projOptions, 0, fw)
+		projectSelect := newInlineListSelect("Project: ", projects, 0, fw)
 
 		// Branch defaults to "origin/main" — argus uses the project's configured
 		// default branch when the field is empty, but pre-filling gives the operator
@@ -558,7 +930,7 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 
 		form := tview.NewForm().
 			AddFormItem(nameField).
-			AddFormItem(projectCycler).
+			AddFormItem(projectSelect).
 			AddFormItem(branchField).
 			AddFormItem(backendCycler).
 			AddFormItem(promptField).
@@ -566,10 +938,8 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 
 		dismiss := func(submitted bool) {
 			name := strings.TrimSpace(nameField.GetText())
-			_, projOpt := projectCycler.GetCurrentOption()
-			if projOpt == "(no projects configured)" {
-				projOpt = ""
-			}
+			// inlineListSelect maps its empty-list sentinel to "" itself.
+			_, projOpt := projectSelect.GetCurrentOption()
 			_, backendOpt := backendCycler.GetCurrentOption()
 			a.closeModal(pageNewCoord)
 			if submitted && name != "" {
@@ -593,47 +963,21 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 		form.AddButton("Cancel [esc]", func() { dismiss(false) })
 		form.SetCancelFunc(func() { dismiss(false) })
 
-		// Enter on an InputField submits the form. On an inlineCycler it must
-		// NOT — the cycler passes Enter through to its own InputHandler, which
-		// calls finishedFunc(KeyTab) to advance focus without submitting. On the
-		// TextArea, plain Enter submits; modified Enter (Ctrl/Shift) passes
-		// through so the TextArea can insert a newline (BUG-011).
-		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-			if ev.Key() != tcell.KeyEnter {
-				return ev
-			}
-			for i := 0; i < form.GetFormItemCount(); i++ {
-				item := form.GetFormItem(i)
-				if !item.HasFocus() {
-					continue
-				}
-				switch item.(type) {
-				case *inlineCycler:
-					return ev // Cycler: Enter handled by its own InputHandler
-				case *styledTextArea:
-					// Plain Enter submits; modified Enter inserts newline in TextArea.
-					if ev.Modifiers() == 0 {
-						dismiss(true)
-						return nil
-					}
-					return ev
-				default:
-					dismiss(true)
-					return nil
-				}
-			}
-			return ev
-		})
+		// Enter routing: selectors (Project list, Backend cycler) pass Enter to
+		// their own InputHandler (advance, never submit — BUG-035); the Prompt
+		// TextArea submits on plain Enter and inserts a newline on modified Enter
+		// (BUG-011); any other focused field submits. Shared with ShowNewWorkerForm.
+		form.SetInputCapture(enterRoutingCapture(form, func() { dismiss(true) }))
 
 		themeFormStyle(form, title)
 
-		// Modal height: 4 single-row fields (Name, Project, Branch, Backend) and
-		// 1 three-row TextArea (Prompt), with itemPadding=1 between each, plus
-		// button row, surrounding padding rows, and 2 border rows. The TextArea
-		// adds 4 rows (3 visible + 1 gap) vs 2 rows for a single-row field, so
-		// the height grows by 2 relative to the all-single-row case (BUG-011):
-		// 7 + 3*2 + 4 = 17.
-		const newCoordModalHeight = 17
+		// Modal height: 3 single-row fields (Name, Branch, Backend), 1 multi-row
+		// inlineListSelect (Project), and 1 three-row TextArea (Prompt), with
+		// itemPadding=1 between each, plus button row, surrounding padding rows,
+		// and 2 border rows. The all-single-row baseline (as for the old cycler
+		// Project) was 17; the Project field grew from a 1-row cycler to a
+		// (1 + listSelectVisibleRows)-row list, adding listSelectVisibleRows rows.
+		const newCoordModalHeight = 17 + listSelectVisibleRows
 
 		a.captureFocus()
 		a.pieces.pages.AddPage(pageNewCoord, centeredModal(form, modalWidth, newCoordModalHeight), true, true)
@@ -643,51 +987,71 @@ func (a *App) ShowNewCoordForm(title string, projects, backends []string, onSubm
 	})
 }
 
-// ShowNewWorkerForm opens the two-field new-worker form modal:
-// Project (inline cycler) and Prompt (multi-line textarea).
-// onSubmit fires with (selectedProject, trimmedPrompt) when the operator
+// ShowNewWorkerForm opens the four-field new-worker form modal, at field-and-
+// behaviour parity with the new-coordinator form and argus's New Task modal:
+// Project (scrollable type-to-filter list), Branch (single-line input,
+// defaulting empty), Backend (inline cycler), and Prompt (multi-line textarea).
+// onSubmit fires with (project, branch, backend, prompt) when the operator
 // confirms; onCancel fires on Esc.
 //
 // projects is the list loaded before open (from argus). defaultProjectIdx is
 // the index of the coordinator's own project within that list; it initializes
-// the cycler. When projects is empty the cycler shows "(no projects
-// configured)" and submit maps that sentinel to "" (the ops layer falls back
-// to the coordinator's project).
+// the Project list cursor. When projects is empty the list shows a single
+// "(no projects configured)" entry and submit maps that sentinel to "" (the
+// ops layer falls back to the coordinator's project).
 //
-// Enter on the Project cycler advances focus (does NOT submit — the cycler's
-// own InputHandler calls finishedFunc(KeyTab)). Plain Enter on the Prompt
-// textarea submits; Shift/Ctrl+Enter inserts a newline (BUG-011).
+// backends is the configured backend list loaded before open; defaultBackendIdx
+// initializes the Backend cycler. An empty Backend selection means "project
+// default" downstream. The Branch field defaults empty: an empty Branch
+// branches the worker off the effective project's default ref.
+//
+// Enter on the Project list or the Backend cycler advances focus (does NOT
+// submit — each widget's own InputHandler calls finishedFunc(KeyTab)). Plain
+// Enter on the Prompt textarea submits; Shift/Ctrl+Enter inserts a newline
+// (BUG-011). Typing while the Project list is focused filters it; a paste
+// reaching a focused text field lands there as one chunk (the list consumes
+// input only while IT holds focus).
 //
 // Safe to call from any goroutine — the body runs through app.QueueUpdateDraw
 // so it lands on the tview event loop.
-func (a *App) ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, onSubmit func(project, prompt string), onCancel func()) {
+func (a *App) ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, backends []string, defaultBackendIdx int, onSubmit func(project, branch, backend, prompt string), onCancel func()) {
 	a.queueModal(func() {
-		fw := formFieldWidth("Project", "Prompt")
+		fw := formFieldWidth("Project", "Branch", "Backend", "Prompt")
 
-		projOptions := projects
-		if len(projOptions) == 0 {
-			projOptions = []string{"(no projects configured)"}
+		projectSelect := newInlineListSelect("Project: ", projects, defaultProjectIdx, fw)
+
+		// Branch defaults EMPTY — an empty Branch uses the effective project's
+		// default ref (delta: "Empty Branch branches off the project default ref").
+		branchField := newStyledInputField()
+		branchField.SetLabel("Branch: ")
+		branchField.SetFieldWidth(fw)
+
+		backendOptions := backends
+		if len(backendOptions) == 0 {
+			backendOptions = []string{"claude"}
 		}
-		projectCycler := newInlineCycler("Project: ", projOptions, defaultProjectIdx, fw)
+		backendCycler := newInlineCycler("Backend: ", backendOptions, defaultBackendIdx, fw)
 
 		promptField := newStyledTextArea()
 		promptField.SetLabel("Prompt: ")
 
 		form := tview.NewForm().
-			AddFormItem(projectCycler).
+			AddFormItem(projectSelect).
+			AddFormItem(branchField).
+			AddFormItem(backendCycler).
 			AddFormItem(promptField).
 			SetButtonsAlign(tview.AlignCenter)
 
 		dismiss := func(submitted bool) {
-			_, projOpt := projectCycler.GetCurrentOption()
-			if projOpt == "(no projects configured)" {
-				projOpt = ""
-			}
+			// inlineListSelect maps its empty-list sentinel to "" itself.
+			_, projOpt := projectSelect.GetCurrentOption()
+			_, backendOpt := backendCycler.GetCurrentOption()
+			branch := strings.TrimSpace(branchField.GetText())
 			prompt := strings.TrimSpace(promptField.GetText())
 			a.closeModal(pageNewWorker)
 			if submitted {
 				if onSubmit != nil {
-					onSubmit(projOpt, prompt)
+					onSubmit(projOpt, branch, backendOpt, prompt)
 				}
 			} else if onCancel != nil {
 				onCancel()
@@ -698,52 +1062,27 @@ func (a *App) ShowNewWorkerForm(title string, projects []string, defaultProjectI
 		form.AddButton("Cancel [esc]", func() { dismiss(false) })
 		form.SetCancelFunc(func() { dismiss(false) })
 
-		// Enter on the inlineCycler must NOT submit — the cycler passes Enter
-		// through to its own InputHandler, which calls finishedFunc(KeyTab) to
-		// advance focus without submitting. On the TextArea, plain Enter submits;
-		// modified Enter (Ctrl/Shift) passes through so the TextArea can insert a
-		// newline (BUG-011).
-		form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-			if ev.Key() != tcell.KeyEnter {
-				return ev
-			}
-			for i := 0; i < form.GetFormItemCount(); i++ {
-				item := form.GetFormItem(i)
-				if !item.HasFocus() {
-					continue
-				}
-				switch item.(type) {
-				case *inlineCycler:
-					return ev // Cycler: Enter handled by its own InputHandler
-				case *styledTextArea:
-					// Plain Enter submits; modified Enter inserts newline in TextArea.
-					if ev.Modifiers() == 0 {
-						dismiss(true)
-						return nil
-					}
-					return ev
-				default:
-					dismiss(true)
-					return nil
-				}
-			}
-			return ev
-		})
+		// Enter routing: selectors (Project list, Backend cycler) pass Enter to
+		// their own InputHandler (advance, never submit — BUG-035); the Prompt
+		// TextArea submits on plain Enter and inserts a newline on modified Enter
+		// (BUG-011); any other focused field submits. Shared with ShowNewCoordForm.
+		form.SetInputCapture(enterRoutingCapture(form, func() { dismiss(true) }))
 
 		themeFormStyle(form, title)
 
-		// Modal height: 1 single-row field (Project cycler) and 1 three-row
-		// TextArea (Prompt), with itemPadding=1 between each, plus button row,
-		// surrounding padding rows, and 2 border rows. The TextArea adds 4 rows
-		// (3 visible + 1 gap) vs 2 rows for a single-row field. Overhead is the
-		// same as ShowNewCoordForm (border + padding + button + padding = 5),
-		// but with 1 cycler row + 1 textarea row (heights 2 + 4) = 11.
-		const newWorkerModalHeight = 11
+		// Modal height: 2 single-row fields (Branch, Backend), 1 multi-row
+		// inlineListSelect (Project), and 1 three-row TextArea (Prompt), with
+		// itemPadding=1 between each, plus button row, surrounding padding rows,
+		// and 2 border rows. The old two-field (cycler Project + TextArea) modal
+		// was 11; adding the Branch + Backend single-row fields adds 2*2 = 4 rows,
+		// and the Project field grew from a 1-row cycler to a
+		// (1 + listSelectVisibleRows)-row list, adding listSelectVisibleRows rows.
+		const newWorkerModalHeight = 11 + 4 + listSelectVisibleRows
 
 		a.captureFocus()
 		a.pieces.pages.AddPage(pageNewWorker, centeredModal(form, modalWidth, newWorkerModalHeight), true, true)
 		if a.app != nil {
-			a.app.SetFocus(projectCycler)
+			a.app.SetFocus(projectSelect)
 		}
 	})
 }

@@ -792,12 +792,30 @@ func frontCycler(t *testing.T, a *App, idx int) *inlineCycler {
 	return c
 }
 
-// TestShowNewCoordForm_ProjectIsInlineCycler verifies the Project field (item 1)
-// uses inlineCycler — not tview.DropDown — so no green popup overlay (BUG-035).
-func TestShowNewCoordForm_ProjectIsInlineCycler(t *testing.T) {
+// frontListSelect unwraps the centeredModal flex to an inlineListSelect at the
+// given form item index. Fails if the item is not an *inlineListSelect.
+func frontListSelect(t *testing.T, a *App, idx int) *inlineListSelect {
+	t.Helper()
+	form := frontForm(t, a)
+	ls, ok := form.GetFormItem(idx).(*inlineListSelect)
+	if !ok {
+		t.Fatalf("form item %d must be *inlineListSelect", idx)
+	}
+	return ls
+}
+
+// TestShowNewCoordForm_ProjectIsInlineListSelect verifies the Project field
+// (item 1) uses inlineListSelect — a scrollable type-to-filter list, NOT a
+// cycler and NOT tview.DropDown (no green popup overlay, BUG-035).
+func TestShowNewCoordForm_ProjectIsInlineListSelect(t *testing.T) {
 	a := newModalTestApp(t)
 	a.ShowNewCoordForm("New coordinator", []string{"proj-a", "proj-b"}, []string{"claude"}, nil, nil)
-	_ = frontCycler(t, a, 1) // asserts *inlineCycler
+	_ = frontListSelect(t, a, 1) // asserts *inlineListSelect
+	// And the Project field must NOT be a cycler anymore.
+	form := frontForm(t, a)
+	if _, ok := form.GetFormItem(1).(*inlineCycler); ok {
+		t.Fatalf("Project (item 1) must NOT be an *inlineCycler — it is now a list")
+	}
 }
 
 // TestShowNewCoordForm_BackendIsInlineCycler verifies the Backend field (item 3)
@@ -824,85 +842,87 @@ func TestShowNewCoordForm_BranchDefaultsToOriginMain(t *testing.T) {
 	}
 }
 
-// TestShowNewCoordForm_CyclerLeftRightCycles verifies that Left/Right on the
-// Project cycler cycles through options without submitting the form.
-func TestShowNewCoordForm_CyclerLeftRightCycles(t *testing.T) {
+// TestShowNewCoordForm_ProjectListDownMovesCursorNoSubmit verifies that Down/Up
+// on the Project list moves the '>' cursor within the options without
+// submitting the form (delta: "Down moves the cursor without submitting").
+func TestShowNewCoordForm_ProjectListDownMovesCursorNoSubmit(t *testing.T) {
 	a := newModalTestApp(t)
 	a.ShowNewCoordForm("New coordinator", []string{"alpha", "beta", "gamma"}, []string{"claude"}, nil, nil)
 
-	cycler := frontCycler(t, a, 1)
+	ls := frontListSelect(t, a, 1)
 
-	// Initial: "alpha" (index 0)
-	if idx, opt := cycler.GetCurrentOption(); idx != 0 || opt != "alpha" {
+	if idx, opt := ls.GetCurrentOption(); idx != 0 || opt != "alpha" {
 		t.Fatalf("initial option must be alpha (0), got %d %q", idx, opt)
 	}
 
-	// Focus the cycler so dispatchKey routes to it.
-	a.app.SetFocus(cycler)
+	a.app.SetFocus(ls)
 
-	dispatchKey(a, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
-	if idx, opt := cycler.GetCurrentOption(); idx != 1 || opt != "beta" {
-		t.Fatalf("after Right expected beta (1), got %d %q", idx, opt)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if idx, opt := ls.GetCurrentOption(); idx != 1 || opt != "beta" {
+		t.Fatalf("after Down expected beta (1), got %d %q", idx, opt)
 	}
 
-	dispatchKey(a, tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
-	if idx, opt := cycler.GetCurrentOption(); idx != 0 || opt != "alpha" {
-		t.Fatalf("after Left expected alpha (0), got %d %q", idx, opt)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	if idx, opt := ls.GetCurrentOption(); idx != 0 || opt != "alpha" {
+		t.Fatalf("after Up expected alpha (0), got %d %q", idx, opt)
 	}
 
-	// Form must NOT have been submitted
 	if !a.IsModalActive() {
-		t.Fatalf("Left/Right on cycler must not dismiss the modal")
+		t.Fatalf("Down/Up on the Project list must not dismiss the modal")
 	}
 }
 
-// TestShowNewCoordForm_CyclerEnterAdvancesFocusNoSubmit verifies that pressing
-// Enter while the Project cycler is focused advances focus (does NOT submit).
-func TestShowNewCoordForm_CyclerEnterAdvancesFocusNoSubmit(t *testing.T) {
+// TestShowNewCoordForm_ProjectListTypingFilters verifies that typing narrows
+// the Project list (case-insensitive substring) and the cursor rests on the
+// first filtered option (delta: "Typing filters the visible options").
+func TestShowNewCoordForm_ProjectListTypingFilters(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewCoordForm("New coordinator", []string{"foo-frontend", "foo-backend", "bar-api"}, []string{"claude"}, nil, nil)
+
+	ls := frontListSelect(t, a, 1)
+	a.app.SetFocus(ls)
+
+	for _, r := range "back" {
+		dispatchKey(a, tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+
+	if _, opt := ls.GetCurrentOption(); opt != "foo-backend" {
+		t.Fatalf("filter 'back' must narrow to foo-backend; got %q", opt)
+	}
+	if n, m := ls.filteredCounter(); n != 1 || m != 1 {
+		t.Fatalf("(N/M) must reflect 1/1; got %d/%d", n, m)
+	}
+	if !a.IsModalActive() {
+		t.Fatalf("typing must not dismiss the modal")
+	}
+}
+
+// TestShowNewCoordForm_ProjectListEnterAdvancesFocusNoSubmit verifies that
+// pressing Enter while the Project list is focused advances focus (does NOT
+// submit) (delta: "Enter locks the selection and advances focus").
+func TestShowNewCoordForm_ProjectListEnterAdvancesFocusNoSubmit(t *testing.T) {
 	a := newModalTestApp(t)
 
 	submitted := false
 	a.ShowNewCoordForm("New coordinator", []string{"proj-a"}, []string{"claude"},
 		func(_ NewCoordFormInput) { submitted = true }, nil)
 
-	cycler := frontCycler(t, a, 1)
-	a.app.SetFocus(cycler)
+	ls := frontListSelect(t, a, 1)
+	a.app.SetFocus(ls)
 
 	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
 	if submitted {
-		t.Fatalf("Enter on Project cycler must NOT submit the form")
+		t.Fatalf("Enter on the Project list must NOT submit the form")
 	}
 	if !a.IsModalActive() {
-		t.Fatalf("Enter on cycler must not dismiss the modal")
+		t.Fatalf("Enter on the list must not dismiss the modal")
 	}
 }
 
-// TestShowNewCoordForm_CyclerWrapAround verifies that cycling past the last
-// option wraps back to the first, and vice versa.
-func TestShowNewCoordForm_CyclerWrapAround(t *testing.T) {
-	a := newModalTestApp(t)
-	a.ShowNewCoordForm("New coordinator", []string{"x", "y"}, []string{"claude"}, nil, nil)
-
-	cycler := frontCycler(t, a, 1)
-	a.app.SetFocus(cycler)
-
-	// Left from index 0 wraps to last
-	dispatchKey(a, tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
-	if idx, _ := cycler.GetCurrentOption(); idx != 1 {
-		t.Fatalf("Left from 0 must wrap to last (1), got %d", idx)
-	}
-
-	// Right from last wraps to first
-	dispatchKey(a, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
-	if idx, _ := cycler.GetCurrentOption(); idx != 0 {
-		t.Fatalf("Right from last must wrap to 0, got %d", idx)
-	}
-}
-
-// TestShowNewCoordForm_SubmitPassesCyclerValues verifies that the onSubmit
-// callback receives the Project/Backend values from the cyclers.
-func TestShowNewCoordForm_SubmitPassesCyclerValues(t *testing.T) {
+// TestShowNewCoordForm_SubmitPassesSelectedValues verifies that the onSubmit
+// callback receives the Project (from the list) and Backend (from the cycler).
+func TestShowNewCoordForm_SubmitPassesSelectedValues(t *testing.T) {
 	a := newModalTestApp(t)
 
 	var got NewCoordFormInput
@@ -917,6 +937,11 @@ func TestShowNewCoordForm_SubmitPassesCyclerValues(t *testing.T) {
 	}
 	nameField.SetText("my-coord")
 
+	// Move the Project list cursor to "proj-b" (index 1).
+	ls := frontListSelect(t, a, 1)
+	a.app.SetFocus(ls)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+
 	// Advance Backend cycler to "opus" (index 1)
 	backendCycler := frontCycler(t, a, 3)
 	a.app.SetFocus(backendCycler)
@@ -929,10 +954,276 @@ func TestShowNewCoordForm_SubmitPassesCyclerValues(t *testing.T) {
 	if !submitted {
 		t.Fatalf("Enter must fire onSubmit")
 	}
-	if got.Project != "proj-a" {
-		t.Fatalf("Project must be proj-a (initial), got %q", got.Project)
+	if got.Project != "proj-b" {
+		t.Fatalf("Project must be proj-b (after Down), got %q", got.Project)
 	}
 	if got.Backend != "opus" {
 		t.Fatalf("Backend must be opus (after Right), got %q", got.Backend)
+	}
+}
+
+// TestShowNewCoordForm_EmptyProjectListMapsToEmpty verifies the empty-list
+// degrade: the Project list shows the sentinel and GetCurrentOption maps it to
+// "" (delta: "Empty project list degrades to a single fallback entry").
+func TestShowNewCoordForm_EmptyProjectListMapsToEmpty(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var got NewCoordFormInput
+	submitted := false
+	a.ShowNewCoordForm("New coordinator", nil, []string{"claude"},
+		func(in NewCoordFormInput) { got = in; submitted = true }, nil)
+
+	ls := frontListSelect(t, a, 1)
+	if _, opt := ls.GetCurrentOption(); opt != "" {
+		t.Fatalf("empty project list must map the sentinel to \"\"; got %q", opt)
+	}
+
+	form := frontForm(t, a)
+	nameField := form.GetFormItem(0).(*styledInputField)
+	nameField.SetText("my-coord")
+	a.app.SetFocus(nameField)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if !submitted || got.Project != "" {
+		t.Fatalf("submit must carry empty Project for the sentinel; submitted=%v project=%q", submitted, got.Project)
+	}
+}
+
+// --- ShowNewWorkerForm tests (stage 1.2, 1.5) ---
+
+// TestShowNewWorkerForm_HasFourFields verifies the new-worker modal opens with
+// Project (list), Branch (input), Backend (cycler), and Prompt (textarea) — at
+// field parity with the new-coordinator modal (delta: "w in RAIL opens the
+// spawn-worker modal" with all four fields).
+func TestShowNewWorkerForm_HasFourFields(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewWorkerForm("New worker", []string{"proj-a", "proj-b"}, 0, []string{"claude", "opus"}, 0, nil, nil)
+
+	form := frontForm(t, a)
+	if form.GetFormItemCount() != 4 {
+		t.Fatalf("worker form must have exactly 4 items (Project, Branch, Backend, Prompt); got %d", form.GetFormItemCount())
+	}
+	if _, ok := form.GetFormItem(0).(*inlineListSelect); !ok {
+		t.Fatalf("item 0 (Project) must be *inlineListSelect")
+	}
+	if _, ok := form.GetFormItem(1).(*styledInputField); !ok {
+		t.Fatalf("item 1 (Branch) must be *styledInputField")
+	}
+	if _, ok := form.GetFormItem(2).(*inlineCycler); !ok {
+		t.Fatalf("item 2 (Backend) must be *inlineCycler")
+	}
+	if _, ok := form.GetFormItem(3).(*styledTextArea); !ok {
+		t.Fatalf("item 3 (Prompt) must be *styledTextArea")
+	}
+}
+
+// TestShowNewWorkerForm_BackendIsCycler is the BUG-035 regression guard for the
+// worker form: Backend MUST be a cycler (NOT a list, NOT a DropDown).
+func TestShowNewWorkerForm_BackendIsCycler(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewWorkerForm("New worker", []string{"proj-a"}, 0, []string{"claude", "opus"}, 0, nil, nil)
+	_ = frontCycler(t, a, 2) // asserts *inlineCycler
+}
+
+// TestShowNewWorkerForm_BranchDefaultsEmpty verifies the Branch field starts
+// empty (delta: "default the Branch field empty"; an empty Branch uses the
+// project default ref).
+func TestShowNewWorkerForm_BranchDefaultsEmpty(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewWorkerForm("New worker", []string{"proj-a"}, 0, []string{"claude"}, 0, nil, nil)
+
+	form := frontForm(t, a)
+	branchField := form.GetFormItem(1).(*styledInputField)
+	if got := branchField.GetText(); got != "" {
+		t.Fatalf("worker Branch field must default empty; got %q", got)
+	}
+}
+
+// TestShowNewWorkerForm_SubmitPassesBranchAndBackend verifies the onSubmit
+// callback receives the chosen Branch and Backend (delta: "Chosen Branch and
+// Backend are forwarded to the spawn").
+func TestShowNewWorkerForm_SubmitPassesBranchAndBackend(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var gotProject, gotBranch, gotBackend, gotPrompt string
+	submitted := false
+	a.ShowNewWorkerForm("New worker", []string{"proj-a", "proj-b"}, 0, []string{"claude", "codex"}, 0,
+		func(project, branch, backend, prompt string) {
+			gotProject, gotBranch, gotBackend, gotPrompt = project, branch, backend, prompt
+			submitted = true
+		}, nil)
+
+	form := frontForm(t, a)
+	branchField := form.GetFormItem(1).(*styledInputField)
+	branchField.SetText("origin/release")
+
+	// Advance Backend cycler to "codex" (index 1).
+	backendCycler := frontCycler(t, a, 2)
+	a.app.SetFocus(backendCycler)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+
+	promptField := form.GetFormItem(3).(*styledTextArea)
+	promptField.SetText("build it", false)
+	a.app.SetFocus(promptField)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if !submitted {
+		t.Fatalf("Enter on Prompt must submit the worker form")
+	}
+	if gotProject != "proj-a" {
+		t.Fatalf("Project: want proj-a (initial), got %q", gotProject)
+	}
+	if gotBranch != "origin/release" {
+		t.Fatalf("Branch: want origin/release, got %q", gotBranch)
+	}
+	if gotBackend != "codex" {
+		t.Fatalf("Backend: want codex (after Right), got %q", gotBackend)
+	}
+	if gotPrompt != "build it" {
+		t.Fatalf("Prompt: want 'build it', got %q", gotPrompt)
+	}
+}
+
+// TestShowNewWorkerForm_NoMatchFilterSubmitsEmptyProject locks the no-match →
+// fallback contract end to end through the form: filtering the Project list to
+// ZERO matches and submitting yields an empty Project in onSubmit. Downstream,
+// ops.SpawnWorker maps an empty project to the coordinator's project (proven by
+// TestSpawnWorker_ProjectOverride_EmptyFallsBackToCoordProject), so a stray
+// no-match filter degrades to the documented fallback rather than spawning in
+// a bogus project.
+func TestShowNewWorkerForm_NoMatchFilterSubmitsEmptyProject(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var gotProject string
+	submitted := false
+	a.ShowNewWorkerForm("New worker", []string{"proj-a", "proj-b"}, 0, []string{"claude"}, 0,
+		func(project, _, _, _ string) { gotProject = project; submitted = true }, nil)
+
+	// Filter the Project list to zero matches.
+	ls := frontListSelect(t, a, 0)
+	a.app.SetFocus(ls)
+	for _, r := range "zzz-no-match" {
+		dispatchKey(a, tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	if _, m := ls.filteredCounter(); m != 0 {
+		t.Fatalf("setup: filter must yield zero matches; got %d", m)
+	}
+
+	// Submit via the Prompt field.
+	form := frontForm(t, a)
+	promptField := form.GetFormItem(3).(*styledTextArea)
+	promptField.SetText("build it", false)
+	a.app.SetFocus(promptField)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if !submitted {
+		t.Fatalf("Enter on Prompt must submit even with a no-match Project filter")
+	}
+	if gotProject != "" {
+		t.Fatalf("a no-match Project filter must submit an empty project (→ coord fallback); got %q", gotProject)
+	}
+}
+
+// TestShowNewWorkerForm_EmptyBranchStaysEmpty verifies that leaving the Branch
+// field untouched yields an empty Branch on submit (delta: "Empty Branch
+// branches off the project default ref").
+func TestShowNewWorkerForm_EmptyBranchStaysEmpty(t *testing.T) {
+	a := newModalTestApp(t)
+
+	var gotBranch string
+	submitted := false
+	a.ShowNewWorkerForm("New worker", []string{"proj-a"}, 0, []string{"claude"}, 0,
+		func(_, branch, _, _ string) { gotBranch = branch; submitted = true }, nil)
+
+	form := frontForm(t, a)
+	promptField := form.GetFormItem(3).(*styledTextArea)
+	promptField.SetText("build it", false)
+	a.app.SetFocus(promptField)
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if !submitted {
+		t.Fatalf("Enter on Prompt must submit")
+	}
+	if gotBranch != "" {
+		t.Fatalf("untouched Branch must submit empty; got %q", gotBranch)
+	}
+}
+
+// TestShowNewWorkerForm_EscCancels verifies Esc fires onCancel.
+func TestShowNewWorkerForm_EscCancels(t *testing.T) {
+	a := newModalTestApp(t)
+
+	cancelled := false
+	a.ShowNewWorkerForm("New worker", []string{"proj-a"}, 0, []string{"claude"}, 0,
+		nil, func() { cancelled = true })
+
+	dispatchKey(a, tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+
+	if a.IsModalActive() {
+		t.Fatalf("Esc must dismiss the worker form")
+	}
+	if !cancelled {
+		t.Fatalf("Esc must fire onCancel")
+	}
+}
+
+// --- Paste-readiness (stage 1.4) ---
+
+// dispatchPaste delivers a bracketed-paste event to the application the way
+// tcell does for an *EventPaste: the Pages root descends to the focused
+// primitive via PasteHandler (the same tree dispatchKey walks for keys).
+func dispatchPaste(a *App, text string) {
+	root := tview.Primitive(a.pieces.pages)
+	if !root.HasFocus() {
+		return
+	}
+	if handler := root.PasteHandler(); handler != nil {
+		handler(text, func(p tview.Primitive) { a.app.SetFocus(p) })
+	}
+}
+
+// TestShowNewWorkerForm_PasteLandsInFocusedPromptAsOneChunk proves the modal is
+// paste-ready: a paste delivered while the Prompt TextArea is focused lands the
+// ENTIRE string in one operation (delta: "Paste lands in the focused prompt
+// field as one chunk"). The styled wrappers keep tview's native PasteHandler.
+func TestShowNewWorkerForm_PasteLandsInFocusedPromptAsOneChunk(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewWorkerForm("New worker", []string{"proj-a"}, 0, []string{"claude"}, 0, nil, nil)
+
+	form := frontForm(t, a)
+	promptField := form.GetFormItem(3).(*styledTextArea)
+	a.app.SetFocus(promptField)
+
+	const pasted = "first line\nsecond line with spaces and symbols !@#$%"
+	dispatchPaste(a, pasted)
+
+	if got := promptField.GetText(); got != pasted {
+		t.Fatalf("paste must land in the focused Prompt as one chunk:\n got  %q\n want %q", got, pasted)
+	}
+}
+
+// TestShowNewWorkerForm_ListDoesNotInterceptPasteToPrompt proves the new list
+// widget does not regress paste: even though the form contains an
+// inlineListSelect, a paste delivered while the Prompt is focused reaches the
+// Prompt (the list only consumes input while IT holds focus). The list's
+// embedded Box has a no-op PasteHandler, so it never swallows a paste.
+func TestShowNewWorkerForm_ListDoesNotInterceptPasteToPrompt(t *testing.T) {
+	a := newModalTestApp(t)
+	a.ShowNewWorkerForm("New worker", []string{"proj-a", "proj-b"}, 0, []string{"claude"}, 0, nil, nil)
+
+	form := frontForm(t, a)
+	promptField := form.GetFormItem(3).(*styledTextArea)
+	a.app.SetFocus(promptField)
+
+	const pasted = "pasted-into-prompt-not-list"
+	dispatchPaste(a, pasted)
+
+	if got := promptField.GetText(); got != pasted {
+		t.Fatalf("with a list field present, paste must still reach the focused Prompt; got %q", got)
+	}
+	// The Project list must NOT have absorbed any of the paste into its filter.
+	ls := frontListSelect(t, a, 0)
+	if ls.filter != "" {
+		t.Fatalf("the list must not absorb a paste destined for the Prompt; list filter=%q", ls.filter)
 	}
 }

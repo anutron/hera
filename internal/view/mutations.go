@@ -187,13 +187,15 @@ type modalAPI interface {
 	// non-empty name; onCancel fires on Esc or empty-name submit.
 	// Either callback may be nil.
 	ShowNewCoordForm(title string, projects, backends []string, onSubmit func(NewCoordFormInput), onCancel func())
-	// ShowNewWorkerForm opens the two-field new-worker form modal:
-	// Project (inline cycler) and Prompt (multi-line textarea).
-	// projects and defaultProjectIdx are loaded before open; defaultProjectIdx
-	// initializes the cycler to the coordinator's own project. onSubmit fires
-	// with (selectedProject, trimmedPrompt) on confirm; onCancel fires on Esc.
-	// Either callback may be nil.
-	ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, onSubmit func(project, prompt string), onCancel func())
+	// ShowNewWorkerForm opens the four-field new-worker form modal: Project
+	// (scrollable type-to-filter list), Branch (single-line input, default
+	// empty), Backend (inline cycler), and Prompt (multi-line textarea).
+	// projects/defaultProjectIdx and backends/defaultBackendIdx are loaded
+	// before open; defaultProjectIdx initializes the Project list to the
+	// coordinator's own project, defaultBackendIdx the Backend cycler. onSubmit
+	// fires with (project, branch, backend, trimmedPrompt) on confirm; onCancel
+	// fires on Esc. Either callback may be nil.
+	ShowNewWorkerForm(title string, projects []string, defaultProjectIdx int, backends []string, defaultBackendIdx int, onSubmit func(project, branch, backend, prompt string), onCancel func())
 	// ShowConfirm opens a y/N confirmation modal. onYes runs when the
 	// operator picks Yes; onNo runs on No or cancel. Either may be nil.
 	ShowConfirm(title, message string, onYes func(), onNo func())
@@ -655,6 +657,14 @@ func (b *mutationBridge) OnNewWorker() {
 			b.modals.ShowError("new worker: could not load coordinator project: " + err.Error())
 			return
 		}
+		// Load the backend list so the worker modal can offer a Backend cycler,
+		// mirroring the new-coordinator path. An empty list degrades to the
+		// modal's own "claude" default; a load failure aborts the open.
+		backends, err := b.svc.ListBackends(b.ctx)
+		if err != nil {
+			b.modals.ShowError("new worker: could not load backends: " + err.Error())
+			return
+		}
 		// Compute the default cycler index: the position of the coordinator's
 		// project in the list, falling back to 0 if not found or list is empty.
 		defaultIdx := 0
@@ -664,7 +674,7 @@ func (b *mutationBridge) OnNewWorker() {
 				break
 			}
 		}
-		b.modals.ShowNewWorkerForm("New worker", projects, defaultIdx, func(project, prompt string) {
+		b.modals.ShowNewWorkerForm("New worker", projects, defaultIdx, backends, 0, func(project, branch, backend, prompt string) {
 			if strings.TrimSpace(prompt) == "" {
 				// Empty/whitespace confirm: surface a dismissible notice rather
 				// than closing silently. No argus/DB call on this path.
@@ -677,6 +687,8 @@ func (b *mutationBridge) OnNewWorker() {
 					CoordRoleID:          capturedCoordRoleID,
 					Prompt:               prompt,
 					Project:              project,
+					Branch:               branch,
+					Backend:              backend,
 				})
 				if err != nil {
 					return err
