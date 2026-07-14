@@ -129,6 +129,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	mcpSrv.RegisterHandler("hera_mark_read", mcp.NewMarkReadHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_status", mcp.NewStatusHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("hera_spawn_worker", mcp.NewSpawnWorkerHandler(resolver, database, client))
+	mcpSrv.RegisterHandler("hera_rebind", mcp.NewRebindHandler(resolver, database, client))
 	mcpSrv.RegisterHandler("settings_save", mcp.NewSettingsSaveHandler(database.Config, sendHandler))
 	mcpSrv.RegisterHandler("hera_tree_updates", mcp.NewTreeUpdatesHandler(resolver, database))
 	mcpSrv.RegisterHandler("hera_get_messages", mcp.NewGetMessagesHandler(resolver, database))
@@ -497,6 +498,19 @@ func toolDefinitions() []mcp.ToolDefinition {
 					"backend":      map[string]any{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
 				},
 				"required": []string{"cwd", "prompt"},
+			},
+		},
+		{
+			Name:        "hera_rebind",
+			Description: "Repair a stuck/ambiguous hera binding without tearing down the argus session. Use when a born-bound worker can neither claim its binding (claim says none) nor attach a new one (attach hits a UNIQUE constraint) — the sign that a reused worktree path left the live binding pointing at a stale argus task. Reconciles the binding for the given orchestrator to the caller's real live task so both lookup paths agree; the role (and its prompt, messages, status) is preserved. Refuses when the state is genuinely ambiguous (two live in_progress tasks share the worktree, or multiple roles are bound here and no role_name is given).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"cwd":          map[string]any{"type": "string", "description": "Caller's worktree path (use $PWD)"},
+					"orchestrator": map[string]any{"type": "string", "description": "The orchestrator whose binding for this worktree should be reconciled"},
+					"role_name":    map[string]any{"type": "string", "description": "(optional) Required only when more than one role holds a live binding at this worktree; names the role to reconcile"},
+				},
+				"required": []string{"cwd", "orchestrator"},
 			},
 		},
 		{

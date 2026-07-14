@@ -97,7 +97,11 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 	// Reject only if the calling argus task is already bound to THIS
 	// orchestrator. Bindings to other orchestrators are fine — that's
 	// the whole point of multi-binding (an argus task can be worker in
-	// foo and coord in bar simultaneously).
+	// foo and coord in bar simultaneously). The worktree-keyed check
+	// mirrors hera_join's attach guard (BUG-059): the (worktree_path,
+	// orchestrator_id) uniqueness would reject the coordinator binding
+	// INSERT anyway, so pre-checking it yields an actionable resume hint
+	// instead of a raw constraint error.
 	if _, err := h.db.Bindings.GetLiveByTaskAndOrchestrator(ctx, task.ID, orch.ID); err == nil {
 		return ErrorResponse(fmt.Sprintf(
 			"hera_new_orchestrator: this argus task is already bound to orchestrator %q; resume via hera_join(cwd, orchestrator=%q) instead",
@@ -105,6 +109,14 @@ func (h *NewOrchestratorHandler) Handle(ctx context.Context, raw json.RawMessage
 		))
 	} else if !errors.Is(err, db.ErrNotFound) {
 		return ErrorResponse("hera_new_orchestrator: lookup existing binding: " + err.Error())
+	}
+	if _, err := h.db.Bindings.GetLiveByWorktreeAndOrchestrator(ctx, task.WorktreePath, orch.ID); err == nil {
+		return ErrorResponse(fmt.Sprintf(
+			"hera_new_orchestrator: this worktree already holds a live binding to orchestrator %q; resume via hera_join(cwd, orchestrator=%q) instead",
+			in.Name, in.Name,
+		))
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return ErrorResponse("hera_new_orchestrator: lookup existing worktree binding: " + err.Error())
 	}
 
 	// Check for an existing coordinator role with the same name; reject if

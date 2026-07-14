@@ -85,14 +85,16 @@ func (h *JoinHandler) Handle(ctx context.Context, raw json.RawMessage) Response 
 	if in.RoleName != "" || in.Kind != "" {
 		return h.attach(ctx, task.ID, task.Project, task.WorktreePath, in)
 	}
-	return h.claim(ctx, task.ID, in.Orchestrator)
+	return h.claim(ctx, task, in.Orchestrator)
 }
 
 // claim handles the bare or orchestrator-only hera_join — re-incarnation:
 // look up the calling task's live binding for the given orchestrator (or
 // the single binding when no orchestrator is supplied), and return the
-// role's identity.
-func (h *JoinHandler) claim(ctx context.Context, taskID, orchestrator string) Response {
+// role's identity. Both lookups resolve through the resolver's
+// task-then-worktree fallback so a cwd that resolved to a colliding task id
+// still claims the live binding rooted at this worktree (BUG-059).
+func (h *JoinHandler) claim(ctx context.Context, task *argus.Task, orchestrator string) Response {
 	if orchestrator != "" {
 		orch, err := h.db.Orchestrators.GetByName(ctx, orchestrator)
 		if errors.Is(err, db.ErrNotFound) {
@@ -104,7 +106,7 @@ func (h *JoinHandler) claim(ctx context.Context, taskID, orchestrator string) Re
 		if err != nil {
 			return ErrorResponse("hera_join: " + err.Error())
 		}
-		bnd, err := h.db.Bindings.GetLiveByTaskAndOrchestrator(ctx, taskID, orch.ID)
+		bnd, err := h.resolver.LiveBindingForOrch(ctx, task, orch.ID)
 		if errors.Is(err, db.ErrNotFound) {
 			return ErrorResponse(fmt.Sprintf(
 				"hera_join: this argus task is not bound to orchestrator %q. To attach, call hera_join with role_name and kind.",
@@ -117,7 +119,7 @@ func (h *JoinHandler) claim(ctx context.Context, taskID, orchestrator string) Re
 		return h.identityResponse(ctx, bnd)
 	}
 
-	bindings, err := h.db.Bindings.ListLiveByTaskID(ctx, taskID)
+	bindings, err := h.resolver.LiveBindingsForTask(ctx, task)
 	if err != nil {
 		return ErrorResponse("hera_join: " + err.Error())
 	}
@@ -190,9 +192,17 @@ func (h *JoinHandler) attach(ctx context.Context, argusTaskID, project, worktree
 		return ErrorResponse("hera_join: " + err.Error())
 	}
 
-	// Reject only if the calling argus task is already bound to THIS
-	// orchestrator. Bindings to other orchestrators are fine — that's
-	// the multi-binding case.
+	// Reject if a live binding for THIS orchestrator already exists for the
+	// caller — either keyed by the resolved argus_task_id OR by the worktree
+	// path. Bindings to OTHER orchestrators are fine (the multi-binding case).
+	//
+	// The worktree check is what makes attach agree with claim under BUG-059:
+	// the (worktree_path, orchestrator_id) uniqueness will reject the INSERT
+	// anyway, so pre-checking it converts a raw "UNIQUE constraint failed"
+	// into an actionable message. When the existing binding's argus_task_id
+	// differs from the caller's resolved task (a stale/colliding task shared
+	// the worktree), a plain claim now resolves the correct binding; if the
+	// binding's own task id has drifted, hera_rebind reconciles it.
 	if _, err := h.db.Bindings.GetLiveByTaskAndOrchestrator(ctx, argusTaskID, orch.ID); err == nil {
 		return ErrorResponse(fmt.Sprintf(
 			"hera_join: this argus task is already bound to orchestrator %q; call hera_join(cwd, orchestrator=%q) with no role_name to claim the existing binding",
@@ -200,6 +210,21 @@ func (h *JoinHandler) attach(ctx context.Context, argusTaskID, project, worktree
 		))
 	} else if !errors.Is(err, db.ErrNotFound) {
 		return ErrorResponse("hera_join: lookup existing binding: " + err.Error())
+	}
+	if existing, err := h.db.Bindings.GetLiveByWorktreeAndOrchestrator(ctx, worktreePath, orch.ID); err == nil {
+		hint := fmt.Sprintf("call hera_join(cwd, orchestrator=%q) with no role_name to claim it", in.Orchestrator)
+		if existing.ArgusTaskID != argusTaskID {
+			hint += fmt.Sprintf(
+				"; if delivery to this worker is broken (the binding still points at stale argus task %s), call hera_rebind(cwd, orchestrator=%q) to reconcile it",
+				existing.ArgusTaskID, in.Orchestrator,
+			)
+		}
+		return ErrorResponse(fmt.Sprintf(
+			"hera_join: this worktree already holds a live binding to orchestrator %q; %s",
+			in.Orchestrator, hint,
+		))
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return ErrorResponse("hera_join: lookup existing worktree binding: " + err.Error())
 	}
 
 	if existing, err := h.db.Roles.GetByOrchestratorAndName(ctx, orch.ID, in.RoleName); err == nil && existing.Kind != kind {

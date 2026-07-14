@@ -26,7 +26,24 @@ func NewResolver(client *argus.Client, database *db.DB) *Resolver {
 // TaskForCwd returns the argus task whose worktree_path matches cwd,
 // after normalizing both sides via filepath.Clean (so trailing slashes,
 // redundant separators, and "." segments don't cause false misses).
-// Returns ErrCwdUnknown if no task matches.
+//
+// A worktree_path is NOT a stable unique key across a task's full lifecycle:
+// argus reuses a worktree directory when a task name / branch is reused after
+// the prior task moved to in_review / complete / archived without its worktree
+// being cleared. When two tasks share a cwd, returning the first match (the
+// pre-BUG-059 behavior) can silently resolve to the STALE task, which is the
+// root of the claim-vs-attach binding paradox: identity then keys off the
+// wrong argus_task_id. To keep resolution stable we disambiguate:
+//
+//   - one match                          → return it (the overwhelmingly
+//     common case; behavior unchanged).
+//   - drop archived matches, one left    → return it.
+//   - multiple live matches, exactly one
+//     is in_progress                      → return the running session (the
+//     agent making the call is in_progress).
+//   - otherwise (all archived, or 2+
+//     equally-plausible live matches)     → ErrCwdUnknown / CwdAmbiguousError
+//     so the caller surfaces the collision instead of guessing.
 func (r *Resolver) TaskForCwd(ctx context.Context, cwd string) (*argus.Task, error) {
 	if cwd == "" {
 		return nil, ErrCwdMissing
@@ -36,12 +53,49 @@ func (r *Resolver) TaskForCwd(ctx context.Context, cwd string) (*argus.Task, err
 	if err != nil {
 		return nil, fmt.Errorf("resolver.TaskForCwd: list tasks: %w", err)
 	}
+	var matches []*argus.Task
 	for i := range tasks {
 		if filepath.Clean(tasks[i].WorktreePath) == normalized {
-			return &tasks[i], nil
+			matches = append(matches, &tasks[i])
 		}
 	}
-	return nil, ErrCwdUnknown
+	return disambiguateTaskMatches(matches)
+}
+
+// disambiguateTaskMatches picks the single task a cwd should resolve to among
+// tasks that all share the worktree_path. See TaskForCwd for the rules.
+func disambiguateTaskMatches(matches []*argus.Task) (*argus.Task, error) {
+	switch len(matches) {
+	case 0:
+		return nil, ErrCwdUnknown
+	case 1:
+		return matches[0], nil
+	}
+
+	var active []*argus.Task
+	for _, t := range matches {
+		if !t.Archived {
+			active = append(active, t)
+		}
+	}
+	switch len(active) {
+	case 0:
+		// Every task at this cwd is archived — there is no live task here.
+		return nil, ErrCwdUnknown
+	case 1:
+		return active[0], nil
+	}
+
+	var running []*argus.Task
+	for _, t := range active {
+		if t.Status == "in_progress" {
+			running = append(running, t)
+		}
+	}
+	if len(running) == 1 {
+		return running[0], nil
+	}
+	return nil, &CwdAmbiguousError{Candidates: active}
 }
 
 // CallerRole resolves cwd → argus task → live binding → role. The
@@ -72,7 +126,7 @@ func (r *Resolver) CallerRole(ctx context.Context, cwd, orchestrator string) (*a
 		if err != nil {
 			return task, nil, nil, err
 		}
-		bnd, err := r.db.Bindings.GetLiveByTaskAndOrchestrator(ctx, task.ID, orch.ID)
+		bnd, err := r.LiveBindingForOrch(ctx, task, orch.ID)
 		if errors.Is(err, db.ErrNotFound) {
 			return task, nil, nil, &NoBindingForOrchestratorError{Orchestrator: orchestrator}
 		}
@@ -86,7 +140,7 @@ func (r *Resolver) CallerRole(ctx context.Context, cwd, orchestrator string) (*a
 		return task, role, bnd, nil
 	}
 
-	bindings, err := r.db.Bindings.ListLiveByTaskID(ctx, task.ID)
+	bindings, err := r.LiveBindingsForTask(ctx, task)
 	if err != nil {
 		return task, nil, nil, err
 	}
@@ -102,6 +156,45 @@ func (r *Resolver) CallerRole(ctx context.Context, cwd, orchestrator string) (*a
 		return task, nil, bnd, err
 	}
 	return task, role, bnd, nil
+}
+
+// LiveBindingForOrch resolves the caller's live binding under orchID. It keys
+// first on the resolved argus_task_id (the exact, historical path) and, on a
+// miss, falls back to the caller's worktree_path. The fallback closes the
+// BUG-059 gap: when cwd resolved to a colliding task id the task-keyed lookup
+// misses the live binding, but the (worktree_path, orchestrator_id) uniqueness
+// guarantees the worktree-keyed lookup finds the one correct binding — the same
+// row an attach INSERT would collide with. Orchestrator scoping makes the
+// fallback safe: a stale binding for a different orchestrator sharing the
+// worktree cannot be returned here.
+func (r *Resolver) LiveBindingForOrch(ctx context.Context, task *argus.Task, orchID int64) (*db.Binding, error) {
+	bnd, err := r.db.Bindings.GetLiveByTaskAndOrchestrator(ctx, task.ID, orchID)
+	if err == nil {
+		return bnd, nil
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		return nil, err
+	}
+	if task.WorktreePath == "" {
+		return nil, db.ErrNotFound
+	}
+	return r.db.Bindings.GetLiveByWorktreeAndOrchestrator(ctx, task.WorktreePath, orchID)
+}
+
+// LiveBindingsForTask lists the caller's live bindings. It keys first on the
+// resolved argus_task_id and, when that yields none, falls back to the
+// worktree_path so a cwd that resolved to a colliding task still finds the
+// bindings physically rooted at this worktree (BUG-059). The fallback fires
+// only on a task-keyed miss, so it never double-counts.
+func (r *Resolver) LiveBindingsForTask(ctx context.Context, task *argus.Task) ([]*db.Binding, error) {
+	bindings, err := r.db.Bindings.ListLiveByTaskID(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(bindings) > 0 || task.WorktreePath == "" {
+		return bindings, nil
+	}
+	return r.db.Bindings.ListLiveByWorktree(ctx, task.WorktreePath)
 }
 
 // buildAmbiguousError loads the orchestrator + role names for each of
@@ -161,6 +254,25 @@ type NoBindingForOrchestratorError struct {
 
 func (e *NoBindingForOrchestratorError) Error() string {
 	return fmt.Sprintf("this argus task is not bound to orchestrator %q. To attach, call hera_join with role_name and kind.", e.Orchestrator)
+}
+
+// CwdAmbiguousError is returned when a cwd maps to two or more equally
+// plausible live argus tasks (same worktree_path, none clearly the running
+// session) so the resolver refuses to guess which one the caller is. The
+// message lists the candidates so the operator can disambiguate or clean up
+// the stale task.
+type CwdAmbiguousError struct {
+	Candidates []*argus.Task
+}
+
+func (e *CwdAmbiguousError) Error() string {
+	var parts []string
+	for _, t := range e.Candidates {
+		parts = append(parts, fmt.Sprintf("%s (%s)", t.ID, t.Status))
+	}
+	return "cwd maps to multiple live argus tasks sharing this worktree: " +
+		strings.Join(parts, ", ") +
+		". A stale task is likely reusing this worktree path — archive or delete it, or re-run once only one task here is in_progress."
 }
 
 // Errors returned by Resolver. Handlers convert these to MCP error

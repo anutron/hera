@@ -131,6 +131,56 @@ func (b *BindingsDAO) GetLiveByTaskAndOrchestrator(ctx context.Context, taskID s
 		taskID, orchID)
 }
 
+// GetLiveByWorktreeAndOrchestrator returns the live binding for
+// (worktreePath, orchID) if one exists. ErrNotFound otherwise. This is the
+// worktree-keyed twin of GetLiveByTaskAndOrchestrator, and it maps exactly
+// onto the bindings_live_unique_worktree_orch partial index, so it returns
+// at most one row.
+//
+// It exists because cwd→argus_task_id resolution can land on the WRONG task
+// when two argus tasks reuse the same worktree_path across their lifecycles
+// (a task name / branch reused after the prior task went to in_review /
+// archived without its worktree being cleared). When that happens the
+// task-keyed lookup misses the live binding that the (worktree_path,
+// orchestrator_id) uniqueness will nonetheless reject on INSERT — the
+// claim-says-none / attach-says-exists paradox (BUG-059). The caller's
+// worktree_path IS its cwd (ground truth), so a worktree-keyed lookup
+// resolves the same binding the INSERT would collide with, keeping the two
+// paths in agreement.
+func (b *BindingsDAO) GetLiveByWorktreeAndOrchestrator(ctx context.Context, worktreePath string, orchID int64) (*Binding, error) {
+	return b.scanOne(ctx,
+		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM bindings WHERE worktree_path = ? AND orchestrator_id = ? AND ended_at IS NULL`,
+		worktreePath, orchID)
+}
+
+// ListLiveByWorktree returns every live binding for a worktree path, ordered
+// by started_at ASC. Empty slice if none. Worktree-keyed twin of
+// ListLiveByTaskID: it backs the no-orchestrator claim / CallerRole fallback
+// when task-id resolution misses because cwd resolved to a colliding task
+// (BUG-059). Multiple rows are possible only across DISTINCT orchestrators
+// (the per-orchestrator uniqueness caps it at one live binding per orch), so
+// this mirrors the legitimate multi-binding shape ListLiveByTaskID returns.
+func (b *BindingsDAO) ListLiveByWorktree(ctx context.Context, worktreePath string) ([]*Binding, error) {
+	rows, err := b.db.QueryContext(ctx,
+		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM bindings WHERE worktree_path = ? AND ended_at IS NULL
+		 ORDER BY started_at ASC`, worktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("bindings.ListLiveByWorktree: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*Binding
+	for rows.Next() {
+		bnd, err := scanBindingRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bnd)
+	}
+	return out, rows.Err()
+}
+
 // ListLiveByTaskID returns every live binding for an argus task,
 // ordered by started_at ASC. Empty slice if none. Used by the
 // auto-adopt parent-disambiguation path and by the task.archived
