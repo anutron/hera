@@ -1,7 +1,9 @@
 # hera-agent-skill Specification
 
 ## Purpose
-TBD - created by archiving change add-agent-facing-skill. Update Purpose after archive.
+
+Ships an agent-facing hera skill and pointer snippet that teach agents inside argus sandboxes when and how to use hera, plus scripts to install and remove them.
+
 ## Requirements
 ### Requirement: Agent-facing hera skill exists and self-gates to argus sandboxes
 

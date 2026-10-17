@@ -1,7 +1,9 @@
 # hera-substrate-link Specification
 
 ## Purpose
-TBD - created by archiving change add-argus-reconnect. Update Purpose after archive.
+
+Keeps hera connected to the argus daemon: discovers argus's REST port at startup, detects argus restarts, and re-registers tools and settings on recovery.
+
 ## Requirements
 ### Requirement: Argus REST port discovered on hera startup
 

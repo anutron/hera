@@ -1,7 +1,9 @@
 # hera-view Specification
 
 ## Purpose
-TBD - created by archiving change add-hera-view. Update Purpose after archive.
+
+Defines the hera plugin view inside argus: the role rail, the pane focus model, live PTY panes, and the keys for managing orchestrators and workers.
+
 ## Requirements
 ### Requirement: Plugin view registered with argus on daemon startup
 

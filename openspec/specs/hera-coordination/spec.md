@@ -1,7 +1,9 @@
 # hera-coordination Specification
 
 ## Purpose
-TBD - created by archiving change hera-v1. Update Purpose after archive.
+
+Defines hera's multi-agent coordination model: persistent roles bound to argus tasks, the `hera_` MCP tools, and message delivery between coordinators and workers.
+
 ## Requirements
 ### Requirement: Role identity outlives argus task lifecycle
 

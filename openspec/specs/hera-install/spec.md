@@ -1,7 +1,9 @@
 # hera-install Specification
 
 ## Purpose
-TBD - created by archiving change add-launchagent-install. Update Purpose after archive.
+
+Covers the opt-in macOS LaunchAgent install in setup.sh so the hera daemon starts at login, restarts on crash, and can be uninstalled cleanly.
+
 ## Requirements
 ### Requirement: setup.sh offers an opt-in macOS LaunchAgent install step
 
